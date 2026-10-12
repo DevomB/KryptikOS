@@ -8,6 +8,7 @@
  *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move FROM's clipboard to TO
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
  *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
+ *   kryptik-launch --wifi-add-open SSID add one as an open network, with no passphrase
  *   kryptik-launch --wifi-forget SSID   remove one
  *   kryptik-launch --update status|fetch|forget|apply   show, fetch, drop or install a release
  *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
@@ -296,7 +297,7 @@ static void usage(void)
 	      "       kryptik-launch --info ZONE\n"
 	      "       kryptik-launch --runtime-dir\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
-	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-forget SSID\n"
+	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-add-open SSID | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
 	      "       kryptik-launch --update status|fetch|forget|apply | --update auto on|off\n", stderr);
 	exit(2);
@@ -361,20 +362,23 @@ static int wifi_main(int argc, char **argv)
 		}
 		return 0;
 	}
-	if (argc != 3 || (strcmp(mode, "--wifi-add") != 0 && strcmp(mode, "--wifi-forget") != 0))
+	int add = strcmp(mode, "--wifi-add") == 0, add_open = strcmp(mode, "--wifi-add-open") == 0;
+	if (argc != 3 || (!add && !add_open && strcmp(mode, "--wifi-forget") != 0))
 		usage();
 	const char *ssid = argv[2];
 	if (!*ssid || strlen(ssid) > 32 || strchr(ssid, '\n'))
 		die("an SSID is 1 to 32 bytes without a newline");
 	char pass[256] = "";
-	if (strcmp(mode, "--wifi-add") == 0) {
+	if (add) {
 		char prompt[64];
 		snprintf(prompt, sizeof prompt, "passphrase for %s: ", ssid);
 		secret_from_stdin(prompt, pass, sizeof pass);
 	}
 	char req[512];
-	if (pass[0])
+	if (add)
 		snprintf(req, sizeof req, "wifi-add\nssid %s\npsk %s\nend\n", ssid, pass);
+	else if (add_open)
+		snprintf(req, sizeof req, "wifi-add\nssid %s\nopen\nend\n", ssid);
 	else
 		snprintf(req, sizeof req, "wifi-forget\nssid %s\nend\n", ssid);
 	char *r = talk(req, -1);

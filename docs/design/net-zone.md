@@ -323,7 +323,13 @@ configured the zone keeps its IPv4 path and the launcher says so.
   802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed,
   wpa_supplicant would take `WPA-PSK WPA-EAP` and never SAE. Management frames
   are protected wherever the access point offers it (`ieee80211w=1`), and SAE
-  always has them. A file an older kryptikd wrote is rewritten so.
+  always has them. A file an older kryptikd wrote is rewritten so. A network
+  saved as open (`kryptik wifi add SSID --open`, an `open` line in place of
+  `psk` in the request) is joined by no key at all (`key_mgmt=NONE`), so a
+  beacon offering one changes nothing, and has no management frames to
+  protect. Anyone in range reads what crosses it, as on any open network,
+  and any access point may take its name: what a zone sends there is private
+  only where the zone encrypts it.
 - **A failed join is followed by a scan.** The file's header sets
   `scan_res_valid_for_connect=0`, so the supplicant never joins from an
   earlier scan without a new one. With two networks saved, wpa_supplicant

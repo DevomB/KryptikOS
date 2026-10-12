@@ -37,6 +37,9 @@ USAGE:
     $PROG wifi list                 the Wi-Fi networks the net zone knows
     $PROG wifi add SSID             add one, or change its passphrase (asked
                                     for on the terminal; never an argument)
+    $PROG wifi add SSID --open      add one that has no passphrase, a cafe's
+                                    or an airport's: anyone in range can read
+                                    what is not encrypted again above it
     $PROG wifi forget SSID          remove one
     $PROG update status             the release running, the newest one known
                                     and how old that news is, what is staged
@@ -309,15 +312,20 @@ cmd_wifi() {
     local sub="${1:-}"; [[ $# -gt 0 ]] && shift
     case "$sub" in
         list)   [[ $# -eq 0 ]] || die "$PROG wifi list takes no argument" 2 ;;
-        add|forget) [[ $# -eq 1 ]] || die "$PROG wifi $sub SSID: exactly one SSID" 2 ;;
+        add) [[ $# -eq 1 || ( $# -eq 2 && "$2" == --open ) ]] || die "$PROG wifi add SSID [--open]: exactly one SSID" 2 ;;
+        forget) [[ $# -eq 1 ]] || die "$PROG wifi forget SSID: exactly one SSID" 2 ;;
         *) usage >&2; die "wifi needs a subcommand: list, add SSID or forget SSID" 2 ;;
     esac
     if via_launch; then
         case "$sub" in
             list)   "$LAUNCH" --wifi-list ;;
-            add)    read_passphrase "$1"
-                    # printf is a builtin, so the passphrase is never in argv.
-                    printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1" ;;
+            add)    if [[ "${2:-}" == --open ]]; then
+                        "$LAUNCH" --wifi-add-open "$1"
+                    else
+                        read_passphrase "$1"
+                        # printf is a builtin, so the passphrase is never in argv.
+                        printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1"
+                    fi ;;
             forget) "$LAUNCH" --wifi-forget "$1" ;;
         esac
         return
@@ -325,8 +333,12 @@ cmd_wifi() {
     have_kryptikd
     case "$sub" in
         list)   "$KRYPTIKD" wifi list --wifi-dir "$WIFI_DIR" ;;
-        add)    read_passphrase "$1"
-                printf '%s\n' "$PASSPHRASE" | "$KRYPTIKD" wifi add "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
+        add)    if [[ "${2:-}" == --open ]]; then
+                    "$KRYPTIKD" wifi add "$1" --open --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR"
+                else
+                    read_passphrase "$1"
+                    printf '%s\n' "$PASSPHRASE" | "$KRYPTIKD" wifi add "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR"
+                fi ;;
         forget) "$KRYPTIKD" wifi forget "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
     esac
 }
