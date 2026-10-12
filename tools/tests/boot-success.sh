@@ -162,14 +162,16 @@ for missing in net-zone kryptikd-serve seatd getty-tty1 eudev; do
     check "trial with $missing down: not committed, recorded, rebooted" "${RESULT%%:*}|$(cat "$KTEST/esp/EFI/BOOT/BOOTX64.EFI")|$([[ -e "$KTEST/boot/trial.failed" ]] && echo failed)|$(reboots)" "trial-unhealthy b|kernel-a|failed|1"
 done
 run_case unkernel b "" persistent 'b\narmed=1\n' $ALL; rm -f "$KTEST/kernel_ok"; go
-check "... and the set-aside record says why, which the next boot's result does not replace" \
-    "$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" "came up unhealthy: service eudev is not up"
 check "trial without kernel zone support: not committed, rebooted" "${RESULT%%:*}|$(reboots)" "trial-unhealthy b|1"
+check "... and the set-aside record says why, which the next boot's result does not replace" \
+    "$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" "came up unhealthy: kryptikd check: no kernel support for zones"
 run_case unzones b "" persistent 'b\narmed=1\n' $ALL; rm -f "$KTEST/zones_ok"; go
 check "trial whose zones do not load: not committed" "${RESULT%%:*}" "trial-unhealthy b"
 run_case unforget b "" persistent 'b\narmed=1\n' eudev; go
 check "an unhealthy trial forgets its entries, gives the committed slot its own, then reboots" "$CALLS" "efiboot forget efiboot ensure a reboot "
 check "an unhealthy trial's entries go before its record is set aside" "$(cat "$KTEST/forget-saw" 2>/dev/null)" "kept"
+check "... and several failures are kept in the order they were found" "$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" \
+    "came up unhealthy: service seatd is not up; service kryptikd-serve is not up; service net-zone is not up; service getty-tty1 is not up"
 run_case unforget2 b "" persistent 'b\narmed=1\n' eudev; : > "$KTEST/efiboot_fails"; go
 check "... and reboots if they stay: its record, now trial.failed, keeps it from coming back" "$(reboots)" "1"
 # On a degraded state /var is a tmpfs, so the trial record is out of reach.
