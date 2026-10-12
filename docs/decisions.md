@@ -74,8 +74,8 @@ where one path means different things in different zones. Isolation rests on
 Landlock for file access, seccomp-bpf for syscalls, cgroup v2 for resources,
 and namespaces for network and IPC: a zone's network is the interfaces in its
 namespace (loopback alone, one veth into the net zone, or, for the net zone,
-the machine's own NICs), not a policy rule inside the zone, so Landlock's
-late network support does not matter.
+the machine's own NICs and the bridge the others' veths join), not a policy
+rule inside the zone, so Landlock's late network support does not matter.
 
 **Cost:** a Landlock bypass has no second MAC layer behind it.
 
