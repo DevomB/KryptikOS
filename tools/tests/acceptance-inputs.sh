@@ -169,6 +169,17 @@ R_RES[0]=SKIPPED; R_RES[1]=PASS
 part() { { tested; ran_on; } > "$T/parts/$1/identity"; }
 part a; part b
 [[ -z "$(parts_disagree)" ]] && ok "parts that tested one revision on one medium are one run" || bad "parts disagree: $(parts_disagree)"
+# A shallow part's describe is shorter than the merge's full clone gives; the revision is the same.
+# shellcheck disable=SC2034  # the describe a part's clone and the merge's would print
+{ REV_DESC=abc1234; part a; REV_DESC=abc12345; }
+[[ -z "$(parts_disagree)" ]] && ok "a part whose describe is shorter than the merge's, of the same revision, is one run with it" || bad "describe length: '$(parts_disagree)'"
+# shellcheck disable=SC2034  # read by tested
+{ DIRTY=" M tools/acceptance.sh"; }
+[[ "$(parts_disagree)" == "the part in $T/parts/a tested revision abc;"* ]] && ok "a merge over a dirty tree does not take a clean tree's parts" || bad "dirty merge: '$(parts_disagree)'"
+# shellcheck disable=SC2034  # read by tested
+{ part a; DIRTY=""; }
+[[ "$(parts_disagree)" == "the part in $T/parts/a tested revision abc (dirty);"* ]] && ok "nor a clean merge a dirty tree's part" || bad "dirty part: '$(parts_disagree)'"
+part a
 sed -i 's/^usb .*/usb u2/' "$T/parts/b/identity"
 [[ "$(parts_disagree)" == "the part in $T/parts/b tested"*"usb u2"* ]] && ok "a part that tested another medium is refused, by name" || bad "another medium: '$(parts_disagree)'"
 part b

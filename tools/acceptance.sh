@@ -154,7 +154,9 @@ REV_DESC="$(g describe --always --dirty --long 2>/dev/null || echo unknown)"
 DIRTY="$(g status --porcelain 2>/dev/null)"
 
 # A merge takes only parts that tested this revision and media, all on one firmware and QEMU.
-tested() { printf 'revision %s (%s)\nusb %s\niso %s\n' "$REV" "$REV_DESC" "$H_USB" "$H_ISO"; }
+# The revision by its full name and whether the tree was dirty: describe's short name is as long
+# as the clone's object count calls for, and the verdict's full clone holds more than a part's.
+tested() { printf 'revision %s%s\nusb %s\niso %s\n' "$REV" "${DIRTY:+ (dirty)}" "$H_USB" "$H_ISO"; }
 ran_on() { printf 'firmware-sha256 %s\nfirmware-package %s\nqemu %s\nkvm %s\n' "$H_FW" "$FW_PKG" "$QEMU_VER" "$KVM"; }
 parts_disagree() {   # the first part that tested or ran on something else, and what
     local f d id first="" k
