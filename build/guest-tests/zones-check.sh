@@ -858,6 +858,15 @@ EOF
        --dhcp-leasefile=/run/zt-ap.leases --pid-file=/run/zt-ap-dnsmasq.pid --user=root >> "$LOG/ap.err" 2>&1 || ap_up=0
 fi
 [[ "$ap_up" = 1 ]] && pass "wifi-ap" "$AP_SSID beacons on $AP_IF in its own namespace ($(ap_wpa status | grep -E '^(mode|freq)=' | tr '\n' ' ')) with a DHCP server" || fail "wifi-ap" "$(tr '\n' ' ' < "$LOG/ap.err" | cut -c1-200) status: $(ap_wpa status | tr '\n' ' ' | cut -c1-120)"
+# From here to the open network, every probe request on the air, as hwsim's own monitor
+# interface hears it: the scans of a station that has joined no network yet, or has left one.
+ap_addr() { ap ip -o link show dev "$AP_IF" 2>/dev/null | sed -n 's/.*link\/ether \([0-9a-f:]*\) .*/\1/p'; }
+AP_ADDRS="$(ap_addr)"
+probes_pid=""
+if ip link set dev hwsim0 up 2>> "$LOG/hwsim.err"; then
+    python3 /usr/lib/kryptik/guest-tests/probe-sources.py hwsim0 > "$LOG/probes.txt" 2>> "$LOG/hwsim.err" &
+    probes_pid=$!
+fi
 before="$(ready_count)"
 printf '%s\n' "$AP_PASS" | "$KD" wifi add "$AP_SSID" --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-add.out" 2>&1
 NET_UID="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/net.toml")"
@@ -1149,6 +1158,7 @@ network={
 EOF
     ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-open.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-open-wpa.log" >> "$LOG/ap.err" 2>&1
     for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { open_up=1; break; }; sleep 1; done
+    AP_ADDRS="$AP_ADDRS $(ap_addr)"
 fi
 before="$(ready_count)"
 "$KD" wifi add "$OPEN_SSID" --open --wifi-dir "$WIFI_DIR" --zones "$Z" < /dev/null > "$LOG/wifi-add-open.out" 2>&1
@@ -1170,6 +1180,20 @@ if [[ -n "$open_mac" && "$open_seen" == "$open_mac" && "$open_mac" != "${own_mac
     pass "wifi-address-per-network" "$OPEN_SSID saw the station as $open_mac, its own address, where $AP_SSID saw ${own_mac}"
 else
     fail "wifi-address-per-network" "saved for $OPEN_SSID: ${open_mac:-none}; seen there: ${open_seen:-none}; $AP_SSID's: ${own_mac:-none}"
+fi
+# No scan went out from an address the machine is known by: the radio's own or a network's.
+# A scan's probe requests are broadcast; one to a BSSID is the station asking after the access
+# point it has joined, which knows that address already.
+[[ -n "$probes_pid" ]] && kill "$probes_pid" 2>/dev/null
+scans="$(awk -v aps="$AP_ADDRS" 'BEGIN { split(aps, a, " "); for (i in a) ap[a[i]] = 1 } $2 == "ff:ff:ff:ff:ff:ff" && !($1 in ap) { print $1 }' "$LOG/probes.txt" 2>/dev/null)"
+known=""
+for a in "$STA_PERM" "$own_mac" "$open_mac"; do
+    [[ -n "$a" ]] && grep -qxF "$a" <<<"$scans" && known="$known $a"
+done
+if [[ -n "$scans" && -n "$STA_PERM" && -z "$known" ]]; then
+    pass "wifi-scan-address" "$(wc -l <<<"$scans") probe requests went out from $(sort -u <<<"$scans" | wc -l) addresses, none the radio's own ($STA_PERM) or a network's (${own_mac:-none}, ${open_mac:-none}); $(netzone_said 'wifi: .*scan' | tail -1)"
+else
+    fail "wifi-scan-address" "probe requests heard: $(wc -l < "$LOG/probes.txt" 2>/dev/null); scans from a known address:${known:- none}; by source: $(sort <<<"$scans" | uniq -c | tr -s ' \n' '  ' | cut -c1-300); $(netzone_said 'wifi: .*scan' | tail -1); $(tail -2 "$LOG/hwsim.err" | tr '\n' ' ')"
 fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done

@@ -274,9 +274,12 @@ private there. Each saved network sees the machine by an address of its own,
 made when the network was saved and kept with it, never the radio's: two
 networks cannot tell they saw one machine by its address or by what it asks
 for a lease. Networks that share a name, a chain's cafés for one, are one
-saved network and see one address. A scan, before a network is joined, goes
-out from whatever address the radio has then. `kryptik wifi list` names the saved networks,
-and `kryptik wifi forget SSID` removes one.
+saved network and see one address. A radio that takes a new address, as most
+do, never uses its own: a scan for networks, before one is joined, goes out
+from a new random address each time, so a scan does not follow the machine
+either.
+`kryptik wifi list` names the saved networks, and `kryptik wifi forget SSID`
+removes one.
 
 **The local network.** Every zone with a network reaches the internet through
 the net zone. The network the machine itself is on, with its router, its
