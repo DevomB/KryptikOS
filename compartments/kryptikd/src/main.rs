@@ -59,7 +59,8 @@ USAGE:
                                       writes only under /run/wpa_supplicant
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
-    kryptikd status NAME              running, stale or absent
+    kryptikd status NAME              running, stale or absent; for the nic zone, as
+                                      root, the menu's Network line as well
     kryptikd list --running           the zones the registry knows about
     kryptikd gc [--rootfs DIR]        reclaim stale entries and empty cgroups, and
                                       close volumes no running zone holds
@@ -244,7 +245,7 @@ fn main() -> ExitCode {
             }
         },
         "status" => match args.get(1) {
-            Some(name) if !name.starts_with("--") => cmd_status(name),
+            Some(name) if !name.starts_with("--") => cmd_status(&zone_dir, name),
             _ => {
                 eprintln!("status: expected a zone name");
                 ExitCode::from(2)
@@ -419,7 +420,7 @@ fn cmd_clipboard(args: &[String]) -> ExitCode {
     }
 }
 
-fn cmd_status(name: &str) -> ExitCode {
+fn cmd_status(dir: &Path, name: &str) -> ExitCode {
     match registry::state(name) {
         Ok(registry::State::Absent) => {
             println!("{name}  absent");
@@ -444,6 +445,12 @@ fn cmd_status(name: &str) -> ExitCode {
                 cgroup.map(|c| format!("  cgroup {c}")).unwrap_or_default(),
                 init.map(|i| format!("  core-sched {}", isolate::core_cookie_word(i.pid))).unwrap_or_default()
             );
+            // The nic zone's word on the network, as the menu's Network line has it. Only root
+            // reads it; a file of that name in another zone says nothing.
+            let nic = zone::load_all(dir).is_ok_and(|zs| zs.iter().any(|z| z.name == name && z.network == zone::NetworkMode::Nic));
+            if let Some(n) = nic.then(|| serve::net_status(name)).flatten() {
+                println!("network  {n}");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

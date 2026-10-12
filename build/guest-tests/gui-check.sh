@@ -346,6 +346,13 @@ if wait_for 60 net_ready && [[ "$(net_line)" =~ ^ready:\ uplink\ [0-9.]+/[0-9]+,
 else
     fail "menu-network-line" "kryptik-launch --info net: $(as_user "kryptik-launch --info net" 2>&1 | tr '\n' ' ')"
 fi
+# At the text login the user's `kryptik status net` asks the launch service for the same line.
+status_user="$(as_user "kryptik status net" 2>&1)"
+if [[ -n "$(net_line)" && "$status_user" == *$'\n'"    network  $(net_line)"* ]]; then
+    pass "status-network-line-user" "kryptik status net, as the user: $(grep -m1 'network  ' <<<"$status_user" | sed 's/^ *//')"
+else
+    fail "status-network-line-user" "kryptik status net: $(tr '\n' ' ' <<<"$status_user" | cut -c1-300); the menu's: $(net_line)"
+fi
 # A zone 0 window taking focus keeps the last zone window's record, which the menu's f shows.
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 15 zone-0" > "$LOG/zone0-window.out" 2>&1 &
 if wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus"; then
