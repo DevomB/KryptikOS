@@ -68,11 +68,11 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
             wifi-no-dpp \
             wifi-second-network \
+            wifi-bss-age \
             uplink-renamed-plain uplink-state-reset \
             radio-recarried \
             wifi-wpa2-plain wifi-sae wifi-supplicant-unprivileged wifi-supplicant-no-nft \
             zone-clocks-own \
-            wifi-bss-age \
             time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden net-zone-sysfs-nics-only \
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
