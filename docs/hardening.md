@@ -154,11 +154,12 @@ filters do not need it), kexec, userfaultfd, 32-bit mappings or core dumps.
 
 Privilege transitions go through kryptikd, where they can be audited, not
 through setuid binaries or file capabilities. A setuid binary needs a
-justified entry in `build/config/setuid-allowlist.txt`, which lists `su`, the
-only way from a login to root, and `passwd`, which nothing brokers yet. A file
+justified entry in `build/config/setuid-allowlist.txt`, which lists only
+`su`, the only way from a login to root; passwords change through it
+(`su -c 'passwd NAME'`), so `passwd` runs as root only for root. A file
 carrying capabilities (`security.capability`) needs one in
 `build/config/capability-allowlist.txt`, which is empty. The recipes install
-no other bit: shadow's eight other tools lose theirs after its install,
+no other bit: shadow's nine other tools lose theirs after its install,
 util-linux is built with `--disable-makeinstall-setuid` and
 `--disable-makeinstall-chown` (wall's setgid tty is under that hook), and
 inetutils without traceroute. Stage 06 runs `tools/audit-setuid.sh` over the

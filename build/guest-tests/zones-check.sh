@@ -1193,7 +1193,7 @@ zrun untrusted 30 -- grep -c /usr/lib/libhardened_malloc.so /proc/self/maps
 # Stage 06 fails the build on any other bit; expected here: the entries of
 # build/config/setuid-allowlist.txt, and no file capabilities.
 setuid_found="$(find / -xdev -type f -perm /6000 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"
-[[ "$setuid_found" == "/usr/bin/passwd /usr/bin/su " ]] && pass "setuid-only-allowed" "on the root filesystem: ${setuid_found}" || fail "setuid-only-allowed" "found: ${setuid_found:-none}"
+[[ "$setuid_found" == "/usr/bin/su " ]] && pass "setuid-only-allowed" "on the root filesystem: ${setuid_found}" || fail "setuid-only-allowed" "found: ${setuid_found:-none}"
 # The scan ends with how many files it read: one that died early, or walked
 # nothing, has not shown that no file carries a capability.
 capscan="$(python3 - <<'PY'
