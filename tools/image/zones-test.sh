@@ -69,6 +69,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             wifi-second-network \
             wifi-bss-age \
             uplink-renamed-plain uplink-state-reset \
+            radio-off-at-start \
             radio-recarried \
             wifi-wpa2-plain wifi-sae wifi-supplicant-unprivileged wifi-supplicant-no-nft \
             zone-clocks-own \

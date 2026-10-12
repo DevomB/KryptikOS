@@ -802,6 +802,8 @@ STA_IF=""; AP_IF=""; AP_HOLD=""
 if modprobe mac80211_hwsim radios=2 2> "$LOG/hwsim.err"; then
     for _ in $(seq 1 20); do [[ -e /sys/class/ieee80211/phy1 ]] && break; sleep 0.5; done
     STA_IF="$(wl_of_phy phy0)"; AP_IF="$(wl_of_phy phy1)"
+    # phy0's rfkill switch by index, read while zone 0 still sees it: its sysfs leaves with the radio.
+    for r in /sys/class/rfkill/rfkill*; do [[ "$(cat "$r/name" 2>/dev/null)" == phy0 ]] && STA_RFKILL="${r##*/rfkill}"; done
 fi
 if [[ -n "$STA_IF" && -n "$AP_IF" ]]; then
     pass "wifi-module" "the signed mac80211_hwsim loaded with two radios: $STA_IF on phy0, $AP_IF on phy1"
@@ -946,6 +948,35 @@ if [[ "$radio_rounds" =~ $fresh_radio ]]; then
     pass "radio-recarried" "netdevs on the radio as the net zone left it and as the next one got it: ${radio_rounds}"
 else
     fail "radio-recarried" "${radio_rounds}$(uncaught | grep -a 'kryptikd: \(wiphy\|interface\)' | tail -3 | tr '\n' ' ') $(tr '\n' ' ' < "$LOG/radio-extra.out")"
+fi
+# A radio switched off as the net zone starts, by an airplane-mode key or a switch, moves in down:
+# brought up, its link would be refused (ERFKILL) and the zone with it, wire and all. Switched on,
+# the next start joins again.
+# Switch rfkill INDEX soft-off (1) or on (0) through its control device, which takes no name:
+# struct rfkill_event { u32 idx; u8 type (0, any); u8 op (2, change one); u8 soft; u8 hard; }.
+rfkill_soft() {
+    python3 -c 'import os, struct, sys
+fd = os.open("/dev/rfkill", os.O_WRONLY)
+os.write(fd, struct.pack("=IBBBB", int(sys.argv[1]), 0, 2, int(sys.argv[2]), 0))' "$1" "$2"
+}
+off_new=0; off_line=""; on_line=""
+if [[ -n "$STA_RFKILL" ]]; then
+    # Switched off while no net zone runs, so only the next one can say READY.
+    s6-svc -d /run/service/net-zone
+    for _ in $(seq 1 30); do [[ -e /sys/class/ieee80211/phy0 ]] && break; sleep 0.5; done
+    rfkill_soft "$STA_RFKILL" 1
+    before="$(ready_count)"
+    s6-svc -u /run/service/net-zone
+    off_line="$(ready_after "$before" " nat=yes " 60)" && off_new=1
+    before="$(ready_count)"
+    rfkill_soft "$STA_RFKILL" 0
+    s6-svc -r /run/service/net-zone
+    on_line="$(ready_after "$before" " wifi=$AP_SSID " 90)"
+fi
+if [[ "$off_new" = 1 && "$off_line" != *" wifi=$AP_SSID "* && "$on_line" == *" wifi=$AP_SSID "* ]]; then
+    pass "radio-off-at-start" "switched off, the net zone came up on its wire: ${off_line#*netzone: }; switched on, the next start joined: ${on_line#*netzone: }"
+else
+    fail "radio-off-at-start" "rfkill: ${STA_RFKILL:+rfkill}${STA_RFKILL:-none named phy0}; switched off, a new READY: ${off_new} (${off_line:-none}); switched on: ${on_line:-none}; $(uncaught | grep -a 'kryptikd: zone "net"' | tail -3 | tr '\n' ' ')"
 fi
 # personal's definition does not open the radio's own network: once the net
 # zone has taken the access point as a gateway, its address is refused

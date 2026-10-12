@@ -275,7 +275,7 @@ fn uplink_config_travels_with_nic() {
                 eprintln!("read back {before}");
                 return Err(7);
             }
-            let carried = carry_nic("up0", zone_ns).map_err(|e| {
+            let carried = carry_nic("up0", zone_ns, false).map_err(|e| {
                 eprintln!("carry_nic: {e}");
                 8
             })?;
@@ -337,7 +337,7 @@ fn unknown_nic_refused_before_move() {
 fn nic_name_escaped_in_errors() {
     /* A net zone can rename its NIC to bytes a terminal acts on, and the NIC comes back to
      * zone 0 under that name: kryptikd's words and netlink's both escape it. */
-    let e = carry_nic("e\u{1b}[2Jth0", -1).unwrap_err().to_string();
+    let e = carry_nic("e\u{1b}[2Jth0", -1, false).unwrap_err().to_string();
     assert!(!e.contains('\u{1b}') && e.matches("\\u{1b}").count() == 2, "{e:?}");
 }
 
@@ -375,5 +375,26 @@ fn bare_radios_are_the_ones_no_netdev_holds() {
     put("net/wlan0/phy80211/index", "0\n");
     put("net/eth0/ifindex", "2\n");
     assert_eq!(bare_radios(&dir), vec![3]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_radio_switched_off_is_told_by_its_rfkill() {
+    let dir = std::env::temp_dir().join(format!("kryptik-rfkill-{}", std::process::id()));
+    let put = |path: &str, value: &str| {
+        let f = dir.join(path);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, value).unwrap();
+    };
+    for (nic, soft, hard) in [("wlan0", "1", "0"), ("wlan1", "0", "1"), ("wlan2", "0", "0")] {
+        put(&format!("{nic}/phy80211/rfkill{}/soft", &nic[4..]), soft);
+        put(&format!("{nic}/phy80211/rfkill{}/hard", &nic[4..]), hard);
+    }
+    put("eth0/ifindex", "2\n");
+    assert!(switched_off(&dir, "wlan0"), "off by software");
+    assert!(switched_off(&dir, "wlan1"), "off by a switch");
+    assert!(!switched_off(&dir, "wlan2"));
+    assert!(!switched_off(&dir, "eth0"), "a wire has no rfkill");
+    assert!(!switched_off(&dir, "gone"));
     let _ = std::fs::remove_dir_all(&dir);
 }
