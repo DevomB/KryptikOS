@@ -71,6 +71,13 @@ rtlwifi/rtl8723bu_nic.bin
 # Broadcom over PCIe (Dell and Apple machines); the SDIO parts are not.
 brcm/brcmfmac*-pcie*
 
+# Broadcom Tigon3 (tg3): a 5701 A0 does not come up without tg3.bin, the 5703 to 5705 lose TSO
+# without theirs, and the 57766 loads its own.
+tigon/tg3.bin
+tigon/tg3_tso.bin
+tigon/tg3_tso5.bin
+tigon/tg357766.bin
+
 # Realtek Ethernet: the PHY and MAC patches r8169 and r8152 ask for by chip revision (rtl_fw.c).
 # Without one the NIC still runs, unpatched.
 rtl_nic/rtl8105e-1.fw
