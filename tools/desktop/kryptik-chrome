@@ -163,6 +163,7 @@ menu_update() {
     case "$trial" in
         "the trial of "*) echo "Update: ${trial%%;*}; this machine runs the release before it (u for more)"; return 0 ;;
         "slot "?" is armed:"*) echo "Update: ${trial%%:*}: the next boot tries it (u for more)"; return 0 ;;
+        "slot "?" is on trial:"*) echo "Update: ${trial%%:*}: it stays once it comes up healthy (u for more)"; return 0 ;;
     esac
     [ -z "$v" ] && return 0
     echo "Update: ${v} has arrived. u installs it, and the next boot tries it."
