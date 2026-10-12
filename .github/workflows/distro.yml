@@ -11,6 +11,9 @@ on:
       - 'docs/**'
       - '*.md'
       - '.github/workflows/ci.yml'
+  # Weekly, main from nothing as a tag builds it: a step that only an empty cache breaks shows within a week.
+  schedule:
+    - cron: '23 4 * * 0'
   workflow_dispatch:
     inputs:
       role:
@@ -18,16 +21,23 @@ on:
         type: choice
         options: [development, production]
         default: development
+      cold:
+        description: "Build every stage from its sources, as a tag does, restoring and saving no stage cache"
+        type: boolean
+        default: false
 
 # Set here, not in a repository setting; the cache and the artifacts use the runner's own credential.
 permissions:
   contents: read
 
 concurrency:
-  group: distro-${{ github.ref }}
+  # A cold run has a group of its own, so a push to main does not cancel it.
+  group: distro-${{ github.ref }}${{ (github.event_name == 'schedule' || inputs.cold == true) && '-cold' || '' }}
   cancel-in-progress: true
 
 env:
+  # A scheduled or cold run restores and saves no stage cache: it builds what a tag would.
+  KRYPTIK_COLD: ${{ github.event_name == 'schedule' || inputs.cold == true }}
   KRYPTIK_WORK: /mnt/kryptik/work
   KRYPTIK_SOURCES: /mnt/kryptik/sources
   KRYPTIK_OUT: /mnt/kryptik/out
@@ -105,10 +115,10 @@ jobs:
           [ "$conclusion" = success ] || { echo "CI concluded ${conclusion} on ${sha}: a release is cut only from a commit CI passed"; exit 1; }
           echo "CI passed on ${sha}"
 
-      # A tag restores nothing: a resumed tree keeps files a step no longer installs.
+      # A tag or a cold run restores nothing: a resumed tree keeps files a step no longer installs.
       - name: Stage 01-02 sysroot (cached)
         id: work02
-        if: github.ref_type != 'tag'
+        if: github.ref_type != 'tag' && env.KRYPTIK_COLD != 'true'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
@@ -150,7 +160,7 @@ jobs:
           echo "ttfp=$ttfp" >> "$GITHUB_OUTPUT"
 
       - name: Save the stage 01-02 sysroot
-        if: ${{ !cancelled() && github.ref_type != 'tag' && steps.progress02.outputs.prefix != '' && !startsWith(steps.work02.outputs.cache-matched-key, steps.progress02.outputs.prefix) }}
+        if: ${{ !cancelled() && github.ref_type != 'tag' && env.KRYPTIK_COLD != 'true' && steps.progress02.outputs.prefix != '' && !startsWith(steps.work02.outputs.cache-matched-key, steps.progress02.outputs.prefix) }}
         continue-on-error: true
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
@@ -198,7 +208,7 @@ jobs:
       # One root-made tarball, keyed on the toolchain, the pins and stage 03; a change to any restarts stage 04 (about 45 minutes).
       - name: Stage 04-05 sysroot and kernel (cached)
         id: work05
-        if: github.ref_type != 'tag'
+        if: github.ref_type != 'tag' && env.KRYPTIK_COLD != 'true'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/work-after-05.tar.zst
@@ -296,7 +306,7 @@ jobs:
       # Never the module signing key: a pull request's run can restore this cache.
       - name: Pack the stage 04-05 tree for the cache
         id: pack05
-        if: ${{ !cancelled() && github.ref_type != 'tag' && steps.progress05.outputs.prefix != '' && !startsWith(steps.work05.outputs.cache-matched-key, steps.progress05.outputs.prefix) }}
+        if: ${{ !cancelled() && github.ref_type != 'tag' && env.KRYPTIK_COLD != 'true' && steps.progress05.outputs.prefix != '' && !startsWith(steps.work05.outputs.cache-matched-key, steps.progress05.outputs.prefix) }}
         run: |
           cd /mnt/kryptik
           members=(.stamps sysroot)
