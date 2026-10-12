@@ -201,8 +201,10 @@ umount /mnt
 poweroff
 ```
 
-Remove the medium. The installed disk boots on its own; it does not need
-the medium again unless it has to be recovered.
+Remove the medium. The installed disk boots on its own, by its
+`EFI/BOOT/BOOTX64.EFI` or by the `Kryptik slot a` entry the installer gave
+the firmware (a firmware that refused it is named in the install's output);
+it does not need the medium again unless it has to be recovered.
 
 **Unattended install** (what the VM tests do): a small control disk labelled
 `kryptik-testctl`, made with `tools/image/mk-testctl.sh --out FILE --key
