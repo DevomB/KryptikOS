@@ -260,7 +260,8 @@ need_host()    { if [[ "$NOHOST" -eq 1 ]]; then echo "not run (--no-host)"; else
 need_root()    { [[ "$EUID" -eq 0 ]] || echo "needs root (the chroot and the VM disks)"; }
 need_sysroot() { [[ -x "${SYSROOT}/usr/bin/gcc" ]] || echo "no built sysroot at ${SYSROOT} (make system)"; }
 need_root_image() {
-    [[ -f "${PAYLOAD_B}/kryptik-root.img" ]] || { echo "no root image for the release under test (make media writes images/payload-VERSION)"; return; }
+    [[ -f "${PAYLOAD_B}/kryptik-root.img.zst" ]] || { echo "no root image for the release under test (make media writes images/payload-VERSION)"; return; }
+    have zstd || { echo "no zstd, which decompresses the release's root image from its payload"; return; }
     [[ "$EUID" -eq 0 ]] || echo "needs root to mount the release's root image read-only"
 }
 need_usb()     { [[ -f "$MEDIA_USB" ]] || echo "no USB image (make media)"; }
@@ -353,13 +354,24 @@ it_media_hashes() {
 it_host_suites()   { "${SELF}/run-tests.sh" --strict; }
 it_libc_unwind()   { env KRYPTIK_ROOT="$ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" "${ROOT}/build/stages/03-chroot-prep.sh" run /kryptik/tools/tests/libc-unwind.sh; }
 it_userspace()     { "${SELF}/tests/userspace-smoke.sh"; }
+# B's root image, decompressed from its payload once, outside what a part uploads.
+ROOT_IMAGE="${TMPDIR:-/tmp}/kryptik-release-root.$$.img"
+trap 'rm -f "$ROOT_IMAGE" "$ROOT_IMAGE.part"' EXIT
+release_root() {   # release_root: the image's path, decompressed if it is not there yet
+    if [[ ! -s "$ROOT_IMAGE" ]]; then
+        zstd -q -d -f "${PAYLOAD_B}/kryptik-root.img.zst" -o "$ROOT_IMAGE.part" && mv -f "$ROOT_IMAGE.part" "$ROOT_IMAGE" \
+            || { echo "could not decompress ${PAYLOAD_B}/kryptik-root.img.zst"; rm -f "$ROOT_IMAGE.part"; return 1; }
+    fi
+    printf '%s\n' "$ROOT_IMAGE"
+}
 # What the release ships, read from its own root image: the media under test,
 # wherever they were built, not this machine's sysroot.
 on_root_image() {   # on_root_image CMD...: CMD, given the image mounted read-only as its last argument
-    local mnt rc
+    local mnt rc img
+    img="$(release_root)" || { echo "$img"; return 1; }
     mnt="$(mktemp -d "${TMPDIR:-/tmp}/kryptik-root.XXXXXX")" || return 1
-    if ! mount -o ro,loop,noexec,nosuid,nodev "${PAYLOAD_B}/kryptik-root.img" "$mnt"; then
-        echo "could not mount ${PAYLOAD_B}/kryptik-root.img read-only"; rmdir "$mnt"; return 1
+    if ! mount -o ro,loop,noexec,nosuid,nodev "$img" "$mnt"; then
+        echo "could not mount ${PAYLOAD_B}'s root image read-only"; rmdir "$mnt"; return 1
     fi
     "$@" "$mnt"; rc=$?
     umount "$mnt" && rmdir "$mnt"
@@ -544,9 +556,10 @@ it_export() {
     else
         echo "  no signed media checksums: ${IMGDIR}/${sums}"; ok=1
     fi
-    if ! debugfs -R 'cat /usr/share/kryptik/trust/release-signers' "${PAYLOAD_B}/kryptik-root.img" > "${d}/release-signers" 2>/dev/null \
+    local root; root="$(release_root)" || root=""
+    if [[ -z "$root" ]] || ! debugfs -R 'cat /usr/share/kryptik/trust/release-signers' "$root" > "${d}/release-signers" 2>/dev/null \
        || [[ ! -s "${d}/release-signers" ]]; then
-        echo "  could not read the anchor out of ${PAYLOAD_B:-(no payload B)}/kryptik-root.img"; rm -f "${d}/release-signers"; ok=1
+        echo "  could not read the anchor out of ${PAYLOAD_B:-(no payload B)}'s root image"; rm -f "${d}/release-signers"; ok=1
     fi
     if [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/manifest" ]]; then
         cp "${PAYLOAD_A}/manifest" "${d}/manifest-${VER_A}"

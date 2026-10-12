@@ -85,7 +85,7 @@ channel_conf() {
 # --- preflight ----------------------------------------------------------------
 log "Kryptik stage 06 — install media ${KRYPTIK_VERSION}"
 for t in mkfs.ext4 tune2fs dumpe2fs debugfs veritysetup sbsign sbverify mkfs.vfat mmd mcopy \
-         xorriso sfdisk openssl ssh-keygen rsync truncate dd sha256sum blkid; do
+         xorriso sfdisk openssl ssh-keygen rsync truncate dd sha256sum blkid zstd; do
     have "$t" || die "required tool not found: ${t}"
 done
 # The signing half never touches the sysroot or the chroot.
@@ -485,18 +485,22 @@ s_sums() {
 }
 
 # The update payload: root image, slot kernels and root.json under a manifest
-# of the image's role, signed with the release key its anchor lists.
+# of the image's role, signed with the release key its anchor lists. The image
+# travels compressed, a fraction of its size, much of it free blocks: the
+# updater checks the compressed file against the manifest, then what it
+# decompresses to against root.json, before it writes a byte of it.
 s_payload() {
     echo "inputs digest: $1"
     local out="${IMG}/payload-${KRYPTIK_VERSION}"
     rm -rf "$out"; mkdir -p "$out"
-    cp --sparse=always "${IMG}/kryptik-root.img" "$out/"
+    zstd -q -T0 -19 "${IMG}/kryptik-root.img" -o "$out/kryptik-root.img.zst" || { echo "could not compress the root image"; return 1; }
+    echo "root image: $(stat -c %s "${IMG}/kryptik-root.img") bytes, $(stat -c %s "$out/kryptik-root.img.zst") compressed"
     cp "${IMG}/kernels/slot-a.signed.efi" "$out/kryptik-a.efi"
     cp "${IMG}/kernels/slot-b.signed.efi" "$out/kryptik-b.efi"
     cp "${IMG}/root.json" "$out/"
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" create --out "$out/manifest" --name kryptik \
         --version "$KRYPTIK_VERSION" --role "$ROLE" --root "$out" \
-        kryptik-root.img kryptik-a.efi kryptik-b.efi root.json
+        kryptik-root.img.zst kryptik-a.efi kryptik-b.efi root.json
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" sign --key "$RELEASE_KEY" "$out/manifest"
     # Verify as the guest will: the image's anchor, --exact.
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$ANCHOR" --principal kryptik-release \

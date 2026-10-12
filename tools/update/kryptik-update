@@ -13,8 +13,9 @@
 #   --retry     arm again a slot whose last trial failed
 #   --recovery  accept an older signed release (a downgrade)
 #
-# DIR holds manifest, manifest.sig, kryptik-root.img, kryptik-a.efi,
-# kryptik-b.efi and root.json, and nothing else.
+# DIR holds manifest, manifest.sig, kryptik-root.img.zst (the root image,
+# compressed for the trip), kryptik-a.efi, kryptik-b.efi and root.json, and
+# nothing else.
 set -eu
 
 PROG=kryptik-update
@@ -45,7 +46,7 @@ case "${1:-}" in
         [ "$(id -u)" != 0 ] || die "$1 does not run as root; kryptikd runs it as nobody"
         tools="ssh-keygen sha256sum cp awk sed sort head mktemp" ;;
     *)
-        tools="kryptikd sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev"
+        tools="kryptikd sha256sum blkid dd cp mv sync flock mount umount cmp kryptik-efiboot awk sed sort head wc stat grep blockdev zstd"
         [ "$(id -u)" = 0 ] || die "must run as root"
         mkdir -p "$B" /run/kryptik /var/log/kryptik ;;
 esac
@@ -131,7 +132,7 @@ pin() {   # pin FD NAME
 }
 payload_path() {   # NAME -> where to read it
     case "$1" in
-        kryptik-root.img) echo /proc/self/fd/3 ;; kryptik-a.efi) echo /proc/self/fd/4 ;;
+        kryptik-root.img.zst) echo /proc/self/fd/3 ;; kryptik-a.efi) echo /proc/self/fd/4 ;;
         kryptik-b.efi)    echo /proc/self/fd/5 ;; root.json)     echo /proc/self/fd/6 ;;
         *) echo "$dir/$1" ;;
     esac
@@ -140,7 +141,7 @@ payload_path() {   # NAME -> where to read it
 # --- verification, all of it before any write ------------------------------
 verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
     verify_manifest "$1" "$2"
-    pin 3 kryptik-root.img; pin 4 kryptik-a.efi; pin 5 kryptik-b.efi; pin 6 root.json
+    pin 3 kryptik-root.img.zst; pin 4 kryptik-a.efi; pin 5 kryptik-b.efi; pin 6 root.json
 
     # Nothing unlisted (a directory listing) before hashing every listed file
     # (gigabytes). Names are compared whole, as text, dotfiles included.
@@ -177,16 +178,22 @@ EOF
     # Checks after the first write compare against these signed hashes, never
     # against the payload files again: the payload directory is mutable.
     manifest_hash() { sed -n '/^--$/,$p' "$m" | sed '1d' | awk -v r="$1" '$3==r {print $1; exit}'; }
-    H_ROOT="$(manifest_hash kryptik-root.img)"; H_KA="$(manifest_hash kryptik-a.efi)"; H_KB="$(manifest_hash kryptik-b.efi)"
-    [ "${#H_ROOT}" = 64 ] && [ "${#H_KA}" = 64 ] && [ "${#H_KB}" = 64 ] || die "the manifest does not list the root image and both kernels"
+    H_ZST="$(manifest_hash kryptik-root.img.zst)"; H_KA="$(manifest_hash kryptik-a.efi)"; H_KB="$(manifest_hash kryptik-b.efi)"
+    [ "${#H_ZST}" = 64 ] && [ "${#H_KA}" = 64 ] && [ "${#H_KB}" = 64 ] || die "the manifest does not list the root image and both kernels"
 
     # root.json must match the signed image, and both kernels carry its root hash.
     ROOT_HASH="$(sed -n 's/^  "root_hash": "\([0-9a-f]*\)".*/\1/p' /proc/self/fd/6 | head -1)"
     [ "${#ROOT_HASH}" = 64 ] || die "root.json has no root hash"
     ROOT_BYTES="$(sed -n 's/^  "total_bytes": \([0-9]*\).*/\1/p' /proc/self/fd/6 | head -1)"
     ROOT_SHA="$(sed -n 's/^  "sha256": "\([0-9a-f]*\)".*/\1/p' /proc/self/fd/6 | head -1)"
-    [ "$(stat -L -c %s /proc/self/fd/3)" = "$ROOT_BYTES" ] || die "root.json total_bytes does not match kryptik-root.img"
-    [ "$ROOT_SHA" = "$H_ROOT" ] || die "root.json's sha256 disagrees with the signed manifest's for kryptik-root.img"
+    [ "${#ROOT_SHA}" = 64 ] && [ -n "$ROOT_BYTES" ] || die "root.json names no image hash and size"
+    # The image's own hash is root.json's, which the manifest signs. zstd reads only
+    # bytes the manifest's hash vouched for, and what it gives is checked before
+    # anything is written.
+    got="$(zstd -dcq < /proc/self/fd/3 | sha256sum | cut -c1-64)"
+    [ "$got" = "$ROOT_SHA" ] || die "kryptik-root.img.zst does not decompress to the image root.json names"
+    H_ROOT="$ROOT_SHA"
+    say "the root image decompresses to the one root.json names ($ROOT_BYTES bytes)"
     for s in a b; do
         [ "$(grep -a -c -F "$ROOT_HASH" "$(payload_path "kryptik-$s.efi")")" -ge 1 ] \
             || die "kryptik-$s.efi does not embed the root hash $ROOT_HASH; kernel and root are not one release"
@@ -366,10 +373,11 @@ cmd_apply() {
     unlist_slot "$target"
     rm -rf "$B/release-$target"
     say "writing kryptik-$target ($ROOT_BYTES bytes)"
-    dd if=/proc/self/fd/3 of="$tdev" bs=4M conv=fsync status=none || die "writing slot $target failed"
+    # A cut stream writes short, which the read-back below catches.
+    zstd -dcq < /proc/self/fd/3 | dd of="$tdev" bs=4M iflag=fullblock conv=fsync status=none || die "writing slot $target failed"
     blockdev --flushbufs "$tdev"   # so the read-back is of the device, not of the page cache
     got="$(dd if="$tdev" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
-    [ "$got" = "$H_ROOT" ] || die "slot $target read back as $got; the manifest says $H_ROOT"
+    [ "$got" = "$H_ROOT" ] || die "slot $target read back as $got; root.json says $H_ROOT"
     say "slot $target verifies after write"
 
     mount_esp

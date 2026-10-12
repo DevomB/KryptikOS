@@ -259,7 +259,7 @@ The channel Kryptik ships lives on GitHub, in two parts a statement's `base`
 joins: the payload's files are among the release's files on the Releases
 page (`tools/release-publish.sh` uploads them under the manifest's names, so
 `https://github.com/<owner>/<repo>/releases/download/v<version>/` serves
-`manifest`, `kryptik-root.img` and the rest), and the statement is served by
+`manifest`, `kryptik-root.img.zst` and the rest), and the statement is served by
 the repository's Pages site at `https://<owner>.github.io/<repo>/stable/`,
 which is the address an image is built with. The statement key is the
 `github-pages` environment's `KRYPTIK_LATEST_KEY` secret, an environment that

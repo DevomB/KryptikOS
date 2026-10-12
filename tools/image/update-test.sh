@@ -132,7 +132,7 @@ changed() {   # changed NAME FILE
 }
 mk_variant wrongkey; ssh-keygen -q -t ed25519 -N "" -f "$BAD/otherkey" >/dev/null; rm -f "$BAD/wrongkey/manifest.sig"
 ssh-keygen -Y sign -f "$BAD/otherkey" -n kryptik-release "$BAD/wrongkey/manifest" >/dev/null 2>&1
-mk_variant modified kryptik-root.img; flip "$BAD/modified/kryptik-root.img" $((4096*200+3)); changed modified kryptik-root.img
+mk_variant modified kryptik-root.img.zst; flip "$BAD/modified/kryptik-root.img.zst" $((4096*200+3)); changed modified kryptik-root.img.zst
 mk_variant truncated kryptik-a.efi; truncate -s -1 "$BAD/truncated/kryptik-a.efi"; changed truncated kryptik-a.efi
 mk_variant extra; echo "ride along" > "$BAD/extra/extra.bin"
 # An empty lost+found (an ext4 payload disk's own) is allowed; a full one is not.
@@ -435,7 +435,7 @@ else
         "run:kryptik update fetch" "expect:${VB} will be fetched" \
         "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" \
         "run:kryptik update status | grep -q 'bytes, complete'" \
-        "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img manifest manifest.sig root.json LISTED" \
+        "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img.zst manifest manifest.sig root.json LISTED" \
         "run:kryptik update apply" "expect:armed: the next boot tries slot b" \
         "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
         "login:${TUSER}:${TPASS}" \
