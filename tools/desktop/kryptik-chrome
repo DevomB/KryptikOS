@@ -158,10 +158,42 @@ menu_update() {
     quiet="$(printf '%s\n' "$st" | sed -n 's/^ *\(no statement from the release key [^:]*\):.*/\1/p' | head -1)"
     [ -n "$v$quiet" ] || return 0
     echo
-    [ -z "$quiet" ] || echo "Update: ${quiet} (kryptik update status)"
+    [ -z "$quiet" ] || echo "Update: ${quiet} (u for more)"
     [ -z "$v" ] && return 0
-    echo "Update: ${v} has arrived. To install it: kryptik update apply, at the"
-    echo "        administration login (Ctrl+Alt+F2); the next boot tries it."
+    echo "Update: ${v} has arrived. u installs it, and the next boot tries it."
+}
+
+# The update channel's verbs through the launch daemon, as `kryptik update` has
+# them at the administration login. Installing asks first: it arms a trial of
+# the release at the next boot.
+run_update() {
+    while :; do
+        clear 2>/dev/null
+        echo "================ KRYPTIK - updates (zone 0) ================"
+        "$LAUNCH" --update status 2>&1 | sed 's/^/  /'
+        echo
+        echo "f fetch the newest release   x forget it   i install what has arrived"
+        echo "a fetch each release as it comes   m only when asked   Enter back"
+        printf 'choice: '
+        read -r c || return 0
+        case "$c" in
+            "") return 0 ;;
+            f) "$LAUNCH" --update fetch ;;
+            x) "$LAUNCH" --update forget ;;
+            i) printf 'install it, for a trial at the next boot? (y/N): '
+               read -r yes || return 0
+               [ "$yes" = y ] || continue
+               echo "installing: the other slot is written and read back, which takes a few minutes"
+               if "$LAUNCH" --update apply; then
+                   echo "To try it, reboot: at the administration login (Ctrl+Alt+F2), su, then reboot."
+               fi
+               printf '(Enter) '; read -r _ || return 0; continue ;;
+            a) "$LAUNCH" --update auto on ;;
+            m) "$LAUNCH" --update auto off ;;
+            *) echo "?" ;;
+        esac
+        sleep 3
+    done
 }
 
 run_menu() {
@@ -176,6 +208,7 @@ run_menu() {
         menu_update
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
+        echo "Admin: u updates: what the channel names, fetch, forget, install"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
         echo "       w Wi-Fi networks   f the last zone window's zone   r refresh   q close this window"
         echo
@@ -183,6 +216,7 @@ run_menu() {
         if ! read -r choice; then break; fi
         case "$choice" in
             q) break ;;
+            u) run_update; continue ;;
             r|"") continue ;;
             w) run_wifi; continue ;;
             f) if [ -r "$FOCUS_ZONE" ]; then

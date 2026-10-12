@@ -214,7 +214,9 @@ already asked for keeps arriving, as one asked for by hand does.
 - **How the user learns.** `kryptik update status` says
   `staged <version>: ... complete; kryptik update apply installs it` once a
   release has arrived whole, and while it waits the chrome's launcher names
-  it and where to apply it. Once the newest accepted statement is more than
+  it; the launcher's `u` shows the status and fetches, forgets, installs
+  (after a `y`) or turns automatic fetching on and off, through the same
+  verbs as `kryptik update`. Once the newest accepted statement is more than
   30 days old, or, on a machine that names a channel and has accepted none,
   once its install is, `status` says so and the launcher shows one line with
   that age: statements are re-signed on a schedule, so either nothing has
@@ -309,7 +311,10 @@ channel's directory.
   refused, and each leaves the old pair.
 - The desktop suite runs the launcher with a stored statement from today and
   with one 45 days old, and with none and the install 45 days old: only the
-  last two name the age.
+  last two name the age. It turns automatic fetching on and off from the
+  launcher's `u` and reads kryptikd's record each time
+  (`menu-update-auto`); `tools/tests/chrome-update.sh` drives every choice
+  against a stand-in launch daemon.
 - `tools/tests/channel-setting.sh`: the addresses stage 06 takes and refuses
   for `KRYPTIK_CHANNEL` for each role, and, for every address it takes, the
   fetcher reading the written `update.conf` into requests it can send.
@@ -325,7 +330,7 @@ channel's directory.
 `rootfs.rs` (`update.conf`), `tools/kryptik` and
 `tools/desktop/kryptik-launch.c` (`kryptik update`),
 `tools/desktop/kryptik-chrome` (the launcher's lines for a release that waits
-and for a stale statement),
+and for a stale statement, and its `u`),
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
 `tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,
