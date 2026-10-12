@@ -106,7 +106,11 @@ and the slot written must verify against it (`veritysetup verify`) before
 anything names it. A kernel's signature is the firmware's to check, at boot.
 
 The installed disk boots `BOOTX64.EFI` through the removable-media path with
-no firmware variables. `kryptik-efiboot` adds a `Kryptik slot <x>` Boot####
+no firmware variables. Some firmware boots an internal disk only from a
+Boot#### entry, so the installer also gives slot a its own, last in
+`BootOrder`, after `forget` has removed an earlier install's; a firmware that
+refuses it leaves the disk to `BOOTX64.EFI`, and the installer says so.
+`kryptik-efiboot` adds a `Kryptik slot <x>` Boot####
 entry for a trial. When the trial ends, committed or not, `forget` removes
 Kryptik's entries and `BootNext`, and the committed slot gets its own entry
 back. Firmware re-adds its own disk entry at the end of `BootOrder`, so an

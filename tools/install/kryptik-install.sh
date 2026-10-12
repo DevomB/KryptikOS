@@ -71,7 +71,7 @@ done
 missing=""
 for tool in sfdisk partx blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed \
             grep readlink lsblk head tail wc cmp cp mkdir stat tr cut basename mv mountpoint rmdir chmod rm cat sleep \
-            loadkeys chattr; do
+            loadkeys chattr kryptik-efiboot; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}
@@ -343,6 +343,15 @@ printf 'a\n' > "$MNT_BASE/tesp/kryptik/committed-slot"
 rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
 sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
+# A firmware entry for slot a as well, last in BootOrder, as kryptik-recover and boot-success
+# leave one: some firmware boots an internal disk only from an entry, not by BOOTX64.EFI.
+# Entries of an earlier Kryptik go first, as they name a partition this install replaced.
+kryptik-efiboot forget > /dev/null 2>&1 || true
+if entry="$(kryptik-efiboot ensure a "$P1" 2>&1)"; then
+    say "firmware     $(printf '%s\n' "$entry" | tail -1)"
+else
+    say "firmware     no entry for slot a ($(printf '%s\n' "$entry" | tail -1)): the disk boots by BOOTX64.EFI alone"
+fi
 
 # --- the state partition: what installed this, and the first-boot preseed --
 mount -t ext4 -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"

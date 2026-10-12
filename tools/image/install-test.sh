@@ -69,6 +69,8 @@ want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-a=/dev/vda2'  "partition 2 is krypt
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3 type=(none)?$'  "partition 3 is kryptik-b, and empty"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "partition 4 is the state partition, and it is LUKS"
 want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
+want "$P1" 'KRYPTIK_INSTALL: kryptik-install: firmware +Boot[0-9A-F]{4} -> .EFI.kryptik.kryptik-a\.efi on /dev/vda1 ' \
+    "the firmware has an entry for slot a on the new ESP as well"
 want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
 want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
 want "$P1" 'KRYPTIK_INSTALL: .*kryptik-a verifies'       "the root image was read back and verified"
