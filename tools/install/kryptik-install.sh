@@ -220,10 +220,11 @@ ESP_BYTES="$(stat -c %s "$ESP_SRC" 2>/dev/null || blockdev --getsize64 "$ESP_SRC
 size_bytes="$(blockdev --getsize64 "$TARGET_REAL" 2>/dev/null || echo 0)"
 [ "$size_bytes" -gt 0 ] || die "could not read the size of ${TARGET}"
 # The ESP is the medium's FAT, copied whole, and a FAT's sectors may not be smaller than the
-# disk's: on a disk with 4096-byte logical sectors (4Kn) neither Linux nor the firmware reads it.
+# disk's: on a disk with 4096-byte logical sectors (4Kn) Linux does not mount it, so neither the
+# install nor any update could write it, and firmware may not read it either.
 esp_ss="$(od -An -tu2 -j11 -N2 "$ESP_SRC" 2>/dev/null | tr -d ' ')"
 disk_ss="$(blockdev --getss "$TARGET_REAL" 2>/dev/null || echo 512)"
-[ "$disk_ss" -le "${esp_ss:-512}" ] || die "${TARGET} has ${disk_ss}-byte logical sectors, and the boot partition this medium copies is a FAT of ${esp_ss:-512}-byte sectors, which neither the firmware nor Linux reads there; give the disk a 512-byte sector format (an NVMe drive's LBA format), or pick another disk; nothing was written"
+[ "$disk_ss" -le "${esp_ss:-512}" ] || die "${TARGET} has ${disk_ss}-byte logical sectors, and the boot partition this medium copies is a FAT of ${esp_ss:-512}-byte sectors, which Linux does not mount there (and firmware may not read); give the disk a 512-byte sector format (an NVMe drive's LBA format), or pick another disk; nothing was written"
 MIB=1048576
 esp_mib=$(( (ESP_BYTES + MIB - 1) / MIB ))
 # A slot must also hold later, larger images: the image plus half again (at
