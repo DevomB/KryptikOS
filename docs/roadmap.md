@@ -80,7 +80,10 @@ work in zones from a terminal and a text browser, and keep it up to date.
       launcher and `kryptik update status` say so: the update suite moves
       the clock to read the prompt for both and status for an old one, the
       desktop suite sets up both of the launcher's lines, and kryptikd's
-      unit tests hold status for an install that heard none.
+      unit tests hold status for an install that heard none. A clock that
+      reads more than a day before the newest statement would refuse every
+      newer one, so the prompt and status say that too, and the update
+      suite moves the clock 3 days back to read both.
 - [x] **An encrypted state partition** ([design](design/state-encryption.md)).
       The install suite finds it is LUKS, asked for at boot and mounted on
       `/var`; the state suite boots degraded and says why when it is
