@@ -170,6 +170,15 @@ limited to a list on the verified root
 ([state partition](design/state-encryption.md)). The ESP, the root slots and
 the LUKS header are in the clear, so the disk shows it is Kryptik.
 
+**The passphrase prompt is Kryptik's only if the firmware boots nothing
+else.** Secure Boot keeps a swapped kernel from booting, but a firmware that
+also holds Microsoft's keys boots anything Microsoft signs, and such a system
+can ask for the state passphrase as Kryptik does and keep the answer. Only a
+`db` that holds nothing able to boot another system (Kryptik's key, and at
+most a card's option ROM by its hash), with a firmware password that clearing
+the firmware's settings does not remove, closes that
+([user guide](user-guide.md#1-boot-the-medium)).
+
 **Not defended while running or suspended.** Keys are in RAM; see
 [coercion, and access to a running or suspended machine](#coercion-and-access-to-a-running-or-suspended-machine).
 
