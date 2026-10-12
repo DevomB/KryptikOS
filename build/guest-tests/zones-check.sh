@@ -813,6 +813,8 @@ if modprobe mac80211_hwsim radios=2 2> "$LOG/hwsim.err"; then
     for _ in $(seq 1 20); do [[ -e /sys/class/ieee80211/phy1 ]] && break; sleep 0.5; done
     STA_IF="$(wl_of_phy phy0)"; AP_IF="$(wl_of_phy phy1)"
 fi
+# The station radio's own address, read while it is still zone 0's: no network may see it.
+STA_PERM="$(cat "/sys/class/net/${STA_IF:-none}/address" 2>/dev/null)"
 if [[ -n "$STA_IF" && -n "$AP_IF" ]]; then
     pass "wifi-module" "the signed mac80211_hwsim loaded with two radios: $STA_IF on phy0, $AP_IF on phy1"
 else
@@ -878,6 +880,19 @@ for _ in $(seq 1 40); do
     [[ "$lease" == 192.168.77.* ]] && break; sleep 1
 done
 [[ "$lease" == 192.168.77.* ]] && pass "wifi-lease" "$STA_IF in the net zone leased $lease from the access point" || fail "wifi-lease" "$STA_IF holds ${lease:-no address}; leases given: $(tr '\n' ' ' < /run/zt-ap.leases 2>/dev/null)"
+# The network sees the station by the address saved for it, never the radio's own: the access
+# point's station and its lease name that address, and the lease's client ID is made from it
+# (01 and the address), not from a DUID a network could follow the machine by.
+saved_mac() { sed -n "/^\tssid=\"$1\"\$/,/^}\$/s/^\tmac_value=//p" "$WIFI_DIR/wpa_supplicant.conf" 2>/dev/null; }
+seen_mac() { ap_wpa all_sta | grep -iE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$' | head -1 | tr 'A-F' 'a-f'; }
+own_mac="$(saved_mac "$AP_SSID")"; own_seen="$(seen_mac)"
+own_lease="$(grep -F " ${lease%/*} " /run/zt-ap.leases 2>/dev/null | head -1)"
+if [[ -n "$own_mac" && -n "$STA_PERM" && "$own_mac" != "$STA_PERM" && "$own_seen" == "$own_mac" \
+      && "$own_lease" == *" $own_mac "* && "$own_lease" == *" 01:$own_mac" ]]; then
+    pass "wifi-own-address" "the access point saw the station as $own_mac, the address saved for $AP_SSID, not the radio's own $STA_PERM; lease: $own_lease"
+else
+    fail "wifi-own-address" "saved: ${own_mac:-none}; the radio's own: ${STA_PERM:-unread}; seen by the access point: ${own_seen:-none}; lease: ${own_lease:-none}"
+fi
 # The supplicant that joined runs as its own user with CAP_NET_ADMIN and CAP_NET_RAW alone,
 # under its own filter on top of the zone's (supplicant.rs).
 sup="$(pgrep -f 'wpa_supplicant -B -i [^ ]* -c /etc/wpa_supplicant.conf' | head -1)"
@@ -1105,6 +1120,13 @@ if [[ "$open_up" = 1 && "$line" == *" wifi=$OPEN_SSID "* && "$open_lease" == 192
     pass "wifi-open" "saved with --open and no passphrase, $OPEN_SSID was joined and the net zone leased ${open_lease} there"
 else
     fail "wifi-open" "access point up: ${open_up} ($(ap iw dev "$AP_IF" info 2>&1 | grep -E 'addr|ssid|type|channel' | tr -s '\t\n' '  ')); $(tr '\n' ' ' < "$LOG/wifi-add-open.out"); newest READY: ${line:-none}; lease: ${open_lease:-none}; $(tail -2 "$LOG/ap-open-wpa.log" 2>/dev/null | tr '\n' ' '); the station: $(sta_wpa status | cut -c1-240); networks: $(sta_wpa list_networks | cut -c1-240); seen: $(sta_wpa scan_results | cut -c1-400); ignored: $(sta_wpa bssid_ignore | cut -c1-120); its radio: $(sta_iw info | grep -E 'addr|type|channel' | tr -s '\t\n' '  '); link: $(sta_iw link | head -2 | tr '\n' ' '); a scan of its own: $(sta_iw scan | grep -E '^BSS|SSID:|command failed' | tr -s '\t\n' '  ' | cut -c1-300); the access point's stations: $(ap iw dev "$AP_IF" station dump 2>&1 | grep -c '^Station'); the kernel: $(dmesg 2>/dev/null | grep -aE 'nic[0-9]+:|wlan[0-9]+:' | tail -12 | tr '\n' ';' | cut -c1-900)"
+fi
+# Another network, another address: the open one saw the station by its own, not $AP_SSID's.
+open_mac="$(saved_mac "$OPEN_SSID")"; open_seen="$(seen_mac)"
+if [[ -n "$open_mac" && "$open_seen" == "$open_mac" && "$open_mac" != "${own_mac:-none}" && "$open_mac" != "$STA_PERM" ]]; then
+    pass "wifi-address-per-network" "$OPEN_SSID saw the station as $open_mac, its own address, where $AP_SSID saw ${own_mac}"
+else
+    fail "wifi-address-per-network" "saved for $OPEN_SSID: ${open_mac:-none}; seen there: ${open_seen:-none}; $AP_SSID's: ${own_mac:-none}"
 fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done

@@ -52,7 +52,10 @@ already assumed hostile.
 
 *Capability: observes and modifies traffic, passively or on-path.*
 
-**Partially defended.** Kryptik segments; it does not anonymize. A compromised
+**Partially defended.** Kryptik segments; it does not anonymize. A Wi-Fi
+network sees the machine by an address of its own and a DHCP client ID made
+from it, never the radio's own, so two networks cannot match the machine by
+those (`wifi-own-address`); what it sends can still identify it. A compromised
 `net` zone gets no zone's files and not `vault`. Confidentiality on the wire
 is the application's job.
 
