@@ -83,9 +83,8 @@ and the net zone prints `time=<offset|no-answer|...>` in its readiness line.
    (`RTC_SET_TIME` on `/dev/rtc0` if present), except on a degraded boot:
    its `/var` is memory, so the unasked total starts afresh at each such
    boot, and its steps stay out of the RTC the next boot starts from. Each
-   claim considered adds a
-   line to `/var/lib/kryptik/time/history`; `kryptikd time status` prints the
-   clock, the floor and the last line.
+   claim considered adds a line to `/var/lib/kryptik/time/history`;
+   `kryptikd time status` prints the clock, the floor and the last line.
 
 A net zone that never answers leaves the clock to the RTC; that is reported
 (`time=no-answer`), not repaired.
