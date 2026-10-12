@@ -157,6 +157,9 @@ for every release from now on.
    checks its hash, then what it decompresses to against `root.json`,
    before it writes the inactive slot.
 2. Add the delta count to the acceptance report.
+   Built: the update suite's `delta-count` (`tools/delta-count.py`) counts
+   B's data blocks that no data block of A holds, adds B's hash tree, and
+   the report shows the sum as "a delta update, A to B".
 3. Build delta fetching once builds are reproducible and the reported deltas
    stay well under a fifth of the image: the plan from the committed slot,
    blocks checked against the authenticated tree, assembly in the stage, and

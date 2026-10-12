@@ -293,6 +293,10 @@ need_update() {
     [[ "$(printf '%s\n' "$VER_A" "$VER_B" | sort -V | tail -1)" == "$VER_B" ]] \
         || echo "release A (${VER_A}) is not older than B (${VER_B}); the update test applies a newer release over an older one"
 }
+need_payloads() {
+    [[ -n "$PAYLOAD_B" && -f "${PAYLOAD_B}/root.json" ]] || { echo "no payload for the release under test (${VER:-unknown})"; return; }
+    [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/root.json" ]] || echo "no payload of a release below ${VER_B} to count from"
+}
 need_production() {
     local r; r="$(need_update)"; [[ -n "$r" ]] && { echo "$r"; return; }
     [[ -n "$PROD_B" && -f "${PROD_A}/manifest" && -f "${PROD_B}/manifest" && -f "$PROD_USB_A" ]] \
@@ -410,6 +414,8 @@ it_update() {
     local foreign=(); [[ -n "$PROD_B" ]] && foreign=(--foreign "$PROD_B")
     "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean "${foreign[@]}"
 }
+# What a delta update from A would have fetched of B (docs/design/delta-updates.md): reported, not judged.
+it_delta()         { "${SELF}/delta-count.py" "$PAYLOAD_A" "$PAYLOAD_B"; }
 it_production() {
     echo "production pair:"
     sha256sum "$PROD_USB_A" "${PROD_A}/manifest" "${PROD_B}/manifest" "${PRODDIR}/kryptik-sb.crt" | sed 's/^/  /'
@@ -471,6 +477,7 @@ item integrity integrity-test             M vm    8 it_integrity need_enrolled
 item zones     zones-test                 M vm   10 it_zones need_vm
 item desktop   gui-test                   M vm   25 it_gui need_vm
 item update    update-test                M vm   10 it_update need_update
+item update    delta-count                O host  0 it_delta need_payloads
 item production update-test-production    M vm   10 it_production need_production
 item boot      firmware-only-boot         M post  0 it_firmware_only
 # A part of a split run leaves its boot records beside its report, for --merge.
@@ -478,6 +485,7 @@ item boot      firmware-only-boot         M post  0 it_firmware_only
 
 # ------------------------------------------------------------- report --
 KERNEL_LINE="$(grep -h -o 'KRYPTIK_SMOKE: kernel=[^ ]*' "${OUT}"/boot-media-smoke-usb.log 2>/dev/null | head -1 | sed 's/KRYPTIK_SMOKE: kernel=//')"
+DELTA_LINE="$(sed -n 's/^delta: //p' "${OUT}/update-delta-count.log" 2>/dev/null | tail -1)"
 verdict_of() {
     local i fail=0 inc=0
     for i in "${!R_SUITE[@]}"; do
@@ -501,6 +509,7 @@ write_report() {
         echo "| ISO | ${MEDIA_ISO:-none}${H_ISO:+ (sha256 \`$H_ISO\`)} |"
         echo "| release under test | ${VER:-none} (payload B: ${PAYLOAD_B:-none}) |"
         echo "| update test, A to B | ${VER_A:-none} (medium ${MEDIA_USB_A:-none}; ${PAYLOAD_A:-no payload}) to ${VER_B:-none} |"
+        echo "| a delta update, A to B | ${DELTA_LINE:-not measured} |"
         echo "| kernel (as the medium reported it) | ${KERNEL_LINE:-not observed} |"
         echo "| firmware | ${FW}${H_FW:+ (sha256 \`$H_FW\`)}; ${FW_PKG} |"
         echo "| QEMU | ${QEMU_VER}; kvm=${KVM} |"
