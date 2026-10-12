@@ -200,9 +200,9 @@ each signed kernel (`CONFIG_EXTRA_FIRMWARE`, stage 05), about 18 MB. Without
 it a machine runs whatever microcode its firmware last shipped, which on older
 machines means known, unfixed CPU vulnerabilities. An AMD Zen processor whose
 firmware predates AMD's 2025 fix for microcode signatures takes only a patch
-whose SHA-256 the kernel holds, and 6.18 holds none for Zen 5 and not five
-EPYC ones: such a machine keeps its firmware's microcode until the firmware is
-updated.
+whose SHA-256 the kernel holds, and 6.18 holds none for Zen 5, nor for the
+current patches of five EPYC models: such a machine keeps its firmware's
+microcode until the firmware is updated.
 
 **Cost:** about 81 MB after zstd (amdgpu is 38 MB of it, Intel Wi-Fi 15 MB and
 Intel graphics 6 MB; for Intel, Realtek and Atheros the list names the files
