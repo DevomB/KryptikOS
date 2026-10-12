@@ -162,8 +162,8 @@ payloads come from [the update channel](update-channel.md) or by hand.
    trial. A trial that never comes up also lands on the committed slot; the
    fallback records `trial.failed` and forgets the entries. A boot manager
    deletes `BootNext` before it boots that entry, so one still naming the
-   trial's entry then was never used: the record says the trial was not
-   tried, which a firmware that ignores `BootNext` would repeat. Either way
+   trial's entry then was never used: the record says the trial was never
+   started, which a firmware that ignores `BootNext` would repeat. Either way
    `trial.failed` keeps a `why=` line (the failures, or that it never came up
    to be judged), since the next boot's own result replaces `last-result`;
    `kryptik update status`, `kryptik-update status` and the launcher repeat

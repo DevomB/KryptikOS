@@ -341,7 +341,7 @@ one picked in the firmware's boot menu: the refusal says to boot the
 committed slot, or to make the running one committed from the medium. After
 a trial that failed, one that did not boot or came up unhealthy, it refuses
 that slot again until you pass `--retry`. A firmware that leaves `BootNext`
-unused never tries the slot, and the status says it was not tried: after
+unused never starts the slot, and the status says it was never started: after
 `--retry`, pick "Kryptik slot X" in the firmware's boot menu to boot it once.
 
 ```sh

@@ -207,7 +207,7 @@ run_case untried a "" persistent 'b\narmed=1\n' $ALL
 printf 'BootNext:    BootB0B0\nBootOrder:   Boot0001 BootB0B0\n  BootB0B0: Kryptik slot b  file=\\EFI\\kryptik\\kryptik-b.efi  [active]\n' > "$KTEST/efilist"; go
 check "BootNext still naming the trial's entry: the firmware never tried it, and the record says so" \
     "$RESULT|$(sed -n 's/^why=//p' "$KTEST/boot/trial.failed")" \
-    'trial-failed b|was not tried: the firmware left BootNext set, so it may not boot an entry once on request (after --retry, pick "Kryptik slot b" in its boot menu)'
+    'trial-failed b|was never started: the firmware left BootNext set, so it may ignore a one-time boot request (after --retry, pick "Kryptik slot b" in its boot menu)'
 check "... and its entries and BootNext are forgotten as for any failed trial" "$CALLS" "efiboot list efiboot forget efiboot ensure a "
 run_case untried2 a "" persistent 'b\narmed=1\n' $ALL
 printf 'BootNext:    Boot0003\n  Boot0003: Windows Boot Manager  file=\\EFI\\Microsoft\\Boot\\bootmgfw.efi  [active]\n' > "$KTEST/efilist"; go

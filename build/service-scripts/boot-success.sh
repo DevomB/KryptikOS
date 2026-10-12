@@ -185,8 +185,8 @@ if [ -n "$trial" ]; then
         if [ "$armed" = 1 ]; then
             # trial.failed stops kryptik-update re-arming this payload without --retry.
             if nx="$(bootnext_left "$trial")"; then
-                say "trial slot $trial was not tried: BootNext still names $nx, so the firmware did not use it; running slot $slot again"
-                why="was not tried: the firmware left BootNext set, so it may not boot an entry once on request (after --retry, pick \"Kryptik slot $trial\" in its boot menu)"
+                say "trial slot $trial was never started: BootNext still names $nx, so the firmware did not use it; running slot $slot again"
+                why="was never started: the firmware left BootNext set, so it may ignore a one-time boot request (after --retry, pick \"Kryptik slot $trial\" in its boot menu)"
             else
                 say "trial slot $trial did NOT boot; running slot $slot again"
                 why="did not come up to be judged"
