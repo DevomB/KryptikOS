@@ -28,7 +28,7 @@ for sh in sh bash dash; do
     boot "$sh" '[    0.000000] microcode: Current revision: 0x0b404023' \
         '[    0.000000] microcode: No sha256 digest for patch ID: 0xb404108 found' \
         '[    0.412345] microcode: No sha256 digest for patch ID: 0xb404108 found'; rc=$?
-    if [[ "$rc" -eq 0 ]] && grep -q "firmware predates AMD's 2025 fix for microcode signatures. Update the machine's firmware" "$NOTICE" 2>/dev/null \
+    if [[ "$rc" -eq 0 ]] && grep -qx "kryptik microcode: the kernel refused this processor's microcode, as the machine's firmware predates AMD's 2025 fix for microcode signatures, so it runs the firmware's older one: update the machine's firmware (BIOS)" "$NOTICE" 2>/dev/null \
        && grep -q 'login prompt says so' "$T/said"; then
         green "a refused patch is named on the login prompt and the console"
     else

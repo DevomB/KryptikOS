@@ -6,7 +6,7 @@
 notice="${KRYPTIK_MICROCODE_NOTICE:-/run/issue.d/kryptik-microcode.issue}"
 if dmesg 2>/dev/null | grep -q 'microcode: No sha256 digest for patch ID'; then
     mkdir -p "${notice%/*}"
-    echo "kryptik: this processor runs its firmware's older microcode: the kernel refused Kryptik's, as the machine's firmware predates AMD's 2025 fix for microcode signatures. Update the machine's firmware (BIOS)." > "$notice"
+    echo "kryptik microcode: the kernel refused this processor's microcode, as the machine's firmware predates AMD's 2025 fix for microcode signatures, so it runs the firmware's older one: update the machine's firmware (BIOS)" > "$notice"
     echo "microcode-notice: the kernel refused this processor's microcode; the login prompt says so"
 else
     rm -f "$notice"

@@ -1165,7 +1165,7 @@ echo '<3>microcode: No sha256 digest for patch ID: 0xb404108 found' > /dev/kmsg
 /usr/libexec/kryptik/microcode-notice.sh > /dev/null 2>&1
 mc_told="$(cat "$mc_notice" 2>/dev/null)"
 rm -f "$mc_notice"
-if [[ -z "$mc_boot" && "$mc_told" == *"Update the machine's firmware (BIOS)."* ]]; then
+if [[ -z "$mc_boot" && "$mc_told" == "kryptik microcode: "*": update the machine's firmware (BIOS)" ]]; then
     pass "microcode-notice" "no notice at boot here; a refused patch in the kernel log puts one in issue.d: ${mc_told:0:120}"
 else
     fail "microcode-notice" "at boot: ${mc_boot:-none}; after the kernel's line: ${mc_told:-none}"
