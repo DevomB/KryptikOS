@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Fail on a file a module under ROOT names (MODULE_FIRMWARE) that linux-firmware's WHENCE has and
 # ROOT's /usr/lib/firmware lacks, unless build/config/firmware-accepted.txt says why it stays out.
+# It sees declared names only: iwlwifi declares each device's highest API, not the one it steps
+# down to; ath11k declares no QCA2066 or QCA6698AQ directory; ath12k declares nothing.
 #
 #   tools/check-firmware-requested.sh ROOT [--accepted FILE]
 
@@ -65,27 +67,37 @@ def firmware_names(data):
                     yield item[len(b"firmware="):].decode()
 
 def shipped(name):
-    return any(os.path.lexists(os.path.join(fwdir, name + ext)) for ext in ("", ".zst", ".xz"))
+    # The names request_firmware tries (FW_LOADER_COMPRESS_ZSTD and _XZ); a dangling link is not one.
+    return any(os.path.exists(os.path.join(fwdir, name + ext)) for ext in ("", ".zst", ".xz"))
 
 modules = sorted(p for p in glob.glob(os.path.join(root, "usr/lib/modules/*/**/*.ko*"), recursive=True)
                  if re.search(r"\.ko(\.zst|\.xz)?$", p))
 if not modules:
     sys.exit(f"no modules under {root}/usr/lib/modules")
-wanted = {}   # a name linux-firmware has -> the modules naming it
+declared = []   # (module, name or glob)
 for path in modules:
     mod = re.sub(r"\.ko(\.zst|\.xz)?$", "", os.path.basename(path))
     try:
-        names = list(firmware_names(module_bytes(path)))
+        declared += [(mod, n) for n in firmware_names(module_bytes(path))]
     except (ValueError, struct.error, subprocess.CalledProcessError, lzma.LZMAError) as e:
         sys.exit(f"{path}: {e}")
-    for pattern in names:
-        # A name may be a glob: ath11k names whole directories.
-        if any(c in pattern for c in "*?["):
-            hits = fnmatch.filter(upstream, pattern)
-        else:
-            hits = [pattern] if pattern in upstream else []
-        for name in hits:
-            wanted.setdefault(name, set()).add(mod)
+# A driver built into the kernel declares in modules.builtin.modinfo, as "module.firmware=NAME".
+for path in glob.glob(os.path.join(root, "usr/lib/modules/*/modules.builtin.modinfo")):
+    with open(path, "rb") as fh:
+        for item in fh.read().split(b"\0"):
+            mod, dot, rest = item.partition(b".")
+            if dot and rest.startswith(b"firmware="):
+                declared.append((mod.decode() + " (built in)", rest[len(b"firmware="):].decode()))
+
+wanted = {}   # a name linux-firmware has -> the modules naming it
+for mod, pattern in declared:
+    # A name may be a glob: ath11k names whole directories.
+    if any(c in pattern for c in "*?["):
+        hits = fnmatch.filter(upstream, pattern)
+    else:
+        hits = [pattern] if pattern in upstream else []
+    for name in hits:
+        wanted.setdefault(name, set()).add(mod)
 
 acc = []   # [pattern, line, uses]
 for n, line in enumerate(open(accepted, encoding="utf-8"), 1):

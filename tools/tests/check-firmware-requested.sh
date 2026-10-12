@@ -22,9 +22,11 @@ module() {   # module NAME FIRMWARE...
     done
     gcc -c -o "$K/$1.ko" "$T/$1.c"
 }
-printf 'File: a.bin\nFile: b.bin\nRawFile: dir/x.bin\nFile: dir/y.bin\nLink: l.bin -> a.bin\n' \
+printf 'File: a.bin\nFile: b.bin\nFile: c.bin\nRawFile: dir/x.bin\nFile: dir/y.bin\nLink: l.bin -> a.bin\n' \
     > "$R/usr/share/licenses/linux-firmware/WHENCE"
-touch "$R/usr/lib/firmware/a.bin.zst" "$R/usr/lib/firmware/dir/x.bin.zst"
+touch "$R/usr/lib/firmware/a.bin.zst" "$R/usr/lib/firmware/c.bin.zst" "$R/usr/lib/firmware/dir/x.bin.zst"
+# A driver built into the kernel declares here, not in a .ko.
+printf 'core.firmware=c.bin\0core.license=GPL\0' > "$R/usr/lib/modules/6.18.0/modules.builtin.modinfo"
 ln -s a.bin.zst "$R/usr/lib/firmware/l.bin.zst"
 module wifi a.bin 'dir/*' c99.ucode l.bin
 zstd -q --rm "$K/wifi.ko"
@@ -33,14 +35,21 @@ check() { NO_COLOR=1 bash "$CHECK" "$R" --accepted "$A" 2>&1; }
 
 printf 'b.bin       # optional\ndir/y.bin   # an older version\n' > "$A"
 out="$(check)"; rc=$?
-[[ "$rc" -eq 0 && "$out" == *"2 modules name 5 files linux-firmware has: 3 shipped, 2 accepted"* ]] \
-    && ok "shipped, accepted, globbed and compressed modules pass; a name linux-firmware lacks is not counted" \
+[[ "$rc" -eq 0 && "$out" == *"2 modules name 6 files linux-firmware has: 4 shipped, 2 accepted"* ]] \
+    && ok "shipped, accepted, globbed, built-in and compressed declarations pass; a name linux-firmware lacks is not counted" \
     || bad "passing root: rc=$rc: $out"
 
 printf 'dir/y.bin   # an older version\n' > "$A"
 out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"NOT SHIPPED  b.bin  (eth)"* ]] \
     && ok "a named file linux-firmware has and the image lacks fails, with its module" || bad "missing file: rc=$rc: $out"
+
+ln -sf gone.bin.zst "$R/usr/lib/firmware/c.bin.zst"
+printf 'b.bin       # optional\ndir/y.bin   # an older version\n' > "$A"
+out="$(check)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"NOT SHIPPED  c.bin  (core (built in))"* ]] \
+    && ok "a dangling link is not shipped, and a built-in driver is named as such" || bad "dangling link: rc=$rc: $out"
+rm -f "$R/usr/lib/firmware/c.bin.zst"; touch "$R/usr/lib/firmware/c.bin.zst"
 
 printf 'b.bin       # optional\ndir/*       # older versions\n' > "$A"
 out="$(check)"; rc=$?
