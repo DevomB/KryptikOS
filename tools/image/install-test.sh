@@ -101,6 +101,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "grab:mounts:awk '\$2==\"/\"||\$2==\"/var\"||\$2==\"/etc\"||\$2==\"/home\" {print \$2, \$1, \$3, \$4}' /proc/mounts" \
     "grab:secureboot:od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null || echo none" \
     "grab:bootresult:cat /var/lib/kryptik/boot/last-result" \
+    "su:${RPASS}:kryptik-update status" \
     "run:echo KRYPTIK-CLEAR-MARKER-7f3a91 > /home/${TUSER}/persisted-p2 && sync" \
     "$(ROOTSH "grep -rqa state[-]pw /proc/[0-9]*/cmdline /run /etc 2>/dev/null && echo PW-LEAK || echo PW-NOLEAK")" "expect:PW-NOLEAK" \
     "su:${RPASS}:reboot" \
@@ -132,6 +133,7 @@ else green "a file written under /home is not readable from the raw partition"; 
 want "$P2" 'KRYPTIK_SMOKE: etc_source=overlay'               "/etc is an overlay"
 want "$P2" 'KRYPTIK_SMOKE: root_writable=no'                 "the verified root is not writable"
 want "$P2" 'boot-success: slot a up'                         "boot-success recorded slot a"
+want "$P2" 'slot b: +version none, kernel absent'            "the ESP names no release for the empty slot b"
 want "$P2" 'reboot: Restarting system'                       "the guest rebooted itself"
 if [[ "$(grep -c 'Linux version' "$P2")" -ge 2 ]]; then green "two kernel boots in one session (reboot worked)"; else red "expected two kernel boots"; fi
 want "$P2" 'Power down'                                      "the guest powered off from inside"

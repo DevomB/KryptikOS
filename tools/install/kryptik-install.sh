@@ -340,7 +340,8 @@ sync -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new"
 mv -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" || die "could not install BOOTX64.EFI"
 cmp -s "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" || die "BOOTX64.EFI is not the slot A kernel"
 printf 'a\n' > "$MNT_BASE/tesp/kryptik/committed-slot"
-rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
+# Slot b was cleared above: the medium's kernel and version for it would name a release it does not hold.
+rm -f "$MNT_BASE/tesp/kryptik/media-kernel" "$MNT_BASE/tesp/EFI/kryptik/kryptik-b.efi" "$MNT_BASE/tesp/kryptik/version-b"
 sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
 
