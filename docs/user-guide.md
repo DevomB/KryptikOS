@@ -273,7 +273,8 @@ open to `untrusted` alone: open that page there (Alt+Shift+u).
 **Degraded boot.** If the system cannot find exactly one `kryptik-state`
 partition on its own disk, or cannot unlock or mount it, it boots degraded: it says
 so on the console, creates no account, starts no desktop and refuses
-updates. Nothing on the disk is written in that state. Fix the cause (no
+updates. Nothing on the disk is written in that state, and the network's
+corrections to the clock stay out of the hardware clock. Fix the cause (no
 partition labelled `kryptik-state` on the system's own disk, or more than
 one, as after relabelling; a damaged filesystem or header) and boot again. A
 clone of the disk attached alongside is ignored, not a cause. After three
