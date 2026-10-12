@@ -156,13 +156,21 @@ s_rootfs() {
     mkdir -p "$stage"
     echo "--- staging the root tree ---"
     # Left out: the cross toolchain, the chroot bind points, kernel sources,
-    # /boot (signed kernels live on the ESP), cmake, and the chroot marker.
+    # /boot (signed kernels live on the ESP), the chroot marker, and what
+    # build/config/image-excludes.txt lists.
+    local -a leave=()
+    local line path
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        path="${line%%[[:space:]]*}"
+        [[ -z "$path" || "$path" == \#* ]] && continue
+        [[ "$line" == *[[:space:]]\#* ]] || { echo "image-excludes.txt: ${path} has no reason"; return 1; }
+        leave+=("--exclude=${path}")
+    done < "${KRYPTIK_ROOT}/build/config/image-excludes.txt"
     rsync -aHAX --numeric-ids \
         --exclude=/tools --exclude=/kryptik --exclude=/kryptik-sources \
         --exclude=/kryptik-work --exclude=/kryptik-kryptikd --exclude=/kryptik-wlproxy --exclude=/usr/src \
         --exclude=/lost+found --exclude=/boot/'*' --exclude=/etc/kryptik/inside-chroot \
-        --exclude=/usr/bin/cmake --exclude=/usr/bin/ccmake --exclude=/usr/bin/cpack --exclude=/usr/bin/ctest \
-        --exclude=/usr/share/cmake* --exclude=/tmp/'*' --exclude=/run/'*' \
+        --exclude=/tmp/'*' --exclude=/run/'*' "${leave[@]}" \
         "${SYSROOT}/" "${stage}/"
     mkdir -p "$stage/boot" "$stage/proc" "$stage/sys" "$stage/dev" "$stage/run" "$stage/tmp" \
              "$stage/var" "$stage/home" "$stage/root" "$stage/etc/kryptik"
@@ -681,7 +689,7 @@ check_bound() {
 
 # --- run --------------------------------------------------------------------
 [[ "$PHASE" != sign ]] || check_bound
-bound rootfs        s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
+bound rootfs        s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/image-excludes.txt" "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
 bound cmdlines      s_cmdlines "$(_hash_file "${IMG}/root.json")"
 bound bind-kernels  s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
 bound bind-iso      s_bind_iso "$(cat "${IMG}/root.json" "$SB_CERT" | sha256_of_stdin)"
