@@ -88,8 +88,9 @@ that build and is its own. A firmware that carries only Microsoft's keys
 refuses either (the acceptance run proves the refusal:
 `media-refused-foreign-keys`). To boot with Secure Boot on, enrol
 `kryptik-sb.der` in the firmware's `db` (and, on most machines, PK/KEK) from
-the firmware setup menu; or turn Secure Boot off. The medium reports which it
-got: `KRYPTIK_SMOKE: secureboot=1` or `=0` on the console.
+the firmware setup menu; or turn Secure Boot off. The medium says which it
+got above its shell (`Secure Boot is on` or `off`), and as
+`KRYPTIK_SMOKE: secureboot=1` or `=0` on a serial console.
 
 **Under QEMU** (a checkout of the source tree is needed):
 
