@@ -359,8 +359,8 @@ and whether its kernel and filesystem are there, which slot's kernel the
 firmware boots by default, the firmware's Kryptik entries, whether the state
 partition still has its LUKS2 header, and the medium's own version, the one
 `--restore-slot` writes. Where something is wrong it names the repair: a
-boot file that is missing or is not the committed slot's kernel is put back
-by `--commit-slot`, a boot partition (the ESP) that no longer mounts is
+boot file that is not the committed slot's kernel is put back by
+`--commit-slot`, a boot partition (the ESP) that no longer mounts is
 rewritten by `--restore-slot`, and a state partition with no header takes a
 backup with `--restore-state-header`. `--commit-slot` also writes the
 firmware an entry for the slot it commits, which a firmware that boots a

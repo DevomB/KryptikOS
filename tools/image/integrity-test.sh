@@ -230,6 +230,10 @@ boot_txt | grep -qF "KRYPTIK_RECOVER: kryptik-recover: restoring slot a from thi
 boot_txt | grep -F 'KRYPTIK_RECOVER: status: slot a ' | grep -qF "version ${MVER}, kernel present, filesystem present" \
     && green "--status then shows slot a at the medium's version, with its kernel and filesystem" \
     || red "--status after the restore: $(boot_txt | grep 'KRYPTIK_RECOVER: status:' | tr '\n' ' ')"
+# Slot b was never written: the rewritten ESP lists nothing for it, so nothing commits it.
+boot_txt | grep -F 'KRYPTIK_RECOVER: status: slot b ' | grep -qF 'version none, kernel absent, filesystem NONE' \
+    && green "--status then shows slot b with no version, kernel or filesystem" \
+    || red "--status after the restore, slot b: $(boot_txt | grep 'KRYPTIK_RECOVER: status: slot b' | tr '\n' ' ')"
 LEFT="$(mdir -/ -b -i "$ESPIMG" ::/ 2>/dev/null | grep -i '\.new$' | tr '\n' ' ')"
 [[ -z "$LEFT" ]] && green "recovery left no .new file on the ESP" || red "recovery left ${LEFT}on the ESP"
 # The medium's kernel for slot b need not boot what slot b holds.
