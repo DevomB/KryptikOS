@@ -10,15 +10,17 @@
 #           module signing checked from inside
 #   step 2  BOOTX64.EFI re-signed with a foreign key: the firmware refuses it
 #           (control: the signed medium boots under the same store); then
-#           kryptik-recover --commit-slot a puts the signed kernel back, and
-#           --status shows slot a committed
+#           kryptik-recover --status names it as neither slot's kernel, and
+#           --commit-slot a puts the signed kernel back and gives the firmware
+#           an entry for slot a; --status then shows slot a committed
 #   step 3  a byte of slot a's root flipped: dm-verity stops the boot
 #   step 4  kryptik-recover --restore-slot a refuses a medium whose root is
 #           not the one its signed kernel names (--status then shows nothing
-#           naming slot a), then, with the ESP's boot sector zeroed, rewrites
-#           the ESP from the medium and restores slot a, naming the version;
-#           its records on the ESP are whole, slot b is unlisted, --status
-#           shows them, and the user's data survives
+#           naming slot a), then, with the ESP's boot sector zeroed (--status
+#           says it does not mount), rewrites the ESP from the medium and
+#           restores slot a, naming the version; its records on the ESP are
+#           whole, slot b is unlisted, --status shows them, and the user's
+#           data survives
 #   step 5  an anchor, zone, sysctl, preload library and udev rule planted in
 #           the state's /etc layer: none takes effect
 #   step 6  the state header saved, wiped and restored by kryptik-recover
@@ -37,7 +39,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -125,9 +127,20 @@ boot_txt | grep -q 'Linux version' && green "control: the developer-signed mediu
 CTLC="${VMDIR}/testctl-commit.img"
 "${SELF}/mk-testctl.sh" --out "$CTLC" --key "$TESTCTL_KEY" recover_disk=/dev/vda recover_slot=a recover_mode=commit smoke_poweroff=1 install_wait=5 > /dev/null
 smoke integ-p2r --usb "$USB" --disk "$DISK" --testctl "$CTLC" --vars enrolled --timeout "$TIMEOUT" > /dev/null
+# What --status shows first, as a user reads it before choosing the repair.
+B2="$(boot_txt | grep 'KRYPTIK_RECOVER: before:')"
+if grep -qE "BOOTX64\.EFI +neither slot's kernel" <<<"$B2" && grep -qE "before: +not the committed slot's kernel: --commit-slot a makes it so" <<<"$B2"; then
+    green "--status first named the boot file as neither slot's kernel, and --commit-slot a as the repair"
+else
+    red "--status before the commit: $(tr '\n' ' ' <<<"$B2")"
+fi
 boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --commit-slot a succeeded from the medium" || { red "--commit-slot did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
 boot_txt | grep -qF 'KRYPTIK_RECOVER: status: committed slot a' && green "--status then shows slot a as the committed one" \
     || red "--status after the commit: $(boot_txt | grep 'KRYPTIK_RECOVER: status:' | tr '\n' ' ')"
+# The store is a fresh copy of the enrolled one, so the firmware has no Kryptik entry until the commit writes it.
+grep -qE 'firmware +no Kryptik entry' <<<"$B2" && boot_txt | grep -qE 'KRYPTIK_RECOVER: status: firmware +Boot[0-9A-F]{4} for slot a, in BootOrder' \
+    && green "--commit-slot a gave the firmware an entry for slot a, in BootOrder, where it had none" \
+    || red "the firmware's Kryptik entries before and after the commit: $(boot_txt | grep -E 'KRYPTIK_RECOVER: (before|status): firmware' | tr '\n' ' ')"
 dd if="$DISK" of="$ESPIMG" bs=1M iflag=skip_bytes,count_bytes skip="$ESP_OFF" count=$((512*1024*1024)) status=none
 mcopy -n -i "$ESPIMG" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/committed.efi" 2>/dev/null
 mcopy -n -i "${ESPIMG}.pristine" ::/EFI/BOOT/BOOTX64.EFI "$TMPK/installed.efi" 2>/dev/null
@@ -200,6 +213,9 @@ rm -rf "$ALT" "$ALTUSB"
 # mounts, and the restore rewrites it from the medium before the slot.
 dd if=/dev/zero of="$DISK" bs=512 seek=$(( ESP_OFF / 512 )) count=1 conv=notrunc status=none
 smoke integ-p4 --usb "$USB" --disk "$DISK" --testctl "$CTLR" --vars enrolled --timeout "$TIMEOUT" > /dev/null
+boot_txt | grep -qE 'KRYPTIK_RECOVER: before: ESP +/dev/vda1 does not mount: --restore-slot a or b rewrites it from this medium' \
+    && green "--status first said the ESP does not mount, and that --restore-slot rewrites it" \
+    || red "--status before the restore: $(boot_txt | grep 'KRYPTIK_RECOVER: before:' | tr '\n' ' ')"
 boot_txt | grep -q 'KRYPTIK_RECOVER: rc=0' && green "kryptik-recover --restore-slot a succeeded from the medium" || { red "recovery did not report success"; boot_txt | grep 'KRYPTIK_RECOVER' | tail -5 | sed 's/^/        /'; }
 boot_txt | grep -qF "KRYPTIK_RECOVER: kryptik-recover: /dev/vda1 does not mount: rewriting it from this medium's ESP" \
     && green "an ESP that did not mount was rewritten from the medium" || red "kryptik-recover did not say it rewrote the ESP that did not mount"
@@ -214,6 +230,10 @@ boot_txt | grep -qF "KRYPTIK_RECOVER: kryptik-recover: restoring slot a from thi
 boot_txt | grep -F 'KRYPTIK_RECOVER: status: slot a ' | grep -qF "version ${MVER}, kernel present, filesystem present" \
     && green "--status then shows slot a at the medium's version, with its kernel and filesystem" \
     || red "--status after the restore: $(boot_txt | grep 'KRYPTIK_RECOVER: status:' | tr '\n' ' ')"
+# Slot b was never written: the rewritten ESP lists nothing for it, so nothing commits it.
+boot_txt | grep -F 'KRYPTIK_RECOVER: status: slot b ' | grep -qF 'version none, kernel absent, filesystem NONE' \
+    && green "--status then shows slot b with no version, kernel or filesystem" \
+    || red "--status after the restore, slot b: $(boot_txt | grep 'KRYPTIK_RECOVER: status: slot b' | tr '\n' ' ')"
 LEFT="$(mdir -/ -b -i "$ESPIMG" ::/ 2>/dev/null | grep -i '\.new$' | tr '\n' ' ')"
 [[ -z "$LEFT" ]] && green "recovery left no .new file on the ESP" || red "recovery left ${LEFT}on the ESP"
 # The medium's kernel for slot b need not boot what slot b holds.
