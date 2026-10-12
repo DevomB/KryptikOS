@@ -163,7 +163,9 @@ and hashed against the medium's record), `kryptik-b` (empty until the first
 update), and `kryptik-state` (LUKS2 with ext4 inside: users, zone volumes,
 updates). Before its first write it asks you to type `ERASE` (`--yes`
 skips that), then twice for the state partition's passphrase, which the
-system then asks for at every boot. There is no escrow: without the
+system then asks for at every boot: at least 8 characters, and a long phrase
+is better, as a stolen disk can be guessed at offline (`kryptik state
+passphrase` changes it later). There is no escrow: without the
 passphrase, or without the partition's header, the state is lost. It ends
 with `kryptik-install: installed VERSION to /dev/sdY: boot it from firmware
 with the medium removed.` and a reminder to keep a copy of that header. Make

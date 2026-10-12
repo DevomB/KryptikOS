@@ -281,6 +281,8 @@ else
     IFS= read -r STATE_PASS || STATE_PASS=""
 fi
 [ -n "$STATE_PASS" ] || die "no state passphrase given; nothing was written"
+# A stolen disk is guessed at offline, slowed only by argon2id: a short passphrase is no lock.
+[ "${#STATE_PASS}" -ge 8 ] || die "the state passphrase is ${#STATE_PASS} characters; it needs at least 8, as a stolen disk can be guessed at offline; nothing was written"
 # Named in the firmware once nothing is left to refuse, and before anything
 # is written to the disk: an install refused above has changed nothing.
 kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOUT}; nothing was written"
