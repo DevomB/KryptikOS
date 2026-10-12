@@ -31,7 +31,8 @@ libsrc="$W/lib.c"
 echo 'int twice(int x) { return x * 2; }' > "$libsrc"
 
 HARD="-O2 -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fcf-protection=full"
-HLD="-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack"
+# Stripped, as stage 06 ships them.
+HLD="-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -s"
 
 # One root per case, so findings cannot bleed between cases.
 mkroot() { local d="$W/$1/usr/bin"; mkdir -p "$d"; printf '%s' "$W/$1"; }
@@ -100,6 +101,65 @@ $CC $HARD -Wl,-z,norelro -o "$norelro_root/usr/bin/nr" "$src" 2>/dev/null
 out="$(run_check "$norelro_root")"
 check "missing RELRO: reported" "$(grep -q 'NO-RELRO' <<<"$out" && echo ok)"
 
+sym_root="$(mkroot symbols)"
+# shellcheck disable=SC2086
+$CC $HARD ${HLD% -s} -o "$sym_root/usr/bin/unstripped" "$src" 2>/dev/null
+out="$(run_check "$sym_root" --strict)"; rc=$?
+check "symbol table: NOT-STRIPPED fails --strict" \
+      "$({ [[ $rc -ne 0 ]] && grep -q 'NOT-STRIPPED' <<<"$out"; } && echo ok)"
+out="$(run_check "$sym_root" --strict --unstripped)"; rc=$?
+check "symbol table: --unstripped leaves it to the sysroot" "$([[ $rc -eq 0 ]] && echo ok)"
+
+# A function with a local array and no canary: built without the stack protector.
+nossp_root="$(mkroot nossp)"
+# shellcheck disable=SC2086
+$CC $HARD -fno-stack-protector $HLD -o "$nossp_root/usr/bin/bare" "$src" 2>/dev/null
+out="$(run_check "$nossp_root" --strict)"; rc=$?
+check "no canary: NO-SSP fails --strict" \
+      "$({ [[ $rc -ne 0 ]] && grep -q 'NO-SSP  usr/bin/bare' <<<"$out"; } && echo ok)"
+out="$(run_check "$clean_root" --strict)"
+check "canary: the protected executable has no NO-SSP" \
+      "$(! grep -q 'NO-SSP  usr/bin/good' <<<"$out" && echo ok)"
+
+# Static code calls a __stack_chk_fail no dynamic symbol names; the canary itself is still read.
+static_root="$(mkroot static)"
+# shellcheck disable=SC2086
+if $CC $HARD $HLD -static -o "$static_root/usr/bin/alone" "$src" 2>/dev/null; then
+    out="$(run_check "$static_root" --strict)"
+    check "static and stripped: the canary is found without symbols" \
+          "$(! grep -q 'NO-SSP' <<<"$out" && echo ok)"
+fi
+
+# printf through a unit built without FORTIFY stays printf; with it, it is always __printf_chk.
+nofort_root="$(mkroot nofortify)"
+# shellcheck disable=SC2086
+$CC $HARD -U_FORTIFY_SOURCE $HLD -o "$nofort_root/usr/bin/unchecked" "$src" 2>/dev/null
+out="$(run_check "$nofort_root" --strict)"; rc=$?
+check "unchecked printf: NO-FORTIFY names the call and fails --strict" \
+      "$({ [[ $rc -ne 0 ]] && grep -q 'NO-FORTIFY  usr/bin/unchecked  (printf)' <<<"$out"; } && echo ok)"
+out="$(run_check "$clean_root" --strict)"
+check "checked printf: the fortified executable has no NO-FORTIFY" \
+      "$(! grep -q 'NO-FORTIFY' <<<"$out" && echo ok)"
+
+# No PT_GNU_STACK at all: the loader gives such an object an executable stack.
+nogs_root="$(mkroot nognustack)"
+cp "$clean_root/usr/bin/good" "$nogs_root/usr/bin/headerless"
+python3 - "$nogs_root/usr/bin/headerless" <<'PY'
+import struct, sys
+p = sys.argv[1]
+b = bytearray(open(p, "rb").read())
+phoff, = struct.unpack_from("<Q", b, 32)
+phentsize, phnum = struct.unpack_from("<HH", b, 54)
+for i in range(phnum):
+    at = phoff + i * phentsize
+    if struct.unpack_from("<I", b, at)[0] == 0x6474e551:
+        struct.pack_into("<I", b, at, 0)
+open(p, "wb").write(b)
+PY
+out="$(run_check "$nogs_root")"; rc=$?
+check "no GNU_STACK header: a hard failure" \
+      "$({ [[ $rc -ne 0 ]] && grep -q 'NO-GNU-STACK' <<<"$out"; } && echo ok)"
+
 # /tools, the cross toolchain built without hardening, is excluded.
 ex_root="$(mkroot excluded)"
 mkdir -p "$ex_root/tools/bin"
@@ -157,6 +217,13 @@ check "accepted list: an RPATH entry accepts its own rpath" "$([[ $rc -eq 0 ]] &
 printf 'RPATH  usr/bin/ok  /usr/lib/other  # another rpath\n' > "$ACC"
 out="$(run_check "$sysrp_root" --strict)"; rc=$?
 check "accepted list: an RPATH entry does not accept another rpath" "$([[ $rc -ne 0 ]] && echo ok)"
+printf 'NO-FORTIFY  usr/bin/unchecked  # a test of the list\n' > "$ACC"
+out="$(run_check "$nofort_root" --strict)"; rc=$?
+check "accepted list: a NO-FORTIFY entry passes --strict" "$([[ $rc -eq 0 ]] && echo ok)"
+printf 'NOT-STRIPPED  usr/bin/unstripped  /usr/lib  # one path only\n' > "$ACC"
+out="$(run_check "$sym_root")"; rc=$?
+check "accepted list: a per-object entry with an rpath is refused" \
+      "$({ [[ $rc -ne 0 ]] && grep -q 'takes one path' <<<"$out"; } && echo ok)"
 : > "$ACC"
 
 echo
