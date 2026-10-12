@@ -966,16 +966,22 @@ fn zone_running(name: &str) -> bool {
 /// (tools/net/netzone-init.sh, `report`) in its own /run. The zone is untrusted, so only
 /// `net_summary`'s words leave here, and zone 0's window shows nothing else of the line.
 fn net_status(name: &str) -> Option<String> {
+    use crate::broker::{openat2, RESOLVE_IN_ROOT, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS};
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
     let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(name) else {
         return None;
     };
-    let f = std::fs::OpenOptions::new()
+    // Resolved inside the zone's root with no link followed, as the broker reaches a zone.
+    let root = std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(format!("/proc/{}/root/run/netzone-status", init.pid))
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open(format!("/proc/{}/root", init.pid))
         .ok()?;
+    let flags = (libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) as u64;
+    let resolve = RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
+    let f = std::fs::File::from(openat2(root.as_raw_fd(), "run/netzone-status", flags, 0, resolve).ok()?);
     // A regular file of the zone the pid still names, not of one that has reused it.
     if !f.metadata().ok()?.is_file() || !init.still_alive() {
         return None;
