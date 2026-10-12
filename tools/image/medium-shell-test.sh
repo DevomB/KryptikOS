@@ -73,6 +73,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
             "send:kryptik-recover --disk /dev/vda --backup-state-header /mnt/kryptik-state-header" "expect:is in /mnt/kryptik-state-header"
             "send:umount /mnt"
             "send:kryptik-recover --disk /dev/vda --status" "expect:committed slot a" "expect:slot a +version [0-9]"
+            "expect:BOOTX64.EFI +slot a's kernel" "expect:this medium +version [0-9][^ ]*, which --restore-slot writes"
             "send:kryptik-recover --disk /dev/vda --commit-slot a" "expect:committed: BOOTX64.EFI is now slot a"
             "send:kryptik-recover --disk /dev/vda --restore-slot a" "expect:done: boot /dev/vda without the medium"
         )
@@ -123,6 +124,8 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
         said 'installed [^ ]* to /dev/vda: boot it from firmware' "an install typed at the console, ERASE and the passphrase twice, completed"
         said 'is in /mnt/kryptik-state-header' "kryptik-recover kept the state header on a second disk mounted at /mnt"
         said 'committed slot a' "kryptik-recover --status read the installed disk"
+        said "BOOTX64.EFI  *slot a's kernel" "--status names the slot whose kernel the firmware boots by default"
+        said 'this medium  *version [0-9][^ ]*, which --restore-slot writes' "--status names the version the medium would write"
         said 'committed: BOOTX64.EFI is now slot a' "kryptik-recover --commit-slot a, typed, made slot a the boot file"
         said 'done: boot /dev/vda without the medium' "kryptik-recover --restore-slot a, typed, rewrote slot a from the medium"
         if LC_ALL=C grep -aq $'LUKS\xba\xbe' "$BACKUP"; then green "usb: the second disk holds the LUKS2 header"; else red "usb: no LUKS2 header on the second disk"; fi
