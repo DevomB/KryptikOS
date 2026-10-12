@@ -25,6 +25,12 @@ KRYPTIK_JOBS    ?=
 KRYPTIK_STALE   ?= refuse
 # Stamped into /etc/os-release; --dirty so an image never claims a clean tree.
 KRYPTIK_BUILD_COMMIT ?= $(shell git -C "$(ROOT)" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)
+# The time every timestamp the build writes is set or clamped to: the commit's (docs/design/reproducible-builds.md).
+SOURCE_DATE_EPOCH ?= $(shell git -C "$(ROOT)" log -1 --format=%ct 2>/dev/null)
+# Never exported empty: GCC refuses a SOURCE_DATE_EPOCH that is not a number.
+ifneq ($(SOURCE_DATE_EPOCH),)
+export SOURCE_DATE_EPOCH
+endif
 # kryptikd and kryptik-wlproxy are static Rust binaries built outside the
 # chroot and installed by stage 04.
 KRYPTIK_KRYPTIKD_BIN ?=
@@ -71,6 +77,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
               KRYPTIK_JOBS="$(KRYPTIK_JOBS)" \
               KRYPTIK_STALE="$(KRYPTIK_STALE)" \
               KRYPTIK_BUILD_COMMIT="$(KRYPTIK_BUILD_COMMIT)" \
+              $(if $(SOURCE_DATE_EPOCH),SOURCE_DATE_EPOCH="$(SOURCE_DATE_EPOCH)") \
               KRYPTIK_KRYPTIKD_BIN="$(KRYPTIK_KRYPTIKD_BIN)" \
               KRYPTIK_WLPROXY_BIN="$(KRYPTIK_WLPROXY_BIN)" \
               TERM="$(TERM)" \

@@ -179,7 +179,7 @@ s_rootfs() {
     printf '%s\n' "$fs_bytes" > "$stage/etc/kryptik/root-image-bytes"
     cat > "$stage/etc/kryptik-image.json" <<EOF
 {
-  "built_at": "$(date -Iseconds)",
+  "built_at": "$(date -u -Iseconds ${SOURCE_DATE_EPOCH:+-d "@${SOURCE_DATE_EPOCH}"})",
   "version": "${version}",
   "built_from_commit": "${COMMIT}",
   "sysroot_manifest_digest": "${manifest_digest}",
@@ -210,15 +210,21 @@ EOF
     "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict "$stage"
 
     echo "--- ext4 (${fs_bytes} bytes, no journal, read-only by design) ---"
-    local img="${IMG}/kryptik-root.img"
-    rm -f "$img"
-    truncate -s "$fs_bytes" "$img"
-    mkfs.ext4 -q -F -L kryptik-root -d "$stage" -O '^has_journal' -E root_owner=0:0 "$img"
+    local img="${IMG}/kryptik-root.img" id
+    # The UUID and directory hash seed, which mke2fs would draw at random.
+    id="$(printf 'kryptik-root %s %s' "$version" "$COMMIT" | sha256_of_stdin)"
+    id="${id:0:8}-${id:8:4}-${id:12:4}-${id:16:4}-${id:20:12}"
+    make_ext4 "$stage" "$img" "$fs_bytes" "$id"
+    make_ext4 "$stage" "${img}.again" "$fs_bytes" "$id"
+    cmp -s "$img" "${img}.again" || { echo "FAIL: two mke2fs runs over one tree wrote different images"; return 1; }
+    rm -f "${img}.again"
+    echo "ok: the same tree makes the same image"
     dumpe2fs -h "$img" 2>/dev/null | grep -E 'Filesystem features|Block count|Free blocks'
 
     echo "--- dm-verity hash tree, appended ---"
     local data_blocks=$(( fs_bytes / 4096 ))
-    local salt; salt="$(openssl rand -hex 32)"
+    # Unique to the image, and the same in every build of it.
+    local salt; salt="$(sha256_of "$img")"
     # Room for the tree (about data/128, generously) in whole 4096-byte blocks:
     # the ISO maps the image linearly over a CD, and device-mapper refuses a
     # length that is not a multiple of its 2048-byte block.
@@ -262,6 +268,16 @@ EOF
     printf '%s  kryptik-root.img\n' "$sha" > "${IMG}/kryptik-root.img.sha256"
     echo "--- root image ---"
     cat "${IMG}/root.json"
+}
+
+# make_ext4 TREE IMAGE BYTES UUID: the sysroot's mke2fs (1.47.1), which clamps every time it
+# writes to SOURCE_DATE_EPOCH, in the chroot; TREE and IMAGE are under the work tree's images/.
+make_ext4() {
+    rm -f "$2"; truncate -s "$3" "$2"
+    env KRYPTIK_ROOT="$KRYPTIK_ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
+        "$CHROOTD" run /usr/sbin/mke2fs -q -F -t ext4 -L kryptik-root -O '^has_journal' -U "$4" \
+        -E "root_owner=0:0,hash_seed=$4" -d "/kryptik-work${1#"$KRYPTIK_WORK"}" "/kryptik-work${2#"$KRYPTIK_WORK"}" \
+        > /dev/null
 }
 
 root_json() { sed -n "s/^  \"$1\": \"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}\$/\1/p" "${IMG}/root.json"; }

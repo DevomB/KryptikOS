@@ -17,6 +17,9 @@ JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 mkdir -p "$KERNELS"
 
 cd "$KSRC"
+# As stage 05 built it, or each relink would stamp its own time and build number.
+export KBUILD_BUILD_USER=kryptik KBUILD_BUILD_HOST=kryptik KBUILD_BUILD_VERSION=1
+[[ -z "${SOURCE_DATE_EPOCH:-}" ]] || export KBUILD_BUILD_TIMESTAMP="$(date -u -d "@${SOURCE_DATE_EPOCH}")"
 grep -q '^CONFIG_CMDLINE_OVERRIDE=y' .config || die "CONFIG_CMDLINE_OVERRIDE is not set in the kernel config; the command line would not be bound"
 grep -q '^CONFIG_EFI_STUB=y' .config || die "CONFIG_EFI_STUB is not set; the kernel is not a UEFI application"
 
