@@ -216,6 +216,8 @@ EOF
     # The objects that ship, audited as they are packed: a finding fails the
     # build here; make acceptance audits the image again for the record.
     "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict "$stage"
+    # Every program the image carries is named, so one a recipe stopped installing cannot ship.
+    "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "$stage"
 
     echo "--- ext4 (${fs_bytes} bytes, no journal, read-only by design) ---"
     local img="${IMG}/kryptik-root.img"
@@ -627,7 +629,7 @@ check_bound() {
 
 # --- run --------------------------------------------------------------------
 [[ "$PHASE" != sign ]] || check_bound
-bound rootfs        s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/image-excludes.txt" "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
+bound rootfs        s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/image-excludes.txt" "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" "${KRYPTIK_ROOT}/build/config/image-programs.txt" "${KRYPTIK_ROOT}/tools/check-image-programs.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
 bound cmdlines      s_cmdlines "$(_hash_file "${IMG}/root.json")"
 bound bind-kernels  s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
 bound bind-iso      s_bind_iso "$(cat "${IMG}/root.json" "$SB_CERT" | sha256_of_stdin)"
