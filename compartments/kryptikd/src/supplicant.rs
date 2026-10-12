@@ -59,12 +59,19 @@ fn confine() -> Result<(), String> {
     crate::seccomp::install_supplicant_filter().map_err(|e| e.to_string())
 }
 
-/// Read where its libraries, configuration and the kernel's views are, run from /usr, the
-/// devices it opens, and write nowhere but `RUN_DIR`.
+/// Read and run what the system paths hold, read its configuration and the kernel's views, use
+/// the devices it opens, and write nowhere but `RUN_DIR`.
 fn ruleset() -> Result<landlock::Ruleset, String> {
     let mut r = landlock::Ruleset::new().map_err(|e| e.to_string())?;
+    /* A rule covers what is reached through its path, and each system path is a bind of its
+     * own: the loader comes by /lib64 and libraries by /lib, which a rule on /usr does not
+     * cover. One the zone lacks is skipped, as the zone skips it. */
+    for path in crate::rootfs::SYSTEM_PATHS {
+        if std::path::Path::new(path).is_dir() {
+            r.allow(path, landlock::ACCESS_READ | landlock::ACCESS_EXEC).map_err(|e| format!("{path}: {e}"))?;
+        }
+    }
     for (path, access) in [
-        ("/usr", landlock::ACCESS_READ | landlock::ACCESS_EXEC),
         ("/etc", landlock::ACCESS_READ),
         ("/proc", landlock::ACCESS_READ),
         ("/sys", landlock::ACCESS_READ),
