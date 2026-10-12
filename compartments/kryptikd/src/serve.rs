@@ -8,8 +8,8 @@
 //!              wifi-add, `ssid <ssid>`, `psk <passphrase>`, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
-//!              runtime | wifi-list | update-status | update-fetch | update-apply |
-//!              update-auto on|off
+//!              runtime | wifi-list | update-status | update-fetch | update-forget |
+//!              update-apply | update-auto on|off
 //!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
 //!
 //! `run` replies `ok <launcher pid>` once the zone's pid 1 exists and the
@@ -1055,7 +1055,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
          * with `auto on` a newer statement, the net zone is told `idle`;
          * `apply` hands the stage to kryptik-update, which verifies it all
          * again before writing a slot. */
-        "update-status" | "update-fetch" | "update-apply" | "update-auto" => {
+        "update-status" | "update-fetch" | "update-forget" | "update-apply" | "update-auto" => {
             use crate::update as up;
             let dir = std::path::Path::new(up::STATE_DIR);
             let running = up::running_version();
@@ -1070,6 +1070,16 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                     up::required_role()
                         .and_then(|role| up::want(dir, up::channel_from(&conf).as_deref(), &role, &running))
                         .map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n"))
+                }
+                "update-forget" => {
+                    // kryptik-update reads the stage while it applies it.
+                    if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
+                        reply(&conn, "error: an update is being applied\n");
+                        return None;
+                    }
+                    up::forget(dir).map(|v| {
+                        format!("{v} is no longer fetched, and what had arrived of it is deleted; automatic fetching passes it over, and `kryptik update fetch` asks for it again\n")
+                    })
                 }
                 "update-auto" => {
                     let on = match first.split_whitespace().collect::<Vec<_>>().as_slice() {

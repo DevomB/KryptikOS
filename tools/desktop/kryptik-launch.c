@@ -9,7 +9,7 @@
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
  *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
  *   kryptik-launch --wifi-forget SSID   remove one
- *   kryptik-launch --update status|fetch|apply   show, fetch or install a release
+ *   kryptik-launch --update status|fetch|forget|apply   show, fetch, drop or install a release
  *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
  *
  * A display goes through the zone's own proxy at $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0, which the
@@ -298,7 +298,7 @@ static void usage(void)
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
-	      "       kryptik-launch --update status|fetch|apply | --update auto on|off\n", stderr);
+	      "       kryptik-launch --update status|fetch|forget|apply | --update auto on|off\n", stderr);
 	exit(2);
 }
 
@@ -390,7 +390,8 @@ static int wifi_main(int argc, char **argv)
 static int update_main(int argc, char **argv)
 {
 	int automatic = argc == 4 && strcmp(argv[2], "auto") == 0 && (strcmp(argv[3], "on") == 0 || strcmp(argv[3], "off") == 0);
-	if (!automatic && (argc != 3 || (strcmp(argv[2], "status") != 0 && strcmp(argv[2], "fetch") != 0 && strcmp(argv[2], "apply") != 0)))
+	if (!automatic && (argc != 3 || (strcmp(argv[2], "status") != 0 && strcmp(argv[2], "fetch") != 0 &&
+	                                 strcmp(argv[2], "forget") != 0 && strcmp(argv[2], "apply") != 0)))
 		usage();
 	char req[32];
 	if (automatic)

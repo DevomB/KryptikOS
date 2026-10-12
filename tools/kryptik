@@ -41,6 +41,8 @@ USAGE:
     $PROG update status             the release running, the newest one known
                                     and how old that news is, what is staged
     $PROG update fetch              ask for the newest release to be fetched
+    $PROG update forget             stop fetching the release asked for, and
+                                    delete what has arrived of it
     $PROG update auto on|off        fetch each newer release as it is
                                     announced, or only when asked (the default)
     $PROG update apply              install what has arrived; the next boot
@@ -332,9 +334,9 @@ cmd_wifi() {
 # Installed systems only: the update state is zone 0's, reached through the launch service.
 cmd_update() {
     case "${1:-}" in
-        status|fetch|apply) [[ $# -eq 1 ]] || die "$PROG update $1 takes no argument" 2 ;;
+        status|fetch|forget|apply) [[ $# -eq 1 ]] || die "$PROG update $1 takes no argument" 2 ;;
         auto) [[ $# -eq 2 && ( "${2:-}" == on || "${2:-}" == off ) ]] || die "$PROG update auto takes on or off" 2 ;;
-        *) usage >&2; die "update needs a subcommand: status, fetch, apply, or auto on|off" 2 ;;
+        *) usage >&2; die "update needs a subcommand: status, fetch, forget, apply, or auto on|off" 2 ;;
     esac
     via_launch || die "update goes through the launch service, which is not answering here (an installed Kryptik, as a session user)"
     "$LAUNCH" --update "$@"

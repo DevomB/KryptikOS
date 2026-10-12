@@ -449,6 +449,12 @@ fn wanted(dir: &Path) -> Option<String> {
     is_version(&v).then_some(v)
 }
 
+/// A release the user dropped (`forget`), which automatic fetching then leaves alone.
+fn declined(dir: &Path) -> Option<String> {
+    let v = std::fs::read_to_string(dir.join("declined")).ok()?.trim().to_string();
+    is_version(&v).then_some(v)
+}
+
 fn staging(dir: &Path, version: &str) -> PathBuf {
     dir.join("incoming").join(version)
 }
@@ -503,7 +509,22 @@ pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Res
         let _ = std::fs::remove_dir_all(dir.join("incoming"));
     }
     put_file(&dir.join("wanted"), p.version.as_bytes())?;
+    // Asked for again: a forgotten version is no longer passed over.
+    let _ = std::fs::remove_file(dir.join("declined"));
     Ok(p.version)
+}
+
+/// `kryptik update forget`: drop the release asked for and what has arrived of it. Automatic
+/// fetching then passes that version over; a newer one, or `fetch`, asks again.
+pub fn forget(dir: &Path) -> Result<String, String> {
+    let v = wanted(dir).ok_or("no release has been asked for")?;
+    // Recorded first, so the next poll never asks for it again in between.
+    put_file(&dir.join("declined"), v.as_bytes())?;
+    let _ = std::fs::remove_file(dir.join("wanted"));
+    if !discard_stage(dir) {
+        return Err(format!("{v} is no longer asked for, but what had arrived of it could not be deleted"));
+    }
+    Ok(v)
 }
 
 /// Anything but `on` is off, a damaged block among them.
@@ -560,7 +581,9 @@ fn outstanding(dir: &Path, channel: &str, role: &str, running: &str, now: i64) -
 /// on, the release the newest statement names is first asked for, as `fetch`
 /// would ask for it.
 pub fn poll(dir: &Path, channel: &str, role: &str, running: &str, now: i64) -> String {
-    if auto(dir) && stored_pointer(dir).is_some_and(|p| wanted(dir) != Some(p.version)) {
+    if auto(dir)
+        && stored_pointer(dir).is_some_and(|p| wanted(dir).as_ref() != Some(&p.version) && declined(dir).as_ref() != Some(&p.version))
+    {
         // Refused as `fetch` would be: nothing newer, or not fetchable here.
         let _ = want(dir, Some(channel), role, running);
     }
@@ -657,7 +680,10 @@ pub fn status(dir: &Path, now: i64, running: &str, since: Option<i64>) -> String
     }
     out.push_str(if auto(dir) { "fetching   automatically, as each release is announced\n" } else { "fetching   only when asked\n" });
     match wanted(dir) {
-        None => out.push_str("staged     nothing asked for\n"),
+        None => match declined(dir).filter(|v| version_cmp(v, running) == Ordering::Greater) {
+            Some(v) => out.push_str(&format!("staged     nothing asked for; {v} was forgotten, and `kryptik update fetch` asks for it again\n")),
+            None => out.push_str("staged     nothing asked for\n"),
+        },
         Some(v) => {
             let stage = staging(dir, &v);
             match verified_files(dir, &v) {

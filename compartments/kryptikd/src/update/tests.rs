@@ -377,6 +377,32 @@ fn auto_follows_newest_release() {
 }
 
 #[test]
+fn forget_drops_a_release_that_auto_then_passes_over() {
+    let d = scratch("forget");
+    assert!(forget(&d).unwrap_err().contains("no release has been asked for"));
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    set_auto(&d, true, Some(CH)).unwrap();
+    assert!(poll(&d, CH, "production", "1.0.2", T0).starts_with("fetch 1.0.3 "));
+    put(&d, &yes(), T0, "manifest", 0, b"m").unwrap();
+    // Forgotten: nothing of it is kept, and automatic fetching does not ask for it again.
+    assert_eq!(forget(&d).unwrap(), "1.0.3");
+    assert!(wanted(&d).is_none() && !d.join("incoming").exists() && !d.join("files").exists());
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle");
+    assert!(status(&d, T0, "1.0.2", None).contains("staged     nothing asked for; 1.0.3 was forgotten"));
+    assert!(status(&d, T0, "1.0.3", None).contains("staged     nothing asked for\n"), "a forgotten release the machine now runs is not named");
+    // A newer statement's release is fetched as before.
+    let t1 = T0 + POINTER_INTERVAL_SECS as i64;
+    latest(&d, &yes(), t1, "production", "1.0.2", pointer_text("1.0.4", "2027-03-02T15:30:00Z").as_bytes(), b"sig").unwrap();
+    assert!(poll(&d, CH, "production", "1.0.2", t1).starts_with("fetch 1.0.4 "));
+    // And `fetch` asks for a forgotten one again.
+    forget(&d).unwrap();
+    assert_eq!(poll(&d, CH, "production", "1.0.2", t1), "idle");
+    assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.4");
+    assert!(poll(&d, CH, "production", "1.0.2", t1).starts_with("fetch 1.0.4 "));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn auto_refuses_what_fetch_refuses() {
     let d = scratch("auto-refused");
     latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
