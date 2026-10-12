@@ -289,7 +289,7 @@ for a lease. Networks that share a name, a chain's cafés for one, are one
 saved network and see one address. A radio that takes a new address, as most
 do, never uses its own: a scan for networks, before one is joined, goes out
 from a new random address each time, so a scan does not follow the machine
-either. A network that hides its name, which a scan lists with none, is
+either. A network that hides its name, which no scan lists, is
 saved with `kryptik wifi add SSID --hidden` (beside `--open` for one with no
 passphrase): the machine then asks for that name in each scan until it
 joins, wherever it is, so anyone listening nearby learns it knows that
