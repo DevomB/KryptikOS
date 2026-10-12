@@ -20,3 +20,7 @@ RPATH   usr/lib/libcc1.so.*          /usr/lib/../lib     # libtool, in GCC's bui
 RPATH   usr/lib/gcc/*/*/plugin/libc[cp]1plugin.so.*  /usr/lib/../lib   # the same
 RPATH   usr/lib/libskarnet.so.*      /usr/lib            # skalibs' own link line
 RPATH   usr/lib/perl5/*/auto/Time/HiRes/HiRes.so  /usr/lib   # Time::HiRes, linking librt
+
+# Every object without a canary or calling an unchecked printf, recorded once for the named entries that replace these two.
+NO-SSP      *    # recorded for the list
+NO-FORTIFY  *    # recorded for the list

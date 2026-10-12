@@ -40,22 +40,28 @@ machinery.
 ### What the audit finds
 
 `make audit-artifacts` (`tools/check-artifact-hardening.sh`) reads the ELF
-headers of every object. Stage 06 runs it strict on the root tree as it packs
-it into the image, so a finding fails the build, and `make acceptance` runs it
-strict again on the root image of the release it tests, mounted read-only, for
-the record. A writable and executable segment, an executable stack, text
-relocations or an RPATH into the build tree always fail it. In strict mode so
-do a missing CET note, `BIND_NOW` or RELRO, a non-PIE executable and any other
-RPATH, unless [`artifact-accepted.txt`](../build/config/artifact-accepted.txt)
-lists the object with its reason: `kryptikd` and `kryptik-wlproxy`, which
-stable rustc does not mark for CET, GMP's assembly, and the rpaths that
-man-db, perl and glibc's converters need or that repeat the loader's own
-directory. An entry that matches nothing fails too, so the list holds only
-what the image has. A new finding is fixed in its package's recipe, not by
-weakening the check. The stack protector and FORTIFY are counted, not required
-of each object: a function without a local array gets no canary and a call
-with no known size no `_chk` variant, so an object with neither shows nothing
-about its flags. The record lists the objects without either.
+headers, dynamic symbols and code of every object. Stage 06 strips every
+x86-64 program and library as it stages the root (the sysroot keeps its
+symbols for the build), then runs the audit strict on that tree, so a finding
+fails the build, and `make acceptance` runs it strict again on the root image
+of the release it tests, mounted read-only, for the record. A writable and
+executable segment, an executable stack or no `GNU_STACK` header at all (the
+loader then makes the stack executable), text relocations or an RPATH into the
+build tree always fail it. In strict mode so do a missing CET note, `BIND_NOW`
+or RELRO, a non-PIE executable, a symbol table or debug section, any other
+RPATH, an object whose code never reads the stack canary, and an object that
+imports `printf`, `fprintf`, `vfprintf`, `dprintf`, `syslog`, `longjmp` or
+another call that `_FORTIFY_SOURCE=2` or `3` always turns into its `_chk`
+variant, which shows a unit built without FORTIFY. Each of these passes only
+where [`artifact-accepted.txt`](../build/config/artifact-accepted.txt) lists
+the object with its reason. `-fstack-protector-strong` guards only functions
+with a local array or an address-taken local, so an object with none of
+those has no canary whatever its flags; such objects are listed by name, and a
+package that loses the flag shows up as a new name. An entry that matches
+nothing fails too, so the list holds only what the image has. A new finding is
+fixed in its package's recipe, not by weakening the check. A call whose size
+is unknown keeps its plain name under FORTIFY, so those prove nothing either
+way: the record counts and lists the objects that call no `_chk` function.
 
 Packages stage 04 builds before its glibc (the first built with
 `--enable-cet`) link stage 01's crt files, which carry no CET note, so each is

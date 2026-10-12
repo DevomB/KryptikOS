@@ -85,7 +85,7 @@ channel_conf() {
 # --- preflight ----------------------------------------------------------------
 log "Kryptik stage 06 — install media ${KRYPTIK_VERSION}"
 for t in mkfs.ext4 tune2fs dumpe2fs debugfs veritysetup sbsign sbverify mkfs.vfat mmd mcopy \
-         xorriso sfdisk openssl ssh-keygen rsync truncate dd sha256sum blkid; do
+         xorriso sfdisk openssl ssh-keygen rsync truncate dd sha256sum blkid strip python3; do
     have "$t" || die "required tool not found: ${t}"
 done
 # The signing half never touches the sysroot or the chroot.
@@ -115,6 +115,40 @@ stage_depends_on "bs-" licences
 
 # --- steps ------------------------------------------------------------------
 
+# strip_root DIR: symbol tables and debug sections off every x86-64 program and
+# library under DIR, each name once per file. Signed kernel modules are ET_REL
+# and other architectures' firmware is not x86-64, so neither is touched.
+strip_root() {
+    local f mode owner n=0
+    while IFS= read -r -d '' f; do
+        mode="$(stat -c %a "$f")"; owner="$(stat -c %u:%g "$f")"
+        strip --strip-all --preserve-dates "$f"
+        # chown before chmod: a change of owner clears the setuid bit.
+        chown "$owner" "$f"; chmod "$mode" "$f"
+        n=$((n + 1))
+    done < <(python3 - "$1" <<'EOF'
+import os, stat, sys
+root = sys.argv[1]
+dev = os.lstat(root).st_dev
+seen = set()
+for d, dirs, files in os.walk(root):
+    dirs[:] = [x for x in dirs if os.lstat(os.path.join(d, x)).st_dev == dev]
+    for name in files:
+        p = os.path.join(d, name)
+        st = os.lstat(p)
+        if not stat.S_ISREG(st.st_mode) or st.st_ino in seen:
+            continue
+        with open(p, "rb") as fh:
+            h = fh.read(20)
+        # 64-bit little-endian ELF, ET_EXEC or ET_DYN, for x86-64
+        if h[:6] == b"\x7fELF\x02\x01" and h[16:18] in (b"\x02\x00", b"\x03\x00") and h[18:20] == b"\x3e\x00":
+            seen.add(st.st_ino)
+            sys.stdout.buffer.write(os.fsencode(p) + b"\0")
+EOF
+)
+    echo "stripped ${n} objects"
+}
+
 s_rootfs() {
     local version="$1" channel="${3:-}" role="$4"
     local work; work="$(mktemp -d "${IMG}/stage.XXXXXX")"
@@ -134,6 +168,10 @@ s_rootfs() {
     mkdir -p "$stage/boot" "$stage/proc" "$stage/sys" "$stage/dev" "$stage/run" "$stage/tmp" \
              "$stage/var" "$stage/home" "$stage/root" "$stage/etc/kryptik"
     chmod 1777 "$stage/tmp"
+
+    # The sysroot keeps its symbols for the build; the image carries none.
+    echo "--- stripping ---"
+    strip_root "$stage"
 
     # The system allocator (ADR-005): the image's processes run on it, the build
     # never does. Zones get their own copy from kryptikd (rootfs.rs).
