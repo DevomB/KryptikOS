@@ -170,15 +170,16 @@ sibling thread online the kernel refuses the cookie (`ENODEV`) and
 
 ## ADR-012: Device firmware from linux-firmware, on the verified root
 
-The image ships the firmware laptop graphics, Wi-Fi and Realtek Ethernet need,
-from the pinned `linux-firmware` release, as selected by
+The image ships the firmware laptop graphics, Wi-Fi and Ethernet need, from
+the pinned `linux-firmware` release, as selected by
 `build/config/firmware.list`, zstd-compressed under `/lib/firmware` on the
 dm-verity root. The drivers that load it are signed modules, so they probe
 after the root is mounted.
 
 **Why:** Intel, AMD and Qualcomm Wi-Fi and AMD GPUs do not run without vendor
-firmware, Intel graphics runs degraded, and Realtek Ethernet runs without its
-chips' PHY fixes. Without it most laptops have no Wi-Fi.
+firmware, Intel graphics runs degraded, Realtek Ethernet runs without its
+chips' PHY fixes, and an old Broadcom Tigon3 does not come up. Without it most
+laptops have no Wi-Fi.
 
 These are vendor binaries, not built from source as
 [supply-chain.md](supply-chain.md) otherwise requires, and run by the device's
