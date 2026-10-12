@@ -92,7 +92,7 @@ if [ "$STATUS" = 1 ]; then
     # fixed disk only from one. They are kept by slot, not disk, so one may be another Kryptik's.
     if [ -d /sys/firmware/efi/efivars ] && fw="$(kryptik-efiboot list 2>/dev/null)"; then
         order=" $(printf '%s\n' "$fw" | sed -n 's/^BootOrder: *//p') "
-        ents="$(printf '%s\n' "$fw" | sed -n 's/^  \(Boot[0-9A-F]\{4\}\): Kryptik slot \([ab]\)  file=.EFI.kryptik.kryptik-[ab]\.efi .*/\1 \2/p')"
+        ents="$(printf '%s\n' "$fw" | sed -n 's/^  \(Boot[0-9A-F]\{4\}\): Kryptik slot \([ab]\)  file=.EFI.kryptik.kryptik-\2\.efi .*/\1 \2/p')"
         if [ -z "$ents" ]; then
             echo "firmware       no Kryptik entry: the firmware boots BOOTX64.EFI by itself, or --commit-slot writes one"
         fi
