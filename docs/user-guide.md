@@ -46,8 +46,8 @@ fit a download from the page.
 
 Neither macOS nor Windows comes with `zstd`. On macOS, `brew install zstd`
 (Homebrew) adds it, and the hash check is `shasum -a 256 -c --ignore-missing`.
-On Windows, the zstd project's own build (`zstd-vX.Y.Z-win64.zip` from
-github.com/facebook/zstd/releases) runs `zstd -d` as above. Run the
+On Windows, `zstd.exe` from zstd's releases page runs `zstd -d` as above,
+and 7-Zip 24 and later unpacks the image too, as the README says. Run the
 `ssh-keygen` line in Command Prompt, on one line (PowerShell has no `<`), and
 compare what `certutil -hashfile kryptik-VERSION-usb.img SHA256` prints with
 the image's line in `kryptik-VERSION.SHA256SUMS`. `certutil -hashfile
