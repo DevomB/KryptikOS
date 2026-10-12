@@ -178,7 +178,7 @@ after the root is mounted.
 
 **Why:** Intel, AMD and Qualcomm Wi-Fi and AMD GPUs do not run without vendor
 firmware, Intel graphics runs degraded, Realtek Ethernet runs without its
-chips' PHY fixes, and an old Broadcom Tigon3 does not come up. Without it most
+chips' patches, and an old Broadcom Tigon3 does not come up. Without it most
 laptops have no Wi-Fi.
 
 These are vendor binaries, not built from source as
