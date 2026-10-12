@@ -31,12 +31,15 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 HCFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
+HCXXFLAGS="${HCFLAGS} ${KRYPTIK_CXXFLAGS_HARDENING}"
 HLDFLAGS="${KRYPTIK_LDFLAGS_HARDENING}"
+CXX="${CXX:-g++}"
 
 echo "Hardening flag verification"
 echo "  compiler : ${CC} ($("$CC" -dumpmachine 2>/dev/null))"
 echo "  version  : $("$CC" --version 2>/dev/null | head -1)"
 echo "  CFLAGS   : ${HCFLAGS}"
+echo "  CXXFLAGS : ${HCXXFLAGS}"
 echo "  LDFLAGS  : ${HLDFLAGS}"
 echo
 
@@ -125,6 +128,32 @@ if [[ $? -eq 0 ]] && [[ "$("$WORK/user" 2>/dev/null)" == "lib-ok 7" ]]; then
 else
     red "executable does not link against the hardened library"
     sed 's/^/         /' "$WORK/user.err"
+fi
+echo
+
+echo "-- C++"
+cat > "$WORK/oob.cc" <<'CPP'
+#include <vector>
+int main(int argc, char **) { std::vector<int> v(1); return v[argc]; }
+CPP
+if ! have "$CXX"; then
+    note "no ${CXX}: the C++ checks did not run"
+else
+    # shellcheck disable=SC2086
+    "$CXX" $HCXXFLAGS $HLDFLAGS -o "$WORK/oob" "$WORK/oob.cc" 2> "$WORK/oob.err"
+    if [[ $? -ne 0 ]]; then
+        red "a C++ program does NOT link under the full flag set"
+        sed 's/^/         /' "$WORK/oob.err"
+    else
+        # The braces take the shell's own "Aborted" line along with the program's message.
+        { "$WORK/oob"; } 2> /dev/null
+        rc=$?
+        if [[ "$rc" -eq 134 ]]; then
+            green "an index past a vector's end aborts (-D_GLIBCXX_ASSERTIONS)"
+        else
+            red "an index past a vector's end did not abort (exit ${rc})"
+        fi
+    fi
 fi
 echo
 
