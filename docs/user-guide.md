@@ -428,8 +428,9 @@ shows each timer, its timeout and whether it is running.
   the disk can damage it, or, with an earlier copy, put a block or its
   header back as it was, and nothing notices
   ([state partition](design/state-encryption.md)).
-- The installer copies the medium's ESP as it is, and only the kernels on
-  it are signed, so anything else someone put on a medium's ESP, files or
+- The installer copies the medium's ESP as it is, as does `kryptik-recover
+  --restore-slot` when the disk's own no longer mounts, and only the kernels
+  on it are signed, so anything else someone put on a medium's ESP, files or
   its FAT structures, ends up on the installed disk: write the medium from a
   verified image and keep it out of others' hands.
 - The keyboard layout is kept in the machine's firmware, not on the disk:
