@@ -815,9 +815,23 @@ pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// `status`'s line for a trial that failed, from the record boot-success set aside as
-/// `trial.failed` with its `why=`: the release it tried still reads as staged and complete.
-pub fn trial_line(trial: &Path, running: &str) -> Option<String> {
+/// The slot this boot runs, from the signed kernel's command line.
+pub fn running_slot() -> Option<String> {
+    let line = std::fs::read_to_string("/proc/cmdline").ok()?;
+    line.split_whitespace().find_map(|w| w.strip_prefix("kryptik.slot=")).filter(|s| matches!(*s, "a" | "b")).map(str::to_string)
+}
+
+/// `status`'s line for a trial: one armed for the next boot or running now (`booted`, the slot
+/// this boot runs, tells which), or one that failed, from the record boot-success set aside as
+/// `trial.failed` with its `why=`. Either way the release still reads as staged and complete.
+pub fn trial_line(trial: &Path, running: &str, booted: Option<&str>) -> Option<String> {
+    if let Some(armed) = std::fs::read_to_string(trial).ok().and_then(|t| t.lines().next().filter(|s| matches!(*s, "a" | "b")).map(str::to_string)) {
+        return Some(if booted == Some(armed.as_str()) {
+            format!("trial      slot {armed} is on trial: it stays once it comes up healthy\n")
+        } else {
+            format!("trial      slot {armed} is armed: the next boot tries it, and it stays once it comes up healthy\n")
+        });
+    }
     let text = std::fs::read_to_string(trial.with_file_name("trial.failed")).ok()?;
     let slot = text.lines().next().filter(|s| matches!(*s, "a" | "b"))?;
     // A record from before boot-success said why reads as failed.

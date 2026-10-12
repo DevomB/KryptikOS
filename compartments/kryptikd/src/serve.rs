@@ -1137,7 +1137,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
                     let mut out = up::status(dir, now, &running, up::expecting_since());
-                    out.extend(up::trial_line(Path::new(up::TRIAL), &running));
+                    out.extend(up::trial_line(Path::new(up::TRIAL), &running, up::running_slot().as_deref()));
                     Ok(out)
                 }
                 "update-fetch" => {

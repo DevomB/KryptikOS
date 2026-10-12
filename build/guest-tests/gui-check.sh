@@ -427,6 +427,18 @@ if [[ "$told" == "Update: the trial of slot b came up unhealthy: service net-zon
 else
     fail "menu-names-failed-trial" "the menu said: $(tr '\n' ' ' <<<"$failed_menu" | cut -c1-300)"
 fi
+# A trial armed for the next boot reads as armed, not as a release to install again.
+rm -f /root/gt/trial.kept
+[[ -e "$BOOTST/trial" ]] && cp -p "$BOOTST/trial" /root/gt/trial.kept
+printf 'b\narmed=1\n' > "$BOOTST/trial"
+armed_menu="$(menu_text)"
+if [[ -e /root/gt/trial.kept ]]; then mv -f /root/gt/trial.kept "$BOOTST/trial"; else rm -f "$BOOTST/trial"; fi
+told="$(grep -o 'Update: slot b is armed.*' <<<"$armed_menu")"
+if [[ "$told" == "Update: slot b is armed: the next boot tries it (u for more)" ]]; then
+    pass "menu-names-armed-trial" "$told"
+else
+    fail "menu-names-armed-trial" "the menu said: $(tr '\n' ' ' <<<"$armed_menu" | cut -c1-300)"
+fi
 
 # A zone runs one command at a time, so its window is stopped before the next.
 stop_zone() { as_user "kryptik-launch --stop $1" > /dev/null 2>&1; wait_for 15 test ! -e "/run/kryptik/zones/$1/init.pid"; sleep 1; }
