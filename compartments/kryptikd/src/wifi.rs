@@ -17,7 +17,11 @@ pub const IN_ZONE: &str = "/etc/wpa_supplicant.conf";
 /// The net zone's service directory on an installed system.
 pub const SERVICE_DIR: &str = "/run/service/net-zone";
 
-const HEADER: &str = "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n";
+/* No scan is recent enough to join from without a new one. With two networks saved, a first
+ * failed join makes wpa_supplicant 2.12 pick again from its last scan; picking the access point
+ * that just failed (one gone, which the kernel's scan cache keeps for 30 s), it counts itself
+ * still joining it and asks for no scan, and waits until something else scans. */
+const HEADER: &str = "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\nscan_res_valid_for_connect=0\n";
 
 /* How a saved network may be joined, from what was saved: a passphrase by WPA2's pre-shared
  * key or WPA3's SAE, a raw key by the former alone (SAE needs the passphrase), and neither by

@@ -1014,6 +1014,49 @@ if [[ "$sae_up" = 1 && "$sae_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* && "$sae_
 else
     fail "wifi-sae" "access point up: ${sae_up}; the station at it: ${sae_keys:-none}; $(tail -3 "$LOG/ap-sae-wpa.log" 2>/dev/null | tr '\n' ' ')"
 fi
+# A second saved network is joined once it appears, after the first one's access point went.
+# The restarted net zone's supplicant tries the departed one first, as the kernel keeps its scan
+# entry for 30 s. On that first failure wpa_supplicant 2.12 picks again from its last scan, gets
+# the same access point, counts itself still joining it and asks for no new scan: it would wait
+# forever. kryptikd's file counts no scan as recent, so each failure is followed by a scan.
+AP2_SSID=kryptik-hwsim-2
+gone_tries() { dmesg 2>/dev/null | grep -ac 'authentication with 02:00:00:00:01:00 timed out'; }
+second_up=0; tried=""
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+fi
+tries_before="$(gone_tries)"
+before="$(ready_count)"
+printf '%s\n' "$AP_PASS" | "$KD" wifi add "$AP2_SSID" --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-add-2.out" 2>&1
+for _ in $(seq 1 60); do [[ "$(gone_tries)" -gt "$tries_before" ]] && { tried=1; break; }; sleep 0.5; done
+if [[ "$ap_up" = 1 ]]; then
+    # Another network is another access point, with an address of its own.
+    ap ip link set dev "$AP_IF" down
+    ap ip link set dev "$AP_IF" address 02:00:00:00:01:01 >> "$LOG/ap.err" 2>&1
+    cat > /root/zt/ap-2.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$AP2_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=WPA-PSK
+    proto=RSN
+    pairwise=CCMP
+    psk="$AP_PASS"
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-2.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-2-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { second_up=1; break; }; sleep 1; done
+fi
+line="$(ready_after "$before" " wifi=$AP2_SSID " 90)"
+if [[ "$second_up" = 1 && -n "$tried" && "$line" == *" wifi=$AP2_SSID "* ]]; then
+    pass "wifi-second-network" "the restarted net zone tried the departed access point, then joined $AP2_SSID once it beaconed: ${line#*netzone: }"
+else
+    fail "wifi-second-network" "access point up: ${second_up}; the departed one tried: ${tried:-no}; $(tr '\n' ' ' < "$LOG/wifi-add-2.out"); newest READY: ${line:-none}; $(netzone_said wifi | tail -2 | tr '\n' ' '); the kernel: $(dmesg 2>/dev/null | grep -aE 'nic[0-9]+:' | tail -6 | tr '\n' ';' | cut -c1-600)"
+fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
 [[ -n "$AP_HOLD" ]] && kill "$AP_HOLD" 2>/dev/null
