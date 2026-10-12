@@ -41,8 +41,9 @@ machinery.
 
 `make audit-artifacts` (`tools/check-artifact-hardening.sh`) reads the ELF
 headers, dynamic symbols and code of every object. Stage 06 strips every
-x86-64 program and library as it stages the root (the sysroot keeps its
-symbols for the build), then runs the audit strict on that tree, so a finding
+x86-64 program and library, and the debug sections of every static archive,
+as it stages the root (the sysroot keeps its symbols for the build), then
+runs the audit strict on that tree, so a finding
 fails the build, and `make acceptance` runs it strict again on the root image
 of the release it tests, mounted read-only, for the record. A writable and
 executable segment, an executable stack or no `GNU_STACK` header at all (the
