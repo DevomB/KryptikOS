@@ -15,8 +15,9 @@
 #                                  focus as text (and the last zone window's
 #                                  in focus.zone), and opens the launcher
 #   kryptik-chrome --menu          the launcher: zones, their state, apps,
-#                                  a release that waits to be installed, and
-#                                  a channel with nothing new for 30 days
+#                                  a release that waits to be installed, a
+#                                  channel with nothing new for 30 days, and
+#                                  the net zone's Wi-Fi networks (w)
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
 #                                  ask for the zone's passphrase in a trusted
 #                                  window, then launch (kryptik-launch hands
@@ -176,13 +177,14 @@ run_menu() {
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
-        echo "       f the last zone window's zone   r refresh   q close this window"
+        echo "       w Wi-Fi networks   f the last zone window's zone   r refresh   q close this window"
         echo
         printf 'choice (e.g. 1t): '
         if ! read -r choice; then break; fi
         case "$choice" in
             q) break ;;
             r|"") continue ;;
+            w) run_wifi; continue ;;
             f) if [ -r "$FOCUS_ZONE" ]; then
                    printf 'The last zone window you had: %s %s (zone %s)\n  %s\n' \
                        "$(sed -n 's/^glyph=//p' "$FOCUS_ZONE")" "$(sed -n 's/^label=//p' "$FOCUS_ZONE")" \
@@ -211,6 +213,33 @@ run_menu() {
                       # --ask: a passphrase is read on this zone 0 terminal, never a zone's.
                       "$LAUNCH" --ask "$z" -- "$@" || sleep 3
                       ;;
+            *) echo "?"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- Wi-Fi ----------------------------------------------------------------------
+
+# The net zone's saved networks, through the launch daemon, as `kryptik wifi` has
+# them at the administration login: kryptik-launch reads a passphrase here,
+# unechoed, and the net zone restarts to join.
+run_wifi() {
+    while :; do
+        clear 2>/dev/null
+        echo "================ KRYPTIK - Wi-Fi networks (zone 0) ================"
+        echo "Saved networks:"
+        "$LAUNCH" --wifi-list 2>&1 | sed 's/^/  /'
+        echo
+        echo "a add a network, or change its passphrase   f forget one   Enter back"
+        printf 'choice: '
+        read -r c || return 0
+        case "$c" in
+            "") return 0 ;;
+            a|f) printf 'network name (SSID): '
+                 read -r ssid || return 0
+                 [ -n "$ssid" ] || continue
+                 if [ "$c" = a ]; then "$LAUNCH" --wifi-add "$ssid"; else "$LAUNCH" --wifi-forget "$ssid"; fi
+                 sleep 3 ;;
             *) echo "?"; sleep 1 ;;
         esac
     done
