@@ -102,6 +102,8 @@ ZONE_DNS_PORTS="$((DNS_PORT_BASE + 2))-$((DNS_PORT_BASE + 249))"
 # dhcpcd on every address once it holds two uplinks, is no zone's to reach.
 # A zone's DNS goes to a resolver of its own where the dns chain sends it
 # (sync_dnsnat), and a resolver's own port takes nothing that chain did not.
+# No resolver answers an uplink: Linux takes a packet for 10.19.0.1 on any
+# interface, so a host on the uplink's network could otherwise ask one.
 RULES="table inet kryptik {
     set gw4 { type ipv4_addr; }
     set gw6 { type ipv6_addr; }
@@ -139,8 +141,7 @@ RULES="table inet kryptik {
     chain input {
         type filter hook input priority filter; policy accept;
         iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
-        iifname ${NICSET} ct state new tcp dport 53 drop
-        iifname ${NICSET} ct state new udp dport 53 drop
+        iifname ${NICSET} ct state new meta l4proto { tcp, udp } th dport { 53, ${ZONE_DNS_PORTS} } drop
         iifname \"${BR}\" ct state established,related accept
         iifname \"${BR}\" ip daddr 10.19.0.1 meta l4proto { tcp, udp } th dport 53 accept
         iifname \"${BR}\" ip6 daddr fd19::1 meta l4proto { tcp, udp } th dport 53 accept
@@ -297,10 +298,12 @@ start_dns() {
     # without a resolver of its own, so it keeps no cache and no CHAOS records (--no-ident):
     # an answer it kept comes back sooner, with less TTL, to the next zone asking, and
     # hits.bind and misses.bind count every zone's lookups. --pid-file with no path writes none.
+    # Its queries go out from ports above the zones' resolvers' (--min-port), so none holds
+    # the port one of them is about to listen on.
     dnsmasq --keep-in-foreground --log-facility=- --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
             --resolv-file="$UPSTREAM" --cache-size=0 --no-ident --local-service --local=/test/ \
-            --pid-file --user=nobody --group=nogroup &
+            --min-port="$((DNS_PORT_BASE + 250))" --pid-file --user=nobody --group=nogroup &
     DNSPID=$!
     sleep 1
     if dns_alive "$DNSPID"; then
@@ -326,7 +329,7 @@ start_zone_dns() {   # start_zone_dns K: started; zone_dns_said tells whether it
     dnsmasq --keep-in-foreground --log-facility=- --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --port="$((DNS_PORT_BASE + $1))" \
             --resolv-file="$UPSTREAM" --no-ident --local-service --local=/test/ \
-            --pid-file --user=nobody --group=nogroup &
+            --min-port="$((DNS_PORT_BASE + 250))" --pid-file --user=nobody --group=nogroup &
     zone_dns_set "$1" "$!"
 }
 zone_dns_said() {   # zone_dns_said K: a second after its start

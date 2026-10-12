@@ -112,8 +112,9 @@ query and the [update](update-channel.md) fetcher. Builds on
   from the bridge to an uplink, what a gateway carries accepted and the
   uplink's own network refused but to the zones whose definition opens it
   ([below](#the-uplinks-own-networks)); bridge to bridge dropped;
-  `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new DNS
-  connections arriving on an uplink dropped. Each routed zone may hold an
+  `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new
+  connections arriving on an uplink for DNS, or for a zone's own resolver,
+  dropped. Each routed zone may hold an
   eighth of the zone's conntrack table, which every zone's flows fill
   together: nft's `ct count` on the MAC both its addresses are pinned to,
   for flows through the net zone and flows to it. Past its share, a zone's
@@ -148,8 +149,11 @@ query and the [update](update-channel.md) fetcher. Builds on
   the masquerade already needs: no kernel option is added). The addresses are
   pinned to the zone's MAC, so no zone is sent to another's resolver, and a
   resolver's port takes only what the chain sent it, so none is asked there
-  directly. A zone defined after the net zone started, or whose resolver
-  could not start, asks the shared one, which keeps no cache
+  directly, and none is asked from an uplink: Linux takes a packet for the
+  bridge's addresses on any interface, so the uplinks' drop names the
+  resolvers' ports beside 53. Every dnsmasq sends its own queries from ports
+  above them (`--min-port`). A zone defined after the net zone started, or
+  whose resolver could not start, asks the shared one, which keeps no cache
   (`--cache-size=0`) and no CHAOS records (`--no-ident`); one that dies is
   started once more, and its zone is on the shared one until it answers.
   The uplink's servers keep caches of their own, shared with every machine

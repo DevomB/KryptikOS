@@ -923,6 +923,26 @@ if [[ "$far" -eq 0 && "$near" -ne 0 ]]; then
 else
     fail "wifi-beyond" "personal (init ${ppid:-none}): $AP_FAR rc=$far, $AP_ADDR rc=$near; $(netzone_said 'nftables: zones go out' | tail -1); routes: $(nsenter -t "$net_init" -n ip -4 route 2>/dev/null | tr '\n' ';')"
 fi
+# No resolver answers the uplink's network. The access point, given a route to the bridge
+# through the net zone's lease, asks the shared resolver and untrusted's own: Linux takes a
+# packet for a local address on any interface, so only the net zone's rules refuse it.
+uplink_dns="no route through ${lease:-no lease}"
+if [[ "$lease" == 192.168.77.* ]] && ap ip route replace 10.19.0.0/24 via "${lease%/*}" dev "$AP_IF" 2>> "$LOG/ap.err"; then
+    uplink_dns="$(ap python3 -c 'import socket, struct, sys
+q = struct.pack(">HHHHHH", 0x5454, 0x0100, 1, 0, 0, 0) + b"\x07kryptik\x04test\x00" + struct.pack(">HH", 1, 1)
+for port in sys.argv[1:]:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
+    try:
+        s.sendto(q, ("10.19.0.1", int(port))); s.recvfrom(512); print(port + ":answered", end=" ")
+    except OSError:
+        print(port + ":none", end=" ")' 53 "$((5300 + UNT))" 2>&1)"
+    ap ip route del 10.19.0.0/24 2>/dev/null
+fi
+if [[ "$uplink_dns" == "53:none $((5300 + UNT)):none " ]]; then
+    pass "dns-uplink-closed" "asked from the access point's network, neither the shared resolver nor untrusted's own answered"
+else
+    fail "dns-uplink-closed" "from the access point: ${uplink_dns}"
+fi
 # The saved passphrase joins WPA2 by its pre-shared key, unprotected where the access point
 # offers no protected management frames, and WPA3 by SAE with them: the same SSID, SAE only.
 sta_keys() { ap_wpa all_sta | grep -E '^(AKMSuiteSelector|flags)=' | tr '\n' ' '; }
