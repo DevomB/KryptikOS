@@ -355,13 +355,13 @@ struct OpenHow {
     mode: u64,
     resolve: u64,
 }
-const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+pub(crate) const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+pub(crate) const RESOLVE_NO_SYMLINKS: u64 = 0x04;
 const RESOLVE_BENEATH: u64 = 0x08;
-const RESOLVE_IN_ROOT: u64 = 0x10;
+pub(crate) const RESOLVE_IN_ROOT: u64 = 0x10;
 
 /// openat2(2): open with resolution restrictions the kernel enforces.
-fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io::Result<OwnedFd> {
+pub(crate) fn openat2(dirfd: RawFd, path: &str, flags: u64, mode: u64, resolve: u64) -> io::Result<OwnedFd> {
     let c = CString::new(path).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
     let how = OpenHow { flags, mode, resolve };
     let r = unsafe {

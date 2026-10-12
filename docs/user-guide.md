@@ -250,10 +250,12 @@ Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
-never appears on a command line. The menu also names a release that has
-arrived and waits to be installed, and says when the newest update statement
-is more than 30 days old, or, with none ever accepted, when the install is
-(section 4). With `w` it lists the Wi-Fi networks the net zone may join, adds
+never appears on a command line. Under the zones, a Network line says what
+the net zone reports: whether it is ready, the Wi-Fi network it joined, its
+address on the uplink and whether there is DNS. The menu also names a
+release that has arrived and waits to be installed, and says when the newest
+update statement is more than 30 days old, or, with none ever accepted, when
+the install is (section 4). With `w` it lists the Wi-Fi networks the net zone may join, adds
 one, asking for its passphrase in the menu's own window, or forgets one, as
 `kryptik wifi` does at the administration login.
 
