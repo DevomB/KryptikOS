@@ -454,14 +454,13 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         _ => {}
     }
     /* A radio switched off stays down: brought up, its link is refused (ERFKILL), and with it the
-     * whole zone, wire and all. The zone's script holds it and starts its supplicant, which brings
-     * the link up, once it is switched on. */
+     * whole zone, wire and all. Bringing it up once it is switched on is the zone's. */
     let off: Vec<&String> = nics.iter().filter(|n| switched_off(Path::new("/sys/class/net"), n)).collect();
     for n in &nics {
         let carried = carry_nic(n, zone_ns, off.contains(&n))?;
         eprintln!("kryptikd: zone {:?}: {n:?} moved in with {carried}", zone.name);
         if off.contains(&n) {
-            eprintln!("kryptikd: zone {:?}: {n:?} is switched off (rfkill); it stays down until switched on", zone.name);
+            eprintln!("kryptikd: zone {:?}: {n:?} is switched off (rfkill), so it is left down", zone.name);
         }
     }
     netlink::with_netns(zone_ns, || {
