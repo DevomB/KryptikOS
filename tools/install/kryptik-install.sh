@@ -252,7 +252,7 @@ for p in "/sys/class/block/$tname/$tname"*; do
     pn="${p##*/}"
     fs="$(shown "$(blkid -p -o value -s TYPE "/dev/$pn" 2>/dev/null)")"
     lb="$(shown "$(blkid -p -o value -s LABEL "/dev/$pn" 2>/dev/null)")"
-    sz="$(lsblk -dno SIZE "/dev/$pn" 2>/dev/null || true)"
+    sz="$(lsblk -dnro SIZE "/dev/$pn" 2>/dev/null || true)"   # raw: a column's padding left out
     holds="${holds:+$holds; }${pn} ${fs:-unformatted}${lb:+ \"$lb\"} ${sz}"
 done
 pt="$(blkid -p -o value -s PTTYPE "$TARGET_REAL" 2>/dev/null || true)"
