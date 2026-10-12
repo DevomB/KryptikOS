@@ -26,9 +26,11 @@ header_roundtrip() {   # header_roundtrip DISK
     dd if=/dev/zero of="$st" bs=1M iflag=count_bytes count="$n" conv=fsync status=none || return 1
     if cryptsetup isLuks "$st" 2>/dev/null; then echo "header: ${st} is still LUKS after the wipe"; return 1; fi
     echo "header: wiped ${n} bytes, and ${st} is no longer LUKS"
+    /usr/sbin/kryptik-recover --disk "$1" --status 2>/dev/null | grep '^state ' || true
     /usr/sbin/kryptik-recover --disk "$1" --restore-state-header "$h" || return 1
     [ "$(head -c "$n" "$st" | sha256sum)" = "$(sha256sum < "$h")" ] || { echo "header: ${st} does not read back as the backup"; return 1; }
     echo "header: restored, and ${st} reads back as the backup"
+    /usr/sbin/kryptik-recover --disk "$1" --status 2>/dev/null | grep '^state ' || true
 }
 
 # Recovery of an installed disk (kryptik-recover), armed the same way.

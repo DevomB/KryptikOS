@@ -337,11 +337,15 @@ smoke integ-p6 --usb "$USB" --disk "$DISK" --testctl "$CTLH" --vars enrolled --t
 T6="$(boot_txt)"
 grep -q 'KRYPTIK_RECOVER: header: wiped [0-9]* bytes, and /dev/vda4 is no longer LUKS' <<<"$T6" \
     && green "--backup-state-header saved the header; wiped on the disk, the partition is no longer LUKS" || red "the header was not saved and wiped"
+grep -qE 'KRYPTIK_RECOVER: state +/dev/vda4: no LUKS2 header, so nothing opens it: --restore-state-header' <<<"$T6" \
+    && green "--status then says the state partition has no header, and what puts one back" || red "--status did not name the state partition's missing header"
 if grep -q 'KRYPTIK_RECOVER: header: restored' <<<"$T6" && grep -q 'KRYPTIK_RECOVER: rc=0' <<<"$T6"; then
     green "--restore-state-header put it back: the partition reads back as the backup"
 else
     red "the header was not restored"; grep 'KRYPTIK_RECOVER' <<<"$T6" | tail -6 | sed 's/^/        /'
 fi
+grep -qE 'KRYPTIK_RECOVER: state +/dev/vda4: a LUKS2 header$' <<<"$T6" \
+    && green "--status names the restored header" || red "--status did not name the restored header"
 cp "$ENROLLED" "$VARSF"
 start_vm integ-p6b; LOG6="$LOG"
 drive \
