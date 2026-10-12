@@ -19,14 +19,19 @@ newest 1 iwlwifi-[[:alpha:]]*-[0-9]*.ucode
 iwlwifi-*.pnvm
 
 # Qualcomm Atheros: the laptop parts, by board revision. ath10k asks for API 6 first, and the
-# -sdio- files are for SDIO parts, which are not built.
+# -sdio- files are for SDIO parts, which are not built. A WCN6855 at SoC revision 2.1 is read
+# from WCN6855/hw2.1, QCA2066/hw2.1 or QCA6698AQ/hw2.1 (ath11k pci.c). ath11k and ath12k read a
+# variant directory (nfa765, ncm865) only when a devicetree names one, so [!n]* leaves it out.
 ath10k/QCA6174/hw3.0/board*.bin
 ath10k/QCA6174/hw3.0/*firmware-6.*
 ath10k/QCA9377/hw1.0/board*.bin
 ath10k/QCA9377/hw1.0/*firmware-6.*
+ath11k/QCA2066/hw2.1/*
 ath11k/QCA6390/hw2.0/*
-ath11k/WCN6855/hw2.0/*
-ath12k/WCN7850/hw2.0/*
+ath11k/QCA6698AQ/hw2.1/*
+ath11k/WCN6855/hw2.0/[!n]*
+ath11k/WCN6855/hw2.1/[!n]*
+ath12k/WCN7850/hw2.0/[!n]*
 
 # MediaTek MT7921 (7961 firmware), MT7922 and MT7925, without their Bluetooth.
 mediatek/WIFI_MT7961_patch_mcu_1_2_hdr.bin

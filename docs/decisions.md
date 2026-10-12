@@ -198,7 +198,7 @@ each signed kernel (`CONFIG_EXTRA_FIRMWARE`, stage 05), about 18 MB. Without
 it a machine runs whatever microcode its firmware last shipped, which on older
 machines means known, unfixed CPU vulnerabilities.
 
-**Cost:** about 82 MB after zstd (amdgpu is 38 MB of it, Intel Wi-Fi 15 MB and
+**Cost:** about 81 MB after zstd (amdgpu is 38 MB of it, Intel Wi-Fi 15 MB and
 Intel graphics 6 MB; for Intel, Realtek and Atheros the list names the files
 each driver asks for, not the versions linux-firmware keeps for other kernels)
 on a root image of about 1.6 GB, and an input nobody here can read.
