@@ -6,7 +6,9 @@ line compiled in. The command line names the root slot and carries its
 dm-verity root hash, and the kernel's `dm-mod.create=` (`CONFIG_DM_INIT`)
 builds the verity device before mounting root: no initramfs, bootloader or
 editable file lies between the firmware's signature check and the read-only
-verified root. Mutable state is on a separate
+verified root. The kernel has no initramfs support and no handover entry, so
+a loader that starts it anyway, even one the firmware trusts, cannot give it
+an initramfs or boot parameters of its own. Mutable state is on a separate
 [encrypted partition](state-encryption.md). Two root slots and a firmware
 `BootNext` trial give A/B updates with a bounded fallback.
 

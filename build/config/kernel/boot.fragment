@@ -9,10 +9,12 @@
 
 # --- the kernel is the UEFI application ---
 # The EFI stub boots the kernel without a bootloader. No EFI_MIXED (32-bit
-# firmware): x86_64 only, and a smaller signed stub.
+# firmware): x86_64 only, and a smaller signed stub. No handover entry, which
+# runs on boot parameters a loader filled in: the firmware uses the PE entry.
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
 # CONFIG_EFI_MIXED is not set
+# CONFIG_EFI_HANDOVER_PROTOCOL is not set
 CONFIG_EFI_PARTITION=y
 # efivarfs, for the updater's BootNext and Boot#### entries (the A/B trial).
 CONFIG_EFIVAR_FS=y
@@ -28,6 +30,9 @@ CONFIG_CMDLINE_OVERRIDE=y
 # --- the verified root, without an initramfs ---
 # dm-init builds the dm-verity (and for the ISO, dm-linear) device from
 # dm-mod.create= (devices by PARTLABEL=), so no unsigned initramfs is needed.
+# None is taken either: a loader that starts this kernel can offer one (a
+# LoadFile2 initrd), and its /init would run as root before the verified root.
+# CONFIG_BLK_DEV_INITRD is not set
 CONFIG_BLK_DEV_DM=y
 CONFIG_DM_INIT=y
 CONFIG_DM_VERITY=y
