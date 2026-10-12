@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The ESP's records as the tools show them (build/service-scripts/esp-records.sh):
-# in the shape Kryptik writes them, and as unknown otherwise.
+# in the shape Kryptik writes them, and as unknown otherwise. Then the writers,
+# which every tool that writes the ESP uses.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=/dev/null
@@ -38,6 +39,32 @@ rec "$(printf '1.%.0s' $(seq 40))0\n"; check "a version longer than any release'
 rec ''; check "an empty record" "$(esp_version "$T/rec")" unknown
 check "no record" "$(esp_version "$T/absent")" unknown
 check "no record, read as the caller says" "$(esp_version "$T/absent" none)" none
+
+echo "-- writing a record"
+mkdir -p "$T/esp/kryptik"
+esp_put "$T/esp/kryptik/committed-slot" b; rc=$?
+check "a record is written whole, and no temporary is left" "$rc|$(cat "$T/esp/kryptik/committed-slot")|$(ls -A "$T/esp/kryptik")" "0|b|committed-slot"
+# A temporary that cannot be made, as a full or read-only ESP refuses it: a directory in its place stops root too.
+mkdir "$T/esp/kryptik/committed-slot.new"
+esp_put "$T/esp/kryptik/committed-slot" a; rc=$?
+check "a record that cannot be written fails, and the old one stays whole" "$([[ $rc -ne 0 ]] && echo failed)|$(cat "$T/esp/kryptik/committed-slot")" "failed|b"
+rmdir "$T/esp/kryptik/committed-slot.new"
+
+echo "-- placing a kernel"
+printf 'kernel-b' > "$T/esp/kernel-b"; printf 'kernel-a' > "$T/esp/BOOTX64.EFI"
+esp_place "$T/esp/kernel-b" "$T/esp/BOOTX64.EFI"; rc=$?
+check "a kernel is copied into place, and no temporary is left" "$rc|$(cat "$T/esp/BOOTX64.EFI")|$([[ -e "$T/esp/BOOTX64.EFI.new" ]] && echo left || echo none)" "0|kernel-b|none"
+printf 'kernel-a' > "$T/esp/BOOTX64.EFI"
+cmp() { return 1; }   # the copy reads back from the device other than it was written
+esp_place "$T/esp/kernel-b" "$T/esp/BOOTX64.EFI"; rc=$?
+unset -f cmp
+check "a copy that reads back wrong never takes the name, and its temporary goes" \
+    "$([[ $rc -ne 0 ]] && echo failed)|$(cat "$T/esp/BOOTX64.EFI")|$([[ -e "$T/esp/BOOTX64.EFI.new" ]] && echo left || echo none)" "failed|kernel-a|none"
+
+echo "-- every tool writes the records through esp_put"
+own="$(grep -nE '>[[:space:]]*"[^"]*kryptik/(committed-slot|version-)' "$ROOT/tools/install/kryptik-install.sh" "$ROOT/tools/update/kryptik-update" \
+    "$ROOT/tools/update/kryptik-recover" "$ROOT/build/service-scripts/boot-success.sh" | sed "s|$ROOT/||")"
+check "no tool writes a record by a redirection of its own" "$own" ""
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

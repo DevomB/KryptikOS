@@ -59,7 +59,7 @@ case "${1:-}" in
     *)
         # shellcheck source=/dev/null
         . /usr/libexec/kryptik/devices.sh
-        # The ESP's records, shown only in the shape Kryptik writes them.
+        # The ESP's records, shown only in the shape Kryptik writes them, and their writers.
         # shellcheck source=/dev/null
         . /usr/libexec/kryptik/esp-records.sh ;;
 esac
@@ -77,9 +77,6 @@ own_part() {   # own_part LABEL -> the partition, or die with what was found
 esp_dev() { own_part kryptik-esp; }
 slot_dev() { own_part "kryptik-$1"; }
 hdr() { awk -F': ' -v k="$2" '$1==k {print $2; exit}' "$1"; }
-
-# Drop FILE's clean pages, so the next read is what the device holds; best effort.
-uncache() { dd if="$1" iflag=nocache count=0 status=none 2>/dev/null || :; }   # uncache FILE
 
 mount_esp() {
     dev="$(esp_dev)" || exit 1
@@ -385,10 +382,7 @@ cmd_apply() {
         die "the kernel staged on the ESP does not hash to the manifest's kryptik-$target.efi"
     fi
     mv -f "$ESP_MNT/EFI/kryptik/kryptik-$target.efi.new" "$ESP_MNT/EFI/kryptik/kryptik-$target.efi"
-    { printf '%s\n' "$VERSION" > "$ESP_MNT/kryptik/version-$target.new" \
-        && sync -f "$ESP_MNT/kryptik/version-$target.new" \
-        && mv -f "$ESP_MNT/kryptik/version-$target.new" "$ESP_MNT/kryptik/version-$target"; } \
-        || die "slot $target's version could not be recorded on the ESP"
+    esp_put "$ESP_MNT/kryptik/version-$target" "$VERSION" || die "slot $target's version could not be recorded on the ESP"
     sync
     umount_esp
     say "kernel for slot $target installed on the ESP (version $VERSION)"
