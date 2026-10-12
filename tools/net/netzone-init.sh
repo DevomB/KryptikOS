@@ -205,13 +205,14 @@ start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     if kryptikd supplicant -- wpa_supplicant -B -i "$n" -c "$WPA_CONF" -C "$WPA_CTRL" -P "$WPA_CTRL/$n.pid" 2>/tmp/wpa.err; then
         say "wifi: wpa_supplicant on ${n} (pid $(wpa_pid "$n"))"
         # A scan while no network is joined goes out from a new random address each time, not
-        # the last network's; a driver that offers none scans from the radio's address, which
-        # kryptikd made new for this start. The socket is the supplicant's, so its user asks.
+        # the last network's. A driver that offers none scans from the station's address: the
+        # one kryptikd made for this start, or the last network's after one. The socket is the
+        # supplicant's, so its user asks.
         rs="$(kryptikd supplicant -- wpa_cli -s "$WPA_CTRL" -p "$WPA_CTRL" -i "$n" mac_rand_scan all enable=1 2>&1)"
         if [ "$rs" = OK ]; then
             say "wifi: ${n}: scans go out from random addresses"
         else
-            say "wifi: ${n}: no random scan addresses ($(printf '%s' "$rs" | tr '\n' ' ')); scans go out from the radio's"
+            say "wifi: ${n}: no random scan addresses ($(printf '%s' "$rs" | tr '\n' ' ')); scans go out from the station's address"
         fi
         return 0
     fi
