@@ -399,7 +399,13 @@ pub fn scan(zones_dir: &Path) -> Result<Scan, String> {
     // A new answer is a new file: the zone renames each one into place.
     let stamp = |f: &fs::File| f.metadata().ok().map(|m| (m.ino(), m.mtime(), m.mtime_nsec()));
     let before = init.file_in_root(SCAN_FILE).as_ref().and_then(stamp);
-    init.signal(libc::SIGUSR1).map_err(|e| format!("the {name} zone could not be asked: {e}"))?;
+    if let Err(e) = init.signal(libc::SIGUSR1) {
+        // Ended since the registry said it runs, as a zone restarting after a save does.
+        return Err(match init.still_alive() {
+            true => format!("the {name} zone could not be asked: {e}"),
+            false => format!("the {name} zone is not running"),
+        });
+    }
     let until = std::time::Instant::now() + SCAN_WAIT;
     while std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(250));
