@@ -229,6 +229,8 @@ PACKAGES=(
     "procps-ng"   "native_build procps-ng-${V_PROCPS}.tar.xz procps-ng-${V_PROCPS} --docdir=/usr/share/doc/procps-ng-${V_PROCPS} --disable-static --disable-kill"
     "e2fsprogs"   "s_e2fsprogs"
     "elfutils"    "s_elfutils"
+    # Before iproute2, which otherwise builds with it only when a cached tree already holds it.
+    "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
     "iproute2"    "s_iproute2"
     "kbd"         "s_kbd"
     "eudev"       "s_eudev"
@@ -247,7 +249,6 @@ PACKAGES=(
     # --- updates: the installed system verifies update manifests itself.
     "openssh"     "s_openssh"
     # --- the net zone: NAT, a resolver and a DHCP client.
-    "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
     "libnftnl"    "native_build libnftnl-${V_LIBNFTNL}.tar.xz libnftnl-${V_LIBNFTNL} --disable-static"
     "nftables"    "native_build nftables-${V_NFTABLES}.tar.xz nftables-${V_NFTABLES} --without-cli --disable-man-doc --disable-python --with-json=no --disable-static"
     "dnsmasq"     "s_dnsmasq"
