@@ -721,12 +721,21 @@ sta_wpa() {
     nsenter -t "${ni:-0}" -U -m -n /usr/bin/kryptikd supplicant -- \
         wpa_cli -s /run/wpa_supplicant -p /run/wpa_supplicant -i "$(sta_if)" "$@" 2>&1 | tr '\n' ' '
 }
-STA_IF=""; AP_IF=""; AP_HOLD=""
+STA_IF=""; AP_IF=""; AP_HOLD=""; STA_RFKILL=""
 # QEMU has no radio, so hwsim makes two: phy1 is the access point, phy0 goes to the net zone.
 if modprobe mac80211_hwsim radios=2 2> "$LOG/hwsim.err"; then
     for _ in $(seq 1 20); do [[ -e /sys/class/ieee80211/phy1 ]] && break; sleep 0.5; done
     STA_IF="$(wl_of_phy phy0)"; AP_IF="$(wl_of_phy phy1)"
+    # phy0's rfkill switch by index, read while zone 0 still sees it: its sysfs leaves with the radio.
+    for r in /sys/class/rfkill/rfkill*; do [[ "$(cat "$r/name" 2>/dev/null)" == phy0 ]] && STA_RFKILL="${r##*/rfkill}"; done
 fi
+# Switch rfkill INDEX soft-off (1) or on (0) through its control device, which takes no name:
+# struct rfkill_event { u32 idx; u8 type (0, any); u8 op (2, change one); u8 soft; u8 hard; }.
+rfkill_soft() {
+    python3 -c 'import os, struct, sys
+fd = os.open("/dev/rfkill", os.O_WRONLY)
+os.write(fd, struct.pack("=IBBBB", int(sys.argv[1]), 0, 2, int(sys.argv[2]), 0))' "$1" "$2"
+}
 if [[ -n "$STA_IF" && -n "$AP_IF" ]]; then
     pass "wifi-module" "the signed mac80211_hwsim loaded with two radios: $STA_IF on phy0, $AP_IF on phy1"
 else
@@ -846,30 +855,28 @@ fi
 # the status and the scan say so. Switched on again, the net zone brings the link up, which its
 # supplicant cannot see for itself, and the radio joins again. Switched off when the net zone
 # starts, it gets no supplicant, which cannot bring the link up; switched on, it gets one.
-sta_kill=""
-for r in /sys/class/rfkill/rfkill*; do [[ "$(cat "$r/name" 2>/dev/null)" == phy0 ]] && sta_kill="$r"; done
 off_line=""; off_scan=""; back_line=""; start_off=""; start_back=""
-if [[ -n "$sta_kill" ]]; then
+if [[ -n "$STA_RFKILL" ]]; then
     before="$(ready_count)"
-    echo 1 > "$sta_kill/soft"
+    rfkill_soft "$STA_RFKILL" 1
     off_line="$(ready_after "$before" " wifi=off " 60)"
     off_scan="$("$KD" wifi scan --zones "$Z" --wifi-dir "$WIFI_DIR" 2>&1)"
     before="$(ready_count)"
-    echo 0 > "$sta_kill/soft"
+    rfkill_soft "$STA_RFKILL" 0
     back_line="$(ready_after "$before" " wifi=$AP_SSID " 90)"
     before="$(ready_count)"
-    echo 1 > "$sta_kill/soft"
+    rfkill_soft "$STA_RFKILL" 1
     s6-svc -r /run/service/net-zone
     start_off="$(ready_after "$before" " wifi=off " 90)"
     before="$(ready_count)"
-    echo 0 > "$sta_kill/soft"
+    rfkill_soft "$STA_RFKILL" 0
     start_back="$(ready_after "$before" " wifi=$AP_SSID " 90)"
 fi
 if [[ "$off_line" == *" wifi=off "* && "$off_scan" == *" is switched off"* && "$back_line" == *" wifi=$AP_SSID "* \
       && "$start_off" == *" wifi=off "* && "$start_back" == *" wifi=$AP_SSID "* ]]; then
     pass "wifi-radio-off" "switched off: ${off_line#*netzone: }; scan: $(head -1 <<<"$off_scan"); switched on, joined again: ${back_line#*netzone: }; off as the net zone started, then on: ${start_back#*netzone: }"
 else
-    fail "wifi-radio-off" "rfkill: ${sta_kill:-none named phy0}; off: ${off_line:-none}; scan: $(tr '\n' ';' <<<"$off_scan" | cut -c1-120); back: ${back_line:-none}; off at the start: ${start_off:-none}; then on: ${start_back:-none}; $(netzone_said 'wifi' | tail -4 | tr '\n' ' ')"
+    fail "wifi-radio-off" "rfkill: ${STA_RFKILL:+rfkill}${STA_RFKILL:-none named phy0}; off: ${off_line:-none}; scan: $(tr '\n' ';' <<<"$off_scan" | cut -c1-120); back: ${back_line:-none}; off at the start: ${start_off:-none}; then on: ${start_back:-none}; $(netzone_said 'wifi' | tail -4 | tr '\n' ' ')"
 fi
 # A net zone can leave its radio with a second netdev or with none, and the
 # radio comes back to zone 0 so. Each round makes that change in the net
