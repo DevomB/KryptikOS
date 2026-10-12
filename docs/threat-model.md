@@ -154,7 +154,8 @@ the LUKS header are in the clear, so the disk shows it is Kryptik.
 else.** Secure Boot keeps a swapped kernel from booting, but a firmware that
 also holds Microsoft's keys boots anything Microsoft signs, and such a system
 can ask for the state passphrase as Kryptik does and keep the answer. Only
-Kryptik's key alone in `db`, with a firmware password, closes that
+Kryptik's key alone in `db`, with a firmware password that clearing the
+firmware's settings does not remove, closes that
 ([user guide](user-guide.md#1-boot-the-medium)).
 
 **Not defended while running or suspended.** Keys are in RAM; see

@@ -96,11 +96,17 @@ Microsoft signs, so someone with the machine in hand can start such a system
 and have it ask for the state passphrase as Kryptik does. Taking Microsoft's
 certificates out of `db`, leaving Kryptik's alone there, and setting a
 firmware password, so that neither the keys nor Secure Boot can be changed
-without it, closes that. Whatever Microsoft signed then no longer starts:
-another operating system on the machine, and the firmware drivers that
-discrete graphics cards and some other cards carry. Where the screen hangs
-off such a card, even the firmware's own menus can stay dark until the
-firmware is reset, so do it only on a machine whose screen works without one.
+without it, closes that where the password survives clearing the firmware's
+settings: most business laptops' does, while on many desktop boards a jumper
+or the battery clears it. Whatever Microsoft signed then no longer starts:
+another operating system on the machine, and the firmware drivers (option
+ROMs) that add-in graphics cards, and some network and storage cards, carry.
+Where the screen hangs off such a card, mostly on a desktop, even the
+firmware's own menus can stay dark until the firmware is reset or reflashed,
+and on some machines for good. There `db` can hold that card's option ROM by
+its hash in place of Microsoft's certificate (sbctl reads the hashes from the
+TPM's event log), which keeps the screen and still boots nothing else
+Microsoft signs.
 
 **Under QEMU** (a checkout of the source tree is needed):
 
