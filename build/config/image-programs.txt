@@ -1268,7 +1268,6 @@ usr/sbin/wpa_passphrase
 usr/sbin/wpa_supplicant
 usr/sbin/zic
 usr/sbin/zramctl
-usr/share/doc/gettext/examples/*
 usr/share/doc/nftables/examples/*
 usr/share/gettext/config.rpath
 usr/share/gettext/projects/GNOME/team-address

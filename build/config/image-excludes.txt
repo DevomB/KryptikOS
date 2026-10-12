@@ -10,3 +10,6 @@
 /usr/share/pkgconfig/hwdata.pc    # the same
 /usr/bin/lto-dump                 # GCC's dump of LTO bytecode, which no build runs
 /usr/share/man/man1/lto-dump.1    # the same
+/usr/share/doc/groff-*            # groff's manuals again as text, HTML and PostScript, and its examples rendered: man reads the pages in /usr/share/man and the macros in /usr/share/groff
+/usr/share/doc/openssl            # an HTML copy of openssl's 900 man pages, which /usr/share/man holds
+/usr/share/doc/gettext            # gettext's examples and its manual as HTML, which no program reads
