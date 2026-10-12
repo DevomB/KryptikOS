@@ -105,7 +105,8 @@ the firmware from the pinned linux-firmware release
 
 - **Storage:** NVMe (including Intel VMD), AHCI and PIIX SATA, eMMC and SD on
   SDHCI, LSI MegaRAID and MPT3 SAS, HPE Smart Array, USB mass storage and UAS,
-  virtio, VMware PVSCSI, Hyper-V.
+  virtio, VMware PVSCSI, Hyper-V. The disk Kryptik installs to needs 512-byte
+  logical sectors: 512e is fine, and a 4Kn disk is refused.
 - **Wired network:** Intel e1000/e1000e, igb, igc, ixgbe, i40e; Broadcom tg3
   and bnxt; Realtek r8169; Aquantia AQtion; Mellanox ConnectX-4 and later;
   USB adapters (AX88179, RTL8152); virtio, VMware vmxnet3, Hyper-V.
