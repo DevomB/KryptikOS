@@ -335,6 +335,15 @@ if wait_for 20 more_menus; then
 else
     fail "menu-opens-on-key" "no new menu window after Alt+p: $(pgrep -u "$USER_NAME" -af 'kryptik-chrome --menu' | cut -c1-80 | tr '\n' ';')"
 fi
+# The menu's network line: what the daemon passes on of the net zone's own status, here a
+# wired uplink with no radio.
+net_line() { as_user "kryptik-launch --info net" 2>/dev/null | sed -n 's/^network //p'; }
+net_ready() { [[ "$(net_line)" == "ready: "* ]]; }
+if wait_for 60 net_ready && [[ "$(net_line)" =~ ^ready:\ uplink\ [0-9.]+/[0-9]+,\ DNS$ ]]; then
+    pass "menu-network-line" "Network: $(net_line)"
+else
+    fail "menu-network-line" "kryptik-launch --info net: $(as_user "kryptik-launch --info net" 2>&1 | tr '\n' ' ')"
+fi
 # A zone 0 window taking focus keeps the last zone window's record, which the menu's f shows.
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 15 zone-0" > "$LOG/zone0-window.out" 2>&1 &
 if wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus"; then

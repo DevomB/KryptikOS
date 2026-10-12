@@ -15,7 +15,8 @@
 #                                  focus as text (and the last zone window's
 #                                  in focus.zone), and opens the launcher
 #   kryptik-chrome --menu          the launcher: zones, their state, apps,
-#                                  a release that waits to be installed, a
+#                                  the network as the net zone reports it, a
+#                                  release that waits to be installed, a
 #                                  channel with nothing new for 30 days, and
 #                                  the net zone's Wi-Fi networks (w)
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
@@ -148,6 +149,23 @@ menu_zones() {
     done
 }
 
+# The net zone's own word on the network, which the daemon passes on only in its own words:
+# ready or not, the Wi-Fi network, the uplink's address and DNS.
+menu_network() {
+    for f in "$ZONES"/*.toml; do
+        [ -f "$f" ] || continue
+        z="$(basename "$f" .toml)"
+        zone_is_nic "$z" || continue
+        info="$("$LAUNCH" --info "$z" 2>/dev/null)"
+        net="$(printf '%s\n' "$info" | sed -n 's/^network //p')"
+        if [ -z "$net" ]; then
+            printf '%s\n' "$info" | grep -qx 'running yes' && net="starting" || net="the net zone is not running"
+        fi
+        echo
+        echo "Network: $net"
+    done
+}
+
 # A release that has arrived whole waits for the user, so the launcher says so.
 # So does a channel gone quiet: statements are re-signed on a schedule, and a
 # net zone that withholds them leaves only their age to show it.
@@ -173,6 +191,7 @@ run_menu() {
         echo
         echo "Zones:"
         menu_zones
+        menu_network
         menu_update
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"

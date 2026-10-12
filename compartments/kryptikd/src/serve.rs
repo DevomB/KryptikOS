@@ -962,6 +962,70 @@ fn zone_running(name: &str) -> bool {
     matches!(crate::registry::state(name), Ok(crate::registry::State::Running { .. }))
 }
 
+/// The nic zone's word on the network: the line its program wrote last
+/// (tools/net/netzone-init.sh, `report`) in its own /run. The zone is untrusted, so only
+/// `net_summary`'s words leave here, and zone 0's window shows nothing else of the line.
+fn net_status(name: &str) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(name) else {
+        return None;
+    };
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(format!("/proc/{}/root/run/netzone-status", init.pid))
+        .ok()?;
+    // A regular file of the zone the pid still names, not of one that has reused it.
+    if !f.metadata().ok()?.is_file() || !init.still_alive() {
+        return None;
+    }
+    let mut text = String::new();
+    f.take(1024).read_to_string(&mut text).ok()?;
+    net_summary(text.lines().next()?)
+}
+
+/// The words for a net zone's status line, or none for a line of another form: whether it is
+/// ready, the Wi-Fi network (an SSID as Rust quotes a string, so nothing unprintable reaches a
+/// terminal), the uplink's address and whether there is DNS.
+fn net_summary(line: &str) -> Option<String> {
+    if line.starts_with("NOT READY") {
+        return Some("not ready: forwarding is off".into());
+    }
+    let rest = line.strip_prefix("READY ")?;
+    // The fields before wifi= come first under their names; an SSID may hold spaces and words
+    // that look like fields, so it runs from wifi= to the last time=.
+    let field = |key: &str| rest.split(' ').find_map(|w| w.strip_prefix(key));
+    let uplink = match field("uplink=")? {
+        "none" => "no uplink address".to_string(),
+        a => {
+            let (ip, len) = a.split_once('/')?;
+            let ip: std::net::Ipv4Addr = ip.parse().ok()?;
+            let len: u8 = len.parse().ok().filter(|l| *l <= 32)?;
+            format!("uplink {ip}/{len}")
+        }
+    };
+    let dns = match field("dns=")? {
+        "yes" => "DNS",
+        "no" => "no DNS",
+        _ => return None,
+    };
+    let from = rest.find(" wifi=")? + " wifi=".len();
+    let to = rest.rfind(" time=").filter(|t| *t >= from)?;
+    let wifi = match &rest[from..to] {
+        "none" => None,
+        "unconfigured" => Some("Wi-Fi with no network saved".to_string()),
+        "connecting" => Some("Wi-Fi connecting".to_string()),
+        "associated" => Some("Wi-Fi joined".to_string()),
+        ssid if !ssid.is_empty() && ssid.len() <= 32 => Some(format!("Wi-Fi {ssid:?}")),
+        _ => return None,
+    };
+    Some(match wifi {
+        Some(w) => format!("ready: {w}, {uplink}, {dns}"),
+        None => format!("ready: {uplink}, {dns}"),
+    })
+}
+
 /// Serve one connection; a started launch is returned and a slow command pushed to `jobs`.
 fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
@@ -1006,13 +1070,16 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             match zone_named(cfg, name) {
                 Ok(z) => {
                     let enc = z.storage == crate::zone::StorageMode::Encrypted;
+                    // The nic zone's own status, for the chrome's network line.
+                    let net = (z.network == crate::zone::NetworkMode::Nic).then(|| net_status(name)).flatten();
                     reply(
                         &conn,
                         &format!(
-                            "encrypted {}\nrunning {}\nlabel {}\nend\n",
+                            "encrypted {}\nrunning {}\nlabel {}\n{}end\n",
                             if enc { "yes" } else { "no" },
                             if zone_running(name) { "yes" } else { "no" },
                             z.label.as_deref().unwrap_or(&z.name),
+                            net.map_or(String::new(), |n| format!("network {n}\n")),
                         ),
                     );
                 }

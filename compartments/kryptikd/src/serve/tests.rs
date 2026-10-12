@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn net_summary_passes_on_known_fields_only() {
+    let line = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=Cafe Wifi time=+0.5 bridge=kryptik0 uplinks=eth0 wlan0";
+    assert_eq!(net_summary(line).as_deref(), Some("ready: Wi-Fi \"Cafe Wifi\", uplink 10.0.2.15/24, DNS"));
+    let wired = "READY uplink=none nat=yes dns=no wifi=none time=no-uplink bridge=kryptik0 uplinks=eth0";
+    assert_eq!(net_summary(wired).as_deref(), Some("ready: no uplink address, no DNS"));
+    let joining = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=connecting time=-2";
+    assert_eq!(net_summary(joining).as_deref(), Some("ready: Wi-Fi connecting, uplink 10.0.2.15/24, DNS"));
+    let down = "NOT READY firewall policy not loaded; forwarding off; uplink=none dns=no wifi=none time=x";
+    assert_eq!(net_summary(down).as_deref(), Some("not ready: forwarding is off"));
+    // An SSID is any access point's: what a terminal would act on comes out escaped, and words
+    // in it that look like fields do not stand for the line's own.
+    let hostile = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=\u{1b}[2J x time=0 dns=no time=+1 bridge=k";
+    let s = net_summary(hostile).unwrap();
+    assert!(!s.contains('\u{1b}') && s.contains("\\u{1b}[2J x time=0 dns=no"), "{s}");
+    assert!(s.ends_with(", uplink 10.0.2.15/24, DNS"), "{s}");
+    for bad in [
+        "",
+        "READY",
+        "anything else",
+        "READY uplink=10.0.2.300/24 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=10.0.2.15/33 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=10.0.2.15 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=none nat=yes dns=maybe wifi=none time=0",
+        "READY uplink=none nat=yes dns=yes wifi= time=0",
+        "READY uplink=none nat=yes dns=yes wifi=an SSID of thirty-three bytes!!!! time=0",
+        "READY uplink=none nat=yes dns=yes time=0 wifi=late",
+    ] {
+        assert_eq!(net_summary(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
 fn parse_run_refuses_bad_requests() {
     let r = parse_run("run work wayland=/run/user/1000/kryptik/work/wayland-0 pass=fd\narg havoc\narg -e\narg sh\nend\n").unwrap();
     assert_eq!(r.zone, "work");
