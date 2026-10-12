@@ -986,7 +986,6 @@ usr/lib/python3.12/lib-dynload/_curses_panel.cpython-312-x86_64-linux-gnu.so
 usr/lib/python3.12/lib-dynload/_datetime.cpython-312-x86_64-linux-gnu.so
 usr/lib/python3.12/lib-dynload/_decimal.cpython-312-x86_64-linux-gnu.so
 usr/lib/python3.12/lib-dynload/_elementtree.cpython-312-x86_64-linux-gnu.so
-usr/lib/python3.12/lib-dynload/_gdbm.cpython-312-x86_64-linux-gnu.so
 usr/lib/python3.12/lib-dynload/_hashlib.cpython-312-x86_64-linux-gnu.so
 usr/lib/python3.12/lib-dynload/_heapq.cpython-312-x86_64-linux-gnu.so
 usr/lib/python3.12/lib-dynload/_json.cpython-312-x86_64-linux-gnu.so
@@ -1151,14 +1150,11 @@ usr/sbin/chpasswd
 usr/sbin/chroot
 usr/sbin/cryptsetup
 usr/sbin/ctrlaltdel
-usr/sbin/dcb
 usr/sbin/debugfs
 usr/sbin/delpart
-usr/sbin/devlink
 usr/sbin/dhcpcd
 usr/sbin/dmsetup
 usr/sbin/dnsmasq
-usr/sbin/dpll
 usr/sbin/dumpe2fs
 usr/sbin/e2freefrag
 usr/sbin/e2fsck
@@ -1219,7 +1215,6 @@ usr/sbin/mkfs.ext4
 usr/sbin/mkfs.minix
 usr/sbin/mklost+found
 usr/sbin/mkswap
-usr/sbin/netshaper
 usr/sbin/newusers
 usr/sbin/nft
 usr/sbin/nologin
@@ -1230,7 +1225,6 @@ usr/sbin/poweroff
 usr/sbin/pwck
 usr/sbin/pwconv
 usr/sbin/pwunconv
-usr/sbin/rdma
 usr/sbin/readprofile
 usr/sbin/reboot
 usr/sbin/resize2fs
@@ -1253,7 +1247,6 @@ usr/sbin/switch_root
 usr/sbin/sysctl
 usr/sbin/tc
 usr/sbin/telinit
-usr/sbin/tipc
 usr/sbin/tune2fs
 usr/sbin/udevadm
 usr/sbin/udevd
@@ -1261,7 +1254,6 @@ usr/sbin/useradd
 usr/sbin/userdel
 usr/sbin/usermod
 usr/sbin/uuidd
-usr/sbin/vdpa
 usr/sbin/veritysetup
 usr/sbin/vipw
 usr/sbin/wipefs
