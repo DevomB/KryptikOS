@@ -327,9 +327,15 @@ configured the zone keeps its IPv4 path and the launcher says so.
   `/etc/dhcpcd.conf`): no hostname, no vendor class, and a client ID made
   from the address the interface has when it asks, not a DUID made from a
   hardware address, which the stock configuration would send to every
-  network. Left as before: a scan goes out from the address the radio has
-  then, its own until it first joins and the last network's after; random
-  scan addresses would change the interface's address at every disconnect.
+  network. The radio's own address never goes on the air: kryptikd gives
+  its station a new random address each time the net zone starts, and a
+  scan while no network is joined goes out from a new random address each
+  time (wpa_supplicant's `MAC_RAND_SCAN`, which the net zone turns on as its
+  supplicant starts; the interface's address stays as it is). A driver
+  without random scan addresses scans from the address the station has
+  then: the start's, or after a network the last network's, and the net
+  zone says which it got. The kernel refuses random addresses to a station
+  that has joined, so a scan then goes out from that network's address.
   A wired uplink keeps its own address. A driver that refuses to change the
   interface's address never joins: wpa_supplicant gives up the association
   rather than use the radio's own, and the status line stays at

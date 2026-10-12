@@ -55,7 +55,8 @@ already assumed hostile.
 **Partially defended.** Kryptik segments; it does not anonymize. A Wi-Fi
 network sees the machine by an address of its own and a DHCP client ID made
 from it, never the radio's own, so two networks cannot match the machine by
-those (`wifi-own-address`); what it sends can still identify it. A compromised
+those (`wifi-own-address`), and a scan goes out from neither
+(`wifi-scan-address`); what it sends can still identify it. A compromised
 `net` zone gets no zone's files and not `vault`. Confidentiality on the wire
 is the application's job.
 

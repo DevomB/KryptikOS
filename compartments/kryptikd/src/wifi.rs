@@ -75,15 +75,20 @@ fn check_mac(v: &str) -> Result<(), String> {
     }
 }
 
-/// A new address for a network: random, with the locally administered bit set and the
-/// group bit clear.
-fn new_mac() -> Result<String, String> {
+/// A random address with the locally administered bit set and the group bit clear.
+pub fn random_mac() -> io::Result<[u8; 6]> {
     let mut b = [0u8; 6];
     let n = unsafe { libc::getrandom(b.as_mut_ptr() as *mut libc::c_void, b.len(), 0) };
     if n != b.len() as isize {
-        return Err(format!("no randomness for a network's address: {}", io::Error::last_os_error()));
+        return Err(io::Error::last_os_error());
     }
     b[0] = (b[0] & 0xfc) | 0x02;
+    Ok(b)
+}
+
+/// A new address for a network, as `mac_value` takes it.
+fn new_mac() -> Result<String, String> {
+    let b = random_mac().map_err(|e| format!("no randomness for a network's address: {e}"))?;
     Ok(b.iter().map(|o| format!("{o:02x}")).collect::<Vec<_>>().join(":"))
 }
 
