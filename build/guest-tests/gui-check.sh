@@ -692,9 +692,13 @@ if [[ "$wifi_typed" == yes ]] && wait_for 30 grep -qx $'\tssid="ztmenunet"' "$WC
 else
     fail "chrome-wifi-add" "typed: ${wifi_typed}; networks in the file: $(grep -c '^network=' "$WCONF" 2>/dev/null); menu windows: $(menu_windows)"
 fi
+menus_open="$(menu_windows)"
 pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 "$KD" wifi forget ztmenunet --wifi-dir /var/lib/kryptik/wifi > /dev/null 2>&1
-# An open network from the same menu, with o: no passphrase is asked for or saved.
+# An open network from the same menu, with o: no passphrase is asked for or saved. The window
+# just closed is gone first, or the new one would only bring the count back to where it was.
+menus_fewer() { [[ "$(menu_windows)" -lt "$menus_open" ]]; }
+wait_for 5 menus_fewer
 menus_before="$(menu_windows)"
 echo "GT KEY-MENU-OPEN"
 open_typed=no

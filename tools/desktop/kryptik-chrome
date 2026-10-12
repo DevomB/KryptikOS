@@ -250,7 +250,7 @@ run_wifi() {
         nets="$("$LAUNCH" --wifi-list 2>&1)"
         printf '%s\n' "${nets:-none}" | sed 's/^/  /'
         echo
-        echo "a add a network, or change its passphrase   o add an open one   f forget one   Enter back"
+        echo "a add, or change a passphrase   o add an open one   f forget one   Enter back"
         printf 'choice: '
         read -r c || return 0
         case "$c" in
