@@ -47,7 +47,7 @@ s_firmware() {
             printf '%s\n' "$matches" >> "$out"
             printf '  %5d  %s\n' "$n" "$line"
         fi
-        total=$((total + n))
+        if [[ "$out" == "$selected" ]]; then total=$((total + n)); fi
     done < "$list"
     if [[ "$missing" -gt 0 ]]; then
         echo "FAIL: ${missing} pattern(s) in firmware.list match nothing; the list must name what this release has"
