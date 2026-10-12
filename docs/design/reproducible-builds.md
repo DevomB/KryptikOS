@@ -90,9 +90,10 @@ compressed man and info pages (gzip stores a time and a name unless `-n`),
 static archives (member times, unless binutils is in deterministic mode),
 Python's bytecode (a timestamp in each `.pyc`, unless `SOURCE_DATE_EPOCH`
 is set, when `py_compile` writes hash-checked files), and perl's
-`Config.pm`, which records when and by whom perl was built.
-`SOURCE_DATE_EPOCH` in every step takes most of them. The comparison finds
-the rest package by package.
+`Config.pm`, which records when perl was built and the build host's name and
+kernel; perl's Configure ignores `SOURCE_DATE_EPOCH`, so the recipe gives it
+fixed values in a `config.over`. `SOURCE_DATE_EPOCH` in every step takes most
+of the rest. The comparison finds what is left package by package.
 
 ### The Rust binaries
 
