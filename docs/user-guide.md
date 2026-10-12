@@ -288,8 +288,8 @@ address on the uplink and whether there is DNS. The menu also names a
 release that has arrived and waits to be installed, and says when the newest
 update statement is more than 30 days old, or, with none ever accepted, when
 the install is (section 4). With `w` it lists the Wi-Fi networks the net zone may join, adds
-one, asking for its passphrase in the menu's own window, or forgets one, as
-`kryptik wifi` does at the administration login.
+one, asking for its passphrase in the menu's own window, adds an open one
+with `o`, or forgets one, as `kryptik wifi` does at the administration login.
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
