@@ -228,15 +228,17 @@ run_wifi() {
         clear 2>/dev/null
         echo "================ KRYPTIK - Wi-Fi networks (zone 0) ================"
         echo "Saved networks:"
-        "$LAUNCH" --wifi-list 2>&1 | sed 's/^/  /'
+        nets="$("$LAUNCH" --wifi-list 2>&1)"
+        printf '%s\n' "${nets:-none}" | sed 's/^/  /'
         echo
         echo "a add a network, or change its passphrase   f forget one   Enter back"
         printf 'choice: '
         read -r c || return 0
         case "$c" in
             "") return 0 ;;
+            # IFS=: an SSID may begin or end with a space.
             a|f) printf 'network name (SSID): '
-                 read -r ssid || return 0
+                 IFS= read -r ssid || return 0
                  [ -n "$ssid" ] || continue
                  if [ "$c" = a ]; then "$LAUNCH" --wifi-add "$ssid"; else "$LAUNCH" --wifi-forget "$ssid"; fi
                  sleep 3 ;;
