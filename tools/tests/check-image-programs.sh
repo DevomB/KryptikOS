@@ -23,6 +23,14 @@ out="$(check)"; rc=$?
 [[ "$rc" -eq 0 && "$out" == *"3 executable files"* ]] \
     && ok "executable files are named; data, a non-executable library and symlinks are not" || bad "named tree: rc=$rc: $out"
 
+printf '#!/bin/sh\n' > "$R/usr/bin/["; chmod 755 "$R/usr/bin/["
+printf 'usr/bin/[\nusr/bin/hostname\nusr/bin/ifconfig\nusr/lib/libz.so.[0-9].*\n' > "$L"
+out="$(check)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"4 executable files, 3 names and 1 patterns"* ]] \
+    && ok "a lone [ is a name, and a closed [...] is a pattern" || bad "brackets: rc=$rc: $out"
+rm -f "$R/usr/bin/["
+printf 'usr/bin/hostname   # inetutils\nusr/bin/ifconfig\nusr/lib/libz.so.1.*\n' > "$L"
+
 printf '#!/bin/sh\n' > "$R/usr/bin/traceroute"; chmod 4755 "$R/usr/bin/traceroute"
 out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"NOT NAMED  usr/bin/traceroute"* ]] \
