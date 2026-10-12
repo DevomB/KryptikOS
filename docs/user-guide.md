@@ -354,6 +354,10 @@ kryptik-recover --disk /dev/sdY --commit-slot a     # the other slot is intact: 
 kryptik-recover --disk /dev/sdY --restore-slot a    # the slot's root is damaged: rewrite it from this medium
 ```
 
+`--status` also names the firmware's Kryptik entries. A firmware that boots
+a fixed disk only from such an entry, and has none, boots the disk again
+after `--commit-slot`, which writes one for the slot it commits.
+
 `--backup-state-header FILE` and `--restore-state-header FILE` save and put
 back the state partition's LUKS2 header. FILE is on a disk mounted for it, as
 in section 2: the medium keeps nothing of its own. Keep the backup somewhere
