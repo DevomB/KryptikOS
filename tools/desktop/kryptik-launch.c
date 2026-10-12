@@ -10,6 +10,7 @@
  *   kryptik-launch --wifi-scan          the networks in range, as the net zone hears them
  *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
  *   kryptik-launch --wifi-add-open SSID add one as an open network, with no passphrase
+ *                                       (either with --hidden: one that hides its name)
  *   kryptik-launch --wifi-forget SSID   remove one
  *   kryptik-launch --update status|fetch|apply   show, fetch or install a release
  *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
@@ -299,7 +300,8 @@ static void usage(void)
 	      "       kryptik-launch --runtime-dir\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID | --wifi-add-open SSID | --wifi-forget SSID\n"
-	      "                      (--wifi-add reads the passphrase from standard input)\n"
+	      "                      (--wifi-add reads the passphrase from standard input; an add takes\n"
+	      "                      --hidden for a network that hides its name)\n"
 	      "       kryptik-launch --update status|fetch|apply | --update auto on|off\n", stderr);
 	exit(2);
 }
@@ -373,7 +375,8 @@ static int wifi_main(int argc, char **argv)
 		return ok ? 0 : 1;
 	}
 	int add = strcmp(mode, "--wifi-add") == 0, add_open = strcmp(mode, "--wifi-add-open") == 0;
-	if (argc != 3 || (!add && !add_open && strcmp(mode, "--wifi-forget") != 0))
+	int hidden = argc == 4 && (add || add_open) && strcmp(argv[3], "--hidden") == 0;
+	if (argc != 3 + hidden || (!add && !add_open && strcmp(mode, "--wifi-forget") != 0))
 		usage();
 	const char *ssid = argv[2];
 	if (!*ssid || strlen(ssid) > 32 || strchr(ssid, '\n'))
@@ -386,9 +389,9 @@ static int wifi_main(int argc, char **argv)
 	}
 	char req[512];
 	if (add)
-		snprintf(req, sizeof req, "wifi-add\nssid %s\npsk %s\nend\n", ssid, pass);
+		snprintf(req, sizeof req, "wifi-add\nssid %s\npsk %s\n%send\n", ssid, pass, hidden ? "hidden\n" : "");
 	else if (add_open)
-		snprintf(req, sizeof req, "wifi-add\nssid %s\nopen\nend\n", ssid);
+		snprintf(req, sizeof req, "wifi-add\nssid %s\nopen\n%send\n", ssid, hidden ? "hidden\n" : "");
 	else
 		snprintf(req, sizeof req, "wifi-forget\nssid %s\nend\n", ssid);
 	char *r = talk(req, -1);

@@ -63,12 +63,18 @@ pub struct Network {
     /// The station's address on this network alone (`mac_value`); none in a file an older
     /// kryptikd wrote, until it is rewritten.
     pub mac: Option<String>,
+    /// A network that does not name itself in its beacons, asked for by name in each scan.
+    pub hidden: bool,
 }
 
 /* Each saved network is joined from an address of its own, made when it is first saved and
  * kept with it: the network sees the same station each time, and no other network, nor the
  * radio's own address, is seen there (wpa_supplicant's dedicated address per ESS). */
 const MAC_POLICY: &str = "\tmac_addr=3";
+
+/* A network that hides its name answers only a scan that asks for it by name, so the station
+ * names it in its probe requests wherever it is, to anyone listening, until it joins. */
+const HIDDEN: &str = "\tscan_ssid=1";
 
 /// A locally administered unicast address, as `mac_value` holds one.
 fn check_mac(v: &str) -> Result<(), String> {
@@ -156,7 +162,11 @@ pub fn render(nets: &[Network]) -> String {
     let mut out = String::from(HEADER);
     for n in nets {
         out.push_str("\nnetwork={\n");
-        out.push_str(&format!("\tssid=\"{}\"\n{}\n", n.ssid, key_mgmt(&n.psk)));
+        out.push_str(&format!("\tssid=\"{}\"\n", n.ssid));
+        if n.hidden {
+            out.push_str(&format!("{HIDDEN}\n"));
+        }
+        out.push_str(&format!("{}\n", key_mgmt(&n.psk)));
         match &n.psk {
             Psk::Passphrase(p) => out.push_str(&format!("{PMF}\n\tpsk=\"{p}\"\n")),
             Psk::Hex(h) => out.push_str(&format!("{PMF}\n\tpsk={h}\n")),
@@ -179,6 +189,7 @@ struct Block {
     pmf: bool,
     mac_policy: bool,
     mac: Option<String>,
+    hidden: bool,
 }
 
 impl Block {
@@ -198,7 +209,7 @@ impl Block {
         if self.mac_policy != self.mac.is_some() {
             return Err(format!("line {n}: a block with only one of mac_addr and mac_value"));
         }
-        Ok(Network { ssid, psk, mac: self.mac })
+        Ok(Network { ssid, psk, mac: self.mac, hidden: self.hidden })
     }
 }
 
@@ -234,6 +245,10 @@ pub fn parse(text: &str) -> Result<Vec<Network>, String> {
         } else if line == PMF {
             if std::mem::replace(&mut b.pmf, true) {
                 return Err(format!("line {n}: a second ieee80211w in one block"));
+            }
+        } else if line == HIDDEN {
+            if std::mem::replace(&mut b.hidden, true) {
+                return Err(format!("line {n}: a second scan_ssid in one block"));
             }
         } else if line == MAC_POLICY {
             if std::mem::replace(&mut b.mac_policy, true) {
@@ -331,19 +346,20 @@ pub fn owner_in(uid: u32, gid: u32) -> (u32, u32) {
     (uid + crate::isolate::WIFI_ID, gid)
 }
 
-/// Add a network or replace its block, open when there is no passphrase; nothing is written
-/// unless both values pass.
-pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option<&str>) -> Result<Added, String> {
+/// Add a network or replace its block, open when there is no passphrase and asked for by name
+/// when `hidden`, as each add says it anew; nothing is written unless both values pass.
+pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option<&str>, hidden: bool) -> Result<Added, String> {
     check_ssid(ssid)?;
     let psk = passphrase.map_or(Ok(Psk::Open), check_passphrase)?;
     let mut nets = load(dir)?;
     let outcome = match nets.iter_mut().find(|n| n.ssid == ssid) {
         Some(n) => {
             n.psk = psk;
+            n.hidden = hidden;
             Added::Replaced
         }
         None => {
-            nets.push(Network { ssid: ssid.to_string(), psk, mac: None });
+            nets.push(Network { ssid: ssid.to_string(), psk, mac: None, hidden });
             Added::New
         }
     };
@@ -354,12 +370,13 @@ pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option
 }
 
 /// What `add` did, in the words the command and the daemon both print.
-pub fn said(ssid: &str, added: Added, open: bool) -> String {
+pub fn said(ssid: &str, added: Added, open: bool, hidden: bool) -> String {
+    let h = if hidden { "hidden " } else { "" };
     match (added, open) {
-        (Added::New, false) => format!("added network {ssid:?}"),
-        (Added::Replaced, false) => format!("replaced the passphrase of network {ssid:?}"),
-        (Added::New, true) => format!("added open network {ssid:?}"),
-        (Added::Replaced, true) => format!("network {ssid:?} is now open, joined without a passphrase"),
+        (Added::New, false) => format!("added {h}network {ssid:?}"),
+        (Added::Replaced, false) => format!("replaced the passphrase of {h}network {ssid:?}"),
+        (Added::New, true) => format!("added {h}open network {ssid:?}"),
+        (Added::Replaced, true) => format!("{h}network {ssid:?} is now open, joined without a passphrase"),
     }
 }
 

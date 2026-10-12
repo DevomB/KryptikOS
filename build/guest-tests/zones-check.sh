@@ -1238,6 +1238,47 @@ if [[ -n "$scans" && -n "$STA_PERM" && -z "$known" ]]; then
 else
     fail "wifi-scan-address" "probe requests heard: $(wc -l < "$LOG/probes.txt" 2>/dev/null); scans from a known address:${known:- none}; by source: $(sort <<<"$scans" | uniq -c | tr -s ' \n' '  ' | cut -c1-300); $(netzone_said 'wifi: .*scan' | tail -1); $(tail -2 "$LOG/hwsim.err" | tr '\n' ' ')"
 fi
+# A network that hides its name is joined once saved with --hidden: its access point beacons with
+# no SSID and answers only a probe request that names it, which the station then sends.
+HIDDEN_SSID=kryptik-hwsim-hidden
+hidden_up=0; heard_nameless=""
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+    ap ip link set dev "$AP_IF" down
+    ap ip link set dev "$AP_IF" address 02:00:00:00:01:03 >> "$LOG/ap.err" 2>&1
+    cat > /root/zt/ap-hidden.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$HIDDEN_SSID"
+    mode=2
+    frequency=2412
+    ignore_broadcast_ssid=1
+    key_mgmt=WPA-PSK
+    proto=RSN
+    pairwise=CCMP
+    psk="$AP_PASS"
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-hidden.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-hidden-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { hidden_up=1; break; }; sleep 1; done
+    # Heard by a passive scan of the station's own, which waits for beacons: they name nothing.
+    for _ in 1 2 3; do
+        heard_nameless="$(sta_iw scan passive 2>/dev/null | awk '/^BSS 02:00:00:00:01:03/ { b = 1 } b && /^[[:space:]]*SSID:/ { print; exit }')"
+        [[ -n "$heard_nameless" ]] && break
+    done
+fi
+before="$(ready_count)"
+printf '%s\n' "$AP_PASS" | "$KD" wifi add "$HIDDEN_SSID" --hidden --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-add-hidden.out" 2>&1
+line="$(ready_after "$before" " wifi=$HIDDEN_SSID " 90)"
+if [[ "$hidden_up" = 1 && -n "$heard_nameless" && "$heard_nameless" != *"$HIDDEN_SSID"* && "$line" == *" wifi=$HIDDEN_SSID "* ]] \
+   && grep -q "added hidden network \"$HIDDEN_SSID\"" "$LOG/wifi-add-hidden.out"; then
+    pass "wifi-hidden" "its beacons name nothing ($(tr -s '\t' ' ' <<<"$heard_nameless")), and saved with --hidden it was joined: ${line#*netzone: }"
+else
+    fail "wifi-hidden" "access point up: ${hidden_up}; its beacons, as the station heard them: ${heard_nameless:-not heard}; $(tr '\n' ' ' < "$LOG/wifi-add-hidden.out"); newest READY: ${line:-none}; $(tail -2 "$LOG/ap-hidden-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
 [[ -n "$AP_HOLD" ]] && kill "$AP_HOLD" 2>/dev/null
