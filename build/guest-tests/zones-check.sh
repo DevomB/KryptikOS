@@ -723,14 +723,15 @@ sta_wpa() {
     nsenter -t "${ni:-0}" -U -m -n /usr/bin/kryptikd supplicant -- \
         wpa_cli -s /run/wpa_supplicant -p /run/wpa_supplicant -i "$(sta_if)" "$@" 2>&1 | tr '\n' ' '
 }
-STA_IF=""; AP_IF=""; AP_HOLD=""; STA_RFKILL=""
+STA_IF=""; AP_IF=""; AP_HOLD=""
 # QEMU has no radio, so hwsim makes two: phy1 is the access point, phy0 goes to the net zone.
 if modprobe mac80211_hwsim radios=2 2> "$LOG/hwsim.err"; then
     for _ in $(seq 1 20); do [[ -e /sys/class/ieee80211/phy1 ]] && break; sleep 0.5; done
     STA_IF="$(wl_of_phy phy0)"; AP_IF="$(wl_of_phy phy1)"
-    # phy0's rfkill switch by index, read while zone 0 still sees it: its sysfs leaves with the radio.
-    for r in /sys/class/rfkill/rfkill*; do [[ "$(cat "$r/name" 2>/dev/null)" == phy0 ]] && STA_RFKILL="${r##*/rfkill}"; done
 fi
+# phy0's rfkill switch by index, read while zone 0 still sees it: its sysfs leaves with the radio.
+STA_RFKILL=""
+for r in /sys/class/rfkill/rfkill*; do [[ "$(cat "$r/name" 2>/dev/null)" == phy0 ]] && STA_RFKILL="${r##*/rfkill}"; done
 # Switch rfkill INDEX soft-off (1) or on (0) through its control device, which takes no name:
 # struct rfkill_event { u32 idx; u8 type (0, any); u8 op (2, change one); u8 soft; u8 hard; }.
 rfkill_soft() {
