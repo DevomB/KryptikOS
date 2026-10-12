@@ -74,7 +74,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
             "send:mount /dev/vdb1 /mnt"
             "send:kryptik-recover --disk /dev/vda --backup-state-header /mnt/kryptik-state-header" "expect:is in /mnt/kryptik-state-header"
             "send:umount /mnt"
-            "send:kryptik-recover --disk /dev/vda --status" "expect:committed slot a" "expect:slot a +version [0-9]"
+            "send:kryptik-recover --disk /dev/vda --status" "expect:committed slot a" "expect:slot a +version [0-9]" "expect:firmware +(Boot[0-9A-F]{4} for slot a|no Kryptik entry)"
             "expect:BOOTX64.EFI +slot a's kernel" "expect:this medium +version [0-9][^ ]*, which --restore-slot writes"
             "send:kryptik-recover --disk /dev/vda --commit-slot a" "expect:committed: BOOTX64.EFI is now slot a"
             "send:kryptik-recover --disk /dev/vda --restore-slot a" "expect:done: boot /dev/vda without the medium"

@@ -84,6 +84,22 @@ if [ "$STATUS" = 1 ]; then
     case "$committed" in
         a|b) [ "$boots" = "$committed" ] || echo "               not the committed slot's kernel: --commit-slot $committed makes it so" ;;
     esac
+    # The firmware's entries for the slots, which --commit-slot writes: some firmware boots a
+    # fixed disk only from one. They are kept by slot, not disk, so one may be another Kryptik's.
+    if [ -d /sys/firmware/efi/efivars ] && fw="$(kryptik-efiboot list 2>/dev/null)"; then
+        order=" $(printf '%s\n' "$fw" | sed -n 's/^BootOrder: *//p') "
+        ents="$(printf '%s\n' "$fw" | sed -n 's/^  \(Boot[0-9A-F]\{4\}\): Kryptik slot \([ab]\)  file=.EFI.kryptik.kryptik-\2\.efi .*/\1 \2/p')"
+        if [ -z "$ents" ]; then
+            echo "firmware       no Kryptik entry: the firmware boots BOOTX64.EFI by itself, or --commit-slot writes one"
+        fi
+        printf '%s\n' "$ents" | while read -r var s; do
+            [ -n "$var" ] || continue
+            case "$order" in *" $var "*) where="in BootOrder" ;; *) where="not in BootOrder" ;; esac
+            echo "firmware       $var for slot $s, $where"
+        done
+        next="$(printf '%s\n' "$fw" | sed -n 's/^BootNext: *//p')"
+        case "$next" in ""|"(none)") ;; *) echo "               BootNext ${next}: the next boot alone goes there" ;; esac
+    fi
     echo "this medium    version $(sed -n 's/^VERSION_ID=//p' /etc/os-release | tr -d '"' | head -1), which --restore-slot writes"
     exit 0
 fi
