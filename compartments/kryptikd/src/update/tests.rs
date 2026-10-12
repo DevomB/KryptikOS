@@ -529,6 +529,8 @@ fn channel_read_from_config() {
 #[test]
 fn stage_kept_through_trial() {
     let d = scratch("trial");
+    // As zone 0 makes it: the stage lock is refused in a directory others can reach.
+    private_dir(&d).unwrap();
     std::fs::create_dir_all(staging(&d, "1.0.3")).unwrap();
     std::fs::write(d.join("wanted"), "1.0.3").unwrap();
     std::fs::write(d.join("files"), LISTING).unwrap();
