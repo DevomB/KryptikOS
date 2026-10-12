@@ -26,7 +26,8 @@ KRYPTIK_STALE   ?= refuse
 # Stamped into /etc/os-release; --dirty so an image never claims a clean tree.
 KRYPTIK_BUILD_COMMIT ?= $(shell git -C "$(ROOT)" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)
 # The time every timestamp the build writes is set or clamped to: the commit's (docs/design/reproducible-builds.md).
-SOURCE_DATE_EPOCH ?= $(shell git -C "$(ROOT)" log -1 --format=%ct 2>/dev/null)
+# Without .git, as in the source bundle, the Makefile's time is the commit's: git archive stamps every member with it.
+SOURCE_DATE_EPOCH ?= $(shell git -C "$(ROOT)" log -1 --format=%ct 2>/dev/null || stat -c %Y "$(ROOT)/Makefile" 2>/dev/null)
 # Never exported empty: GCC refuses a SOURCE_DATE_EPOCH that is not a number.
 ifneq ($(SOURCE_DATE_EPOCH),)
 export SOURCE_DATE_EPOCH

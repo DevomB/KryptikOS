@@ -215,10 +215,14 @@ EOF
     id="$(printf 'kryptik-root %s %s' "$version" "$COMMIT" | sha256_of_stdin)"
     id="${id:0:8}-${id:8:4}-${id:12:4}-${id:16:4}-${id:20:12}"
     make_ext4 "$stage" "$img" "$fs_bytes" "$id"
-    make_ext4 "$stage" "${img}.again" "$fs_bytes" "$id"
-    cmp -s "$img" "${img}.again" || { echo "FAIL: two mke2fs runs over one tree wrote different images"; return 1; }
-    rm -f "${img}.again"
-    echo "ok: the same tree makes the same image"
+    if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+        make_ext4 "$stage" "${img}.again" "$fs_bytes" "$id"
+        cmp -s "$img" "${img}.again" || { echo "FAIL: two mke2fs runs over one tree wrote different images"; return 1; }
+        rm -f "${img}.again"
+        echo "ok: the same tree makes the same image"
+    else
+        echo "no SOURCE_DATE_EPOCH: the image carries this build's times and is not reproducible"
+    fi
     dumpe2fs -h "$img" 2>/dev/null | grep -E 'Filesystem features|Block count|Free blocks'
 
     echo "--- dm-verity hash tree, appended ---"
