@@ -18,9 +18,12 @@ iwlwifi-9260-th-b0-jf-b0-46.ucode
 newest 1 iwlwifi-[[:alpha:]]*-[0-9]*.ucode
 iwlwifi-*.pnvm
 
-# Qualcomm Atheros: the laptop parts, by board revision.
-ath10k/QCA6174/hw3.0/*
-ath10k/QCA9377/hw1.0/*
+# Qualcomm Atheros: the laptop parts, by board revision. ath10k asks for API 6 first, and the
+# -sdio- files are for SDIO parts, which are not built.
+ath10k/QCA6174/hw3.0/board*.bin
+ath10k/QCA6174/hw3.0/*firmware-6.*
+ath10k/QCA9377/hw1.0/board*.bin
+ath10k/QCA9377/hw1.0/*firmware-6.*
 ath11k/QCA6390/hw2.0/*
 ath11k/WCN6855/hw2.0/*
 ath12k/WCN7850/hw2.0/*
@@ -34,13 +37,33 @@ mediatek/WIFI_MT7922_patch_mcu_1_1_hdr.bin
 mediatek/WIFI_RAM_CODE_MT7922_1.bin
 mediatek/mt7925/WIFI_*
 
-# Realtek: the rtw88 and rtw89 families, and the USB sticks rtl8xxxu drives.
-rtw88/*
-rtw89/*
-rtlwifi/rtl8192cufw*.bin
-rtlwifi/rtl8192eu_*.bin
-rtlwifi/rtl8723bu_*.bin
+# Realtek: the PCIe chips rtw88 and rtw89 drive here, and every USB stick rtl8xxxu drives (its
+# MODULE_FIRMWARE names; linux-firmware has no rtl8723bu_bt). rtw89 asks for the newest format it
+# reads first (fw_format_max); linux-firmware also has formats only later kernels read, and chips
+# not built here (8852BT, 8922D).
+rtw88/rtw8723d_fw.bin
+rtw88/rtw8821c_fw.bin
+rtw88/rtw8822b_fw.bin
+rtw88/rtw8822c_fw.bin
+rtw88/rtw8822c_wow_fw.bin
+rtw89/rtw8851b_fw.bin
+rtw89/rtw8852a_fw.bin
+rtw89/rtw8852b_fw-1.bin
+rtw89/rtw8852c_fw-2.bin
+rtw89/rtw8922a_fw-4.bin
 rtlwifi/rtl8188eufw.bin
+rtlwifi/rtl8188fufw.bin
+rtlwifi/rtl8192cufw_A.bin
+rtlwifi/rtl8192cufw_B.bin
+rtlwifi/rtl8192cufw_TMSC.bin
+rtlwifi/rtl8192eu_nic.bin
+rtlwifi/rtl8192fufw.bin
+rtlwifi/rtl8710bufw_SMIC.bin
+rtlwifi/rtl8710bufw_UMC.bin
+rtlwifi/rtl8723aufw_A.bin
+rtlwifi/rtl8723aufw_B.bin
+rtlwifi/rtl8723aufw_B_NoBT.bin
+rtlwifi/rtl8723bu_nic.bin
 
 # Broadcom over PCIe (Dell and Apple machines); the SDIO parts are not.
 brcm/brcmfmac*-pcie*
