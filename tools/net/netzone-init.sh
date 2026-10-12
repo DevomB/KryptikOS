@@ -419,10 +419,10 @@ scan_lines() {
         END { out() }'
 }
 # Every radio's networks in range. A scan goes out from a random address while no network is
-# joined. Once one is, the kernel refuses a random address, and the scan only listens, so
-# nothing goes out from the address that network knows. A radio its supplicant is scanning
-# with answers busy, and the kernel's last results are read instead. A radio rfkill holds off
-# is named.
+# joined. Once one is, the kernel refuses a random address, as a driver without them always
+# does, and the scan only listens, so nothing goes out from an address a network knows. A
+# radio its supplicant is scanning with answers busy, and the kernel's last results are read
+# instead. A radio rfkill holds off is named.
 scan_radios() {
     {
         echo "radios ${WIRELESS:-none}"
@@ -477,6 +477,7 @@ while :; do
         case "$wifi_now" in none|unconfigured|connecting) ;; *) time_ticks=999999 ;; esac
     fi
     # 10 s ticks: the time hourly once measured, else every 5 min (zone 0 takes a claim per 10 min).
+    # A scan's signal ends a wait early, so each scan brings what follows forward by up to 10 s.
     time_ticks=$((time_ticks + 1))
     case "$TIME_STATE" in
         -*|+*|[0-9]*) time_every=360 ;;
@@ -499,6 +500,9 @@ while :; do
         fi
     fi
     [ "$changed" = 1 ] && status_line "$@"
+    # A scan asked for while this pass ran (its signal lands once a foreground step such as the
+    # time query ends) is answered now, not after the wait.
+    [ "$scan_wanted" = 1 ] && continue
     sleep 10 &
     wait $!
 done

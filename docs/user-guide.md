@@ -272,7 +272,8 @@ ask again for a minute.
 
 **Wi-Fi.** `kryptik wifi scan` lists the networks in range with their
 security and signal, as the net zone hears them; it scans only when asked,
-from a random address while no network is joined, and only listens once one is.
+from a random address while no network is joined where the radio allows one,
+and otherwise only listens.
 `kryptik wifi add SSID` saves a network and asks for its
 passphrase; the net zone restarts and joins it, by WPA3 where the network
 offers it. A network with no passphrase, a café's or an airport's, is saved

@@ -359,9 +359,9 @@ pub fn restart_net_zone(dir: &Path) -> String {
 
 /// Where the nic zone answers a scan, in its own root (tools/net/netzone-init.sh, `scan_radios`).
 const SCAN_FILE: &str = "run/netzone-scan";
-/// From the ask to the answer: the zone scans every channel of each radio, after anything its
-/// start or a supplicant is busy with.
-const SCAN_WAIT: std::time::Duration = std::time::Duration::from_secs(25);
+/// From the ask to the answer: the zone may first finish a time query (8 s at most), then
+/// scans every channel of each radio, a listening scan taking some seconds a radio.
+const SCAN_WAIT: std::time::Duration = std::time::Duration::from_secs(40);
 const SCAN_CAP: u64 = 64 * 1024;
 const MAX_HEARD: usize = 40;
 const SECURITIES: [&str; 9] = ["open", "wep", "wpa", "wpa2", "wpa3", "wpa2/wpa3", "owe", "enterprise", "other"];

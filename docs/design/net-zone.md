@@ -281,9 +281,9 @@ configured the zone keeps its IPv4 path and the launcher says so.
   and takes it as an untrusted zone's word: each line is checked, an SSID is
   shown quoted with nothing unprintable, and at most 40 networks are listed.
   A scan goes out from a random address while no network is joined; once one
-  is, it only listens, so nothing goes out from the address that network
-  knows. A radio rfkill holds off is named. Nothing else scans but the
-  supplicant, to join what is saved.
+  is, and on a driver without random scan addresses, it only listens, so
+  nothing goes out from an address a network knows. A radio rfkill holds off
+  is named. Nothing else scans but the supplicant, to join what is saved.
 - **It takes no provisioning frames.** `wpa_supplicant` is built without
   DPP: with it a station registers for DPP's and GAS's public action frames
   (`nl80211_mgmt_subscribe_non_ap` in hostap's `driver_nl80211.c`), which any
