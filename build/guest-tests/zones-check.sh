@@ -1265,9 +1265,11 @@ EOF
     ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-hidden.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-hidden-wpa.log" >> "$LOG/ap.err" 2>&1
     for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { hidden_up=1; break; }; sleep 1; done
     # Heard by a passive scan of the station's own, which waits for beacons: they name nothing.
+    # Apart, as a scan the supplicant has under way leaves the radio busy for a moment.
     for _ in 1 2 3; do
         heard_nameless="$(sta_iw scan passive 2>/dev/null | awk '/^BSS 02:00:00:00:01:03/ { b = 1 } b && /^[[:space:]]*SSID:/ { print; exit }')"
         [[ -n "$heard_nameless" ]] && break
+        sleep 2
     done
 fi
 before="$(ready_count)"

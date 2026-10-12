@@ -11,8 +11,8 @@ fn tmpdir(tag: &str) -> PathBuf {
 fn add_list_forget_round_trip() {
     let dir = tmpdir("roundtrip");
     assert_eq!(list(&dir).unwrap(), Vec::<String>::new(), "no file is no networks");
-    assert_eq!(add(&dir, None, "Home", Some("correct horse battery"), false).unwrap(), Added::New);
-    assert_eq!(add(&dir, None, "Cafe Wifi", Some("0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef"), false).unwrap(), Added::New);
+    assert_eq!(add(&dir, None, "Home", Some("correct horse battery"), false).unwrap().0, Added::New);
+    assert_eq!(add(&dir, None, "Cafe Wifi", Some("0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef"), false).unwrap().0, Added::New);
     assert_eq!(list(&dir).unwrap(), vec!["Home", "Cafe Wifi"]);
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
     // Each block also ends in its own address, which `each_network_has_an_address_of_its_own` reads.
@@ -92,15 +92,15 @@ fn an_address_is_local_unicast_and_paired_with_its_policy() {
 #[test]
 fn open_network_saved_without_key_or_protection() {
     let dir = tmpdir("open");
-    assert_eq!(add(&dir, None, "Cafe", None, false).unwrap(), Added::New);
+    assert_eq!(add(&dir, None, "Cafe", None, false).unwrap().0, Added::New);
     add(&dir, None, "Home", Some("correct horse battery"), false).unwrap();
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
     assert!(text.contains("\nnetwork={\n\tssid=\"Cafe\"\n\tkey_mgmt=NONE\n\tmac_addr=3\n\tmac_value="), "{text}");
     assert_eq!(list(&dir).unwrap(), vec!["Cafe", "Home"]);
     // A passphrase given later replaces the open block, and saving it open again drops it.
-    assert_eq!(add(&dir, None, "Cafe", Some("now it has one"), false).unwrap(), Added::Replaced);
+    assert_eq!(add(&dir, None, "Cafe", Some("now it has one"), false).unwrap().0, Added::Replaced);
     assert!(fs::read_to_string(conf_path(&dir)).unwrap().contains("\tssid=\"Cafe\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n"));
-    assert_eq!(add(&dir, None, "Home", None, false).unwrap(), Added::Replaced);
+    assert_eq!(add(&dir, None, "Home", None, false).unwrap().0, Added::Replaced);
     let home = &load(&dir).unwrap()[1];
     assert_eq!((home.ssid.as_str(), &home.psk), ("Home", &Psk::Open));
     assert!(!fs::read_to_string(conf_path(&dir)).unwrap().contains("correct horse battery"));
@@ -110,7 +110,7 @@ fn open_network_saved_without_key_or_protection() {
 #[test]
 fn hidden_network_asked_for_by_name() {
     let dir = tmpdir("hidden");
-    assert_eq!(add(&dir, None, "Attic", Some("correct horse battery"), true).unwrap(), Added::New);
+    assert_eq!(add(&dir, None, "Attic", Some("correct horse battery"), true).unwrap().0, Added::New);
     add(&dir, None, "Cafe", None, true).unwrap();
     add(&dir, None, "Home", Some("long enough"), false).unwrap();
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
@@ -119,9 +119,12 @@ fn hidden_network_asked_for_by_name() {
     assert_eq!(text.matches("scan_ssid").count(), 2, "{text}");
     let hidden: Vec<bool> = load(&dir).unwrap().iter().map(|n| n.hidden).collect();
     assert_eq!(hidden, vec![true, true, false]);
-    // Each add says it anew: saved again without it, the network is no longer asked for.
-    assert_eq!(add(&dir, None, "Attic", Some("a new passphrase"), false).unwrap(), Added::Replaced);
-    assert!(!load(&dir).unwrap()[0].hidden);
+    // A new passphrase keeps it asked for by name: without, it would not be found again.
+    assert_eq!(add(&dir, None, "Attic", Some("a new passphrase"), false).unwrap(), (Added::Replaced, true));
+    assert!(load(&dir).unwrap()[0].hidden);
+    forget(&dir, None, "Attic").unwrap();
+    add(&dir, None, "Attic", Some("a new passphrase"), false).unwrap();
+    assert!(!load(&dir).unwrap().iter().find(|n| n.ssid == "Attic").unwrap().hidden, "forgotten, it starts over");
     assert_eq!(said("Attic", Added::New, false, true), "added hidden network \"Attic\"");
     assert_eq!(said("Cafe", Added::Replaced, true, true), "hidden network \"Cafe\" is now open, joined without a passphrase");
     let twice = "network={\n\tssid=\"a\"\n\tscan_ssid=1\n\tscan_ssid=1\n\tkey_mgmt=NONE\n}\n";
@@ -213,7 +216,7 @@ fn readd_replaces_block_in_place() {
     let dir = tmpdir("replace");
     add(&dir, None, "First", Some("first pass"), false).unwrap();
     add(&dir, None, "Second", Some("second pass"), false).unwrap();
-    assert_eq!(add(&dir, None, "First", Some("changed pass"), false).unwrap(), Added::Replaced);
+    assert_eq!(add(&dir, None, "First", Some("changed pass"), false).unwrap().0, Added::Replaced);
     let nets = load(&dir).unwrap();
     assert_eq!(nets.len(), 2, "replaced, not appended");
     assert_eq!((nets[0].ssid.as_str(), &nets[0].psk), ("First", &Psk::Passphrase("changed pass".into())));

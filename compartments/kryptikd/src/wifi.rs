@@ -347,20 +347,22 @@ pub fn owner_in(uid: u32, gid: u32) -> (u32, u32) {
 }
 
 /// Add a network or replace its block, open when there is no passphrase and asked for by name
-/// when `hidden`, as each add says it anew; nothing is written unless both values pass.
-pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option<&str>, hidden: bool) -> Result<Added, String> {
+/// when `hidden`, which a new passphrase keeps, as it would not be found again without it;
+/// nothing is written unless both values pass. Says what it did, and whether the network is
+/// asked for by name now.
+pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option<&str>, hidden: bool) -> Result<(Added, bool), String> {
     check_ssid(ssid)?;
     let psk = passphrase.map_or(Ok(Psk::Open), check_passphrase)?;
     let mut nets = load(dir)?;
     let outcome = match nets.iter_mut().find(|n| n.ssid == ssid) {
         Some(n) => {
             n.psk = psk;
-            n.hidden = hidden;
-            Added::Replaced
+            n.hidden |= hidden;
+            (Added::Replaced, n.hidden)
         }
         None => {
             nets.push(Network { ssid: ssid.to_string(), psk, mac: None, hidden });
-            Added::New
+            (Added::New, hidden)
         }
     };
     // A replaced network keeps its address; a new one, and any an older kryptikd wrote, get one.

@@ -293,7 +293,7 @@ either. A network that hides its name, which a scan lists with none, is
 saved with `kryptik wifi add SSID --hidden` (beside `--open` for one with no
 passphrase): the machine then asks for that name in each scan until it
 joins, wherever it is, so anyone listening nearby learns it knows that
-network.
+network. A new passphrase keeps it so; forget the network to stop.
 `kryptik wifi list` names the saved networks, and `kryptik wifi forget SSID`
 removes one.
 

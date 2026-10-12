@@ -1129,7 +1129,7 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
                 Err(e) => return refused(e),
             };
             match wifi::add(&dir, owner, ssid, pass.as_deref(), hidden) {
-                Ok(a) => println!("{}; {}", wifi::said(ssid, a, open, hidden), wifi::restart_net_zone(&dir)),
+                Ok((a, hidden)) => println!("{}; {}", wifi::said(ssid, a, open, hidden), wifi::restart_net_zone(&dir)),
                 Err(e) => return refused(e),
             }
             ExitCode::SUCCESS

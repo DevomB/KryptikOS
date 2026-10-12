@@ -1238,7 +1238,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             };
             let done = if verb == "wifi-add" {
                 crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref(), req.hidden)
-                    .map(|a| crate::wifi::said(&req.ssid, a, req.open, req.hidden))
+                    .map(|(a, hidden)| crate::wifi::said(&req.ssid, a, req.open, hidden))
             } else {
                 crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| format!("forgot network {:?}", req.ssid))
             };
