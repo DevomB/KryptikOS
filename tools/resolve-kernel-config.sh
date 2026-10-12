@@ -57,6 +57,12 @@ dim "  =y: $(grep -c '=y$' .config)  =m: $(grep -c '=m$' .config)"
 mkdir -p "$(dirname "$OUT")"
 cp .config "$OUT"
 ok "resolved config: ${OUT}"
+# A runner's file is gone with it; the log keeps every set option, folded, for a reader of a fragment change.
+if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    echo "::group::resolved config, every set option"
+    grep '^CONFIG_' "$OUT"
+    echo "::endgroup::"
+fi
 
 echo
 log "the options Kryptik's guarantees rest on"
