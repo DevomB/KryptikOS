@@ -15,13 +15,14 @@ s_glibc() {
     cd build
     echo "rootsbindir=/usr/sbin" > configparms
 
-    # --enable-stack-protector=strong: glibc builds its own stack protection.
+    # glibc applies the strong stack protector and FORTIFY itself, sparing the files that implement them.
     # --enable-cet: CFLAGS' -fcf-protection makes rtld call _dl_cet_*, built only with this flag.
     ../configure \
         --prefix=/usr \
         --disable-werror \
         --enable-kernel=4.19 \
         --enable-stack-protector=strong \
+        --enable-fortify-source=3 \
         --enable-cet \
         --disable-nscd \
         libc_cv_slibdir=/usr/lib

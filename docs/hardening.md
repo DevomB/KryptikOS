@@ -34,8 +34,9 @@ references `main()`, so every shared library fails to link.
 A package that cannot build with a flag goes in
 `build/config/hardening-exceptions.txt` as `<package> <flag> # reason`;
 `build/lib/common.sh` fails the build on an entry without a reason. The only
-one is glibc's `-D_FORTIFY_SOURCE=3`, since glibc defines the fortify
-machinery.
+one is glibc's `-D_FORTIFY_SOURCE=3`: glibc implements FORTIFY, and its own
+`--enable-fortify-source=3` applies it to all but the files that implement
+it.
 
 ### What the audit finds
 
