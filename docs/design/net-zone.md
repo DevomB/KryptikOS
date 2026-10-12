@@ -186,7 +186,7 @@ query and the [update](update-channel.md) fetcher. Builds on
 - **Readiness**, printed again on any change:
 
 ```text
-netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none> time=<offset|no-answer|...> bridge=kryptik0 uplinks=<list>
+netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|refused:ssid|connecting|unconfigured|off|none> time=<offset|no-answer|...> bridge=kryptik0 uplinks=<list>
 netzone: NOT READY <reason>        (forwarding off)
 ```
 
@@ -359,6 +359,22 @@ configured the zone keeps its IPv4 path and the launcher says so.
   the kernel's scan cache keeps for 30 s), it counts itself still joining it,
   asks for no scan, and waits until something else scans. A file an older
   kryptikd wrote is rewritten so.
+- **A refused passphrase is said.** wpa_supplicant says why a join failed
+  only to a listener on its control socket, and the action mode of its
+  `wpa_cli` passes on neither event that means a refused passphrase. Beside
+  each supplicant the net zone starts `kryptikd supplicant --watch RADIO`, as
+  the supplicant's user and under its confinement. The listener keeps
+  `/run/wpa_supplicant/RADIO.refused` naming the network after WPA2's 4-way
+  handshake fails (`CTRL-EVENT-SSID-TEMP-DISABLED ... reason=WRONG_KEY`), or
+  after the access point being joined refuses the station's SAE confirm
+  (`CTRL-EVENT-AUTH-REJECT ... auth_type=3 auth_transaction=2
+  status_code=15`, which wpa_supplicant itself takes for a passphrase
+  mismatch). The file goes when a network is joined. While none is, the
+  status line says `wifi=refused:SSID`, and the menu's Network line names the
+  network and says it refused the passphrase. An access point that drops a
+  wrong SAE confirm without answering looks like any other failed join, and
+  the line stays `connecting`. The listener ends with its supplicant, and a
+  supplicant started again gets a listener of its own.
 - **Each saved network sees an address of its own.** kryptikd gives every
   network a random, locally administered unicast address when it is first
   saved, or when a file an older kryptikd wrote is rewritten, and keeps it

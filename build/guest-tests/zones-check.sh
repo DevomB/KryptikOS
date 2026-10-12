@@ -1134,6 +1134,65 @@ if [[ "$sae_up" = 1 && "$sae_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* && "$sae_
 else
     fail "wifi-sae" "access point up: ${sae_up}; the station at it: ${sae_keys:-none}; $(tail -3 "$LOG/ap-sae-wpa.log" 2>/dev/null | tr '\n' ' ')"
 fi
+# A passphrase the network refuses is said on the status line, after WPA2's handshake and after
+# SAE's, and not once a network is joined. The access point keeps its name and takes another
+# passphrase, so the saved one is wrong, and no other saved network is in range. It gets its own
+# back after each, so what follows finds it as wifi-sae left it.
+REFUSING_PASS=not-the-saved-passphrase
+ap_anew() {   # ap_anew KEY_MGMT PASSPHRASE NAME: the access point again, so; 0 once it beacons
+    local pid pmf=""
+    pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    [[ "$1" == SAE ]] && pmf="ieee80211w=2"
+    cat > "/root/zt/ap-$3.conf" <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$AP_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=$1
+    $pmf
+    proto=RSN
+    pairwise=CCMP
+    psk="$2"
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c "/root/zt/ap-$3.conf" -P /run/zt-ap-wpa.pid -f "$LOG/ap-$3-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && return 0; sleep 1; done
+    return 1
+}
+# The listener's file, which the zone's root reads by name, and the zone's own words on Wi-Fi.
+refused_kept() { nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -m cat "/run/wpa_supplicant/$(sta_if).refused" 2>/dev/null; }
+refused_said() { echo "kept: $(refused_kept | head -1); $(netzone_said 'wifi' | tail -3 | tr '\n' ' '); the listener: $(uncaught | grep -a 'supplicant --watch' | tail -2 | tr '\n' ' '); the station: $(sta_wpa status | cut -c1-200)"; }
+refused_wpa2=""; refused_cleared=""; refused_sae=""; sae_back=""; kept_after=""
+if [[ "$sae_up" = 1 ]]; then
+    before="$(ready_count)"
+    ap_anew WPA-PSK "$REFUSING_PASS" refusing-wpa2 && refused_wpa2="$(ready_after "$before" " wifi=refused:$AP_SSID " 90)"
+    before="$(ready_count)"
+    ap_anew WPA-PSK "$AP_PASS" wpa2-again && refused_cleared="$(ready_after "$before" " wifi=$AP_SSID " 90)"
+    kept_after="$(refused_kept)"
+    before="$(ready_count)"
+    ap_anew SAE "$REFUSING_PASS" refusing-sae && refused_sae="$(ready_after "$before" " wifi=refused:$AP_SSID " 90)"
+    before="$(ready_count)"
+    ap_anew SAE "$AP_PASS" sae-again && sae_back="$(ready_after "$before" " wifi=$AP_SSID " 120)"
+fi
+if [[ "$refused_wpa2" == *" wifi=refused:$AP_SSID "* ]]; then
+    pass "wifi-refused-wpa2" "the access point took another passphrase, WPA2's handshake failed, and the status line names the network that refused the saved one: ${refused_wpa2#*netzone: }"
+else
+    fail "wifi-refused-wpa2" "access point up: ${sae_up}; newest READY: ${refused_wpa2:-none}; $(refused_said); $(tail -3 "$LOG/ap-refusing-wpa2-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
+if [[ "$refused_cleared" == *" wifi=$AP_SSID "* && -z "$kept_after" ]]; then
+    pass "wifi-refused-cleared" "given its own passphrase back, the access point was joined, the listener's file went, and the status line names the network again: ${refused_cleared#*netzone: }"
+else
+    fail "wifi-refused-cleared" "newest READY: ${refused_cleared:-none}; still kept after the join: ${kept_after:-nothing}; $(refused_said)"
+fi
+if [[ "$refused_sae" == *" wifi=refused:$AP_SSID "* && "$sae_back" == *" wifi=$AP_SSID "* ]]; then
+    pass "wifi-refused-sae" "under SAE the access point refused the station's confirm, the status line said so, and with its own passphrase back it was joined again: ${refused_sae#*netzone: }"
+else
+    fail "wifi-refused-sae" "refused: ${refused_sae:-none}; again: ${sae_back:-none}; $(refused_said); $(tail -3 "$LOG/ap-refusing-sae-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
 # A second saved network is joined once it appears, after the first one's access point went.
 # The restarted net zone's supplicant tries the departed one first, as the kernel keeps its scan
 # entry for 30 s. On that first failure wpa_supplicant 2.12 picks again from its last scan, gets
