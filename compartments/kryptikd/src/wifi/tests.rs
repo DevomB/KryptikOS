@@ -22,7 +22,7 @@ fn add_list_forget_round_trip() {
              \nnetwork={\n\tssid=\"Cafe Wifi\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk=0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef\n}\n"
     );
     let md = fs::metadata(conf_path(&dir)).unwrap();
-    assert_eq!(md.mode() & 0o7777, 0o400);
+    assert_eq!(md.mode() & 0o7777, 0o440);
     assert_eq!(fs::metadata(&dir).unwrap().mode() & 0o7777, 0o711);
     forget(&dir, None, "Home").unwrap();
     assert_eq!(list(&dir).unwrap(), vec!["Cafe Wifi"]);
@@ -191,9 +191,14 @@ fn older_file_rewritten_with_key_management() {
     assert!(refresh(&dir, None).unwrap());
     let now = fs::read_to_string(conf_path(&dir)).unwrap();
     assert!(now.contains("\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n"), "{now}");
-    assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o400);
+    assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o440);
     assert!(!refresh(&dir, None).unwrap(), "a current file is left alone");
-    // Replaced, as the 0400 file takes no write.
+    // An older kryptikd's mode, which the supplicant's own user cannot read through its group.
+    fs::set_permissions(conf_path(&dir), fs::Permissions::from_mode(0o400)).unwrap();
+    assert!(refresh(&dir, None).unwrap(), "a current file at 0400 is rewritten");
+    assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o440);
+    assert_eq!(fs::read_to_string(conf_path(&dir)).unwrap(), now, "and keeps its text");
+    // Replaced, as the 0440 file takes no write.
     fs::remove_file(conf_path(&dir)).unwrap();
     fs::write(conf_path(&dir), "ap_scan=1\n").unwrap();
     assert!(refresh(&dir, None).unwrap_err().contains("something else edited"));

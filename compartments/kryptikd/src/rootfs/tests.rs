@@ -106,12 +106,15 @@ fn identity_names_zone() {
     assert!(pw.starts_with("root:x:0:0:work:/home/work:"), "{pw}");
     assert_eq!(pw.lines().count(), 2);
     assert_eq!(group_for(false).lines().count(), 2);
-    // The nic zone's dhcpcd drops to the third mapped id, chrooted to an empty directory.
+    // The nic zone's dhcpcd drops to the third mapped id, chrooted to an empty directory, and its
+    // wpa_supplicant runs as the fourth.
     let pw = passwd_for("net", "/home/net", true);
-    assert_eq!(pw.lines().count(), 3);
+    assert_eq!(pw.lines().count(), 4);
     assert!(pw.contains("\ndhcpcd:x:100:100:dhcpcd:/var/empty:/bin/false\n"));
-    assert!(group_for(true).contains("\ndhcpcd:x:100:\n"));
+    assert!(pw.contains("\nwpa:x:101:101:wpa_supplicant:/run/wpa_supplicant:/bin/false\n"));
+    assert!(group_for(true).contains("\ndhcpcd:x:100:\nwpa:x:101:\n"));
     assert_eq!(crate::isolate::SERVICE_ID, 100);
+    assert_eq!(crate::isolate::WIFI_ID, 101);
     assert!(hosts_for("work").contains("127.0.0.1 localhost work"));
     assert_eq!(zone_home("work"), "/home/work");
     assert!(nsswitch().contains("passwd: files"));

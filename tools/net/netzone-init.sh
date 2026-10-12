@@ -12,7 +12,7 @@ say() { printf 'netzone: %s\n' "$*"; }
 BR=kryptik0
 STATUS=/run/netzone-status
 WPA_CONF=/etc/wpa_supplicant.conf   # bound in read-only from zone 0 (kryptik wifi add)
-WPA_CTRL=/run/wpa_supplicant
+WPA_CTRL=/run/wpa_supplicant       # the supplicant's own: kryptikd makes it for its user alone
 
 forwarding() {   # forwarding on|off
     v=0; [ "$1" = on ] && v=1
@@ -208,15 +208,16 @@ fi
 # --- wireless: associate before asking for a lease ---------------------------
 
 # One supplicant per radio, each with a pid file so the loop can tell a dead one from a slow one.
-wpa_pid() { cat "/run/wpa_supplicant.$1.pid" 2>/dev/null; }
+# It runs as its own user, which this root cannot signal: its /proc entry says whether it lives.
+wpa_pid() { cat "$WPA_CTRL/$1.pid" 2>/dev/null; }
+wpa_alive() { p="$(wpa_pid "$1")"; [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = wpa_supplicant ]; }
 start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     n="$1"
-    p="$(wpa_pid "$n")"
-    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then return 0; fi
+    if wpa_alive "$n"; then return 0; fi
     command -v wpa_supplicant >/dev/null 2>&1 || { say "wifi: no wpa_supplicant in this image; ${n} stays unassociated"; return 1; }
     [ -r "$WPA_CONF" ] || { say "wifi: ${n}: no ${WPA_CONF} (nothing added with 'kryptik wifi add'); unconfigured"; return 1; }
-    mkdir -p "$WPA_CTRL" 2>/dev/null
-    if wpa_supplicant -B -i "$n" -c "$WPA_CONF" -C "$WPA_CTRL" -P "/run/wpa_supplicant.$n.pid" 2>/tmp/wpa.err; then
+    # Not as root: kryptikd gives it its own user, CAP_NET_ADMIN and CAP_NET_RAW, and no nf_tables.
+    if kryptikd supplicant -- wpa_supplicant -B -i "$n" -c "$WPA_CONF" -C "$WPA_CTRL" -P "$WPA_CTRL/$n.pid" 2>/tmp/wpa.err; then
         say "wifi: wpa_supplicant on ${n} (pid $(wpa_pid "$n"))"
         return 0
     fi
@@ -224,18 +225,18 @@ start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     return 1
 }
 # The status line's wifi=: none (no radio), unconfigured (no credentials), connecting, or the SSID.
+# Read from the kernel, as the supplicant's control socket is its own user's: a link the
+# supplicant holds dormant until it has the keys, then up, and the SSID it is associated with.
 wifi_state() {
     [ -n "$WIRELESS" ] || { echo none; return; }
     [ -r "$WPA_CONF" ] || { echo unconfigured; return; }
     st=connecting
     for n in $WIRELESS; do
-        s="$(wpa_cli -p "$WPA_CTRL" -i "$n" status 2>/dev/null)" || continue
-        case "$s" in
-            *"wpa_state=COMPLETED"*)
-                st="$(printf '%s\n' "$s" | sed -n 's/^ssid=//p' | head -1)"
-                [ -n "$st" ] || st=associated
-                break ;;
-        esac
+        [ "$(cat "/sys/class/net/$n/operstate" 2>/dev/null)" = up ] || continue
+        s="$(iw dev "$n" link 2>/dev/null)" || continue
+        st="$(printf '%s\n' "$s" | sed -n 's/^[[:space:]]*SSID: //p' | head -1)"
+        [ -n "$st" ] || st=associated
+        break
     done
     echo "$st"
 }
@@ -459,9 +460,9 @@ status_line "$@"
 cleanup() {
     say "stopping"
     forwarding off
-    # dnsmasq and dhcpcd's parsers run as users this root cannot signal; the zone's end ends them.
+    # The supplicant, dnsmasq and dhcpcd's parsers run as users this root cannot signal; the
+    # zone's end ends them.
     [ -n "$UPDATE_PID" ] && kill "$UPDATE_PID" 2>/dev/null
-    for n in $WIRELESS; do p="$(wpa_pid "$n")"; [ -n "$p" ] && kill "$p" 2>/dev/null; done
     exit 0
 }
 trap cleanup TERM INT
@@ -491,9 +492,9 @@ while :; do
     done
     [ "$policy_ok" = 1 ] && sync_dnsnat
     for n in $WIRELESS; do
-        p="$(wpa_pid "$n")"
-        if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then
-            say "wifi: wpa_supplicant on ${n} died; restarting"; rm -f "/run/wpa_supplicant.$n.pid"; start_wifi "$n"; changed=1
+        # Its stale pid file is its own user's to replace, which the next one does.
+        if [ -n "$(wpa_pid "$n")" ] && ! wpa_alive "$n"; then
+            say "wifi: wpa_supplicant on ${n} died; restarting"; start_wifi "$n"; changed=1
         fi
     done
     wifi_now="$(wifi_state)"

@@ -89,7 +89,8 @@ query and the [update](update-channel.md) fetcher. Builds on
   plus `policy/net.seccomp`: `AF_PACKET`, `NETLINK_NETFILTER`,
   `NETLINK_GENERIC` (dhcpcd opens one for nl80211 and exits if refused),
   `CAP_NET_ADMIN` / `CAP_NET_RAW` over its own interfaces, and `CAP_SETUID`,
-  `CAP_SETGID` and `CAP_SYS_CHROOT` for dhcpcd's privilege separation.
+  `CAP_SETGID` and `CAP_SYS_CHROOT` for dhcpcd's privilege separation and
+  the supplicant's own user, and Landlock's three calls for its ruleset.
   `chown`, which dhcpcd calls on its control socket, is in the base list.
   The net zone alone gets private tmpfs mounts at `/run` and `/var/lib`
   (writable under Landlock, no exec), where dhcpcd keeps its pid file,
@@ -290,15 +291,30 @@ configured the zone keeps its IPv4 path and the launcher says so.
   (`nl80211_mgmt_subscribe_non_ap` in hostap's `driver_nl80211.c`), which any
   radio in range can send it unassociated, for a way of joining networks
   Kryptik does not offer.
+- **The supplicant is not the zone's root.** `kryptikd supplicant` starts
+  each one as `wpa`, the zone's id 101 beside dhcpcd's 100, with
+  `CAP_NET_ADMIN` and `CAP_NET_RAW` alone, raised as ambient capabilities so
+  they outlive the exec: nl80211 and interface flags take the first, EAPOL's
+  packet socket the second. A filter of its own on top of the zone's opens
+  unix, packet and datagram inet sockets and route and generic netlink, so
+  not nf_tables, and Landlock lets it read `/usr`, `/etc`, `/proc` and
+  `/sys`, use `/dev`, and write only in `/run/wpa_supplicant`, where its
+  control sockets and pid files are. The zone's root reads the status line's
+  `wifi=` from the kernel (`iw dev NIC link`), as the control socket is the
+  supplicant's. hostap's own privilege separation was the other way, and
+  [cannot protect management frames](net-zone-surface.md#wpa_supplicants-privilege-separation).
 - **The net zone knows the passphrases.** They live in zone 0 at
   `/var/lib/kryptik/wifi/wpa_supplicant.conf`, written only by `kryptikd serve`
   for `kryptik wifi add|forget <SSID>`. The passphrase is read on the
   terminal and never appears on a command line or in a log, and `kryptik wifi
   list` shows SSIDs only. The file is in wpa_supplicant's own format, so
-  kryptikd derives no keys. It is rewritten by temp-and-rename, 0400, owned by
-  the net zone's identity in a root-owned 0711 directory: the zone's root is
-  host uid N, so a root-owned 0600 file would be unreadable to it, and nothing
-  else runs as N. Only the net zone gets it, bound read-only at
+  kryptikd derives no keys. It is rewritten by temp-and-rename, 0440, owned by
+  the supplicant's user and the zone root's group, in a root-owned 0711
+  directory: the zone's root is host uid N and the supplicant N+101, so a
+  root-owned 0600 file would be unreadable to both, and nothing else runs as
+  either; dhcpcd and nobody in the zone cannot read it. A file an older
+  kryptikd wrote, 0400 and the root's alone, is rewritten so as the net zone
+  starts. Only the net zone gets it, bound read-only at
   `/etc/wpa_supplicant.conf`, and a change restarts the `net-zone` service
   (`s6-svc -r`).
 - **A saved network names how it may be joined.** A passphrase by WPA2's
@@ -307,8 +323,7 @@ configured the zone keeps its IPv4 path and the launcher says so.
   802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed,
   wpa_supplicant would take `WPA-PSK WPA-EAP` and never SAE. Management frames
   are protected wherever the access point offers it (`ieee80211w=1`), and SAE
-  always has them. A file an older kryptikd wrote is rewritten so as the net
-  zone starts.
+  always has them. A file an older kryptikd wrote is rewritten so.
 - On disk the file is plaintext inside the [encrypted](state-encryption.md)
   state partition, like NetworkManager's connection files. A compromised net
   zone learns the passphrases of the networks it was given, and nothing more.

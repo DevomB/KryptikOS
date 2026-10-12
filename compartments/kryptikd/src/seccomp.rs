@@ -668,6 +668,72 @@ fn install_with(
     Ok(ret)
 }
 
+const AF_PACKET: u32 = 17;
+const NETLINK_GENERIC: u32 = 16;
+const SOCK_DGRAM: u32 = 2;
+/// A datagram socket's type with the flags socket(2) takes beside it, SOCK_CLOEXEC and SOCK_NONBLOCK.
+const SOCK_DGRAM_FLAGS: u32 = SOCK_DGRAM | 0x8_0000 | 0x800;
+
+/* wpa_supplicant's own filter (supplicant.rs), stacked on its zone's: every call that filter
+ * allows, but sockets only as the supplicant opens them. AF_UNIX for its control socket,
+ * AF_PACKET for EAPOL, netlink for nl80211 and link events alone, and AF_INET datagram sockets,
+ * which its nl80211 driver takes interface ioctls through. Never NETLINK_NETFILTER: with
+ * CAP_NET_ADMIN it would rewrite the zone's nf_tables. */
+fn supplicant_program() -> Vec<SockFilter> {
+    let refuse = SECCOMP_RET_ERRNO | EPERM;
+    vec![
+        stmt(BPF_LD | BPF_W | BPF_ABS, OFF_ARCH),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        stmt(BPF_LD | BPF_W | BPF_ABS, OFF_NR),
+        jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1),
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, libc::SYS_socket as u32, 1, 0),
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        // The family; jumps land on the two returns at the end.
+        stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 9, 0),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, AF_PACKET, 8, 0),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, AF_NETLINK, 1, 0),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 3, 7),
+        stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(2)),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, NETLINK_ROUTE, 4, 0),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, NETLINK_GENERIC, 3, 4),
+        stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(1)),
+        jump(BPF_JMP | BPF_JSET | BPF_K, !SOCK_DGRAM_FLAGS, 2, 0),
+        jump(BPF_JMP | BPF_JSET | BPF_K, SOCK_DGRAM, 0, 1),
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        stmt(BPF_RET | BPF_K, refuse),
+    ]
+}
+
+/// Stack the supplicant's filter on this single-threaded process, through prctl: the zone's own
+/// filter refuses seccomp(2).
+pub fn install_supplicant_filter() -> Result<(), SeccompError> {
+    if !cfg!(target_arch = "x86_64") {
+        return Err(SeccompError::UnsupportedArch);
+    }
+    let prog = supplicant_program();
+    let fprog = SockFprog { len: prog.len() as u16, filter: prog.as_ptr() };
+    let os = |call| SeccompError::Syscall { call, errno: io::Error::last_os_error().raw_os_error().unwrap_or(0) };
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } < 0 {
+        return Err(os("prctl(PR_SET_NO_NEW_PRIVS)"));
+    }
+    let set = unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::SECCOMP_MODE_FILTER as libc::c_ulong,
+            &fprog as *const SockFprog as libc::c_ulong,
+            0,
+            0,
+        )
+    };
+    if set < 0 {
+        return Err(os("prctl(PR_SET_SECCOMP)"));
+    }
+    Ok(())
+}
+
 /// Install the standard zone filter.
 pub fn confine_zone() -> Result<(), SeccompError> {
     install(BASE_ALLOWLIST)
