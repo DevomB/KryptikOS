@@ -108,6 +108,14 @@ forget_entries() {   # forget_entries COMMITTED-SLOT
     return 0
 }
 
+# The trial slot's entry, if BootNext still names it: a firmware's boot manager deletes
+# BootNext before it boots that entry, so one left standing was never used.
+bootnext_left() {   # bootnext_left SLOT
+    fw="$(kryptik-efiboot list 2>/dev/null)" || return 1
+    nx="$(printf '%s\n' "$fw" | sed -n 's/^BootNext: *\(Boot[0-9A-F]\{4\}\)$/\1/p')"
+    [ -n "$nx" ] && printf '%s\n' "$fw" | grep -q "^  $nx: Kryptik slot $1 " && echo "$nx"
+}
+
 # The committed slot as the ESP names it, read whenever no trial is on record.
 esp_committed() {
     e="$(kryptik_part kryptik-esp 2>/dev/null)" && [ -n "$e" ] || return 0
@@ -176,11 +184,17 @@ if [ -n "$trial" ]; then
     else
         if [ "$armed" = 1 ]; then
             # trial.failed stops kryptik-update re-arming this payload without --retry.
-            say "trial slot $trial did NOT boot; running slot $slot again"
+            if nx="$(bootnext_left "$trial")"; then
+                say "trial slot $trial was not tried: BootNext still names $nx, so the firmware did not use it; running slot $slot again"
+                why="was not tried: the firmware left BootNext set, so it may not boot an entry once on request (after --retry, pick \"Kryptik slot $trial\" in its boot menu)"
+            else
+                say "trial slot $trial did NOT boot; running slot $slot again"
+                why="did not come up to be judged"
+            fi
             result "trial-failed $trial"
             forget_entries "$slot"
             mv -f "$B/trial" "$B/trial.failed"
-            echo "why=did not come up to be judged" >> "$B/trial.failed"
+            echo "why=$why" >> "$B/trial.failed"
         else
             say "the arming of slot $trial was interrupted before BootNext was set; nothing was tried"
             result "arming-interrupted $trial"
