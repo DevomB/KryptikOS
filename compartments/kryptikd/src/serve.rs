@@ -990,8 +990,9 @@ fn net_status(name: &str) -> Option<String> {
 }
 
 /// The words for a net zone's status line, or none for a line of another form: whether it is
-/// ready, the Wi-Fi network (an SSID as Rust quotes a string, so nothing unprintable reaches a
-/// terminal), the uplink's address and whether there is DNS.
+/// ready, the Wi-Fi network (an SSID as iw prints one, read back to its bytes and shown as
+/// `wifi::shown` shows them, so nothing unprintable reaches a terminal), the uplink's address
+/// and whether there is DNS.
 fn net_summary(line: &str) -> Option<String> {
     if line.starts_with("NOT READY") {
         return Some("not ready: forwarding is off".into());
@@ -1022,8 +1023,7 @@ fn net_summary(line: &str) -> Option<String> {
         "off" => Some("Wi-Fi switched off".to_string()),
         "connecting" => Some("Wi-Fi connecting".to_string()),
         "associated" => Some("Wi-Fi joined".to_string()),
-        ssid if !ssid.is_empty() && ssid.len() <= 32 => Some(format!("Wi-Fi {ssid:?}")),
-        _ => return None,
+        printed => Some(format!("Wi-Fi {}", crate::wifi::shown(&crate::wifi::ssid_from_iw(printed)?))),
     };
     Some(match wifi {
         Some(w) => format!("ready: {w}, {uplink}, {dns}"),

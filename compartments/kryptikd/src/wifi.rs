@@ -530,8 +530,12 @@ fn heard_line(line: &str) -> Option<Heard> {
     }
     let signal = signal.parse::<i32>().ok().filter(|s| (-150..=0).contains(s))?;
     let security = SECURITIES.into_iter().find(|s| *s == security)?;
-    let ssid = unescape_iw(ssid).filter(|b| (1..=32).contains(&b.len()) && b.iter().any(|c| *c != 0))?;
-    Some(Heard { ssid, security, signal })
+    Some(Heard { ssid: ssid_from_iw(ssid)?, security, signal })
+}
+
+/// The bytes of an SSID iw printed, if they name a network: 1 to 32 of them, not all zero.
+pub fn ssid_from_iw(printed: &str) -> Option<Vec<u8>> {
+    unescape_iw(printed).filter(|b| (1..=32).contains(&b.len()) && b.iter().any(|c| *c != 0))
 }
 
 /// An SSID as iw prints one: printable ASCII but a backslash, and \xHH for every other byte.
