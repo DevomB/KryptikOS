@@ -30,7 +30,7 @@ ROOT="$(realpath -e -- "$ROOT")" || die "no such directory: ${ROOT}"
 
 log "Executable files under ${ROOT} against ${LIST#"$KRYPTIK_ROOT"/}"
 python3 - "$ROOT" "$LIST" "$WRITE" <<'EOF'
-import fnmatch, os, stat, sys
+import fnmatch, os, re, stat, sys
 
 root, listfile, write = sys.argv[1:4]
 
@@ -65,7 +65,8 @@ for n, line in enumerate(open(listfile), 1):
         continue
     if entry.startswith("/"):
         sys.exit(f"{listfile}:{n}: {entry}: paths are relative to the root, with no leading /")
-    if any(c in entry for c in "*?["):
+    # A pattern has * or ?, or a closed [...]: a lone [ is a name, as coreutils' usr/bin/[ is.
+    if re.search(r"[*?]|\[[^\]]+\]", entry):
         globs.append([entry, n, 0])
     else:
         exact[entry] = [n, 0]
