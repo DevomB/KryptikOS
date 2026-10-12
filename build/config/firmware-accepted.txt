@@ -19,3 +19,21 @@ rtlwifi/rtl8192cufw_*   # no 8192CU stick binds
 
 # e100 runs a D101M or D101S without its microcode, which only adds receive bundling (CPUSaver).
 e100/d101[ms]_ucode.bin # optional
+
+# amdgpu binds no CIK part without DRM_AMDGPU_CIK, but code it shares with Topaz and with later
+# parts' power management names Bonaire's and Hawaii's files (gmc_v7_0.c, smumgr.c).
+amdgpu/bonaire_*        # CIK
+amdgpu/hawaii_*         # CIK
+
+# Instinct accelerators compute and have no display; without KFD (HSA_AMD) nothing here uses one.
+amdgpu/aldebaran_*      # Instinct
+amdgpu/arcturus_*       # Instinct
+amdgpu/gc_9_4_[34]_*    # Instinct
+amdgpu/gc_9_5_0_*       # Instinct
+amdgpu/psp_13_0_6_*     # Instinct
+amdgpu/psp_13_0_12_*    # Instinct
+amdgpu/psp_13_0_14_*    # Instinct
+amdgpu/sdma_4_4_[245].bin  # Instinct
+amdgpu/smu_13_0_6.bin   # Instinct
+amdgpu/smu_13_0_14.bin  # Instinct
+amdgpu/vcn_4_0_3.bin    # Instinct

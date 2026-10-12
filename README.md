@@ -114,10 +114,10 @@ the firmware from the pinned linux-firmware release
   rtl8xxxu; Broadcom over PCIe. The net zone owns the radio
   ([net zone design](docs/design/net-zone.md)). No Bluetooth.
 - **Display:** the firmware framebuffer (simpledrm) everywhere; Intel (i915,
-  xe) and AMD (amdgpu) with their firmware; ASPEED and Matrox server BMCs;
-  virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines use the firmware
-  framebuffer. The compositor renders with pixman, so no GPU acceleration is
-  needed.
+  xe) and AMD from GCN 3 on (amdgpu) with their firmware; ASPEED and Matrox
+  server BMCs; virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines, and AMD's
+  GCN 1 and 2 parts, use the firmware framebuffer. The compositor renders
+  with pixman, so no GPU acceleration is needed.
 - **Input:** USB HID, PS/2, I2C touchpads and touchscreens on Intel and AMD
   laptops, VMware and Hyper-V input.
 

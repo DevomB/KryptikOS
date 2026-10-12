@@ -14,16 +14,18 @@ s_firmware() {
 
     local dest="${KRYPTIK_DESTDIR}/lib/firmware"
     rm -rf "$dest"; mkdir -p "$dest"
-    local line keep pattern matches n total=0 missing=0
+    local line keep pattern out matches n total=0 missing=0
     local selected="${src}/.selected"
-    : > "$selected"
+    : > "$selected"; : > "${selected}.except"
     while IFS= read -r line; do
         line="${line%%#*}"
         line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
         [[ -n "$line" ]] || continue
-        keep=0; pattern="$line"
+        keep=0; pattern="$line"; out="$selected"
         if [[ "$line" =~ ^newest[[:space:]]+([0-9]+)[[:space:]]+(.+)$ ]]; then
             keep="${BASH_REMATCH[1]}"; pattern="${BASH_REMATCH[2]}"
+        elif [[ "$line" =~ ^except[[:space:]]+(.+)$ ]]; then
+            pattern="${BASH_REMATCH[1]}"; out="${selected}.except"
         fi
         matches="$(find "$tree" -path "${tree}/${pattern}" \( -type f -o -type l \) -print | sort)"
         if [[ "$keep" -gt 0 && -n "$matches" ]]; then
@@ -42,7 +44,7 @@ s_firmware() {
             echo "  MISSING  ${pattern}: matches nothing in linux-firmware-${V_LINUX_FIRMWARE}"
             missing=$((missing + 1))
         else
-            printf '%s\n' "$matches" >> "$selected"
+            printf '%s\n' "$matches" >> "$out"
             printf '  %5d  %s\n' "$n" "$line"
         fi
         total=$((total + n))
@@ -51,6 +53,9 @@ s_firmware() {
         echo "FAIL: ${missing} pattern(s) in firmware.list match nothing; the list must name what this release has"
         return 1
     fi
+    # An except line takes back what any other line chose.
+    sort -u "$selected" | comm -23 - <(sort -u "${selected}.except") > "${selected}.kept"
+    mv "${selected}.kept" "$selected"
     # A symlink's target comes too, wherever it points inside the tree.
     local f t
     while IFS= read -r f; do
