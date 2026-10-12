@@ -18,6 +18,8 @@
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
 #   GT SCREENSHOT-HEAD                              take a screenshot of the second monitor
+#   GT KEY-MENU-WIFI                                press Alt+p (a menu window for Wi-Fi)
+#   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -657,6 +659,30 @@ back_on_first_head() { [[ "$(focus_output)" == "$first_head" ]]; }
 wait_for 20 back_on_first_head && pass "chrome-back-on-first-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")" \
     || fail "chrome-back-on-first-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 stop_zone untrusted
+
+# --- Wi-Fi from the menu ----------------------------------------------------------------
+# A network saved from the chrome's own window, as `kryptik wifi add` saves one at the
+# administration login: the host types each answer once it is asked for, and the passphrase,
+# read unechoed by kryptik-launch in that window, reaches the net zone's file.
+WCONF=/var/lib/kryptik/wifi/wpa_supplicant.conf
+menus_before="$(menu_windows)"
+echo "GT KEY-MENU-WIFI"
+wifi_typed=no
+if wait_for 20 more_menus; then
+    sleep 2; echo "GT WIFI-TYPE 1 w"
+    sleep 3; echo "GT WIFI-TYPE 2 a"
+    sleep 2; echo "GT WIFI-TYPE 3 ztmenunet"
+    sleep 2; echo "GT WIFI-TYPE 4 menupassphrase1"
+    wifi_typed=yes
+fi
+if [[ "$wifi_typed" == yes ]] && wait_for 30 grep -qx $'\tssid="ztmenunet"' "$WCONF" \
+   && grep -qx $'\tpsk="menupassphrase1"' "$WCONF"; then
+    pass "chrome-wifi-add" "the menu's w, then a, saved ztmenunet, its passphrase typed in the chrome's own window"
+else
+    fail "chrome-wifi-add" "typed: ${wifi_typed}; networks in the file: $(grep -c '^network=' "$WCONF" 2>/dev/null); menu windows: $(menu_windows)"
+fi
+pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
+"$KD" wifi forget ztmenunet --wifi-dir /var/lib/kryptik/wifi > /dev/null 2>&1
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
