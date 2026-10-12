@@ -162,12 +162,13 @@ no other bit: shadow's eight other tools lose theirs after its install,
 util-linux is built with `--disable-makeinstall-setuid` and
 `--disable-makeinstall-chown` (wall's setgid tty is under that hook), and
 inetutils without traceroute. Stage 06 runs `tools/audit-setuid.sh` over the
-image's root and fails the build on any unlisted bit or capability; on a root
-staged by hand, `--strip` takes them off instead. Either way the audit fails
-when it cannot read a directory, on a list entry without a justification, and
-on a strip that would take the bit or the capabilities off a listed file
-through a hard link. `make zones-test` audits the installed root again: the
-bits are on the listed binaries alone, no file carries capabilities, and
+image's root and fails the build on any unlisted bit or capability, on a list
+entry without a justification, on an entry whose file carries no bit or
+capability (it would let the next file of that name in unread), and when it
+cannot read a directory. It never takes a bit off: a bit the image should not
+have is removed in its recipe. `make acceptance` runs the same audit on the
+root image it tests, and `make zones-test` audits the installed root again:
+the bits are on the listed binaries alone, no file carries capabilities, and
 every sysctl reads back as `build/config/sysctl.d` says.
 
 ## Zone syscall filter
