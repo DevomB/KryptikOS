@@ -121,8 +121,11 @@ the firmware from the pinned linux-firmware release
 - **Input:** USB HID, PS/2, I2C touchpads and touchscreens on Intel and AMD
   laptops, VMware and Hyper-V input.
 
-CPU microcode for Intel and AMD is built into the signed kernel. Hyper-V
-trusts only Microsoft's keys, so run Kryptik there with Secure Boot off.
+CPU microcode for Intel and AMD is built into the signed kernel. On a Zen 5
+processor, and a few EPYC models, the kernel loads it only once the machine's
+firmware has AMD's 2025 microcode-signature fix
+([user guide](docs/user-guide.md#1-boot-the-medium)). Hyper-V trusts only
+Microsoft's keys, so run Kryptik there with Secure Boot off.
 
 A machine outside that list boots a kernel that cannot find its disk or its
 network. Adding a driver is one line in the fragment, a firmware file one line
