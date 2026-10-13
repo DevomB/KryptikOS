@@ -16,8 +16,10 @@ check. The proposed decisions are ADR-021 and ADR-022 in
 ### Where things stand
 
 The kernel builds HD Audio and USB audio as signed modules
-(`boot.fragment`), and the image carries alsa-lib without its MIDI,
-sequencer, use-case manager and DSP topology parts. No zone has a sound
+(`boot.fragment`), and the image carries alsa-lib without its use-case
+manager and DSP topology parts; its MIDI and sequencer API is there for
+Firefox's Web MIDI and finds no device, as the kernel builds no sequencer
+and no zone has `/dev/snd`. No zone has a sound
 device or a sound server: `kryptik-sound` and the zone's plugin are not
 written.
 
