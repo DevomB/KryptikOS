@@ -1104,6 +1104,7 @@ usr/libexec/kryptik-console
 usr/libexec/kryptik/ask.sh
 usr/libexec/kryptik/boot-smoke.sh
 usr/libexec/kryptik/boot-success.sh
+usr/libexec/kryptik/brightness.sh
 usr/libexec/kryptik/devices.sh
 usr/libexec/kryptik/dhcpcd-hook
 usr/libexec/kryptik/esp-records.sh

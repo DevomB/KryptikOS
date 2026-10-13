@@ -288,6 +288,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |
 | Alt+Shift+l | lock the screen until the login password is typed |
 | volume keys, mute, microphone mute | the volume up or down a step, mute or unmute everything, and take the microphone back from whichever zone has it |
+| brightness keys | the screen's backlight up or down a step |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |

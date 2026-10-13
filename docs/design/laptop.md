@@ -322,8 +322,13 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   PCIe link power and NVMe power states keep the kernel's defaults, and no
   rule turns on USB autosuspend for input devices, which too often
   misbehave with it.
-- **Brightness.** An eudev rule gives the `video` group write access to the
-  backlight, the session user is in it, and dwl's keys run a small tool.
+- **Brightness.** An eudev rule (`70-kryptik-backlight.rules`) gives the
+  session's group, `kryptik`, write access to the backlight's level, not
+  `video`, which would hand the user the GPU's device nodes past seatd.
+  dwl's brightness keys run `brightness.sh up|down`, a twentieth of the
+  range a step and never down to dark, on the backlight the kernel's
+  documentation prefers when a panel has several (firmware, then platform,
+  then raw).
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
   zone 0 tool to blank the screen, then lock, then suspend. The lock and
   blanking are built (`kryptik-lock --idle`, above), in the other order: a
@@ -362,7 +367,9 @@ the charge, and with the battery at 2% unplugged the service stops the
 zones and powers off; the host then finds on the state partition that it
 said so and that a running zone's volume was closed first. The energy
 preference, which QEMU's processors do not offer, is checked against
-stand-in `/sys` trees (`tools/tests/power.sh`).
+stand-in `/sys` trees (`tools/tests/power.sh`). QEMU has no backlight:
+the brightness steps are checked the same way (`tools/tests/brightness.sh`),
+and the rule and the keys wait for physical hardware.
 
 ## Keyboard layouts and input methods
 

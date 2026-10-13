@@ -99,6 +99,9 @@ static const char *volupcmd[]     = { "/usr/libexec/kryptik/kryptik-sound", "--c
 static const char *voldowncmd[]   = { "/usr/libexec/kryptik/kryptik-sound", "--control", "volume -5", NULL };
 static const char *mutecmd[]      = { "/usr/libexec/kryptik/kryptik-sound", "--control", "mute toggle", NULL };
 static const char *micbackcmd[]   = { "/usr/libexec/kryptik/kryptik-sound", "--control", "revoke", NULL };
+/* The backlight a step up or down, which udev lets the session's group set. */
+static const char *brightupcmd[]  = { "/usr/libexec/kryptik/brightness.sh", "up", NULL };
+static const char *brightdowncmd[] = { "/usr/libexec/kryptik/brightness.sh", "down", NULL };
 
 static const Key keys[] = {
 	/* modifier                  key                  function          argument */
@@ -111,6 +114,8 @@ static const Key keys[] = {
 	{ 0,                         XKB_KEY_XF86AudioLowerVolume, spawn,   {.v = voldowncmd} },
 	{ 0,                         XKB_KEY_XF86AudioMute,        spawn,   {.v = mutecmd} },
 	{ 0,                         XKB_KEY_XF86AudioMicMute,     spawn,   {.v = micbackcmd} },
+	{ 0,                         XKB_KEY_XF86MonBrightnessUp,   spawn,  {.v = brightupcmd} },
+	{ 0,                         XKB_KEY_XF86MonBrightnessDown, spawn,  {.v = brightdowncmd} },
 	{ MODKEY,                    XKB_KEY_j,           focusstack,       {.i = +1} },
 	{ MODKEY,                    XKB_KEY_k,           focusstack,       {.i = -1} },
 	{ MODKEY,                    XKB_KEY_i,           incnmaster,       {.i = +1} },
