@@ -1731,6 +1731,100 @@ else
     fail "microcode-notice" "at boot: ${mc_boot:-none}; after the kernel's line: ${mc_told:-none}"
 fi
 
+# --- software images over a zone's /usr (images.rs) -------------------------
+# The list stage 06 signed for this root, the probe image it names and its two
+# controls, from the disk zones-test attached, kept under the names images.rs
+# reads; then zones of this check's own: one granted the probe's call, one not,
+# and one that names no image.
+IMGS=/var/lib/kryptik/images; IZ=/root/zt/image-zones
+img_dev="$(blkid -L kryptik-zt-images 2>/dev/null)"
+mkdir -p /run/zt-images "$IZ/policy"
+if [[ -z "$img_dev" ]] || ! mount -o ro "$img_dev" /run/zt-images; then
+    fail "image-store" "no kryptik-zt-images disk holds the signed images: ${img_dev:-none attached}"
+else
+    D=/run/zt-images
+    this_root="$(sed -n 's/.*sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
+    img_base="$(sed -n 's/^base: //p' "$D/images.manifest")"
+    probe_hash="$(sed -n 's/^image: probe .* root-hash=\([0-9a-f]\{64\}\) .*/\1/p' "$D/images.manifest")"
+    keep_list() {   # keep_list DIR FILE: DIR/FILE and its signature, as the list kept for this root
+        install -D -m 0644 "$1/$2" "$IMGS/$img_base.manifest" && install -m 0644 "$1/$2.sig" "$IMGS/$img_base.manifest.sig"
+    }
+    if [[ -n "$this_root" && "$img_base" == "$this_root" && -n "$probe_hash" ]] && keep_list "$D" images.manifest \
+       && install -D -m 0644 "$D/probe.img" "$IMGS/probe/$probe_hash.img"; then
+        pass "image-store" "the list for this root (${img_base:0:12}...) and the probe image (${probe_hash:0:12}...) kept"
+    else
+        fail "image-store" "list base ${img_base:-none}, probe ${probe_hash:-none}; this root ${this_root:-unknown}"
+    fi
+    izone() {   # izone NAME UID_BASE COLOUR [IMAGES] [POLICY]
+        {
+            printf '[zone]\nname = "%s"\ndescription = "software image check"\n' "$1"
+            printf '[network]\nmode = "none"\n[storage]\nmode = "ephemeral"\nsize = "64M"\n'
+            [[ -z "${5:-}" ]] || printf '[policy]\nseccomp = "%s"\n' "$5"
+            [[ -z "${4:-}" ]] || printf '[software]\nimages = "%s"\n' "$4"
+            printf '[identity]\nuid_base = %s\n[ui]\nborder_color = "%s"\n' "$2" "$3"
+        } > "$IZ/$1.toml"
+    }
+    printf 'allow-syscall mlockall\n' > "$IZ/policy/imgok.seccomp"
+    izone imgok 3932160 '#0a1b2c' probe policy/imgok.seccomp
+    izone imgbare 3997696 '#0a1b3c' probe
+    izone imgnone 4063232 '#0a1b4c'
+    irun() {   # irun ZONE CMD...: sets ZRC, ZOUT and ZERR
+        local zone="$1"; shift
+        timeout -k 5 60 "$KD" run "$zone" --zones "$IZ" --rootfs "$R" -- "$@" > "$LOG/$zone.out" 2> "$LOG/$zone.err"
+        ZRC=$?; ZOUT="$(cat "$LOG/$zone.out")"; ZERR="$(cat "$LOG/$zone.err")"
+    }
+    irun imgok /usr/bin/kryptik-probe
+    if [[ "$ZRC" -eq 0 && "$ZOUT" == "kryptik-probe 1.0, from the probe image: /usr/bin/kryptik-probe (mlockall: "* ]]; then
+        pass "image-runs" "a zone granted the probe's call runs it from the image over its /usr: $ZOUT"
+    else
+        fail "image-runs" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -3 <<<"$ZERR" | tr '\n' ' ')"
+    fi
+    irun imgbare /usr/bin/kryptik-probe
+    if [[ "$ZRC" -ne 0 && -z "$ZOUT" && "$ZERR" == *'needs `allow-syscall mlockall`'* ]]; then
+        pass "image-needs-refused" "a zone whose policy does not grant the image's call is refused before it starts"
+    else
+        fail "image-needs-refused" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+    fi
+    irun imgnone sh -c 'test -e /usr/bin/kryptik-probe && echo PRESENT || echo ABSENT'
+    [[ "$ZOUT" == ABSENT ]] && pass "image-hidden" "a zone that names no image does not see the probe" \
+        || fail "image-hidden" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+    expl="$("$KD" explain imgok --zones "$IZ" 2>&1)"
+    [[ "$expl" == *"/usr (with the images probe over it, signed for this root and opened with dm-verity)"* ]] \
+        && pass "image-explained" "explain names the image over the zone's /usr" \
+        || fail "image-explained" "$(grep -m1 '^root ' <<<"$expl")"
+    # The controls stage 06 signed: a list in the release manifests' namespace, and one for another root.
+    keep_list "$D/controls/release-ns" manifest && irun imgok /usr/bin/kryptik-probe
+    if [[ "$ZRC" -ne 0 && "$ZERR" == *"the image list for this root is refused"* ]]; then
+        pass "image-list-namespace" "a list the release key signed in kryptik-release is refused"
+    else
+        fail "image-list-namespace" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+    fi
+    keep_list "$D/controls/other-base" manifest && irun imgok /usr/bin/kryptik-probe
+    if [[ "$ZRC" -ne 0 && "$ZERR" == *"is for another root"* ]]; then
+        pass "image-list-other-base" "a signed list for another root is refused"
+    else
+        fail "image-list-other-base" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+    fi
+    keep_list "$D" images.manifest
+    # A byte of the probe program flipped in the stored image: with the cache dropped, dm-verity
+    # turns the read into an I/O error in the zone, and the image is refused from then on.
+    blk="$(debugfs -R 'bmap /usr/bin/kryptik-probe 0' "$IMGS/probe/$probe_hash.img" 2>/dev/null | tail -1)"
+    if [[ "$blk" =~ ^[0-9]+$ ]] && printf '\xa5' | dd of="$IMGS/probe/$probe_hash.img" bs=1 seek=$(( blk * 4096 + 64 )) conv=notrunc,fsync status=none; then
+        echo 3 > /proc/sys/vm/drop_caches
+        irun imgok /usr/bin/kryptik-probe
+        rc1="$ZRC"; said1="$ZOUT $ZERR"
+        irun imgok /usr/bin/kryptik-probe
+        if [[ "$rc1" -ne 0 && "$said1" == *"Input/output error"* && "$ZRC" -ne 0 && "$ZERR" == *"read back other than signed"* ]]; then
+            pass "image-corrupt" "a flipped block reads as an I/O error in the zone, and the next start is refused"
+        else
+            fail "image-corrupt" "first rc ${rc1}: $(tail -2 <<<"$said1" | tr '\n' ' '); then rc ${ZRC}: $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+        fi
+    else
+        fail "image-corrupt" "could not find or flip the probe's first block (${blk:-none})"
+    fi
+    umount /run/zt-images
+fi
+
 echo "ZT SUMMARY passed=$PASS failed=$FAIL"
 echo "ZT END"
 [[ "$FAIL" -eq 0 ]]
