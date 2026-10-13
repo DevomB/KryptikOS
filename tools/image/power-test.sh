@@ -6,7 +6,8 @@
 #
 #   tools/image/power-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
-# The power service follows the adapter, and the chrome's menu names the source and the charge.
+# The power service follows the adapter, the chrome's menu names the source and the charge, and
+# the chrome warns in a window at 10% and again at 5%.
 # Then the battery is set to 2% unplugged: the service stops the zones and powers the machine
 # off, and the host opens the state partition to find that it said so and that the running
 # zone's volume was closed first.
@@ -56,9 +57,9 @@ T="$(tr -d '\r' < "$LOG")"
 summary="$(grep -o 'GT SUMMARY passed=[0-9]* failed=[0-9]*' <<<"$T" | tail -1)"
 echo "  guest summary: ${summary:-none}"
 gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*failed=\([0-9]*\).*/\1/p' <<<"$summary")"
-if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 6 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
+if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 7 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
-for name in power-service chrome-power-mains power-on-battery chrome-power-battery power-on-mains-again zone-running; do
+for name in power-service chrome-power-mains power-on-battery chrome-power-battery battery-warnings power-on-mains-again zone-running; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 

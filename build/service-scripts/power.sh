@@ -1,16 +1,19 @@
 #!/bin/bash
 # The power source (docs/design/laptop.md). The processors' energy preference follows it,
-# balance_power on battery and balance_performance on mains, where cpufreq offers one; and on
-# battery a charge at 3% or under, seen twice 30 s apart, stops every zone, so each volume is
-# closed, and powers the machine off before the battery dies under them.
+# balance_power on battery and balance_performance on mains, where cpufreq offers one. On
+# battery the charge is warned of at 10% and again at 5%, once each a discharge, and at 3% or
+# under, seen twice 30 s apart, every zone is stopped, so each volume is closed, and the machine
+# powers off before the battery dies under them. Each look is written to
+# /run/kryptik-power/state, which the chrome's menu and its warning windows read: one decision.
 #
 #   power.sh           the service
-#   power.sh --once    one look, said as "source=mains|battery charge=N|none critical=yes|no",
-#                      with the preference set as the service sets it; KRYPTIK_SYSFS names
-#                      another /sys
+#   power.sh --once    one look, written to the state file and said as one line; KRYPTIK_SYSFS
+#                      names another /sys, KRYPTIK_POWER_RUN another /run/kryptik-power
 set -u
 SYS="${KRYPTIK_SYSFS:-/sys}"
+RUN="${KRYPTIK_POWER_RUN:-/run/kryptik-power}"
 CRITICAL=3
+WARNINGS="10 5"
 
 supplies() {
     local d
@@ -56,19 +59,34 @@ prefer() {
     done
 }
 
-look() {   # sets SOURCE, CHARGE and LOW
+look() {   # sets SOURCE, CHARGE, LOW and WARNING, which the last look's state carries on
+    local was w
     CHARGE="$(charge)"
     if [ -n "$CHARGE" ] && ! on_mains; then SOURCE=battery; else SOURCE=mains; fi
-    LOW=no
-    if [ "$SOURCE" = battery ] && [ "$CHARGE" -le "$CRITICAL" ]; then LOW=yes; fi
+    LOW=no; WARNING=""
+    [ "$SOURCE" = battery ] || return 0
+    [ "$CHARGE" -le "$CRITICAL" ] && LOW=yes
+    # The lowest threshold this discharge has reached, so each is warned of once; mains clears it.
+    was="$(sed -n 's/^warning=//p' "$RUN/state" 2>/dev/null)"
+    [[ "$was" =~ ^[0-9]+$ ]] && WARNING="$was"
+    for w in $WARNINGS; do
+        if [ "$CHARGE" -le "$w" ] && { [ -z "$WARNING" ] || [ "$w" -lt "$WARNING" ]; }; then WARNING="$w"; fi
+    done
+}
+
+write_state() {
+    printf 'source=%s\ncharge=%s\ncritical=%s\nwarning=%s\n' "$SOURCE" "${CHARGE:-none}" "$LOW" "$WARNING" \
+        > "$RUN/state.tmp" && mv -f "$RUN/state.tmp" "$RUN/state"
 }
 
 preference() { [ "$1" = battery ] && echo balance_power || echo balance_performance; }
 
 if [ "${1:-}" = --once ]; then
+    mkdir -p "$RUN"
     look
     prefer "$(preference "$SOURCE")"
-    echo "source=${SOURCE} charge=${CHARGE:-none} critical=${LOW}"
+    write_state
+    echo "source=${SOURCE} charge=${CHARGE:-none} critical=${LOW} warning=${WARNING:-none}"
     exit 0
 fi
 
@@ -83,9 +101,12 @@ shut_down() {
     exec /sbin/poweroff
 }
 
+install -d -m 0755 "$RUN" || exit 1
+rm -f "$RUN/state"
 last="" low=0
 while :; do
     look
+    write_state || echo "power: ${RUN}/state was not written" >&2
     if [ "$SOURCE" != "$last" ]; then
         prefer "$(preference "$SOURCE")"
         echo "power: on ${SOURCE}${CHARGE:+, the battery at ${CHARGE}%}"
