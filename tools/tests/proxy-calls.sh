@@ -44,7 +44,11 @@ if [[ "$rc" -ne 0 ]]; then
     run="$T/again"
     traced "$run"
     rc=$?
-    [[ "$rc" -ne 0 ]] || echo "proxy calls: the second run passed; the first run's failure is above"
+    if [[ "$rc" -eq 0 ]]; then
+        echo "proxy calls: the second run passed; the first run's failure is above"
+        # An annotation on the run, so a test that keeps doing it is noticed.
+        [[ -z "${GITHUB_ACTIONS:-}" ]] || echo "::warning title=proxy calls::the live tests failed once under strace and passed on the second run"
+    fi
 fi
 tail -4 "$run/test.log"
 if [[ "$rc" -ne 0 ]]; then
