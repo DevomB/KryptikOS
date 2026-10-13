@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
 # Each listed source's licence files, from its own tarball, under /usr/share/licenses/<source>/;
-# prints how many. The root's sources for stage 04, an image's for that image.
-source_licences() {   # source_licences < tools/fetch-sources.sh --list-root|--list-image NAME
+# prints how many. The root's sources for stage 04, an image's for that image; ERE adds members.
+source_licences() {   # source_licences [ERE] < tools/fetch-sources.sh --list-root|--list-image NAME
     # Also the microcode's lowercase license, firmware's WHENCE and the kernel's LICENSES/.
     local more_re='^[^/]+/(license|WHENCE|LICENSES/(preferred|exceptions)/[^/]+)$'
+    [[ -z "${1:-}" ]] || more_re="${more_re}|${1}"
     local name url f m dir tmp n=0 members
     while read -r name _ url _; do
         [[ -n "$name" ]] || continue

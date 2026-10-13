@@ -29,7 +29,7 @@ s_tk_pcre2() {
     native_build "pcre2-${V_PCRE2}.tar.bz2" "pcre2-${V_PCRE2}" --disable-static --enable-unicode \
         --disable-jit --disable-pcre2-16 --disable-pcre2-32 --disable-pcre2grep-libz \
         --disable-pcre2grep-libbz2 --disable-pcre2test-libreadline
-    rm -f /usr/bin/pcre2grep /usr/bin/pcre2test /usr/bin/pcre2-config
+    rm -f /usr/bin/pcre2grep /usr/bin/pcre2test /usr/bin/pcre2-config /usr/lib/libpcre2-*.la
 }
 
 s_tk_glib() {
@@ -41,7 +41,8 @@ s_tk_glib() {
 
 s_tk_libpng() {
     native_build "libpng-${V_LIBPNG}.tar.xz" "libpng-${V_LIBPNG}" --disable-static
-    rm -f /usr/bin/pngfix /usr/bin/png-fix-itxt /usr/bin/libpng-config /usr/bin/libpng16-config
+    rm -f /usr/bin/pngfix /usr/bin/png-fix-itxt /usr/bin/libpng-config /usr/bin/libpng16-config \
+        /usr/lib/libpng*.la
 }
 
 # Without HarfBuzz, which is built on it, and without brotli and bzip2, which no shipped font needs.
@@ -141,6 +142,7 @@ s_tk_gtk3() {
     rm -f /usr/share/locale/*/LC_MESSAGES/gtk30-properties.mo
 }
 
+# GLib keeps its texts the REUSE way, in LICENSES/, with no licence file at its top.
 s_tk_licences() {
-    echo "$(source_licences < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list-image toolkit)) licence files"
+    echo "$(source_licences '^[^/]+/LICENSES/[^/]+$' < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list-image toolkit)) licence files"
 }
