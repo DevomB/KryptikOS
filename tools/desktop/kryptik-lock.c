@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/pidfd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -118,7 +119,7 @@ static int kind = LOGIN;
 /* --suspend: asked once locked, then the connection that answers when the machine woke and
  * when it was asked. */
 static int suspend_wanted, asleep = -1;
-static struct timespec asked;
+static struct timespec asked, woke_at;
 /* $XDG_RUNTIME_DIR/kryptik/lock.pid while a lock is up, and the process it names. */
 static char pidfile[PATH_MAX];
 static pid_t supervisor;
@@ -240,6 +241,15 @@ static int request(const char *text, int fd);
  * locked it is remembered for then; the answer comes once the machine has woken. */
 static void suspend_now(void)
 {
+	/* The press that woke the machine reaches the input layer as a power key on some
+	 * hardware, and would put it straight back to sleep: none is heeded for 10 s after a
+	 * wake, counted on the clock that counts the sleep. */
+	struct timespec now;
+	clock_gettime(CLOCK_BOOTTIME, &now);
+	if (woke_at.tv_sec && now.tv_sec - woke_at.tv_sec < 10) {
+		say("held off a suspend: the machine woke less than 10 s ago");
+		return;
+	}
 	if (!locked) {
 		suspend_wanted = 1;
 		return;
@@ -473,6 +483,8 @@ static void woke(int answered)
 	else
 		close(asleep);
 	asleep = -1;
+	if (!strcmp(why, "ok woke"))
+		clock_gettime(CLOCK_BOOTTIME, &woke_at);
 	snprintf(line, sizeof line, "suspend: %s", why);
 	say(line);
 	relabel(kind_now());
@@ -959,35 +971,44 @@ static long seconds(const char *s)
 	return *s && !*end && v >= 0 && v <= 7 * 24 * 3600 ? v : -1;
 }
 
-/* A lock that is up, as its pid file says, or 0. The file must be this user's own and no one
- * else's to read, and the process this same program, run by this user. */
-static pid_t lock_up(void)
+/* A lock that is up, as its pid file says, held by a pidfd, or -1. The file must be this user's
+ * own and no one else's to read, and the process this same program, run by this user; it is
+ * checked once its pidfd is open, so the process checked is the one a signal reaches, never
+ * another that took its number. */
+static int lock_up(void)
 {
 	char buf[32], path[64], exe[PATH_MAX], self[PATH_MAX];
 	struct stat st;
 	if (!pidfile[0])
-		return 0;
+		return -1;
 	int fd = open(pidfile, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
 	if (fd < 0)
-		return 0;
+		return -1;
 	ssize_t n = -1;
 	if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == getuid() && !(st.st_mode & 077))
 		n = read(fd, buf, sizeof buf - 1);
 	close(fd);
 	if (n <= 0)
-		return 0;
+		return -1;
 	buf[n] = 0;
 	long pid = strtol(buf, NULL, 10);
 	if (pid <= 1)
-		return 0;
+		return -1;
+	int pfd = pidfd_open((pid_t)pid, 0);
+	if (pfd < 0)
+		return -1;
 	snprintf(path, sizeof path, "/proc/%ld", pid);
-	if (stat(path, &st) < 0 || st.st_uid != getuid())
-		return 0;
-	snprintf(path, sizeof path, "/proc/%ld/exe", pid);
-	ssize_t a = readlink(path, exe, sizeof exe), b = readlink("/proc/self/exe", self, sizeof self);
-	if (a <= 0 || a != b || memcmp(exe, self, (size_t)a))
-		return 0;
-	return (pid_t)pid;
+	ssize_t a = -1, b = -1;
+	if (stat(path, &st) == 0 && st.st_uid == getuid()) {
+		snprintf(path, sizeof path, "/proc/%ld/exe", pid);
+		a = readlink(path, exe, sizeof exe);
+		b = readlink("/proc/self/exe", self, sizeof self);
+	}
+	if (a <= 0 || a != b || memcmp(exe, self, (size_t)a)) {
+		close(pfd);
+		return -1;
+	}
+	return pfd;
 }
 
 static void forward(int sig)
@@ -1032,10 +1053,14 @@ int main(int argc, char **argv)
 		snprintf(pidfile, sizeof pidfile, "%s/kryptik/lock.pid", rt);
 	/* A second lock would be refused while one is up: that one is asked instead. */
 	if (suspend_wanted) {
-		pid_t up = lock_up();
-		if (up > 0 && kill(up, SIGUSR1) == 0) {
-			say("asked the lock that is up to suspend");
-			return 0;
+		int up = lock_up();
+		if (up >= 0) {
+			int sent = pidfd_send_signal(up, SIGUSR1, NULL, 0) == 0;
+			close(up);
+			if (sent) {
+				say("asked the lock that is up to suspend");
+				return 0;
+			}
 		}
 	}
 	/* A refused pipe write is told by write's return, not a signal. */

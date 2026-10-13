@@ -692,18 +692,42 @@ static void createswitch(struct wlr_switch *sw);
 inputdevice(struct wl_listener *listener, void *data)
 {
 """,
-     """/* Kryptik: a switch, the lid's or another's, with its listeners. */
+     """/* Kryptik: a switch, the lid's or another's, with its listeners and when it came. */
 typedef struct {
 \tstruct wl_listener toggle;
 \tstruct wl_listener destroy;
+\tstruct timespec added;
 } Switch;
+
+/* Kryptik: an output other than the built-in panel is on, or only blanked: the laptop is
+ * docked, and its lid closes with the work going on elsewhere. */
+static int
+docked(void)
+{
+\tMonitor *m;
+\twl_list_for_each(m, &mons, link) {
+\t\tconst char *n = m->wlr_output->name;
+\t\tif ((m->wlr_output->enabled || m->asleep) && strncmp(n, "eDP", 3)
+\t\t\t\t&& strncmp(n, "LVDS", 4) && strncmp(n, "DSI", 3))
+\t\t\treturn 1;
+\t}
+\treturn 0;
+}
 
 static void
 switchtoggle(struct wl_listener *listener, void *data)
 {
+\tSwitch *s = wl_container_of(listener, s, toggle);
 \tstruct wlr_switch_toggle_event *event = data;
-\tif (event->switch_type == WLR_SWITCH_TYPE_LID && event->switch_state == WLR_SWITCH_STATE_ON)
-\t\tspawn(&(Arg){.v = suspendcmd});
+\tstruct timespec now;
+\tif (event->switch_type != WLR_SWITCH_TYPE_LID || event->switch_state != WLR_SWITCH_STATE_ON)
+\t\treturn;
+\t/* libinput tells a lid closed already when the device comes, for a switch it trusts:
+\t * a session started with the lid shut must not sleep for it. */
+\tclock_gettime(CLOCK_MONOTONIC, &now);
+\tif (now.tv_sec - s->added.tv_sec < 2 || docked())
+\t\treturn;
+\tspawn(&(Arg){.v = suspendcmd});
 }
 
 static void
@@ -719,6 +743,7 @@ void
 createswitch(struct wlr_switch *sw)
 {
 \tSwitch *s = ecalloc(1, sizeof(*s));
+\tclock_gettime(CLOCK_MONOTONIC, &s->added);
 \tLISTEN(&sw->events.toggle, &s->toggle, switchtoggle);
 \tLISTEN(&sw->base.events.destroy, &s->destroy, switchdestroy);
 }

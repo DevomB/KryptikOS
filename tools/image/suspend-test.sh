@@ -76,6 +76,8 @@ DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
     "expect:GT SLEEPING 2" "asleep-or:120:GT DID-NOT-SLEEP 2" "if-asleep:sleep:5" "if-asleep:wakeup" \
     "expect:GT LOCK-TYPE-STATE 3" "${SPASS_KEYS[@]}" "key:ret" \
     "expect:GT POWER-KEY 1" "powerkey" "asleep-or:120:GT DID-NOT-SLEEP 3" "if-asleep:sleep:5" "if-asleep:wakeup" \
+    "expect:GT POWER-KEY SOON" "powerkey" "asleep-or:30:GT DID-NOT-SLEEP 7" "if-asleep:sleep:5" "if-asleep:wakeup" \
+    "expect:GT POWER-KEY 3" "powerkey" "asleep-or:120:GT DID-NOT-SLEEP 8" "if-asleep:sleep:5" "if-asleep:wakeup" \
     "expect:GT LOCK-TYPE-STATE 4" "${SPASS_KEYS[@]}" "key:ret" \
     "expect:GT KEY-LOCK 3" "key:alt+shift+l" \
     "expect:GT POWER-KEY 2" "powerkey" "asleep-or:120:GT DID-NOT-SLEEP 4" "if-asleep:sleep:5" "if-asleep:wakeup" \
@@ -101,7 +103,8 @@ for name in second-passphrase session-up zones-ticking state-suspended zones-fro
             nothing-else-waits lock-refuses-wrong-passphrase passphrase-resumes zones-thawed writer-resumes zones-tick-again \
             slept-and-woke woke-to-state-prompt prompt-outlasts-watchdog resumed-after-sleep zones-thawed-after-sleep \
             sleep-refusal-told resumed-after-refusal \
-            power-key-sleeps power-key-resumes power-key-sleeps-locked power-key-locked-resumes \
+            power-key-sleeps power-key-held-off-after-wake power-key-heeded-after-holdoff power-key-resumes \
+            power-key-sleeps-locked power-key-locked-resumes \
             lock-pid-written lock-up-sleeps lock-up-resumes lock-pid-removed idle-sleeps idle-sleep-resumes; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done

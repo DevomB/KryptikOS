@@ -8,7 +8,8 @@
 #                                    the watchdog's timeout, then wake it; or for
 #                                    GT DID-NOT-SLEEP 1, the kernel's refusal
 #   GT SLEEPING 2                    the same, the refusal expected (GT DID-NOT-SLEEP 2)
-#   GT POWER-KEY 1|2                 press the power button, then as GT SLEEPING (3, 4)
+#   GT POWER-KEY 1|2|3               press the power button, then as GT SLEEPING (3, 4, 8)
+#   GT POWER-KEY SOON                the same, a refusal expected (GT DID-NOT-SLEEP 7)
 #   GT KEY-LOCK 3|4                  press Alt+Shift+l
 #   GT SLEEPING 3|4                  as GT SLEEPING 1, a refusal told as GT DID-NOT-SLEEP 5, 6
 #   GT LOCK-TYPE-STATE 4..7          type the second state passphrase and Enter
@@ -308,6 +309,20 @@ resumed() {   # resumed LOG BEFORE NAME: unlocked once more, with the partition 
 a0="$(answers "$slog")"; u0="$(said unlocked)"
 echo "GT POWER-KEY 1"
 slept "$slog" "$a0" 3 "power-key-sleeps"
+# The press that wakes some machines reaches the lock as a power key: one within 10 s of the
+# wake is held off, and one after it is heeded.
+heldoff() { [[ "$(grep -c '^kryptik-lock: held off a suspend' "$slog")" -gt "$1" ]]; }
+h0="$(grep -c '^kryptik-lock: held off a suspend' "$slog")"; a1="$(answers "$slog")"
+echo "GT POWER-KEY SOON"
+if wait_for 15 heldoff "$h0"; then
+    echo "GT DID-NOT-SLEEP 7"
+    pass "power-key-held-off-after-wake" "a press a moment after the wake did not put the machine back to sleep"
+else
+    fail "power-key-held-off-after-wake" "$(grep '^kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
+sleep 13
+echo "GT POWER-KEY 3"
+slept "$slog" "$a1" 8 "power-key-heeded-after-holdoff"
 echo "GT LOCK-TYPE-STATE 4"
 resumed "$slog" "$u0" "power-key-resumes"
 

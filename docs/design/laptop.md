@@ -163,7 +163,11 @@ to resume can run from the root while the state partition is suspended.
    `kryptik-lock --suspend` asks that lock instead (SIGUSR1) when the
    file is the user's own, mode 600, and names a process of this program
    run by the user. dwl runs no binding while locked, so the lock takes the
-   power key itself. Idleness asks too, `kryptik-lock --idle --sleep`, but
+   power key itself, but none for 10 s after a wake: on some machines the
+   press that wakes it reaches the input layer as the power key, which
+   would put it straight back to sleep. A lid that closes while an output
+   other than the built-in panel is on, docked, is left alone, as is one
+   libinput says is closed as the switch appears. Idleness asks too, `kryptik-lock --idle --sleep`, but
    only as many minutes after the lock as `~/.config/kryptik/lock-sleep`
    holds: a sleep that does not wake would cost open work nobody chose to
    risk, so it stays off until resume is proven on physical hardware, and 20
@@ -307,7 +311,8 @@ Then for real, `kryptik-lock --suspend` as the user:
   on its device, the kernel refuses, the refusal is told, and the passphrase
   still brings the partition back;
 - the power button, pressed through QEMU's monitor, has the machine sleep
-  with the session unlocked and with it locked; `kryptik-lock --suspend`
+  with the session unlocked and with it locked, but not when pressed a
+  moment after a wake, and again once 10 s have passed; `kryptik-lock --suspend`
   with a lock up hands the sleep to that lock, whose pid file is the user's
   own, mode 600, and goes at the unlock; and an idle watcher with
   `--sleep` has its lock ask. Each wake waits for the passphrase.
