@@ -629,6 +629,37 @@ focusclient(Client *c, int lift)
      """\told_client_type = toplevel_from_wlr_surface(old, &old_c, &old_l);
 \tendpopups(c);
 """),
+    # A lock surface takes the keyboard without focusclient, which does
+    # nothing while the session is locked: each such hand-over ends every
+    # popup first, or a zone's grab, made at any moment, would keep the
+    # keyboard from the lock.
+    ("""static void focusclient(Client *c, int lift);
+""",
+     """static void focusclient(Client *c, int lift);
+static void endpopups(Client *keep);
+"""),
+    ("""\tif (m == selmon)
+\t\tclient_notify_enter(lock_surface->surface, wlr_seat_get_keyboard(seat));
+""",
+     """\tif (m == selmon) {
+\t\tendpopups(NULL);
+\t\tclient_notify_enter(lock_surface->surface, wlr_seat_get_keyboard(seat));
+\t}
+"""),
+    ("""\t\tsurface = wl_container_of(cur_lock->surfaces.next, surface, link);
+\t\tclient_notify_enter(surface->surface, wlr_seat_get_keyboard(seat));
+""",
+     """\t\tsurface = wl_container_of(cur_lock->surfaces.next, surface, link);
+\t\tendpopups(NULL);
+\t\tclient_notify_enter(surface->surface, wlr_seat_get_keyboard(seat));
+"""),
+    ("""\t\tif (selmon->lock_surface) {
+\t\t\tclient_notify_enter(selmon->lock_surface->surface,
+""",
+     """\t\tif (selmon->lock_surface) {
+\t\t\tendpopups(NULL);
+\t\t\tclient_notify_enter(selmon->lock_surface->surface,
+"""),
 ]
 
 
