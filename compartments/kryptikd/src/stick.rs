@@ -240,20 +240,26 @@ fn flush_and_drop(dev: &str) -> std::io::Result<()> {
 /// Take the stick back from `zone`: what it wrote and left unsynced written out first, then its
 /// mapping made to fail every read and write and the stick's cached pages dropped, so a
 /// descriptor the zone kept reads nothing more; the mapping removed once the last closes, and
-/// the record gone. Whether there was one.
+/// the record gone. Whether a grant ended; a mapping left without one is cleared all the same.
 pub fn eject(zone: &str) -> Result<bool, String> {
     let map = mapping_name(zone);
-    let dev = dm_device(Path::new("/sys/block"), &map);
-    let mapped = dev.is_some();
-    if let Some(dev) = dev {
+    let record = Path::new(RUN_DIR).join(zone);
+    let held = record.exists();
+    if let Some(dev) = dm_device(Path::new("/sys/block"), &map) {
+        // A mapping ejected before goes by itself once its last descriptor closes, as when its
+        // zone stops, which may be while this runs.
+        let gone = || dm_device(Path::new("/sys/block"), &map).is_none();
+        let or_gone = |r: Result<(), String>| r.or_else(|e| if gone() { Ok(()) } else { Err(e) });
         // A stick pulled out has nothing to flush to: the drop is what counts then.
         let _ = flush_and_drop(&dev);
-        dmsetup(&["wipe_table", &map])?;
-        flush_and_drop(&dev).map_err(|e| format!("/dev/{dev}: {e}"))?;
-        dmsetup(&["remove", "--deferred", &map])?;
+        or_gone(dmsetup(&["wipe_table", &map]))?;
+        or_gone(flush_and_drop(&dev).map_err(|e| format!("/dev/{dev}: {e}")))?;
+        or_gone(dmsetup(&["remove", "--deferred", &map]))?;
     }
-    let recorded = fs::remove_file(Path::new(RUN_DIR).join(zone)).is_ok();
-    Ok(mapped || recorded)
+    if held {
+        fs::remove_file(&record).map_err(|e| format!("{}: {e}", record.display()))?;
+    }
+    Ok(held)
 }
 
 /// Take back every grant whose stick was pulled out: its mapping fails every read already, but

@@ -33,6 +33,8 @@ zrun() {   # zrun ZONE [--passphrase-file F] -- CMD...: sets ZRC and ZOUT
 }
 held_by() { ls "/sys/class/block/$1/holders" 2>/dev/null | tr '\n' ' '; }
 mapped() { dmsetup info "kryptik-stick-$1" > /dev/null 2>&1; }
+# Device-mapper removes a mapping whose removal was deferred from a workqueue, after its last close.
+unmapped() { for _ in $(seq 1 10); do mapped "$1" || return 0; sleep 1; done; return 1; }
 stick_of() { as_user "kryptik-launch --info $1" 2>&1 | sed -n 's/^stick //p'; }
 # The USB partition with GPT name $1, waited for: the host plugs the stick just before.
 usb_part() {
@@ -110,7 +112,7 @@ plugged)
     if grep -q '^PUT-RC=[1-9]' <<<"$ZOUT" && grep -q 'given to this zone read-only' <<<"$ZOUT"; then pass "stick-ro-refuses-write" "a write was refused"; else fail "stick-ro-refuses-write" "$(oneline <<<"$ZOUT")"; fi
     devs="$(grep '^DEV:' <<<"$ZOUT")"
     if [[ -n "$devs" && ! "$devs" =~ /dev/(sd|dm-|mapper|mmcblk) ]]; then pass "stick-no-node" "the zone's /dev has no node for it"; else fail "stick-no-node" "${devs:-no listing}"; fi
-    if [[ "$(stick_of untrusted)" == none && -z "$(held_by "$P")" ]] && ! mapped untrusted; then
+    if [[ "$(stick_of untrusted)" == none && -z "$(held_by "$P")" ]] && unmapped untrusted; then
         pass "stick-ends-with-zone" "untrusted stopped, so its grant ended and the mapping went"
     else
         fail "stick-ends-with-zone" "info stick $(stick_of untrusted); holders $(held_by "$P"); mapping $(mapped untrusted && echo kept || echo gone)"
@@ -135,7 +137,7 @@ plugged)
     fi
     for _ in $(seq 1 60); do kill -0 "$hp" 2>/dev/null || break; sleep 1; done
     kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
-    if mapped untrusted; then fail "stick-mapping-gone" "kryptik-stick-untrusted is still there after the zone exited"; else pass "stick-mapping-gone" "the ejected mapping went with its last descriptor"; fi
+    if unmapped untrusted; then pass "stick-mapping-gone" "the ejected mapping went with its last descriptor"; else fail "stick-mapping-gone" "kryptik-stick-untrusted is still there after the zone exited"; fi
 
     # Read and write: what untrusted puts lands on the stick (the host reads it after pulling it).
     said="$(as_user "kryptik-launch --stick-grant untrusted $P rw" 2>&1)"; rc=$?
@@ -161,7 +163,7 @@ pulled)
     if wait_for "$LOG/held.out" '^READ-FAILED 5$' 30; then pass "stick-pulled-reads-fail" "the descriptor untrusted held reads only EIO"; else fail "stick-pulled-reads-fail" "$(oneline < "$LOG/held.out")"; fi
     if [[ "$(stick_of untrusted)" == none ]]; then pass "stick-pulled-grant-ended" "untrusted holds no stick"; else fail "stick-pulled-grant-ended" "info stick $(stick_of untrusted)"; fi
     for _ in $(seq 1 30); do pgrep -f 'import array, os, socket' > /dev/null || break; sleep 1; done
-    if mapped untrusted; then fail "stick-pulled-mapping-gone" "kryptik-stick-untrusted is still there"; else pass "stick-pulled-mapping-gone" "the mapping went with the program that held it"; fi
+    if unmapped untrusted; then pass "stick-pulled-mapping-gone" "the mapping went with the program that held it"; else fail "stick-pulled-mapping-gone" "kryptik-stick-untrusted is still there"; fi
     after="$(dmesg | sed -n '/stick-check: the stick is pulled out next/,$p')"
     oops="$(grep -E 'Oops|BUG:|Call Trace|general protection' <<<"$after" | head -3)"
     if [[ -n "$after" && -z "$oops" ]]; then pass "stick-no-oops" "the kernel log has no oops after the pull"; else fail "stick-no-oops" "${oops:-no marker in the kernel log}"; fi
