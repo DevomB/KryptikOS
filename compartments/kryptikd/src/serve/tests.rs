@@ -284,12 +284,13 @@ fn failed_job_says_why() {
 }
 
 /// While the state partition is suspended: what unlocks is the state passphrase, everything else
-/// is refused, and the passphrase comes on a descriptor, under its own pause.
+/// but a suspend, which handle() turns into the sleep alone, is refused, and the passphrase comes
+/// on a descriptor, under its own pause.
 #[test]
 fn a_suspended_state_answers_the_lock_alone() {
     let mut pause = crate::password::Attempts::default();
     assert_eq!(while_suspended(1000, "unlock-kind", None, &mut pause), "ok state\n");
-    for other in ["check-password", "run work", "status", "suspend", "stop work", ""] {
+    for other in ["check-password", "run work", "status", "stop work", ""] {
         assert!(
             while_suspended(1000, other, None, &mut pause).starts_with("error: suspended: "),
             "{other:?} is refused, as the lock's check for a stale label expects"
