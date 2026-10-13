@@ -209,7 +209,8 @@ fi
 said_info="$(as_user "kryptik-launch --info work" 2>&1)"
 grep -qx 'waiting yes' <<<"$said_info" && pass "info-says-waiting" "the daemon says work waits" \
     || fail "info-says-waiting" "$(tr '\n' ' ' <<<"$said_info")"
-said_run="$(as_user "kryptik-launch --no-display --passphrase-fd 3 work -- true 3<$UPP" 2>&1)"
+# Without a passphrase the launcher asks the daemon to run, which says why it will not.
+said_run="$(as_user "kryptik-launch --no-display work -- true" 2>&1)"
 [[ "$said_run" == *"waits for its volume's passphrase"* ]] && pass "launch-told-waiting" "$said_run" \
     || fail "launch-told-waiting" "$said_run"
 printf 'not-the-zone-pass\n' > "$OUT/wrong-pass"; chmod 600 "$OUT/wrong-pass"
