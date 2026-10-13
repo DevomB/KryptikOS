@@ -435,7 +435,7 @@ run_menu() {
                       echo "moving the clipboard of $za to $zb (this is the only way a payload crosses zones)"
                       "$LAUNCH" --clipboard-move "$za" "$zb" || sleep 2
                       sleep 1; continue ;;
-            p[1-9]*) idx="${choice#p}"; eval "z=\"\${Z$idx:-}\""
+            p[1-9]) idx="${choice#p}"; eval "z=\"\${Z$idx:-}\""
                       [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
                       "$LAUNCH" --resume "$z" || sleep 2; sleep 1; continue ;;
             s[1-9]*) idx="${choice#s}"; eval "z=\"\${Z$idx:-}\""
