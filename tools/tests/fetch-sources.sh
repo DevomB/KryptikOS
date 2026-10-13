@@ -119,6 +119,17 @@ fi
 run
 expect_pass "a second run uses the cached copies" "3 cached"
 
+# A host that refuses: the file comes from the distfiles mirror, under the BLAKE2b of its name.
+DIST="${W}/distfiles"
+d="$(printf '%s' alpha-1.0.tar.gz | b2sum | cut -c1-2)"
+mkdir -p "${DIST}/${d}" && cp "${UPSTREAM}/alpha-1.0.tar.gz" "${DIST}/${d}/"
+printf 'alpha|1.0|https://127.0.0.1:9/alpha-1.0.tar.gz|probe|listing\n' > "${W}/manifest-down"
+build_root alpha-1.0:good
+MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="file://${DIST}" run
+expect_pass "a source whose host refuses comes from the distfiles mirror" "1 downloaded"
+grep -qF "trying fallback mirror: file://${DIST}/${d}/alpha-1.0.tar.gz" "$OUT" \
+    && green "the mirror's path is the BLAKE2b of the file's name" || { red "the mirror was asked another path"; show; }
+
 # --- checksum refusal -------------------------------------------------------
 
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good

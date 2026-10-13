@@ -54,32 +54,29 @@ zone_has_browser() { grep -Eq '^images[[:space:]]*=[[:space:]]*"([^"]* )?browser
 
 # --- the status stream ---------------------------------------------------------
 
-# dwl writes `<output> title <t>`, `<output> appid <id>`, `<output> fullscreen
-# <0|1>` ... on every focus or state change, one output after another, each
-# output's lines ending with layout. The proxy stamps a zone window's app_id
-# kryptik.<zone>.<claimed>; any other app_id is zone 0's.
+# dwl writes `<output> title <t>`, `<output> appid <id>`, `<output> zone <z>`,
+# `<output> fullscreen <0|1>` ... on every focus or state change, one output
+# after another, each output's lines ending with layout. The zone is the one
+# whose socket the window's client came through, 0 for dwl's own socket, and
+# empty with no window; an app_id, like a title, is the client's own word.
 #
 # The record is the selected output's window. Only that output's layout line
 # publishes: with two monitors, the one dwl writes last need not be the one
 # in use.
 status_to_focus() {
-    appid=""; title=""; fs=""; selected=0
+    zone=""; title=""; fs=""; selected=0
     while IFS= read -r line; do
         out="${line%% *}"; rest="${line#* }"; key="${rest%% *}"; val="${rest#* }"
         [ "$key" = "$rest" ] && val=""
         case "$key" in
-            title) title="$val"; appid=""; fs=""; selected=0; continue ;;
-            appid) appid="$val"; continue ;;
+            title) title="$val"; zone=""; fs=""; selected=0; continue ;;
+            zone) zone="$val"; continue ;;
             fullscreen) fs="$val"; continue ;;
             selmon) selected="$val"; continue ;;
             layout) [ "$selected" = 1 ] || continue ;;
             *) continue ;;
         esac
-        case "$appid" in
-            kryptik.*) zone="${appid#kryptik.}"; zone="${zone%%.*}" ;;
-            "") zone="-" ;;
-            *) zone="0" ;;
-        esac
+        [ -n "$zone" ] || zone="-"
         label="$(zone_field "$zone" label)"
         glyph="$(zone_field "$zone" glyph)"
         [ "$zone" = "0" ] && label="ZONE 0 (trusted)"
@@ -88,7 +85,7 @@ status_to_focus() {
         tmp="$FOCUS.tmp.$$"
         printf 'output=%s\nzone=%s\nlabel=%s\nglyph=%s\ntitle=%s\nfullscreen=%s\n' \
             "$out" "$zone" "$label" "$glyph" "$title" "$fs" > "$tmp" && mv -f "$tmp" "$FOCUS"
-        # The zone comes from the app_id the proxy stamps; a title is the zone's own words.
+        # The zone is dwl's, from the socket; a title is the zone's own words.
         case "$zone" in
             0|-) ;;
             *) cp -f "$FOCUS" "$FOCUS_ZONE.tmp.$$" && mv -f "$FOCUS_ZONE.tmp.$$" "$FOCUS_ZONE" ;;

@@ -271,6 +271,13 @@ jobs:
       - name: Compositor tests
         run: tools/tests/compositor.sh
 
+      # The static proxy under strace: every call it makes is on its seccomp list.
+      - name: The proxy's calls are on its filter's list
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq strace
+          rustup target add x86_64-unknown-linux-musl
+          tools/tests/proxy-calls.sh
+
       - name: Zone definitions validate
         run: |
           cd compartments/kryptikd && cargo build --quiet

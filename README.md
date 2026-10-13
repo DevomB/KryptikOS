@@ -380,6 +380,10 @@ Designs of the individual parts:
 - [Update channel](docs/design/update-channel.md): fetching releases through the net zone
 - [State encryption](docs/design/state-encryption.md): the encrypted state partition
 - [Keyboard layout](docs/design/keyboard-layout.md): one layout for the passphrase prompt, the console and the desktop
+- [Removable storage](docs/design/removable-storage.md): a USB stick read in the zone the user gives it to
+- [Camera](docs/design/camera.md): a camera granted to one zone at a time, its driver loaded only for the grant
+- [Bluetooth](docs/design/bluetooth.md): none for 1.0, then a zone of its own for a headset's audio
+- [Input methods](docs/design/input-methods.md): one per zone, its virtual keyboard bound to the zone
 
 ## License
 

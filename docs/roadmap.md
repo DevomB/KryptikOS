@@ -199,10 +199,22 @@ A desktop someone can live in, built the same way.
   read-only over the `/usr` of the zones that name them
   ([software delivery](design/software-delivery.md)). Not decided: a package
   manager, or images released apart from the root.
-- **The laptop.** Per-zone sound brokered like the clipboard, Bluetooth,
+- **The laptop.** Per-zone sound brokered like the clipboard,
   suspend and resume with volume keys dropped across it, power management,
-  hotplug and multiple monitors, input methods and a second keyboard layout
-  to switch to.
+  hotplug and multiple monitors, and a second keyboard layout to switch to.
+- **USB sticks.** Decided (ADR-025): read in the zone the user gives one
+  to, through a descriptor and a reader of Kryptik's own, never mounted;
+  FAT first, exFAT a named gap, FUSE a later decision of its own
+  ([removable storage](design/removable-storage.md)).
+- **A camera.** Decided (ADR-026): granted to one zone at a time, as the
+  microphone is, its driver loaded only for the grant
+  ([camera](design/camera.md)).
+- **Bluetooth.** Decided (ADR-027): none for 1.0, where calls use USB or
+  wired headsets or a Bluetooth headset's USB dongle; after it, a zone of
+  its own for a headset's audio alone ([Bluetooth](design/bluetooth.md)).
+- **Input methods.** Decided (ADR-028): none for 1.0; after it, one per
+  zone that asks, fcitx5 as a software image, its virtual keyboard bound
+  to the zone ([input methods](design/input-methods.md)).
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so

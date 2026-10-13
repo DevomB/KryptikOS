@@ -18,8 +18,10 @@
  *   kryptik-launch --check-password    whether the line on stdin is the login password: the
  *                                      screen lock asks, and the daemon pauses after a wrong one
  *
- * A display goes through the zone's own proxy at $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0, which the
- * daemon binds into the zone: a zone never sees the compositor's own socket.
+ * A display goes through the zone's own proxy, which the daemon starts as a user of its own and
+ * binds into the zone at /run/kryptik/wayland-0: a zone never sees the compositor's own socket.
+ * The proxy reaches dwl through dwl's socket for that zone, which offers only what the proxy
+ * passes on and is how dwl knows the zone of each window.
  * --ask reads an encrypted zone's passphrase on the controlling terminal, or hands over to
  * kryptik-chrome --prompt; it travels as a descriptor, never in argv or environ.
  */
@@ -43,7 +45,6 @@
 #include <unistd.h>
 
 #define LAUNCH_SOCKET "/run/kryptik-launch/launch.sock"
-#define PROXY_BIN "/usr/bin/kryptik-wlproxy"
 #define CHROME_BIN "/usr/bin/kryptik-chrome"
 
 static void die(const char *fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
@@ -126,110 +127,6 @@ static char *talk(const char *text, int fd)
 	reply[len] = 0;
 	close(s);
 	return reply;
-}
-
-static int pid_is_proxy(pid_t pid)
-{
-	char path[64], buf[256];
-	if (pid <= 0 || kill(pid, 0) != 0)
-		return 0;
-	snprintf(path, sizeof path, "/proc/%d/cmdline", (int)pid);
-	int fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return 0;
-	ssize_t n = read(fd, buf, sizeof buf - 1);
-	close(fd);
-	if (n <= 0)
-		return 0;
-	buf[n] = 0;
-	return strstr(buf, "kryptik-wlproxy") != NULL;
-}
-
-/* dir/name into a PATH_MAX buffer, or die: a cut path names another file. */
-static void join(char *out, const char *dir, const char *name)
-{
-	int n = snprintf(out, PATH_MAX, "%s/%s", dir, name);
-	if (n < 0 || n >= PATH_MAX)
-		die("path too long: %s/%s", dir, name);
-}
-
-/* Make sure the zone's proxy is up; return the socket path (static). */
-static const char *ensure_proxy(const char *zone)
-{
-	static char sock[PATH_MAX];
-	char top[PATH_MAX], dir[PATH_MAX], pidfile[PATH_MAX], logfile[PATH_MAX], oldlog[PATH_MAX], upstream[PATH_MAX];
-	const char *rt = getenv("XDG_RUNTIME_DIR");
-	const char *disp = getenv("WAYLAND_DISPLAY");
-	if (!rt || !*rt)
-		die("XDG_RUNTIME_DIR is not set; use --no-display for a zone without a window");
-	if (!disp || !*disp)
-		disp = "wayland-0";
-	if (disp[0] != '/')
-		join(upstream, rt, disp);
-	else if (snprintf(upstream, sizeof upstream, "%s", disp) >= (int)sizeof upstream)
-		die("path too long: %s", disp);
-	join(top, rt, "kryptik");
-	mkdir(top, 0700);
-	join(dir, top, zone);
-	if (mkdir(dir, 0700) < 0 && errno != EEXIST)
-		die("%s: %s", dir, strerror(errno));
-	join(sock, dir, "wayland-0");
-	join(pidfile, dir, "proxy.pid");
-	join(logfile, dir, "proxy.log");
-	join(oldlog, dir, "proxy.log.old");
-	/* The move gesture's socket, beside the zone's and never bound into it, and the one user
-	 * it answers: this session's. */
-	char control[PATH_MAX], uid[16];
-	join(control, dir, "control");
-	snprintf(uid, sizeof uid, "%u", (unsigned)getuid());
-
-	FILE *f = fopen(pidfile, "r");
-	if (f) {
-		int pid = 0;
-		if (fscanf(f, "%d", &pid) == 1 && pid_is_proxy(pid)) {
-			fclose(f);
-			return sock;
-		}
-		fclose(f);
-	}
-	struct stat st;
-	if (stat(upstream, &st) != 0 || !S_ISSOCK(st.st_mode))
-		die("no compositor at %s", upstream);
-
-	/* The log is in RAM and each proxy bounds only its own lines: keep one old file. */
-	(void)rename(logfile, oldlog);
-	pid_t pid = fork();
-	if (pid < 0)
-		die("fork: %s", strerror(errno));
-	if (pid == 0) {
-		setsid();
-		int null = open("/dev/null", O_RDONLY);
-		int log = open(logfile, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
-		if (null < 0 || log < 0 || dup2(null, 0) < 0 || dup2(log, 1) < 0 || dup2(log, 2) < 0)
-			_exit(127);
-		/* The proxy gets stdio only, never the passphrase fd or any other descriptor. */
-		if (close_range(3, ~0U, 0) < 0)
-			_exit(127);
-		execl(PROXY_BIN, "kryptik-wlproxy", "--zone", zone, "--listen", sock, "--upstream", upstream,
-		      "--max-clients", "32", "--control", control, "--control-uid", uid, (char *)NULL);
-		_exit(127);
-	}
-	f = fopen(pidfile, "w");
-	if (f) {
-		fprintf(f, "%d\n", (int)pid);
-		fclose(f);
-	}
-	/* Wait up to 3 s for the listener. */
-	for (int i = 0; i < 60; i++) {
-		if (stat(sock, &st) == 0 && S_ISSOCK(st.st_mode))
-			return sock;
-		int status;
-		if (waitpid(pid, &status, WNOHANG) == pid)
-			die("kryptik-wlproxy exited before listening (see %s)", logfile);
-		struct timespec ts = { 0, 50 * 1000 * 1000 };
-		nanosleep(&ts, NULL);
-	}
-	die("kryptik-wlproxy did not start listening on %s (see %s)", sock, logfile);
 }
 
 static volatile sig_atomic_t caught;
@@ -450,17 +347,17 @@ static int password_main(int argc)
 }
 
 /* One request to a zone's proxy on the move gesture's socket (kryptik-wlproxy's control.rs),
- * `body` after its line: the answer's line in `line`, and the bytes an "ok GEN TYPE N" answer
- * announces in *data. -1 when the zone has no proxy to ask. */
+ * which the launch daemon made for this user beside the proxy's own, `body` after its line:
+ * the answer's line in `line`, and the bytes an "ok GEN TYPE N" answer announces in *data.
+ * -1 when the zone has no proxy to ask. */
 static int ask_proxy(const char *zone, const char *head, const unsigned char *body, size_t blen,
 		     char *line, size_t lsize, unsigned char **data, size_t *dlen)
 {
-	const char *rt = getenv("XDG_RUNTIME_DIR");
 	struct sockaddr_un sa = { .sun_family = AF_UNIX };
 	*data = NULL;
 	*dlen = 0;
 	line[0] = 0;
-	if (!rt || !*rt || snprintf(sa.sun_path, sizeof sa.sun_path, "%s/kryptik/%s/control", rt, zone) >= (int)sizeof sa.sun_path)
+	if (snprintf(sa.sun_path, sizeof sa.sun_path, "/run/kryptik-proxy/%u/%s.control", (unsigned)getuid(), zone) >= (int)sizeof sa.sun_path)
 		return -1;
 	int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (s < 0)
@@ -648,10 +545,8 @@ int main(int argc, char **argv)
 		}
 	}
 
-	const char *wl = no_display ? NULL : ensure_proxy(zone);
-
-	/* Every string is counted, the socket path included; 1024 covers the fixed words. */
-	size_t cap = 1024 + strlen(zone) + (wl ? strlen(wl) : 0);
+	/* Every string is counted; 1024 covers the fixed words. */
+	size_t cap = 1024 + strlen(zone);
 	for (i = 0; i < ncmd; i++)
 		cap += strlen(cmd[i]) + 8;
 	char *req = malloc(cap);
@@ -665,7 +560,7 @@ int main(int argc, char **argv)
 			die("request too long"); \
 		len += (size_t)n_; \
 	} while (0)
-	PUT("run %s%s%s%s\n", zone, wl ? " wayland=" : "", wl ? wl : "", pass_fd >= 0 ? " pass=fd" : "");
+	PUT("run %s%s%s\n", zone, no_display ? "" : " wayland", pass_fd >= 0 ? " pass=fd" : "");
 	for (i = 0; i < ncmd; i++) {
 		if (strchr(cmd[i], '\n'))
 			die("argument %d contains a newline", i);
