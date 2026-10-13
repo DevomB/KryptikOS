@@ -191,10 +191,11 @@ firmware from the verified root, so replacing it means re-signing the kernel.
 
 **Left out:** NVIDIA (nouveau needs tens of megabytes of GSP firmware per
 generation, and the firmware framebuffer gives those machines a display);
-Bluetooth and sound, which no zone uses yet. What is not on the list is not
-shipped, and the other way round the acceptance checks that every file a
-shipped module names (`MODULE_FIRMWARE`) and linux-firmware has ships, or that
-`build/config/firmware-accepted.txt` says why it does not.
+Bluetooth, and the firmware of sound DSPs, which nothing here drives yet.
+What is not on the list is not shipped, and the other way round the
+acceptance checks that every file a shipped module names (`MODULE_FIRMWARE`)
+and linux-firmware has ships, or that `build/config/firmware-accepted.txt`
+says why it does not.
 
 **CPU microcode** is the same decision. The early loader runs before any
 filesystem and there is no initramfs, so Intel and AMD microcode is built into
@@ -218,9 +219,9 @@ verifies or mounts the root; gives a console and keyboard before the root is
 mounted; or cannot work as a module (netfilter for the `net` zone, microcode,
 the watchdog, a few platform drivers that misbehave when loaded late).
 Everything else, including every network card, GPU and pointing device, is a
-signed module that eudev loads at coldplug. What Kryptik never uses (sound,
-network filesystems, CardBus, AGP, software RAID, conntrack helpers) is not
-built. The rule heads `build/config/kernel/boot.fragment`, and stage 05 fails
+signed module that eudev loads at coldplug. What Kryptik never uses (network
+filesystems, CardBus, AGP, software RAID, conntrack helpers) is not built.
+The rule heads `build/config/kernel/boot.fragment`, and stage 05 fails
 a kernel larger than `build/config/kernel/size-budget`.
 
 **Why:** a built-in driver is on every machine whether or not its device is. A
@@ -454,8 +455,8 @@ and the compositor routes their keys and commits to that zone's surfaces
 alone; the virtual keyboard is never offered to a zone
 ([the laptop](design/laptop.md)).
 
-This amends ADR-013, which lists sound among what is never built, and
-ADR-012, which leaves sound and Bluetooth firmware out.
+This amends ADR-012, which leaves the firmware of sound DSPs and Bluetooth
+out.
 
 **Why:** a fixed format leaves zone 0 nothing to parse, and the microphone's
 gate stays in trusted code; a sound zone would gate the microphone from the

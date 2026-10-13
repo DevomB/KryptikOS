@@ -261,6 +261,8 @@ PACKAGES=(
     "ca-bundle"   "s_ca_bundle"
     # --- device firmware (ADR-012): what build/config/firmware.list names.
     "linux-firmware" "s_firmware $(sha256_of "${KRYPTIK_ROOT}/build/config/firmware.list" 2>/dev/null || echo none)"
+    # --- sound: the library zone 0's mixer and a zone's programs use (docs/design/laptop.md).
+    "alsa-lib"    "s_alsa_lib"
     # --- the desktop: build tools, the Wayland stack, compositor, applications.
     "meson"       "s_meson"
     "ninja"       "s_ninja"

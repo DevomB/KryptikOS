@@ -15,20 +15,31 @@ check. The proposed decisions are ADR-021 and ADR-022 in
 
 ### Where things stand
 
-`CONFIG_SOUND` is off ("no audio stack", `hardening.fragment`), ADR-013
-lists sound among what Kryptik never builds, and ADR-012 left sound firmware
-out. No zone has a sound device or a sound server.
+The kernel builds HD Audio and USB audio as signed modules
+(`boot.fragment`), and the image carries alsa-lib without its MIDI,
+sequencer, use-case manager and DSP topology parts. No zone has a sound
+device or a sound server: `kryptik-sound` and the zone's plugin are not
+written.
 
 ### The kernel side
 
-The drivers are modules, since nothing at boot needs them (ADR-013):
-`snd-hda-intel` with its codecs, Intel's Sound Open Firmware drivers for
-laptops with digital microphones, AMD's audio coprocessor drivers,
-`snd-usb-audio`, and the smart-amplifier codecs (Cirrus, TI) many laptops
-put on their speakers. Most of their firmware is in linux-firmware, but
-Intel's SOF firmware and topology files are not: the SOF project publishes
-them separately (sof-bin). That is a second firmware source, which ADR-012
-has to name, with its own provenance row.
+The drivers are modules, since nothing at boot needs them (ADR-013). Built:
+`snd-hda-intel`, with the codec drivers of the machines that boot UEFI
+(Realtek, Conexant, Senarytech, IDT, Cirrus, and the HDMI and DisplayPort
+codecs of Intel, AMD and NVIDIA graphics) and the generic parser for any
+other codec, and `snd-usb-audio`; none of them needs firmware. The kernel
+loads no module by itself (`STATIC_USERMODEHELPER`), and a codec binds only
+to a driver loaded when the controller probes it, so modprobe loads every
+codec driver ahead of `snd-hda-intel` (`build/config/modprobe.d/sound.conf`,
+which stage 05 holds to the drivers built).
+
+Not yet: Intel's Sound Open Firmware drivers for laptops with digital
+microphones, AMD's audio coprocessor drivers, and the smart-amplifier
+codecs (Cirrus, TI) many laptops put on their speakers. Most of their
+firmware is in linux-firmware, but Intel's SOF firmware and topology files
+are not: the SOF project publishes them separately (sof-bin). That is a
+second firmware source, which ADR-012 has to name, with its own provenance
+row.
 
 ### Who holds `/dev/snd`
 
@@ -71,8 +82,11 @@ has to name, with its own provenance row.
 
 ### Check
 
-QEMU's HDA device with its output written to a WAV file on the host (`-audiodev wav`):
+QEMU's HDA device with its output written to a WAV file on the host (`-audiodev wav`),
+in `make sound-test`:
 
+- the card registers at boot with its codec bound, every codec driver
+  loaded ahead of the controller;
 - a tone played in `work` arrives in the file;
 - two zones playing at once are mixed;
 - `record` without a grant is refused, works after the chrome's gesture,

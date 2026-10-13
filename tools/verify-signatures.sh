@@ -256,6 +256,10 @@ PINNED_FPRS=(
 
     # libexpat names no signer: gentoo.org's WKD serves this for sping@gentoo.org (source-notes.tsv)
     "3176EF7DB2367F1FCA4F306B1F9B0E909AF37285"   # Sebastian Pipping, expat
+
+    # https://www.alsa-project.org/wiki/Download (retrieved 2026-10-13) states this fingerprint
+    # and links the key, https://www.alsa-project.org/files/pub/gpg-release-key-v1.txt.
+    "F04DF50737AC1A884C4B3D718380596DA6E59C91"   # ALSA Release Team, alsa-lib
 )
 
 # Primaries and subkeys: GOODSIG names a subkey, while pins and keys.manifest hold primaries.
