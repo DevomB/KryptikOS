@@ -764,17 +764,19 @@ fn truncated_ancillary_data_is_refused() {
     assert_eq!(b.read(&mut [0u8; 1]).unwrap(), 0);
 }
 
+/// A keymap a client never reads: the descriptors queued for it stop at the bound. (Of the
+/// requests, only create_pool carries one forward, and the pool bound comes first.)
 #[test]
 fn outgoing_descriptors_are_bounded() {
-    let (mut s, c, _sv) = make();
-    s.objects.place(3, (protocol::find("wl_data_offer").unwrap(), 1));
+    let (mut s, _c, sv) = make();
+    s.objects.place(3, (protocol::find("wl_keyboard").unwrap(), 1));
     let (a, mut b) = UnixStream::pair().unwrap();
     b.set_nonblocking(true).unwrap();
     for i in 0..=policy::MAX_PENDING_FDS {
-        let msg = MessageWriter::new(3, 1).string("text/plain").finish().unwrap();
-        send_with_fd(c.as_raw_fd(), &msg, a.as_raw_fd());
-        s.client.read().unwrap();
-        let result = s.pump(Dir::ClientToServer, &mut Clipboard::default()); // the compositor's queue is never flushed
+        let msg = MessageWriter::new(3, 0).u32(1).u32(4096).finish().unwrap(); // wl_keyboard.keymap(format, fd, size)
+        send_with_fd(sv.as_raw_fd(), &msg, a.as_raw_fd());
+        s.server.read().unwrap();
+        let result = s.pump(Dir::ServerToClient, &mut Clipboard::default()); // the client's queue is never flushed
         if i < policy::MAX_PENDING_FDS {
             result.unwrap();
         } else {
@@ -980,6 +982,7 @@ fn a_copy_in_one_client_pastes_in_another() {
     // The keyboard moves to B, which hears of the selection first.
     keyboard(&mut sa, false);
     pump_with(&mut a, &mut clip).unwrap();
+    let _ = read_all(&mut ca);
     keyboard(&mut sb, true);
     pump_with(&mut b, &mut clip).unwrap();
     let got = split_messages(&read_all(&mut cb));
@@ -1024,8 +1027,9 @@ fn only_the_keyboards_client_copies() {
     deliver(&mut clip, &mut [&mut a, &mut b]);
     assert_eq!(names(&split_messages(&read_all(&mut ca))), [(7, WL_DATA_SOURCE_CANCELLED)]);
     assert!(clip.selection.is_none() && read_all(&mut cb).is_empty());
-    // B copies, twice: the first offer B was given then reads nothing.
-    for source in [8u32, 9] {
+    // B copies, twice, its sources 7 and 8 (ids are each client's own): the first offer B was
+    // given then reads nothing.
+    for source in [7u32, 8] {
         cb.write_all(&MessageWriter::new(5, 0).u32(source).finish().unwrap()).unwrap();
         cb.write_all(&MessageWriter::new(source, 0).string("text/plain").finish().unwrap()).unwrap();
         cb.write_all(&MessageWriter::new(6, 1).u32(source).u32(10).finish().unwrap()).unwrap();
@@ -1033,7 +1037,7 @@ fn only_the_keyboards_client_copies() {
         deliver(&mut clip, &mut [&mut a, &mut b]);
     }
     let got = names(&split_messages(&read_all(&mut cb)));
-    assert!(got.contains(&(8, WL_DATA_SOURCE_CANCELLED)), "the first copy's source hears the second replaced it: {got:?}");
+    assert!(got.contains(&(7, WL_DATA_SOURCE_CANCELLED)), "the first copy's source hears the second replaced it: {got:?}");
     let (mut r, w) = UnixStream::pair().unwrap();
     send_with_fd(cb.as_raw_fd(), &MessageWriter::new(OFFER, 1).string("text/plain").finish().unwrap(), w.as_raw_fd());
     drop(w);
@@ -1043,7 +1047,7 @@ fn only_the_keyboards_client_copies() {
     r.read_to_end(&mut pasted).unwrap();
     assert!(pasted.is_empty(), "the reader gets end of file");
     // The copy's source destroyed: B, with the keyboard, hears there is no selection.
-    cb.write_all(&MessageWriter::new(9, 1).finish().unwrap()).unwrap();
+    cb.write_all(&MessageWriter::new(8, 1).finish().unwrap()).unwrap();
     pump_with(&mut b, &mut clip).unwrap();
     deliver(&mut clip, &mut [&mut a, &mut b]);
     let got = split_messages(&read_all(&mut cb));
