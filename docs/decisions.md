@@ -549,3 +549,27 @@ A compromised compositor still controls what the user sees and types.
 
 **Rejected:** splitting dwl into an input process and a renderer, which
 leaves the renderer drawing the borders and every zone talking to it.
+
+## ADR-025 (proposed): A USB stick is read in the zone the user gives it to, never mounted
+
+When a stick appears, the chrome names it from sysfs and asks which zone
+gets which partition, read-only unless the user says otherwise. kryptikd
+opens the partition exclusively, behind a device-mapper mapping it turns to
+errors on eject, and that zone's broker hands the zone the descriptor. A
+reader of Kryptik's own copies files in and out on the descriptor. Nothing
+mounts the stick, in zone 0 or anywhere
+([removable storage](design/removable-storage.md)).
+
+**Why:** a stick's filesystem is written by whoever had it last, and the
+kernel's filesystem drivers are shared by every zone. Read by a zone's own
+process, a hostile filesystem reaches that process; mounted, it reaches the
+kernel.
+
+**Cost:** a copy step, since a file on the stick reaches a zone's programs
+only once copied in; a reader to write and keep, FAT first and exFAT next;
+a broker verb that hands a descriptor out.
+
+**Rejected:** mounting in zone 0 and transferring, which parses the stick in
+the shared kernel and puts file picking in zone 0. FUSE in the chosen zone,
+which lets every program there browse the stick, waits: it adds a kernel
+subsystem, and is weighed again if copying first proves too clumsy.
