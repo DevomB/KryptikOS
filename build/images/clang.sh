@@ -17,6 +17,6 @@ s_clang_libclang() {
     mkdir -p "$dir"
     tar --zstd --no-same-owner -xf "${KRYPTIK_SOURCES}/LLVM-${V_LLVM}-Linux-X64.tar.zst" -C "$dir" --strip-components=1 \
         --wildcards "${top}/bin/clang" "${top}/bin/clang-[0-9]*" "${top}/lib/libclang.so*" \
-        "${top}/lib/clang/*/include/*" "${top}/LICENSE.TXT"
+        "${top}/lib/clang/*/include/*"
     "${dir}/bin/clang" --version
 }
