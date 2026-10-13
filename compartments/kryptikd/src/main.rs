@@ -700,6 +700,10 @@ fn cmd_check(dir: &Path, target: bool, image_list: Option<&Path>) -> ExitCode {
                             failed = true;
                         }
                         Some(Ok(m)) => {
+                            if let Err(e) = images::requires_met(m, &z.images) {
+                                eprintln!("             {e}");
+                                failed = true;
+                            }
                             for name in &z.images {
                                 let held = m.images.iter().any(|i| &i.name == name);
                                 match images::needs_met(m, name, granted.as_ref()) {

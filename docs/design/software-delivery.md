@@ -192,6 +192,8 @@ up ADR-001 in the zones where the applications run.
   release: 1.2.0
   base: <the root's dm-verity root hash>
   image: browser 140.4.0 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
+  image: toolkit 3.24.49 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
+  requires: browser toolkit
   needs: browser allow-syscall seccomp
   ```
 
@@ -201,8 +203,10 @@ up ADR-001 in the zones where the applications run.
   from the signed kernel's command line. The verity parameters are the
   root's (SHA-256, 4096-byte blocks, no superblock, the hash tree after
   `data-blocks`), so every value kryptikd passes to dm-verity is signed.
-  Image lines are sorted by name and a needs line uses the policy-file
-  syntax; anything else in the file refuses it.
+  Image lines are sorted by name; a requires line, one per image in image
+  order, names the images it is built over, which a zone naming it must
+  name too; a needs line uses the policy-file syntax. Anything else in the
+  file refuses it.
 - **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
   the list for each root as `<base>.manifest` and `.manifest.sig`, root
   only. Zone 0 keeps the generation the committed root uses and, during a
