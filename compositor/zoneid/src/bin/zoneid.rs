@@ -355,9 +355,8 @@ A window's border colour is how the user tells which zone it belongs to
 checked against a model of it, not compared as strings.
 
 The rule: every two border colours the compositor draws (each zone's, and its
-own for a window from no zone, from an unknown zone, or asking for attention)
-differ by the floor under every vision model. Zones have distinct glyphs and
-distinct labels.
+own for a window from no zone or asking for attention) differ by the floor
+under every vision model. Zones have distinct glyphs and distinct labels.
 
 Channels:
   color     the whole window border        seen without looking for it

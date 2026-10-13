@@ -16,6 +16,7 @@ mod netlink;
 mod netzone;
 mod password;
 mod policy;
+mod proxy;
 mod registry;
 mod rootfs;
 mod seccomp;
