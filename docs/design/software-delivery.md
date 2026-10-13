@@ -202,7 +202,10 @@ up ADR-001 in the zones where the applications run.
   others (`image_over`): their trees lie under it, above the root, while its
   rows run, the tree check refuses a file any of them has, and the list's
   `requires:` line names those that ship. A layer marked `image_ships=no`, a
-  toolchain only builds use, is never packed or listed.
+  toolchain only builds use, is never packed or listed. `image_over` is not
+  followed through: an image built over one that is itself built over others
+  names those too, and a zone names every image of the chain, as each image's
+  `requires:` line is checked on its own.
 - **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
   makes the root (ext4 without a journal, then the verity tree, with a
   salt and UUID derived from the content), runs the root's artifact audit
