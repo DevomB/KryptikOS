@@ -15,9 +15,11 @@ image_rows=(
 
 # Stage 04's GCC and hardening flags; libclang only for bindgen. With no network: Firefox's own vendored
 # crates and Python packages, no toolchain bootstrap, no Node.js. No D-Bus, which no zone has, no updater
-# (updates are the image's), no crash reporter, no EME, no jemalloc (hardened_malloc is preloaded), and
-# no sound until sound reaches zones. The first build keeps no wasm sandbox for its libraries. No debug
-# symbols: stage 06 strips them anyway, and linking libxul with them would need more than the runner has.
+# (updates are the image's), no crash reporter, no EME, no jemalloc (hardened_malloc is preloaded). Sound
+# through ALSA, whose default device in a zone is zone 0's mixer; Web MIDI links ALSA's sequencer, which
+# reaches no device, as the kernel builds none. The first build keeps no wasm sandbox for its libraries.
+# No debug symbols: stage 06 strips them anyway, and linking libxul with them would need more than the
+# runner has.
 s_browser_firefox() {
     local src llvm="/usr/lib/llvm-${V_LLVM%%.*}" gccdir
     # bindgen's libclang finds GCC's C++ headers only under triples it knows, and this GCC's is
@@ -58,7 +60,7 @@ ac_add_options --disable-updater
 ac_add_options --disable-crashreporter
 ac_add_options --disable-eme
 ac_add_options --disable-jemalloc
-ac_add_options --disable-audio-backends
+ac_add_options --enable-audio-backends=alsa
 ac_add_options --without-wasm-sandboxed-libraries
 ac_add_options --with-libclang-path=${llvm}/lib
 ac_add_options --with-clang-path=${llvm}/bin/clang
@@ -71,8 +73,10 @@ EOF
         MOZ_NOSPAM=1 ./mach --no-interactive build
     env MOZBUILD_STATE_PATH="${src}/.mozbuild" ./mach --no-interactive install
     test -x /usr/lib/firefox/firefox
-    # Enterprise policies: no telemetry or studies, no update checks (updates are the image's), and
-    # no question of the default browser, which a zone has no other of.
+    # Enterprise policies: no telemetry or studies, no update checks (updates are the image's), no
+    # question of the default browser, which a zone has no other of, and none of the first-run pages,
+    # recommendations or sponsored tiles that a profile made afresh at each start, as untrusted's is,
+    # would show every time.
     install -d -m 0755 /usr/lib/firefox/distribution
     cat > /usr/lib/firefox/distribution/policies.json <<'EOF'
 {
@@ -80,7 +84,22 @@ EOF
     "DisableTelemetry": true,
     "DisableFirefoxStudies": true,
     "DisableAppUpdate": true,
-    "DontCheckDefaultBrowser": true
+    "DontCheckDefaultBrowser": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": "",
+    "NoDefaultBookmarks": true,
+    "UserMessaging": {
+      "ExtensionRecommendations": false,
+      "FeatureRecommendations": false,
+      "UrlbarInterventions": false,
+      "SkipOnboarding": true,
+      "MoreFromMozilla": false,
+      "FirefoxLabs": false
+    },
+    "FirefoxHome": {
+      "SponsoredTopSites": false,
+      "SponsoredStories": false
+    }
   }
 }
 EOF
