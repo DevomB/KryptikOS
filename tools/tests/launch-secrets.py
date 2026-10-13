@@ -59,7 +59,9 @@ signal.pause()
             daemon.bind(str(launch_socket))
             daemon.listen(1)
             daemon.settimeout(5)
-            compositor.bind(str(work / "wayland-0"))
+            # dwl's socket for the zone, which the proxy is given as its upstream.
+            (work / "kryptik-compositor").mkdir()
+            compositor.bind(str(work / "kryptik-compositor" / "work"))
 
             def receive():
                 with daemon.accept()[0] as conn:
@@ -83,7 +85,7 @@ signal.pause()
                     run = subprocess.run(
                         [str(work / "launcher"), "--passphrase-fd", str(f.fileno()), "work", "--", "/bin/true"],
                         pass_fds=(f.fileno(),), capture_output=True, timeout=8,
-                        env={**os.environ, "XDG_RUNTIME_DIR": str(work), "WAYLAND_DISPLAY": "wayland-0", "KRYPTIK_TEST_FD_REPORT": str(report)},
+                        env={**os.environ, "XDG_RUNTIME_DIR": str(work), "KRYPTIK_TEST_FD_REPORT": str(report)},
                     )
                 receiver.join(timeout=6)
                 assert not receiver.is_alive(), "test daemon did not finish"

@@ -187,7 +187,9 @@ serves exactly one zone. The proxy advertises only `wl_compositor`,
 paste stays among the zone's own clients and never reaches the compositor. It disconnects a client that
 binds anything else, bounds objects, pending bytes and descriptors per
 client, and rewrites every window's title to `[zone] ...` and its app_id to
-`kryptik.<zone>.<claimed>`, from which the compositor draws the zone's border.
+`kryptik.<zone>.<claimed>`. It reaches dwl through the zone's own socket,
+which offers the same globals, and dwl draws the zone's border from that
+socket.
 
 ## Tests
 
