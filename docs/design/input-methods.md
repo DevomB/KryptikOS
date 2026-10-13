@@ -8,7 +8,8 @@ CJK script. The laptop design chose one input method per zone, inside it,
 offered the input-method protocol by its proxy and never the virtual
 keyboard ([laptop](laptop.md#input-methods)), and left open whether an input
 method works without the virtual keyboard. It does not. This design settles
-what replaces that rule. [ADR-028](../decisions.md) proposes it.
+what replaces that rule. [ADR-028](../decisions.md) decides it: none for
+1.0, then one per zone, its virtual keyboard bound to the zone.
 
 ## Where things stand
 
@@ -57,8 +58,12 @@ zone a keymap of its choosing.
     so the chrome's and other zones' keys never reach it;
   - a text field's state goes only to the input method of its own zone, and
     that method's commits only to that field;
-  - its candidate window is a surface of that zone, with that zone's
-    border.
+  - dwl's own keys come first: `keybinding()` runs on the real keyboard's
+    keys before an input method's grab sees them, so no zone's method sees
+    or swallows Alt+Shift+l, the move gesture or any other compositor key;
+  - its candidate window (`zwp_input_popup_surface_v2`) follows the rules
+    for a zone's popups: placed and clipped inside its zone's window and
+    frame, never drawn over the chrome or another zone's window.
 
   The virtual keyboard then does no more than the zone's own windows can:
   type into themselves.
@@ -80,11 +85,12 @@ zone a keymap of its choosing.
   most users need none. fcitx5 can leave D-Bus out (`ENABLE_DBUS`), which
   zones do not run.
 
-## Recommendation
+## The decision
 
-For 1.0, no input method, and the guide says so. Then one per zone, with
-the virtual keyboard bound to its zone, and fcitx5 delivered as a software
-image.
+ADR-028 decides: for 1.0, no input method, and the guide says so. Then one
+per zone, with the virtual keyboard bound to its zone as above, and fcitx5
+delivered as a software image. That is the direction, not yet the code:
+dwl's relay is weighed again when the work starts.
 
 ## Check, when it comes
 
@@ -94,7 +100,11 @@ image.
   in that window;
 - while the chrome or a `personal` window has focus, the engine gets no
   key, and keys sent through `work`'s virtual keyboard reach no window;
-- Alt+Shift+l sent through `work`'s virtual keyboard locks nothing;
+- Alt+Shift+l sent through `work`'s virtual keyboard locks nothing, and
+  from the real keyboard it locks the screen while `work`'s engine holds
+  the grab;
+- a candidate list opened near the edge of a `work` window stays inside its
+  frame;
 - a zone that did not ask is offered none of the three globals;
 - a layout set in the session still reaches every zone's client in its
   keymap.
