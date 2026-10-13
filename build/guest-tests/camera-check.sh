@@ -67,14 +67,15 @@ if "hold" in sys.argv:
 untrusted_uid="$(sed -n 's/^uid_base *= *\([0-9]*\).*/\1/p' "$Z/untrusted.toml")"
 node=/run/kryptik-camera/untrusted/video0
 
-# A camera plugged in loads nothing: eudev loads by alias, and the alias is kept from uvcvideo.
+# A camera plugged in loads nothing: eudev loads by alias, and kmod skips a blacklisted module's
+# own aliases, so a video-class device's alias, which uvcvideo claims, loads nothing.
 alias='usb:v0000p0000d0000dcEFdsc02dp01ic0Eisc01ip00in00'
-would="$(modprobe -n -v "$alias" 2>&1)"
+claims="$(modinfo -F alias uvcvideo 2>&1 | grep -c 'ic0Eisc01ip00')"
 kept="$(modprobe -n -v -b "$alias" 2>&1)"
-if [[ "$would" == *uvcvideo* && "$kept" != *uvcvideo* ]] && ! loaded uvcvideo; then
-    pass "camera-not-by-alias" "a video-class alias names uvcvideo, and loading by it loads nothing"
+if [[ "$claims" -ge 1 && "$kept" != *uvcvideo* ]] && ! loaded uvcvideo; then
+    pass "camera-not-by-alias" "uvcvideo claims the video class, and loading by a camera's alias loads nothing"
 else
-    fail "camera-not-by-alias" "without the blacklist: $(oneline <<<"$would"); with it: $(oneline <<<"$kept"); loaded: $(loaded uvcvideo && echo yes || echo no)"
+    fail "camera-not-by-alias" "uvcvideo's video-class aliases: ${claims}; loading by alias: $(oneline <<<"$kept"); loaded: $(loaded uvcvideo && echo yes || echo no)"
 fi
 
 modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid.err" || { fail "camera-stand-in" "$(oneline < "$LOG/vivid.err")"; exit 0; }
