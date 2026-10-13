@@ -61,12 +61,12 @@ T="$(tr -d '\r' < "$LOG")"
 summary="$(grep -o 'GT SUMMARY passed=[0-9]* failed=[0-9]*' <<<"$T" | tail -1)"
 echo "  guest summary: ${summary:-none}"
 gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*failed=\([0-9]*\).*/\1/p' <<<"$summary")"
-if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 19 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
+if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 20 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in sound-card codec-bound codec-drivers-ahead pcm-nodes mixer-running mixer-zones mixer-own-user \
             zone-socket-no-card zone-plays zones-play-together record-refused-ungranted status-shows-recording \
             record-granted grant-ends-with-zone foreign-uid-refused chrome-grants-microphone \
-            chrome-takes-microphone-back chrome-sets-volume volume-steps; do
+            chrome-takes-microphone-back chrome-sets-volume microphone-window volume-steps; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 

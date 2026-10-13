@@ -331,7 +331,9 @@ hears another. No zone may record until you let it: in the menu, `c` and the
 zone's number lets that zone use the microphone until it stops, one zone at
 a time, and `c` alone takes it back, as does the keyboard's microphone key.
 The menu's Sound line names the zone that may record and says when it is
-recording. `v` and a digit sets the volume, 0 to 9, `v`, a zone's number and
+recording, and while a zone may record, a window of its own says so, and
+when it does; it closes when the zone stops or the microphone is taken
+back. `v` and a digit sets the volume, 0 to 9, `v`, a zone's number and
 a digit sets that zone's own, and `x` mutes or unmutes everything. Sound
 plays on a USB device when one is plugged in, otherwise on the built-in one.
 

@@ -220,6 +220,26 @@ if [[ "$zone_vol" == "zone untrusted 0" && "$master_vol" == "master 100" && "$mu
 else
     fail "chrome-sets-volume" "after v${n}0: ${zone_vol}; v9: ${master_vol}; x: ${muted}; x: ${unmuted}"
 fi
+# The microphone's window, as the chrome opens it on a grant: it names the zone, says when it
+# records, and closes when the grant goes.
+watch="$LOG/microphone.out"
+ctl grant untrusted > /dev/null
+su -s /bin/sh "$USER_NAME" -c "/usr/bin/kryptik-chrome --microphone untrusted" > "$watch" 2>&1 &
+wp=$!
+( zrun untrusted 30 -- "$PROBE" record 3 ) &
+rp=$!
+said_rec() { grep -qx 'RECORDING NOW' "$watch"; }
+wait_for 15 said_rec; wait "$rp"
+# The zone stopped with the record, and its grant with it: the window says so and closes.
+closed() { ! kill -0 "$wp" 2>/dev/null; }
+if wait_for 15 closed && grep -q '^Zone untrusted .* holds the microphone' "$watch" && said_rec \
+   && grep -q '^The microphone is no longer zone untrusted' "$watch"; then
+    pass "microphone-window" "$(grep -v '^=' "$watch" | tr '\n' '|')"
+else
+    kill "$wp" 2>/dev/null
+    fail "microphone-window" "$(tr '\n' '|' < "$watch")"
+fi
+
 # The keys' steps: dwl runs these for the volume keys.
 ctl volume -5 > /dev/null; ctl volume -5 > /dev/null; stepped="$(st master)"
 ctl volume +100 > /dev/null; top="$(st master)"

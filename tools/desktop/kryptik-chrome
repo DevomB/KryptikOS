@@ -28,6 +28,9 @@
 #   kryptik-chrome --focus         print the focused zone, from the record
 #   kryptik-chrome --confirm ID    ask the broker's question ID in a trusted window: yes only
 #                                  for the code it shows, typed after it shows
+#   kryptik-chrome --microphone ZONE
+#                                  say, for as long as ZONE holds the microphone,
+#                                  that it does and whether it is recording
 #
 # Passphrases are read by kryptik-launch on the chrome's own terminal and go
 # to the daemon as a descriptor, never in argv or the environment.
@@ -133,7 +136,41 @@ run_status() {
             sleep 1
         done
     ) &
+    # While a zone holds the microphone, a window of the chrome's says so, and when it records.
+    (
+        shown=""
+        while :; do
+            mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
+            if [ -n "$mic" ] && [ "$mic" != "$shown" ]; then
+                "$TERMINAL" /usr/bin/kryptik-chrome --microphone "$mic" &
+            fi
+            shown="$mic"
+            sleep 1
+        done
+    ) &
     status_to_focus
+}
+
+# The microphone's window: open from the grant to its end, with each change of state on a line.
+run_microphone() {
+    z="$1" said=""
+    clear 2>/dev/null
+    echo "================ KRYPTIK - the microphone (zone 0) ================"
+    printf 'Zone %s %s %s holds the microphone until it stops.\n' "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)"
+    echo "Alt+p, then c and Enter, or the keyboard's microphone key, takes it back."
+    echo
+    while :; do
+        line="$("$SOUND" --control status 2>/dev/null | grep "^zone $z ")"
+        case "$line" in
+            *" granted recording") now="RECORDING NOW" ;;
+            *" granted") now="not recording" ;;
+            *) break ;;
+        esac
+        [ "$now" = "$said" ] || { echo "$now"; said="$now"; }
+        sleep 1
+    done
+    echo "The microphone is no longer zone $z's."
+    sleep 2
 }
 
 # --- the launcher ---------------------------------------------------------------
@@ -493,7 +530,8 @@ case "${1:-}" in
     "") run_status ;;
     --confirm) [ -n "${2:-}" ] || die "--confirm needs an id"; run_confirm "$2" ;;
     --menu) run_menu ;;
+    --microphone) [ -n "${2:-}" ] || die "--microphone needs a zone"; run_microphone "$2" ;;
     --prompt) shift; run_prompt "$@" ;;
     --focus) cat "$FOCUS" 2>/dev/null || { echo "zone=-"; exit 1; } ;;
-    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus]" ;;
+    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus | --microphone ZONE]" ;;
 esac

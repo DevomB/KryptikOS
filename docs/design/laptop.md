@@ -23,8 +23,10 @@ recommendation below has it. The chrome's menu grants the microphone
 (`c<N>`, and `c` takes it back), sets the volume of all and of each zone
 (`v<D>`, `v<N><D>`) and mutes (`x`), and names the zone that may record and
 whether it does; the keyboard's volume keys step the volume, its mute key
-mutes, and its microphone key takes the microphone back. The menu shows the
-recording when it is open; nothing on screen shows it otherwise yet.
+mutes, and its microphone key takes the microphone back. While a zone holds
+the microphone, a window of the chrome's says so, and says when it records;
+it opens on the grant, so it takes the keyboard from the menu the gesture was
+typed in, not from a zone, and closes when the grant ends.
 
 ### The kernel side
 
