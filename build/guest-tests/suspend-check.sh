@@ -283,6 +283,10 @@ if wait_for 60 more unlocked "$unlocked0" && state_is 0 && wait_for 15 test ! -d
 else
     fail "resumed-after-refusal" "flag $(state_flag): $(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
     stuck_report
+    # The rounds after this one need a lock that answers: the stuck lock is killed, and its
+    # supervisor, whose pid the lock file holds, locks again as after any signal.
+    sup="$(cat "$RT/kryptik/lock.pid" 2>/dev/null)"
+    [[ -n "$sup" ]] && pkill -KILL -P "$sup" -x kryptik-lock
 fi
 wait_for 15 none_frozen || fail "zones-thawed-after-refusal" "$(zones_frozen)"
 
