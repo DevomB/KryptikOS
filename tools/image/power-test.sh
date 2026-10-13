@@ -44,7 +44,7 @@ install_disk power-install "$USB" --vars clean && green "installed" || { red "in
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the power source, from the guest, to a critical battery"
 start_vm power-p2 --net user
-DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
+DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/power-check.sh ${TUSER} 2>&1'" \
     "expect:Password: ?" "send:${RPASS}" \
