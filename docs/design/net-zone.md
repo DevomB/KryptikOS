@@ -186,7 +186,7 @@ query and the [update](update-channel.md) fetcher. Builds on
 - **Readiness**, printed again on any change:
 
 ```text
-netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none> time=<offset|no-answer|...> bridge=kryptik0 uplinks=<list>
+netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|refused:ssid|connecting|unconfigured|off|none> time=<offset|no-answer|...> bridge=kryptik0 uplinks=<list>
 netzone: NOT READY <reason>        (forwarding off)
 ```
 
@@ -344,13 +344,24 @@ configured the zone keeps its IPv4 path and the launcher says so.
   802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed,
   wpa_supplicant would take `WPA-PSK WPA-EAP` and never SAE. Management frames
   are protected wherever the access point offers it (`ieee80211w=1`), and SAE
-  always has them. A file an older kryptikd wrote is rewritten so. A network
+  always has them. SAE derives its password element by hash-to-element
+  wherever the access point offers it, and by the older loop only where it
+  does not (`sae_pwe=2` in the file's header): the loop alone,
+  wpa_supplicant's default, passes over an access point that takes
+  hash-to-element only, and it is the method side channels have leaked
+  passwords from. A file an older kryptikd wrote is rewritten so. A network
   saved as open (`kryptik wifi add SSID --open`, an `open` line in place of
   `psk` in the request) is joined by no key at all (`key_mgmt=NONE`), so a
   beacon offering one changes nothing, and has no management frames to
   protect. Anyone in range reads what crosses it, as on any open network,
   and any access point may take its name: what a zone sends there is private
-  only where the zone encrypts it.
+  only where the zone encrypts it. A network saved with `--hidden` (a
+  `hidden` line in the request) gets `scan_ssid=1`: its access point beacons
+  with no name and answers only a probe request that names it, so the
+  station names it in its scans wherever it is until it joins, from a random
+  address where the radio allows one, and anyone listening learns that it
+  knows that network. A new passphrase keeps it so, as without it the
+  network would not be found again; forgetting it starts over.
 - **A failed join is followed by a scan.** The file's header sets
   `scan_res_valid_for_connect=0`, so the supplicant never joins from an
   earlier scan without a new one. With two networks saved, wpa_supplicant
@@ -359,6 +370,23 @@ configured the zone keeps its IPv4 path and the launcher says so.
   the kernel's scan cache keeps for 30 s), it counts itself still joining it,
   asks for no scan, and waits until something else scans. A file an older
   kryptikd wrote is rewritten so.
+- **A refused passphrase is said.** wpa_supplicant says why a join failed
+  only to a listener on its control socket, and the action mode of its
+  `wpa_cli` passes on neither event that means a refused passphrase. Beside
+  each supplicant the net zone starts `kryptikd supplicant --watch RADIO`, as
+  the supplicant's user, under its confinement and with no capability. The
+  listener keeps `/run/wpa_supplicant/RADIO.refused` naming the network after
+  WPA2's 4-way handshake fails (`CTRL-EVENT-SSID-TEMP-DISABLED ...
+  reason=WRONG_KEY`), or
+  after the access point being joined refuses the station's SAE confirm
+  (`CTRL-EVENT-AUTH-REJECT ... auth_type=3 auth_transaction=2
+  status_code=15`, which wpa_supplicant itself takes for a passphrase
+  mismatch). The file goes when a network is joined. While none is, the
+  status line says `wifi=refused:SSID`, and the menu's Network line names the
+  network and says it refused the passphrase. An access point that drops a
+  wrong SAE confirm without answering looks like any other failed join, and
+  the line stays `connecting`. The listener ends with its supplicant, and a
+  supplicant started again gets a listener of its own.
 - **Each saved network sees an address of its own.** kryptikd gives every
   network a random, locally administered unicast address when it is first
   saved, or when a file an older kryptikd wrote is rewritten, and keeps it

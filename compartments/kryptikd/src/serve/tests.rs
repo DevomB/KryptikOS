@@ -14,7 +14,7 @@ fn net_summary_passes_on_known_fields_only() {
     assert_eq!(net_summary(down).as_deref(), Some("not ready: forwarding is off"));
     // An SSID is any access point's: what a terminal would act on comes out escaped, and words
     // in it that look like fields do not stand for the line's own.
-    let hostile = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=\u{1b}[2J x time=0 dns=no time=+1 bridge=k";
+    let hostile = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=\\x1b[2J x time=0 dns=no time=+1 bridge=k";
     let s = net_summary(hostile).unwrap();
     assert!(!s.contains('\u{1b}') && s.contains("\\u{1b}[2J x time=0 dns=no"), "{s}");
     assert!(s.ends_with(", uplink 10.0.2.15/24, DNS"), "{s}");
@@ -29,8 +29,41 @@ fn net_summary_passes_on_known_fields_only() {
         "READY uplink=none nat=yes dns=yes wifi= time=0",
         "READY uplink=none nat=yes dns=yes wifi=an SSID of thirty-three bytes!!!! time=0",
         "READY uplink=none nat=yes dns=yes time=0 wifi=late",
+        // iw prints no control character as itself.
+        "READY uplink=none nat=yes dns=yes wifi=\u{1b}[2J time=0",
     ] {
         assert_eq!(net_summary(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn net_summary_reads_an_ssid_back_from_iw() {
+    let line = |printed: &str| format!("READY uplink=none nat=yes dns=yes wifi={printed} time=0");
+    // iw prints each byte past ASCII as \xHH, four characters for one byte: a name of sixteen
+    // bytes is sixty-four characters long, and comes back whole.
+    let cyrillic = line("\\xd0\\xa0\\xd0\\xb5\\xd1\\x81\\xd1\\x82\\xd0\\xbe\\xd1\\x80\\xd0\\xb0\\xd0\\xbd");
+    assert_eq!(net_summary(&cyrillic).as_deref(), Some("ready: Wi-Fi \"Ресторан\", no uplink address, DNS"));
+    let full = line(&"\\xc3\\xa9".repeat(16));
+    assert_eq!(net_summary(&full), Some(format!("ready: Wi-Fi \"{}\", no uplink address, DNS", "é".repeat(16))));
+    assert_eq!(net_summary(&line(&format!("{}x", "\\xc3\\xa9".repeat(16)))), None, "33 bytes");
+    // A name that is not UTF-8 keeps its escapes; one that turns text around is escaped.
+    assert_eq!(net_summary(&line("Caf\\xe9")).as_deref(), Some("ready: Wi-Fi \"Caf\\xe9\", no uplink address, DNS"));
+    let s = net_summary(&line("\\xe2\\x80\\xaegnp.exe")).unwrap();
+    assert!(!s.contains('\u{202e}') && s.contains("\\u{202e}gnp.exe"), "{s}");
+    for bad in ["\\x", "\\xd", "\\xzz", "\\q", "tail\\", "\\x00\\x00"] {
+        assert_eq!(net_summary(&line(bad)), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn net_summary_names_the_network_that_refused_the_passphrase() {
+    let line = |wifi: &str| format!("READY uplink=none nat=yes dns=no wifi={wifi} time=no-uplink");
+    let refused = line("refused:Home net");
+    assert_eq!(net_summary(&refused).as_deref(), Some("ready: Wi-Fi \"Home net\" refused the passphrase, no uplink address, no DNS"));
+    let cafe = line("refused:Caf\\xc3\\xa9");
+    assert_eq!(net_summary(&cafe).as_deref(), Some("ready: Wi-Fi \"Café\" refused the passphrase, no uplink address, no DNS"));
+    for bad in ["refused:", "refused:\\q", "refused:an SSID of thirty-three bytes!!!!"] {
+        assert_eq!(net_summary(&line(bad)), None, "{bad:?}");
     }
 }
 
@@ -81,12 +114,16 @@ fn parse_wifi_hides_psk() {
     let r = parse_wifi("wifi-forget\nssid Home\nend\n").unwrap();
     assert_eq!((r.ssid.as_str(), r.psk), ("Home", None));
     let r = parse_wifi("wifi-add\nssid Cafe\nopen\nend\n").unwrap();
-    assert_eq!((r.ssid.as_str(), r.psk, r.open), ("Cafe", None, true));
+    assert_eq!((r.ssid.as_str(), r.psk, r.open, r.hidden), ("Cafe", None, true, false));
+    let r = parse_wifi("wifi-add\nssid Attic\npsk pass word\nhidden\nend\n").unwrap();
+    assert_eq!((r.ssid.as_str(), r.open, r.hidden), ("Attic", false, true));
     for bad in [
         "wifi-add\nssid a\nend\n",                    // no psk
         "wifi-add\nssid a\npsk secret\nopen\nend\n",  // a psk and open
         "wifi-add\nssid a\nopen\nopen\nend\n",        // one open
         "wifi-forget\nssid a\nopen\nend\n",           // forget takes no open
+        "wifi-add\nssid a\nopen\nhidden\nhidden\nend\n", // one hidden
+        "wifi-forget\nssid a\nhidden\nend\n",         // forget takes no hidden
         "wifi-add\npsk secret\nend\n",                // no ssid
         "wifi-add\nssid a\npsk se\ncret\nend\n",      // a newline in the psk
         "wifi-add\nssid a\npsk secret\n",             // no end

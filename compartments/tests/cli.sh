@@ -334,9 +334,9 @@ case "\${1:-}" in
     --runtime-dir) exit 0 ;;
     --wifi-list)   printf 'wifi-list\n' | client | sed -n 's/^network //p' ;;
     --wifi-add)    IFS= read -r pass
-                   r="\$(printf 'wifi-add\nssid %s\npsk %s\nend\n' "\$2" "\$pass" | client)"
+                   r="\$( { printf 'wifi-add\nssid %s\npsk %s\n' "\$2" "\$pass"; [[ "\${3:-}" == --hidden ]] && printf 'hidden\n'; printf 'end\n'; } | client)"
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
-    --wifi-add-open) r="\$(printf 'wifi-add\nssid %s\nopen\nend\n' "\$2" | client)"
+    --wifi-add-open) r="\$( { printf 'wifi-add\nssid %s\nopen\n' "\$2"; [[ "\${3:-}" == --hidden ]] && printf 'hidden\n'; printf 'end\n'; } | client)"
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
     --wifi-forget) r="\$(printf 'wifi-forget\nssid %s\nend\n' "\$2" | client)"
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
@@ -374,6 +374,13 @@ SHIM
             pass "wifi add --open asks for no passphrase and saves an open network through the launch service"
         else
             fail "wifi add --open through the launch service: exit $rc, output '$out'"
+        fi
+        out="$(printf 'attic passphrase\n' | KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi add Attic --hidden 2>&1)"; rc=$?
+        if (( rc == 0 )) && [[ "$out" == "ok added hidden network \"Attic\";"* ]] \
+           && grep -A1 -xF $'\tssid="Attic"' "$WDAEMON/wpa_supplicant.conf" | grep -qxF $'\tscan_ssid=1'; then
+            pass "wifi add --hidden saves a network asked for by name through the launch service"
+        else
+            fail "wifi add --hidden through the launch service: exit $rc, output '$out'"
         fi
         # No zone runs here: the daemon's scan job asks the registry and says the nic zone is down.
         out="$(KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi scan 2>&1)"; rc=$?

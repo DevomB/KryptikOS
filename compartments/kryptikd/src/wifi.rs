@@ -21,8 +21,12 @@ pub const SERVICE_DIR: &str = "/run/service/net-zone";
 /* No scan is recent enough to join from without a new one. With two networks saved, a first
  * failed join makes wpa_supplicant 2.12 pick again from its last scan; picking the access point
  * that just failed (one gone, which the kernel's scan cache keeps for 30 s), it counts itself
- * still joining it and asks for no scan, and waits until something else scans. */
-const HEADER: &str = "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\nscan_res_valid_for_connect=0\n";
+ * still joining it and asks for no scan, and waits until something else scans.
+ * SAE derives its password element by hash-to-element wherever the access point offers it, and
+ * by the older loop only where it does not. The loop alone, wpa_supplicant's default, passes
+ * over an access point that takes hash-to-element only, and side channels have leaked
+ * passwords from it. */
+const HEADER: &str = "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\nscan_res_valid_for_connect=0\nsae_pwe=2\n";
 
 /* How a saved network may be joined, from what was saved: a passphrase by WPA2's pre-shared
  * key or WPA3's SAE, a raw key by the former alone (SAE needs the passphrase), and neither by
@@ -63,12 +67,18 @@ pub struct Network {
     /// The station's address on this network alone (`mac_value`); none in a file an older
     /// kryptikd wrote, until it is rewritten.
     pub mac: Option<String>,
+    /// A network that does not name itself in its beacons, asked for by name in each scan.
+    pub hidden: bool,
 }
 
 /* Each saved network is joined from an address of its own, made when it is first saved and
  * kept with it: the network sees the same station each time, and no other network, nor the
  * radio's own address, is seen there (wpa_supplicant's dedicated address per ESS). */
 const MAC_POLICY: &str = "\tmac_addr=3";
+
+/* A network that hides its name answers only a scan that asks for it by name, so the station
+ * names it in its probe requests wherever it is, to anyone listening, until it joins. */
+const HIDDEN: &str = "\tscan_ssid=1";
 
 /// A locally administered unicast address, as `mac_value` holds one.
 fn check_mac(v: &str) -> Result<(), String> {
@@ -156,7 +166,11 @@ pub fn render(nets: &[Network]) -> String {
     let mut out = String::from(HEADER);
     for n in nets {
         out.push_str("\nnetwork={\n");
-        out.push_str(&format!("\tssid=\"{}\"\n{}\n", n.ssid, key_mgmt(&n.psk)));
+        out.push_str(&format!("\tssid=\"{}\"\n", n.ssid));
+        if n.hidden {
+            out.push_str(&format!("{HIDDEN}\n"));
+        }
+        out.push_str(&format!("{}\n", key_mgmt(&n.psk)));
         match &n.psk {
             Psk::Passphrase(p) => out.push_str(&format!("{PMF}\n\tpsk=\"{p}\"\n")),
             Psk::Hex(h) => out.push_str(&format!("{PMF}\n\tpsk={h}\n")),
@@ -179,6 +193,7 @@ struct Block {
     pmf: bool,
     mac_policy: bool,
     mac: Option<String>,
+    hidden: bool,
 }
 
 impl Block {
@@ -198,7 +213,7 @@ impl Block {
         if self.mac_policy != self.mac.is_some() {
             return Err(format!("line {n}: a block with only one of mac_addr and mac_value"));
         }
-        Ok(Network { ssid, psk, mac: self.mac })
+        Ok(Network { ssid, psk, mac: self.mac, hidden: self.hidden })
     }
 }
 
@@ -234,6 +249,10 @@ pub fn parse(text: &str) -> Result<Vec<Network>, String> {
         } else if line == PMF {
             if std::mem::replace(&mut b.pmf, true) {
                 return Err(format!("line {n}: a second ieee80211w in one block"));
+            }
+        } else if line == HIDDEN {
+            if std::mem::replace(&mut b.hidden, true) {
+                return Err(format!("line {n}: a second scan_ssid in one block"));
             }
         } else if line == MAC_POLICY {
             if std::mem::replace(&mut b.mac_policy, true) {
@@ -331,20 +350,23 @@ pub fn owner_in(uid: u32, gid: u32) -> (u32, u32) {
     (uid + crate::isolate::WIFI_ID, gid)
 }
 
-/// Add a network or replace its block, open when there is no passphrase; nothing is written
-/// unless both values pass.
-pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option<&str>) -> Result<Added, String> {
+/// Add a network or replace its block, open when there is no passphrase and asked for by name
+/// when `hidden`, which a new passphrase keeps, as it would not be found again without it;
+/// nothing is written unless both values pass. Says what it did, and whether the network is
+/// asked for by name now.
+pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option<&str>, hidden: bool) -> Result<(Added, bool), String> {
     check_ssid(ssid)?;
     let psk = passphrase.map_or(Ok(Psk::Open), check_passphrase)?;
     let mut nets = load(dir)?;
     let outcome = match nets.iter_mut().find(|n| n.ssid == ssid) {
         Some(n) => {
             n.psk = psk;
-            Added::Replaced
+            n.hidden |= hidden;
+            (Added::Replaced, n.hidden)
         }
         None => {
-            nets.push(Network { ssid: ssid.to_string(), psk, mac: None });
-            Added::New
+            nets.push(Network { ssid: ssid.to_string(), psk, mac: None, hidden });
+            (Added::New, hidden)
         }
     };
     // A replaced network keeps its address; a new one, and any an older kryptikd wrote, get one.
@@ -354,12 +376,13 @@ pub fn add(dir: &Path, owner: Option<(u32, u32)>, ssid: &str, passphrase: Option
 }
 
 /// What `add` did, in the words the command and the daemon both print.
-pub fn said(ssid: &str, added: Added, open: bool) -> String {
+pub fn said(ssid: &str, added: Added, open: bool, hidden: bool) -> String {
+    let h = if hidden { "hidden " } else { "" };
     match (added, open) {
-        (Added::New, false) => format!("added network {ssid:?}"),
-        (Added::Replaced, false) => format!("replaced the passphrase of network {ssid:?}"),
-        (Added::New, true) => format!("added open network {ssid:?}"),
-        (Added::Replaced, true) => format!("network {ssid:?} is now open, joined without a passphrase"),
+        (Added::New, false) => format!("added {h}network {ssid:?}"),
+        (Added::Replaced, false) => format!("replaced the passphrase of {h}network {ssid:?}"),
+        (Added::New, true) => format!("added {h}open network {ssid:?}"),
+        (Added::Replaced, true) => format!("{h}network {ssid:?} is now open, joined without a passphrase"),
     }
 }
 
@@ -530,8 +553,12 @@ fn heard_line(line: &str) -> Option<Heard> {
     }
     let signal = signal.parse::<i32>().ok().filter(|s| (-150..=0).contains(s))?;
     let security = SECURITIES.into_iter().find(|s| *s == security)?;
-    let ssid = unescape_iw(ssid).filter(|b| (1..=32).contains(&b.len()) && b.iter().any(|c| *c != 0))?;
-    Some(Heard { ssid, security, signal })
+    Some(Heard { ssid: ssid_from_iw(ssid)?, security, signal })
+}
+
+/// The bytes of an SSID iw printed, if they name a network: 1 to 32 of them, not all zero.
+pub fn ssid_from_iw(printed: &str) -> Option<Vec<u8>> {
+    unescape_iw(printed).filter(|b| (1..=32).contains(&b.len()) && b.iter().any(|c| *c != 0))
 }
 
 /// An SSID as iw prints one: printable ASCII but a backslash, and \xHH for every other byte.
@@ -552,6 +579,21 @@ fn unescape_iw(s: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// An SSID printed as iw prints one, for `unescape_iw` to read back: a space at either end, a
+/// backslash and every byte that is not printable ASCII as \xHH.
+pub fn as_iw_prints(ssid: &[u8]) -> String {
+    let last = ssid.len().saturating_sub(1);
+    let mut out = String::new();
+    for (i, &c) in ssid.iter().enumerate() {
+        if (c.is_ascii_graphic() && c != b'\\') || (c == b' ' && i != 0 && i != last) {
+            out.push(char::from(c));
+        } else {
+            out.push_str(&format!("\\x{c:02x}"));
+        }
+    }
+    out
 }
 
 /// An SSID for a terminal: quoted as Rust quotes a string where it is UTF-8, so nothing
