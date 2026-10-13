@@ -16,7 +16,8 @@ seccomp  = "policy/personal.seccomp"
 
 [limits]
 memory_max = "8G"
-pids_max   = 1024
+# Threads count too: Firefox runs a process for each site, each with dozens of threads.
+pids_max   = 4096
 
 [identity]
 # Root inside maps to host uid/gid 262144, nobody to 327678; fixed, never derived from zone order.
