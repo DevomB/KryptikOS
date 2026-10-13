@@ -7,8 +7,8 @@ ships whole in every release. Version 2's applications (a graphical browser,
 a mail client, a document viewer) do not fit that model for long. This
 document chooses how they arrive: a package manager with a signed binary
 repository, zones that carry their own userland, or something between. The
-[roadmap](../roadmap.md) asks for an ADR first; the proposed text is
-ADR-015 in [decisions](../decisions.md).
+[roadmap](../roadmap.md) asked for an ADR first: it is ADR-015 in
+[decisions](../decisions.md).
 
 ## Where things stand
 
@@ -80,8 +80,8 @@ its files are in the root image.
 - **Policies** are the zone files', as now.
 - **The slot limit** decides it. The browser and its toolkit stack alone
   take most of the 800 MiB of headroom a 1.0 install has (the browser and
-  graphics design, `docs/design/browser-and-graphics.md`, proposed beside
-  this one, works it out); a mail client, a document viewer and Mesa do not
+  graphics design, `docs/design/browser-and-graphics.md`, beside this one,
+  works it out); a mail client, a document viewer and Mesa do not
   fit after it.
 - **Other costs:** every build carries every application; every zone sees
   every application's files, including zones that never run them.

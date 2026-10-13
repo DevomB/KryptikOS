@@ -6,7 +6,7 @@ Today a zone gets a terminal and a text browser, drawn into shared memory
 and composited on the CPU. This document chooses the browser, the toolkit
 under it, how a zone is given the GPU and what the proxy must then carry,
 how Xwayland runs inside a zone (ADR-004), and what all of it costs the
-root. The proposed decision is ADR-016 in [decisions](../decisions.md).
+root. The decision is ADR-016 in [decisions](../decisions.md).
 
 ## Where things stand
 
@@ -45,8 +45,8 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
 - **ADR-001 and ADR-010.** Built from source here; Rust comes from the pinned
   release toolchain, as for kryptikd.
 - **The slot size** of machines already installed (below), and the software
-  images proposed as ADR-015 in `docs/design/software-delivery.md`, beside
-  this design.
+  images of ADR-015 (`docs/design/software-delivery.md`), beside this
+  design.
 
 ## The browser
 
@@ -366,7 +366,7 @@ filesystem and the hash tree.
   400 MiB left. Mesa and libLLVM leave about 200 MiB; a mail client after
   that does not fit, and the release that crosses the line needs a
   reinstall: a major version under [releases](../releases.md).
-- As a software image (ADR-015, proposed), the browser costs the root
+- As a software image (ADR-015), the browser costs the root
   nothing, and the state partition about twice the image while an update is
   in flight.
 - **Build time.** Firefox is one of the largest builds there is, and it
