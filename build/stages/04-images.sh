@@ -25,9 +25,10 @@ image_setting() {
 }
 
 # What an image is built from: its definition and files, the recipes and flags, the pins, the base
-# system, and the images it is built over.
-image_inputs() {   # image_inputs NAME
-    local f dep
+# system, and what the images it is built over are built from, so a cached image needs none of them
+# built to be found current. CHAIN is the images it is being read under.
+image_inputs() {   # image_inputs NAME [CHAIN]
+    local f dep h chain="${2:-} ${1}"
     for f in "${DEFS}/${1}.sh" "${DEFS}/${1}"/* "${KRYPTIK_ROOT}/build/lib/recipes.sh" "${KRYPTIK_ROOT}"/build/recipes/*.sh \
              "${BASH_SOURCE[0]}" "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "${KRYPTIK_ROOT}/build/config/hardening.env" \
              "${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt" "${KRYPTIK_ROOT}/build/config/versions.env" \
@@ -36,7 +37,10 @@ image_inputs() {   # image_inputs NAME
     done
     printf 'base %s\n' "$(_stamp_read "${KRYPTIK_WORK}/.stamps/bs-licences")"
     for dep in $(image_setting "$1" image_over); do
-        printf 'over %s %s\n' "$dep" "$(sed -n 's/^fingerprint: //p' "${KRYPTIK_WORK}/image-build/${dep}/record")"
+        [[ " ${chain} " != *" ${dep} "* ]] || die "image ${dep} is built over itself:${chain} ${dep}"
+        [[ -f "${DEFS}/${dep}.sh" ]] || die "image ${1} is built over ${dep}, which has no ${DEFS}/${dep}.sh"
+        h="$(image_inputs "$dep" "$chain" | sha256_of_stdin)"
+        printf 'over %s %s\n' "$dep" "$h"
     done
 }
 
@@ -49,31 +53,26 @@ unmount_image() {   # unmount_image TOP
     if findmnt -rn -o TARGET | grep -F "$1/" >&2; then die "still mounted under $1 (above): nothing there is removed"; fi
 }
 
-# The images being built, innermost last, so one built over itself is refused.
-BUILDING=""
 build_image() {   # build_image NAME
     local name="$1" top="${KRYPTIK_WORK}/image-build/${1}" version want d ships dep lowers=""
     local -a over
     [[ "$name" =~ ^[a-z0-9-]{1,32}$ ]] || die "image name ${name}: a-z, 0-9 and -, at most 32"
     [[ -f "${DEFS}/${name}.sh" ]] || die "no image ${name}: nothing at ${DEFS}/${name}.sh"
-    [[ " ${BUILDING} " != *" ${name} "* ]] || die "image ${name} is built over itself:${BUILDING} ${name}"
     version="$(image_setting "$name" image_version)"
     [[ "$version" =~ ^[!-~]{1,64}$ ]] || die "image ${name}: version '${version}' is not 1-64 printable characters without a space"
     ships="$(image_setting "$name" image_ships)"; ships="${ships:-yes}"
     [[ "$ships" == yes || "$ships" == no ]] || die "image ${name}: image_ships is yes or no, not '${ships}'"
     read -ra over <<< "$(image_setting "$name" image_over)"
-    # What it is built over comes first; the nearest layer is named first, as overlayfs takes it.
-    BUILDING="${BUILDING} ${name}"
-    for dep in "${over[@]}"; do
-        build_image "$dep"
-        lowers+="${KRYPTIK_WORK}/image-build/${dep}/tree:"
-    done
-    BUILDING="${BUILDING% "${name}"}"
     want="$(image_inputs "$name" | sha256_of_stdin)"
     if [[ -d "${top}/tree/usr" ]] && grep -qx "fingerprint: ${want}" "${top}/record" 2>/dev/null; then
         dim "  skip ${name} ${version} (already built, inputs unchanged)"
         return 0
     fi
+    # What it is built over comes first; the nearest layer is named first, as overlayfs takes it.
+    for dep in "${over[@]}"; do
+        build_image "$dep"
+        lowers+="${KRYPTIK_WORK}/image-build/${dep}/tree:"
+    done
     log "image ${name} ${version}"
     unmount_image "$top"
     rm -rf "$top"
