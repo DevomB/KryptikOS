@@ -256,6 +256,17 @@ PINNED_FPRS=(
 
     # libexpat names no signer: gentoo.org's WKD serves this for sping@gentoo.org (source-notes.tsv)
     "3176EF7DB2367F1FCA4F306B1F9B0E909AF37285"   # Sebastian Pipping, expat
+
+    # The software images' sources (build/images/versions.env).
+    # https://github.com/PCRE2Project/pcre2/blob/main/SECURITY.md (retrieved 2026-10-13) names it for
+    # 10.45 on, cross-signed by Philip Hazel's earlier key. It signs with a subkey GitHub's copy lacks.
+    "A95536204A3BB489715231282A98E77EB6F24CA8"   # Nicholas Wilson, pcre2
+    # cairographics.org names the signer, not the key; https://gitlab.gnome.org/ebassi.gpg serves this
+    # one under his GNOME account (retrieved 2026-10-13). It signs the checksum lists since 1.18.0.
+    "53EF3DC3B63E2899271BD26322E8091EEA11BBB7"   # Emmanuele Bassi, cairo
+    # FreeType publishes only the long id BE6C3AAC63AD8E3F: docs/release in its repository since
+    # 2.12.0, and each release announcement. This key ends in it and has signed every release since.
+    "E30674707856409FF1948010BE6C3AAC63AD8E3F"   # Werner Lemberg, freetype (long id alone: weaker)
 )
 
 # Primaries and subkeys: GOODSIG names a subkey, while pins and keys.manifest hold primaries.
