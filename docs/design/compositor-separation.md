@@ -85,10 +85,14 @@ since the session user cannot switch uid:
 - in empty network and IPC namespaces and a cgroup of its own, with 128 MiB
   of memory, which its clients' queues fit, room for one process, and
   descriptors for its 32 clients and no more;
-- with `no_new_privs`, under the zones' seccomp filter for now, and with a
-  Landlock ruleset that grants only reading and executing its own program,
-  which exec needs, so once it runs it opens no other file. A filter cut to
-  its own loop follows once a run has traced the calls it makes;
+- with `no_new_privs`, under a seccomp filter of its own calls, about
+  thirty of a zone's, with sockets only `AF_UNIX`, `sendto` only to the
+  connected peer, `ioctl` only to make a descriptor nonblocking and no
+  memory made executable; CI runs the static
+  proxy through its live tests under strace and fails on a call the list
+  lacks (`tools/tests/proxy-calls.sh`). A Landlock ruleset grants only
+  reading and executing its own program, which exec needs, so once it runs
+  it opens no other file;
 - with its listening socket made by the daemon at
   `/run/kryptik-proxy/<uid>/<zone>/wayland-0` and passed as `--listen-fd`.
   The zone's directory is root's alone, so the socket is reached only
@@ -118,7 +122,9 @@ it. Stopping the zone ends its proxy.
   another zone's socket.
 - **Cost:** the launch daemon starts and stops proxies, and a uid per zone
   is reserved. kryptikd confines the proxy before the exec with its own
-  seccomp and Landlock code, so no crate is shared.
+  seccomp and Landlock code, so no crate is shared. The filter's list
+  follows the calls the C library and Rust's standard library make, which
+  the trace in CI checks at every change.
 
 ### The compositor as a user of its own, confined as zones are
 

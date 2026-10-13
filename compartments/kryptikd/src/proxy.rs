@@ -1,8 +1,9 @@
 //! A zone's Wayland proxy as a user of its own (docs/design/compositor-separation.md). The launch
 //! daemon starts it for a session: as the uid at the top of the zone's block, which no zone maps,
-//! in network and IPC namespaces and a cgroup of its own, under the zones' seccomp filter, and
-//! with Landlock leaving it no file but its own program. A developer instance keeps its own uid
-//! and makes neither the namespaces nor the cgroup.
+//! in network and IPC namespaces and a cgroup of its own, under a seccomp filter of its own calls,
+//! and with Landlock leaving it no file but its own program. A developer instance keeps its own
+//! uid, makes neither the namespaces nor the cgroup, and takes the zones' filter, as a proxy built
+//! on the host loads libraries the installed one does not.
 
 use std::ffi::CString;
 use std::fs;
@@ -265,7 +266,8 @@ fn become_proxy(
     if let Err(e) = ruled {
         return format!("Landlock: {e}");
     }
-    if let Err(e) = crate::seccomp::confine_zone() {
+    let filtered = if uid.is_some() { crate::seccomp::confine_proxy() } else { crate::seccomp::confine_zone() };
+    if let Err(e) = filtered {
         return format!("seccomp: {e}");
     }
     let mut ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
