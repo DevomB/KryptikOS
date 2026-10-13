@@ -60,9 +60,9 @@ T="$(tr -d '\r' < "$LOG")"
 summary="$(grep -o 'GT SUMMARY passed=[0-9]* failed=[0-9]*' <<<"$T" | tail -1)"
 echo "  guest summary: ${summary:-none}"
 gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*failed=\([0-9]*\).*/\1/p' <<<"$summary")"
-if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 4 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
+if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 5 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
-for name in sound-card codec-bound codec-drivers-ahead pcm-nodes; do
+for name in sound-card codec-bound codec-drivers-ahead pcm-nodes zone-proc-asound-empty; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 rm -f "$WAV"
