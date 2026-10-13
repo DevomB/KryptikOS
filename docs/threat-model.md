@@ -231,6 +231,13 @@ or suspended machine stay out of scope. No software helps against coercion.
 The screen lock (Alt+Shift+l) keeps whoever is at the keyboard without the
 login password from every window, but takes no key out of RAM.
 
+A USB stick or an SD card plugged into a running machine reaches the
+kernel, which reads its partition table as it does any disk's, and no
+program in zone 0: eudev probes none of its filesystems
+(`59-kryptik-removable.rules`), and Kryptik finds its own partitions by
+the names the kernel read from their tables (`devices.sh`). A device that
+also presents a keyboard is taken as one.
+
 ### Microarchitectural side channels
 
 Shared caches and branch predictors allow cross-zone inference. The signed

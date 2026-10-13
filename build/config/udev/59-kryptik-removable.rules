@@ -1,0 +1,6 @@
+# No program in zone 0 reads a disk on USB or an SD card: eudev's blkid builtin would parse its
+# partition table and every superblock on it, as root, for /dev/disk links nothing in Kryptik
+# uses. Kryptik finds its own partitions, the install medium's included, by the names the kernel
+# read from the table (devices.sh). An eMMC can be the root's disk, so only SD cards.
+SUBSYSTEM=="block", SUBSYSTEMS=="usb", ENV{UDEV_DISABLE_PERSISTENT_STORAGE_BLKID_FLAG}="1"
+SUBSYSTEM=="block", SUBSYSTEMS=="mmc", ATTRS{type}=="SD", ENV{UDEV_DISABLE_PERSISTENT_STORAGE_BLKID_FLAG}="1"
