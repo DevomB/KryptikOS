@@ -69,11 +69,12 @@ fn net_summary_names_the_network_that_refused_the_passphrase() {
 
 #[test]
 fn parse_run_refuses_bad_requests() {
-    let r = parse_run("run work wayland=/run/user/1000/kryptik/work/wayland-0 pass=fd\narg havoc\narg -e\narg sh\nend\n").unwrap();
+    let r = parse_run("run work wayland pass=fd\narg havoc\narg -e\narg sh\nend\n").unwrap();
     assert_eq!(r.zone, "work");
     assert_eq!(r.argv, vec!["havoc", "-e", "sh"]);
     assert!(r.wants_fd);
-    assert_eq!(r.wayland.as_deref(), Some(Path::new("/run/user/1000/kryptik/work/wayland-0")));
+    assert!(r.wayland);
+    assert!(!parse_run("run work\narg a\nend\n").unwrap().wayland);
     for bad in [
         "",
         "run\n",
@@ -81,6 +82,8 @@ fn parse_run_refuses_bad_requests() {
         "run work\nend\n",
         "run work\narg a\n",
         "run work bogus=1\narg a\nend\n",
+        // The proxy's socket is serve's to choose, never the asker's.
+        "run work wayland=/run/user/1000/kryptik/work/wayland-0\narg a\nend\n",
         "stop work\n",
     ] {
         assert!(parse_run(bad).is_err(), "{bad:?} must be refused");
@@ -136,22 +139,33 @@ fn parse_wifi_hides_psk() {
     }
 }
 
-/// The path rule: only the session's own `<zone>/wayland-0` is considered.
+/// dwl's directory for a session's zone sockets: the session's own, and others may only pass.
 #[test]
-fn proxy_path_rule() {
-    let bad = |p: &str, uid: u32, zone: &str| {
-        let e = verify_proxy_socket(Path::new(p), uid, zone, None).unwrap_err();
-        assert!(e.contains("must be") || e.contains("path"), "{p}: {e}");
+fn the_compositor_directory_is_made_traversable_and_never_through_a_link() {
+    let dir = std::env::temp_dir().join(format!("kryptik-compositor-dir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = ServeConfig {
+        socket: dir.join("launch.sock"),
+        group: GROUP.into(),
+        zones_dir: dir.clone(),
+        rootfs: String::new(),
+        log_dir: dir.clone(),
+        proxy_exe: PathBuf::from(PROXY_EXE),
+        wifi_dir: dir.clone(),
+        developer: true,
+        shadow: dir.join("shadow"),
     };
-    bad("/run/user/1000/kryptik/work/wayland-0", 1001, "work");
-    bad("/run/user/1000/kryptik/work/wayland-0", 1000, "vault");
-    bad("/run/user/1000/wayland-0", 1000, "work");
-    bad("/run/user/1000/kryptik/../wayland-0", 1000, "work");
-    bad("/tmp/wayland-0", 1000, "work");
-    bad("/run/user/1000/kryptik/work/wayland-0/", 1000, "work");
+    compositor_dir(&cfg, 1000).unwrap();
+    let md = std::fs::metadata(dir.join("kryptik-compositor/1000")).unwrap();
+    assert!(md.is_dir());
+    assert_eq!(md.permissions().mode() & 0o777, 0o711);
+    compositor_dir(&cfg, 1000).expect("one already there is kept");
+    std::fs::remove_dir(dir.join("kryptik-compositor/1000")).unwrap();
+    std::os::unix::fs::symlink(&dir, dir.join("kryptik-compositor/1000")).unwrap();
+    assert!(compositor_dir(&cfg, 1000).is_err(), "a link in its place is refused");
+    let _ = std::fs::remove_dir_all(&dir);
 }
-
-// The ownership and listener checks run against the daemon in compartments/tests/serve.sh.
 
 #[test]
 fn open_nofollow_refusals() {
@@ -168,30 +182,6 @@ fn open_nofollow_refusals() {
     assert!(open_nofollow(&dir.join("real/plain"), false).is_ok());
     assert!(open_nofollow(Path::new("relative/x"), false).is_err());
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn full_backlog_never_blocks() {
-    let dir = std::env::temp_dir().join(format!("kryptik-backlog-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("socket");
-    let listener = UnixListener::bind(&path).unwrap();
-    assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
-    let queued = UnixStream::connect(&path).unwrap();
-    let sock = open_nofollow(&path, true).unwrap();
-    let (done, completion) = std::sync::mpsc::channel();
-    let worker = std::thread::spawn(move || {
-        let result = verify_proxy_listener(&sock, unsafe { libc::geteuid() }, "work", None);
-        let _ = done.send(result);
-    });
-    let result = completion.recv_timeout(Duration::from_secs(2));
-    // Closing the listener releases a blocking connect, so a regression fails instead of hanging.
-    drop(listener);
-    drop(queued);
-    worker.join().unwrap();
-    std::fs::remove_dir_all(dir).unwrap();
-    assert!(result.is_ok(), "a session-owned listener held the root daemon at connect");
-    assert!(result.unwrap().is_err(), "a full backlog must be refused");
 }
 
 #[test]

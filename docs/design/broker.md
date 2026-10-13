@@ -162,9 +162,11 @@ kryptik-launch asks FROM's proxy for the selection on its control socket
 1 MiB and 2 s at most, gives it to TO's proxy, which holds it and serves its
 windows' pastes itself, and only then has FROM's proxy clear it, if nothing
 was copied there since. A stall, an overrun or a type off the list moves
-nothing. The control socket is 0600 beside the zone's own, in the directory
-whose `wayland-0` alone is bound into the zone, and a proxy refuses any peer
-but the session's user; it takes one move at a time, and its log names the
+nothing. The control socket is the session's, 0600, at
+`/run/kryptik-proxy/<uid>/<zone>.control`, beside the directory whose
+`wayland-0` alone is bound into the zone; the launch daemon makes it and
+hands it to the proxy listening, and a proxy refuses any peer but the
+session's user. It takes one move at a time, and its log names the
 type and the length, never the bytes. Both zones must be running. The
 payload leaves the source and replaces the destination's: one payload
 crosses, once, and a second gesture finds nothing to move. No zone can fetch another's payload or trigger
@@ -174,10 +176,13 @@ and `mount` and points at the broker.
 
 ## Compositor proxy
 
-`kryptik-launch` starts one `kryptik-wlproxy --zone NAME` per desktop zone,
-as the session user, at `$XDG_RUNTIME_DIR/kryptik/<zone>/wayland-0`, and the
-launcher binds it into the zone at `/run/kryptik/wayland-0`
-(`--wayland-socket`, with `--wayland-inode` naming the inode it must be).
+The launch daemon starts one `kryptik-wlproxy --zone NAME` per desktop zone
+for the session, as a user of its own, confined
+([compositor separation](compositor-separation.md)), on a socket it makes
+at `/run/kryptik-proxy/<uid>/<zone>/wayland-0`, in a directory only root
+enters; the launcher binds that socket into the zone at
+`/run/kryptik/wayland-0` (`--wayland-socket`, with `--wayland-inode` naming
+the inode it must be).
 The compositor's own socket is never reachable from a zone, and each proxy
 serves exactly one zone. The proxy advertises only `wl_compositor`,
 `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`, `xdg_wm_base`,
@@ -187,7 +192,9 @@ serves exactly one zone. The proxy advertises only `wl_compositor`,
 paste stays among the zone's own clients and never reaches the compositor. It disconnects a client that
 binds anything else, bounds objects, pending bytes and descriptors per
 client, and rewrites every window's title to `[zone] ...` and its app_id to
-`kryptik.<zone>.<claimed>`, from which the compositor draws the zone's border.
+`kryptik.<zone>.<claimed>`. It reaches dwl through the zone's own socket,
+which offers the same globals, and dwl draws the zone's border from that
+socket.
 
 ## Tests
 
