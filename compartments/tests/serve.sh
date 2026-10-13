@@ -329,19 +329,26 @@ fi
 
 head_ "the zone's proxy"
 LOGDIR="$(dirname "$SOCK")"
+# A developer instance keeps kryptik-proxy/ and kryptik-compositor/ beside its socket, a root
+# daemon under /run.
+if (( PRIVILEGED == 1 )); then RUNDIR=/run; else RUNDIR="$LOGDIR"; fi
 r="$(ask 'run alpha wayland=/tmp/wayland-0\narg /bin/true\nend\n')"
 if [[ "$r" == "error: run: unknown option"* ]]; then pass "S8a a socket path from the asker is refused: the daemon chooses the proxy's"; else fail "S8a: $r"; fi
 r="$(ask 'run alpha wayland\narg /bin/true\nend\n')"
 if [[ "$r" == "error: no compositor serves zone \"alpha\" for uid $EUID"* ]]; then pass "S8b with no compositor socket for the zone, no proxy starts"; else fail "S8b: $r"; fi
 r="$(ask 'runtime\n')"
-CDIR="$LOGDIR/kryptik-compositor/$EUID"
+CDIR="$RUNDIR/kryptik-compositor/$EUID"
 if [[ "$r" == ok\ * && -d "$CDIR" && ! -L "$CDIR" && "$(stat -c %a "$CDIR")" == 711 ]]; then
     pass "S8c runtime also makes the session's compositor directory, 0711"
 else
     fail "S8c: $r; $(stat -c '%a %F' "$CDIR" 2>&1)"
 fi
 
-if [[ ! -x "$WLPROXY" ]]; then
+if (( PRIVILEGED == 1 )); then
+    # Made for this run alone: no session of root's has a compositor.
+    rmdir "$CDIR" 2>/dev/null
+    skip "S8d-S8k: a root daemon runs the proxy as the zone's own uid, under Landlock and the proxy's own filter, which only the image's static proxy passes; gui-check's proxy rounds check that on the installed system"
+elif [[ ! -x "$WLPROXY" ]]; then
     skip "S8d-S8k need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
 else
     UP="$CDIR/alpha"
