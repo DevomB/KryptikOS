@@ -8,11 +8,12 @@
  * `kryptik-launch --check-password` on a pipe, and the launch daemon answers: this process
  * never reads a password hash. It says "kryptik-lock: locked", "kryptik-lock: refused: WHY"
  * and "kryptik-lock: unlocked" on stderr, the session log.
- * Exit: 0 unlocked; 1 the compositor would not lock, or the display went away; 2 usage.
+ * Exit: 0 unlocked; 1 the compositor would not lock, or there is no display; 2 usage.
  */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -201,7 +202,9 @@ static const struct ext_session_lock_v1_listener lock_listener = {
 };
 
 /* Ask the launch daemon through kryptik-launch, the password on its stdin. Its answer on
- * failure goes to `why`; true if it took the password. */
+ * failure goes to `why`; true if it took the password. While it is asked the lock reads no
+ * events, so an answer that does not come is given up on: the compositor's buffer of keys
+ * for the lock would fill, and end its connection. */
 static int check(const char *password, char *why, size_t n)
 {
 	int in[2], out[2], st = 0;
@@ -220,7 +223,7 @@ static int check(const char *password, char *why, size_t n)
 		dup2(in[0], 0);
 		dup2(out[1], 1);
 		dup2(out[1], 2);
-		execlp("kryptik-launch", "kryptik-launch", "--check-password", (char *)NULL);
+		execl("/usr/bin/kryptik-launch", "kryptik-launch", "--check-password", (char *)NULL);
 		_exit(127);
 	}
 	close(in[0]);
@@ -234,11 +237,16 @@ static int check(const char *password, char *why, size_t n)
 	size_t len = strlen(password);
 	int sent = write(in[1], password, len) == (ssize_t)len && write(in[1], "\n", 1) == 1;
 	close(in[1]);
-	ssize_t got = read(out[0], why, n - 1);
+	struct pollfd p = { .fd = out[0], .events = POLLIN };
+	ssize_t got = poll(&p, 1, 15000) == 1 ? read(out[0], why, n - 1) : -1;
 	close(out[0]);
 	why[got > 0 ? got : 0] = 0;
 	why[strcspn(why, "\n")] = 0;
-	if (waitpid(pid, &st, 0) < 0 || !sent)
+	if (got < 0) {
+		kill(pid, SIGKILL);
+		snprintf(why, n, "no answer from the launch daemon");
+	}
+	if (waitpid(pid, &st, 0) < 0 || !sent || got < 0)
 		return 0;
 	return WIFEXITED(st) && WEXITSTATUS(st) == 0;
 }
@@ -317,7 +325,7 @@ static void keyboard_key(void *data, struct wl_keyboard *kb, uint32_t serial, ui
 	} else {
 		char buf[8];
 		int n = xkb_state_key_get_utf8(xstate, code, buf, sizeof buf);
-		if (n > 0 && (unsigned char)buf[0] >= 0x20 && buf[0] != 0x7f && ntyped + (size_t)n < sizeof typed) {
+		if (n > 0 && n < (int)sizeof buf && (unsigned char)buf[0] >= 0x20 && buf[0] != 0x7f && ntyped + (size_t)n < sizeof typed) {
 			memcpy(typed + ntyped, buf, (size_t)n);
 			ntyped += (size_t)n;
 			explicit_bzero(buf, sizeof buf);
@@ -447,9 +455,12 @@ static int lock_session(void)
 		return 0;
 	}
 	explicit_bzero(typed, sizeof typed);
-	if (!done)
-		say("the display went away");
-	return 1;
+	if (done)
+		return 1;
+	say("the display went away");
+	/* The session stays locked without its lock: one that lost the display while locked
+	 * runs again, and finds no display if the compositor itself has gone. */
+	return locked ? 3 : 1;
 }
 
 int main(int argc, char **argv)
@@ -462,7 +473,8 @@ int main(int argc, char **argv)
 	/* A refused pipe write is told by write's return, not a signal. */
 	signal(SIGPIPE, SIG_IGN);
 	/* The compositor keeps a session locked when its lock dies and takes no keys while
-	 * locked, so nothing else could unlock it: a lock a signal killed locks again. */
+	 * locked, so nothing else could unlock it: a lock a signal killed, or one that lost
+	 * the display while locked, locks again. */
 	for (;;) {
 		pid_t pid = fork();
 		if (pid <= 0)
@@ -471,9 +483,12 @@ int main(int argc, char **argv)
 		while (waitpid(pid, &st, 0) < 0)
 			if (errno != EINTR)
 				return 1;
-		if (!WIFSIGNALED(st))
+		if (WIFSIGNALED(st))
+			fprintf(stderr, "kryptik-lock: the lock died of signal %d; locking again\n", WTERMSIG(st));
+		else if (WEXITSTATUS(st) == 3)
+			fputs("kryptik-lock: the lock lost the display while locked; locking again\n", stderr);
+		else
 			return WEXITSTATUS(st);
-		fprintf(stderr, "kryptik-lock: the lock died of signal %d; locking again\n", WTERMSIG(st));
 		sleep(1);
 	}
 }

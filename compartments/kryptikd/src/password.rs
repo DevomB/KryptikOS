@@ -38,7 +38,9 @@ pub fn matches(password: &[u8], hash: &str) -> bool {
     if password.contains(&0) || hash.as_bytes().contains(&0) {
         return false;
     }
-    let mut phrase = password.to_vec();
+    // Room for the NUL first: a push past the capacity would leave a copy behind, unwiped.
+    let mut phrase = Vec::with_capacity(password.len() + 1);
+    phrase.extend_from_slice(password);
     phrase.push(0);
     let mut setting = hash.as_bytes().to_vec();
     setting.push(0);
