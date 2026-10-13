@@ -71,7 +71,8 @@ USAGE:
                                       with its key wiped, and sleep (root; the
                                       session asks the launch daemon, after its
                                       screen lock); --awake keeps the machine up,
-                                      its state partition waiting for the passphrase
+                                      its state partition waiting for the passphrase;
+                                      with the partition suspended already, sleep
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
@@ -1038,19 +1039,23 @@ fn cmd_suspend(args: &[String]) -> ExitCode {
         eprintln!("kryptikd suspend: must run as root; the session asks through kryptik-lock --suspend");
         return ExitCode::from(2);
     }
+    // The zones are frozen and the key gone already: only the sleep is left to do.
     if suspend::state_suspended() {
-        eprintln!("kryptikd suspend: the state partition is suspended already");
-        return ExitCode::FAILURE;
-    }
-    match suspend::seal() {
-        Ok(zones) => println!("kryptikd suspend: froze {zones:?}; the state partition's key is dropped"),
-        Err(e) => {
-            eprintln!("kryptikd suspend: {e}");
+        if awake {
+            eprintln!("kryptikd suspend: the state partition is suspended already");
             return ExitCode::FAILURE;
         }
-    }
-    if awake {
-        return ExitCode::SUCCESS;
+    } else {
+        match suspend::seal() {
+            Ok(zones) => println!("kryptikd suspend: froze {zones:?}; the state partition's key is dropped"),
+            Err(e) => {
+                eprintln!("kryptikd suspend: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        if awake {
+            return ExitCode::SUCCESS;
+        }
     }
     match suspend::sleep() {
         Ok(()) => {

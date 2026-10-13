@@ -15,7 +15,9 @@
 # memory, which must hold neither the state partition's key nor the passphrase typed at the lock,
 # and must hold the key of the zone volume a frozen zone keeps; it waits past the watchdog's
 # timeout and wakes the guest, which waits three minutes at the state prompt before the
-# passphrase, typed again, resumes it.
+# passphrase, typed again, resumes it. Last, a read left waiting on the suspended device keeps
+# the kernel from sleeping when the guest is asked again: the refusal is told, and the passphrase
+# still brings the partition back.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -63,11 +65,14 @@ DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/suspend-check.sh ${TUSER} ${KRYPTIK_STATE_PASSPHRASE} ${SEED} 2>&1; echo SCHECK-DONE'" \
     "expect:Password: ?" "send:${RPASS}" \
-    "expect:GT KEY-LOCK" "key:alt+shift+l" \
+    "expect:GT KEY-LOCK 1" "key:alt+shift+l" \
     "expect:GT LOCK-TYPE-STATE-WRONG" "key:n" "key:o" "key:p" "key:e" "key:ret" \
     "expect:GT LOCK-TYPE-STATE 1" "${SPASS_KEYS[@]}" "key:ret" \
-    "expect:GT SLEEPING" "asleep:120" "dump:${DUMP}" "sleep:75" "wakeup" \
+    "expect:GT SLEEPING 1" "asleep-or:120:GT DID-NOT-SLEEP 1" "if-asleep:dump:${DUMP}" "if-asleep:sleep:75" "if-asleep:wakeup" \
     "expect:GT LOCK-TYPE-STATE 2" "${SPASS_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-LOCK 2" "key:alt+shift+l" \
+    "expect:GT SLEEPING 2" "asleep-or:120:GT DID-NOT-SLEEP 2" "if-asleep:sleep:5" "if-asleep:wakeup" \
+    "expect:GT LOCK-TYPE-STATE 3" "${SPASS_KEYS[@]}" "key:ret" \
     "expect:GT END" "expect:SCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
@@ -82,7 +87,8 @@ if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 15 ]]; then green "eve
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in second-passphrase session-up zones-ticking state-suspended zones-frozen client-told-suspended lock-asks-for-state \
             nothing-else-waits lock-refuses-wrong-passphrase passphrase-resumes zones-thawed writer-resumes zones-tick-again \
-            slept-and-woke woke-to-state-prompt prompt-outlasts-watchdog resumed-after-sleep zones-thawed-after-sleep; do
+            slept-and-woke woke-to-state-prompt prompt-outlasts-watchdog resumed-after-sleep zones-thawed-after-sleep \
+            sleep-refusal-told resumed-after-refusal; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 

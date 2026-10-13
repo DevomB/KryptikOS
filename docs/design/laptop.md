@@ -167,8 +167,15 @@ to resume can run from the root while the state partition is suspended.
    within 10 s, thaws the others and the suspend is refused.
 4. **Sync,** then suspend the state partition, wiping its key. A zone
    volume's file is on the partition, so the sync writes the volume out
-   through it first.
-5. **Sleep** (`/sys/power/state`).
+   through it first. The kernel's own sync before it sleeps is turned off
+   (`/sys/power/sync_on_suspend`), as it could wait on the suspended
+   partition for good, and on again once the partition is back.
+5. **Sleep** (`/sys/power/state`), written by a child of the daemon's, so
+   the daemon goes on answering the lock while the kernel puts the machine
+   to sleep, or refuses to: a task it cannot freeze, such as one waiting on
+   the suspended partition's device, makes it give up after 20 s, and the
+   lock says so. Asked again at the passphrase prompt, as a lid closed on
+   it would, the daemon only sleeps.
 6. **On waking,** the lock asks for the state partition's passphrase. The
    TPM is not used here: an unseal at resume would let whoever holds the
    machine resume it, and the TPM design extends PCR 15 at boot so that
@@ -284,7 +291,13 @@ Then for real, `kryptik-lock --suspend` as the user:
 - it sleeps past the watchdog's timeout, wakes with the lock asking for the
   state passphrase, and waits three minutes at it, the caches dropped again,
   without a reset;
-- the passphrase resumes it, and the zones thaw.
+- the passphrase resumes it, and the zones thaw;
+- asked to sleep again with the partition suspended and a read left waiting
+  on its device, the kernel refuses, the refusal is told, and the passphrase
+  still brings the partition back.
+
+Whether the guest slept or the kernel refused is told either way, so a
+refusal in the first sleep reads as one, not as a hang.
 
 ## Power management without logind
 

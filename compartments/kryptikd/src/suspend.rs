@@ -23,6 +23,10 @@ use crate::volume::Passphrase;
 pub const STATE_MAPPER: &str = "kryptik-state";
 /// `kryptik-update apply` holds it while it writes a slot.
 const UPDATE_LOCK: &str = "/run/kryptik/update.lock";
+/// Whether the kernel syncs every filesystem before it sleeps. With the state partition
+/// suspended, that sync could wait on it for good, a flush to its device among others; the sync
+/// that counts is the one made before the partition is suspended.
+const SYNC_ON_SUSPEND: &str = "/sys/power/sync_on_suspend";
 /// How long a zone may take to say it is frozen.
 const FREEZE_WITHIN: Duration = Duration::from_secs(10);
 /// How long the state partition's resume may take, its key derivation included.
@@ -142,6 +146,10 @@ pub fn seal() -> Result<Vec<String>, String> {
     let zones = freeze_all()?;
     // SAFETY: sync takes no arguments and cannot fail.
     unsafe { libc::sync() };
+    if let Err(e) = fs::write(SYNC_ON_SUSPEND, "0") {
+        thaw();
+        return Err(format!("{SYNC_ON_SUSPEND}: {e}: the kernel's own sync before it sleeps would wait on the suspended partition"));
+    }
     if let Err(e) = crate::volume::suspend_mapping(STATE_MAPPER) {
         thaw();
         return Err(format!("the state partition did not suspend: {e}"));
@@ -220,7 +228,11 @@ pub fn resume_state(pass: &Passphrase) -> Result<Vec<String>, ResumeError> {
         let _ = e.read_to_string(&mut err);
     }
     match status.code() {
-        Some(0) => Ok(thaw()),
+        Some(0) => {
+            // The partition takes writes again, so the kernel's sync before a sleep is safe again.
+            let _ = fs::write(SYNC_ON_SUSPEND, "1");
+            Ok(thaw())
+        }
         Some(2) => Err(ResumeError::Wrong),
         code => Err(ResumeError::Failed(format!("cryptsetup luksResume exited {}: {}", code.unwrap_or(-1), err.trim()))),
     }

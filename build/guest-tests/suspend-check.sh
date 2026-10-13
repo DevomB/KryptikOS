@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Suspend suite, run as root in the installed guest by tools/image/suspend-test.sh. The host boots
 # it with S3 on, a virtual GPU and keyboard, and acts on these lines:
-#   GT KEY-LOCK                      press Alt+Shift+l (the screen lock)
+#   GT KEY-LOCK 1|2                  press Alt+Shift+l (the screen lock)
 #   GT LOCK-TYPE-STATE-WRONG         type a wrong passphrase and Enter
-#   GT LOCK-TYPE-STATE 1|2           type the second state passphrase and Enter
-#   GT SLEEPING                      wait for the guest to sleep, dump its memory, wait past
-#                                    the watchdog's timeout, then wake it
+#   GT LOCK-TYPE-STATE 1|2|3         type the second state passphrase and Enter
+#   GT SLEEPING 1                    wait for the guest to sleep, dump its memory, wait past
+#                                    the watchdog's timeout, then wake it; or for
+#                                    GT DID-NOT-SLEEP 1, the kernel's refusal
+#   GT SLEEPING 2                    the same, the refusal expected (GT DID-NOT-SLEEP 2)
 #   GT STATE-KEY HEX, GT ZONE-KEY HEX  what the dump must not hold, and what it must
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
@@ -150,7 +152,7 @@ else
     fail "client-told-suspended" "exit ${rc}: ${said_now}"
 fi
 locked0="$(said locked)"; refused0="$(said refused)"; unlocked0="$(said unlocked)"
-echo "GT KEY-LOCK"
+echo "GT KEY-LOCK 1"
 # Started now by the compositor's key, the lock asks the daemon what unlocks and is told.
 if wait_for 30 more locked "$locked0" && grep -q '^kryptik-lock: the state partition is suspended: its passphrase unlocks' "$slog"; then
     pass "lock-asks-for-state" "the lock started with the state partition suspended, and asks for its passphrase"
@@ -190,20 +192,27 @@ fi
 
 # --- a real sleep ----------------------------------------------------------------------------
 # The user's own way: the lock, then the daemon. The host sees the guest sleep, dumps its memory,
-# waits past the watchdog's timeout and wakes it.
-unlocked0="$(said unlocked)"
+# waits past the watchdog's timeout and wakes it; should the kernel refuse to sleep, the lock
+# says so, and so does this script, for the host.
 as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/lock-suspend.out" 2>&1 &
 if wait_for 30 grep -q '^kryptik-lock: suspending' "$OUT/lock-suspend.out"; then
-    echo "GT SLEEPING"
+    echo "GT SLEEPING 1"
 else
     fail "suspend-asked" "$(tr '\n' ' ' < "$OUT/lock-suspend.out")"
 fi
-# The lock tells the daemon's answer once the machine is back.
-if wait_for 300 grep -q '^kryptik-lock: suspend: ok woke' "$OUT/lock-suspend.out" && state_is 1; then
-    pass "slept-and-woke" "the machine slept and woke with the state partition suspended"
-else
-    fail "slept-and-woke" "flag $(state_flag): $(tr '\n' ' ' < "$OUT/lock-suspend.out")"
-fi
+# The lock tells the daemon's answer once the machine is back, or once the kernel has refused.
+wait_for 300 grep -q '^kryptik-lock: suspend: ' "$OUT/lock-suspend.out"
+answer="$(grep '^kryptik-lock: suspend: ' "$OUT/lock-suspend.out" | tail -1)"
+case "$answer" in
+    *": ok woke")
+        state_is 1 && pass "slept-and-woke" "the machine slept and woke with the state partition suspended" \
+            || fail "slept-and-woke" "woke, but the state partition's flag is $(state_flag)" ;;
+    *"did not sleep"*)
+        echo "GT DID-NOT-SLEEP 1"
+        fail "slept-and-woke" "the kernel refused to sleep: ${answer#*did not sleep: }" ;;
+    *)
+        fail "slept-and-woke" "flag $(state_flag): $(tr '\n' ' ' < "$OUT/lock-suspend.out")" ;;
+esac
 grep -q '^kryptik-lock: the state partition is suspended: its passphrase unlocks' "$OUT/lock-suspend.out" \
     && pass "woke-to-state-prompt" "the lock asks for the state passphrase as soon as the machine is back" \
     || fail "woke-to-state-prompt" "$(tr '\n' ' ' < "$OUT/lock-suspend.out")"
@@ -223,6 +232,41 @@ else
     fail "resumed-after-sleep" "flag $(state_flag): $(tail -3 "$OUT/lock-suspend.out" | tr '\n' ' ')"
 fi
 wait_for 15 none_frozen && pass "zones-thawed-after-sleep" "$(zones_frozen)" || fail "zones-thawed-after-sleep" "$(zones_frozen)"
+
+# --- a sleep the kernel refuses ----------------------------------------------------------------
+# A task waiting on the suspended partition's device where the freezer cannot stop it, here a
+# read that bypasses the page cache, keeps the kernel from sleeping: it gives up after 20 s.
+# Asked again with the partition suspended, the daemon's steps are only the sleep; its refusal
+# is told, and the passphrase still brings the partition back.
+dd if=/dev/zero of=/var/log/kryptik/suspend-reader bs=1M count=1 status=none
+"$KD" suspend --awake > "$OUT/awake2.out" 2>&1 && state_is 1 || fail "suspended-again" "$(tr '\n' ' ' < "$OUT/awake2.out")"
+dd if=/var/log/kryptik/suspend-reader of=/dev/null bs=4096 count=1 iflag=direct status=none &
+reader=$!
+sleep 2
+r="$(< "/proc/$reader/stat")"
+[[ "${r##*) }" == D* ]] || info "the reader on the device is in state ${r##*) }, not waiting on it"
+locked0="$(said locked)"; unlocked0="$(said unlocked)"
+echo "GT KEY-LOCK 2"
+wait_for 30 more locked "$locked0" || fail "locked-again" "$(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+echo "GT SLEEPING 2"
+# Root's way to the same sleep: the session's lock asks the daemon, which forks the same write.
+"$KD" suspend > "$OUT/sleep2.out" 2>&1
+case "$(< "$OUT/sleep2.out")" in
+    *"did not sleep"*)
+        echo "GT DID-NOT-SLEEP 2"
+        pass "sleep-refusal-told" "$(grep -o 'did not sleep: [^;]*' "$OUT/sleep2.out")" ;;
+    *woke*)
+        info "the kernel slept with a read waiting on the device; the host woke it" ;;
+    *)
+        fail "sleep-refusal-told" "$(tr '\n' ' ' < "$OUT/sleep2.out")" ;;
+esac
+echo "GT LOCK-TYPE-STATE 3"
+if wait_for 60 more unlocked "$unlocked0" && state_is 0 && wait_for 15 test ! -d "/proc/$reader"; then
+    pass "resumed-after-refusal" "the passphrase gave the partition its key after the refused sleep, the read ended, and the lock opened"
+else
+    fail "resumed-after-refusal" "flag $(state_flag): $(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+fi
+wait_for 15 none_frozen || fail "zones-thawed-after-refusal" "$(zones_frozen)"
 
 # --- teardown ------------------------------------------------------------------------------
 kill "$writer" 2>/dev/null

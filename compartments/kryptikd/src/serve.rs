@@ -11,16 +11,17 @@
 //!              check-password, `password <password>`, `end` (the screen lock's)
 //!              unlock-kind, answered `ok login`, or `ok state` while the state
 //!                partition is suspended (the screen lock's)
-//!              suspend, answered `ok woke` once the machine has slept and woken
+//!              suspend, answered `ok woke` once the machine has slept and woken; asked
+//!                again while the state partition is suspended, it sleeps again
 //!              resume-state, the state partition's passphrase on one descriptor
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
 //!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
 //!
-//! While the state partition is suspended, unlock-kind and resume-state alone are answered,
-//! to whoever reached the socket: who may ask is checked in /etc/group, whose overlay keeps
-//! its copy on that partition, and the passphrase is what resume-state checks.
+//! While the state partition is suspended, unlock-kind, resume-state and suspend alone are
+//! answered, to whoever reached the socket: who may ask is checked in /etc/group, whose overlay
+//! keeps its copy on that partition, and the passphrase is what resume-state checks.
 //!
 //! `run` replies `ok <launcher pid>` once the zone's pid 1 exists and the
 //! launcher has not failed within SETTLE. One request is read at a time, for at
@@ -716,6 +717,9 @@ enum JobKind {
     Stop { uid: u32, zone: String },
     UpdateApply,
     WifiScan,
+    /// The machine's sleep, whose write returns once it has woken: the daemon answers the
+    /// screen lock meanwhile.
+    Sleep,
 }
 
 fn memfile(name: &str) -> Result<std::fs::File, String> {
@@ -741,6 +745,45 @@ fn start_job(conn: UnixStream, what: JobKind, cmd: &mut std::process::Command) -
     match cmd.stdin(std::process::Stdio::null()).stdout(o2).stderr(e2).spawn() {
         Ok(child) => Ok(Job { conn, pid: child.id() as libc::pid_t, what, out, err, exited: None }),
         Err(e) => Err((conn, e.to_string())),
+    }
+}
+
+/// Start a job that is the daemon's own work, in a child of its own: kryptikd is static, so the
+/// child starts nothing and reads nothing under /etc while the state partition is suspended.
+/// Its status is left for `reap`; what `work` gives as an error is the job's reason.
+fn fork_job(conn: UnixStream, what: JobKind, work: fn() -> Result<(), String>) -> Result<Job, (UnixStream, String)> {
+    let files = memfile("kryptikd-job-out").and_then(|o| memfile("kryptikd-job-err").map(|e| (o, e)));
+    let (out, err) = match files {
+        Ok(f) => f,
+        Err(e) => return Err((conn, e)),
+    };
+    // SAFETY: the daemon runs one thread, so the child may do what the parent would.
+    match unsafe { libc::fork() } {
+        -1 => Err((conn, format!("fork: {}", std::io::Error::last_os_error()))),
+        0 => {
+            let code = match work() {
+                Ok(()) => 0,
+                Err(e) => {
+                    let _ = (&err).write_all(e.as_bytes());
+                    1
+                }
+            };
+            // SAFETY: the child ends here, running nothing more of the daemon's.
+            unsafe { libc::_exit(code) }
+        }
+        pid => Ok(Job { conn, pid, what, out, err, exited: None }),
+    }
+}
+
+/// The machine's sleep as a job of the daemon's, on the connection that asked for it.
+fn start_sleep(conn: UnixStream, jobs: &mut Vec<Job>) {
+    if jobs.iter().any(|j| j.what == JobKind::Sleep) {
+        reply(&conn, "error: the machine is going to sleep already\n");
+        return;
+    }
+    match fork_job(conn, JobKind::Sleep, crate::suspend::sleep) {
+        Ok(j) => jobs.push(j),
+        Err((conn, e)) => reply(&conn, &format!("error: the machine did not sleep: {e}; the state partition waits for its passphrase\n")),
     }
 }
 
@@ -793,6 +836,15 @@ fn finish_job(j: &mut Job, st: i32) {
         JobKind::WifiScan => {
             let why = why(j, "the scan failed");
             reply(&j.conn, &format!("error: {why}\n"));
+        }
+        JobKind::Sleep if ok => {
+            eprintln!("kryptikd serve: woke; the state partition waits for its passphrase");
+            reply(&j.conn, "ok woke\n");
+        }
+        JobKind::Sleep => {
+            let why = why(j, "no reason given");
+            eprintln!("kryptikd serve: the machine did not sleep: {why}");
+            reply(&j.conn, &format!("error: the machine did not sleep: {why}; the state partition waits for its passphrase\n"));
         }
     }
 }
@@ -1144,6 +1196,13 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 let first = String::from_utf8_lossy(raw.split(|&b| b == b'\n').next().unwrap_or_default()).into_owned();
                 // The rest may hold a password: wiped, never read.
                 raw.fill(0);
+                // Asked again at the passphrase prompt, as a lid closed on it would: the
+                // zones are frozen and the key is gone already, so the machine just sleeps.
+                if first == "suspend" {
+                    eprintln!("kryptikd serve: uid {uid} asked to suspend again");
+                    start_sleep(conn, jobs);
+                    return None;
+                }
                 while_suspended(uid, &first, carried, &mut pauses.state)
             }
             Err(e) => format!("error: {e}\n"),
@@ -1256,16 +1315,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 }
                 Ok(zones) => {
                     eprintln!("kryptikd serve: uid {uid} asked to suspend: froze {zones:?}; dropped the state partition's key");
-                    match crate::suspend::sleep() {
-                        Ok(()) => {
-                            eprintln!("kryptikd serve: woke; the state partition waits for its passphrase");
-                            reply(&conn, "ok woke\n");
-                        }
-                        Err(e) => {
-                            eprintln!("kryptikd serve: the machine did not sleep: {e}");
-                            reply(&conn, &format!("error: the machine did not sleep: {e}; the state partition waits for its passphrase\n"));
-                        }
-                    }
+                    start_sleep(conn, jobs);
                 }
             }
         }
