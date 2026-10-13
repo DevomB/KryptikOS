@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Software images (docs/design/software-delivery.md): each image's recipes built in the chroot over the
+# finished base system, through an overlay whose upper directory keeps what they install. Stage 06
+# packs each tree as it packs the root.
+# usage: make images   (as root, for the overlay; or 04-images.sh NAME... for some of build/images)
+#        04-images.sh --inside NAME   in the chroot: one image's rows, as stage 04 runs its own
+
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
+load_config
+
+DEFS="${KRYPTIK_ROOT}/build/images"
+
+# --- in the chroot: one image's rows ----------------------------------------
+
+if [[ "${1:-}" == --inside ]]; then
+    name="${2:?--inside needs an image name}"
+    require_inside_chroot "the image stage"
+    load_hardening
+    validate_hardening_exceptions
+    stage_contract "${BASH_SOURCE[0]}" "image-${name}-" gcc
+    # shellcheck disable=SC2034  # consumed by step() and the recipes
+    STAMPS="${KRYPTIK_WORK}/.stamps" LOGS="${KRYPTIK_WORK}/logs" BUILDDIR="${KRYPTIK_WORK}/build"
+    KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
+    # As stage 04 builds: gnulib refuses root without this, and every make runs in parallel.
+    export FORCE_UNSAFE_CONFIGURE=1 MAKEFLAGS="-j${KRYPTIK_JOBS}"
+    # The root's index of info manuals is the root's; automake leaves it alone. And a Python tool the
+    # build runs leaves no bytecode for the root's modules in the image.
+    export AM_UPDATE_INFO_DIR=no PYTHONDONTWRITEBYTECODE=1
+    umask 022
+    source "${KRYPTIK_ROOT}/build/lib/recipes.sh"
+    # shellcheck source=/dev/null
+    source "${DEFS}/${name}.sh"
+    # Stage 04's last build step: a rebuilt base system rebuilds every image.
+    stage_depends_on "bs-" licences
+    for ((i = 0; i < ${#image_rows[@]}; i += 2)); do
+        # shellcheck disable=SC2086  # a recipe is a word-split command, as in stage 04
+        step "${image_rows[i]}" ${image_rows[i+1]}
+    done
+    exit 0
+fi
+
+# --- on the host: an overlay per image, its rows run inside it ---------------
+
+[[ "$EUID" -eq 0 ]] || die "the image stage mounts an overlay over the sysroot: run it as root (make images)"
+require_outside_chroot "the image stage"
+SYSROOT="${KRYPTIK_WORK}/sysroot"
+CHROOTD="${KRYPTIK_ROOT}/build/stages/03-chroot-prep.sh"
+[[ -f "${KRYPTIK_WORK}/.stamps/bs-licences" ]] || die "stage 04 has not finished: make system first"
+
+# What an image is built from: its definition and files, the recipes and flags, the pins, and the base system.
+image_inputs() {   # image_inputs NAME
+    local f
+    for f in "${DEFS}/${1}.sh" "${DEFS}/${1}"/* "${KRYPTIK_ROOT}/build/lib/recipes.sh" "${KRYPTIK_ROOT}"/build/recipes/*.sh \
+             "${BASH_SOURCE[0]}" "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "${KRYPTIK_ROOT}/build/config/hardening.env" \
+             "${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt" "${KRYPTIK_ROOT}/build/config/versions.env" \
+             "${KRYPTIK_ROOT}/sources.lock"; do
+        if [[ -f "$f" ]]; then printf '%s %s\n' "${f#"${KRYPTIK_ROOT}/"}" "$(sha256_of "$f")"; fi
+    done
+    printf 'base %s\n' "$(_stamp_read "${KRYPTIK_WORK}/.stamps/bs-licences")"
+}
+
+# The image that is being built, so an exit takes its mounts down with it.
+MOUNTED=""
+unmount_image() {   # unmount_image TOP
+    env KRYPTIK_WORK="$1" "$CHROOTD" umount > /dev/null 2>&1 || true
+    if mountpoint -q "$1/sysroot"; then umount "$1/sysroot" || umount -l "$1/sysroot"; fi
+    # Not grep -q: under pipefail its early exit could fail findmnt and hide a mount.
+    if findmnt -rn -o TARGET | grep -F "$1/" >&2; then die "still mounted under $1 (above): nothing there is removed"; fi
+}
+trap '[[ -z "$MOUNTED" ]] || unmount_image "$MOUNTED"' EXIT
+
+build_image() {   # build_image NAME
+    local name="$1" top="${KRYPTIK_WORK}/image-build/${1}" version want d
+    [[ "$name" =~ ^[a-z0-9-]{1,32}$ ]] || die "image name ${name}: a-z, 0-9 and -, at most 32"
+    # shellcheck source=/dev/null
+    version="$(source "${DEFS}/${name}.sh"; printf '%s' "${image_version:-}")"
+    [[ "$version" =~ ^[!-~]{1,64}$ ]] || die "image ${name}: version '${version}' is not 1-64 printable characters without a space"
+    want="$(image_inputs "$name" | sha256_of_stdin)"
+    if [[ -d "${top}/tree/usr" ]] && grep -qx "fingerprint: ${want}" "${top}/record" 2>/dev/null; then
+        dim "  skip ${name} ${version} (already built, inputs unchanged)"
+        return 0
+    fi
+    log "image ${name} ${version}"
+    unmount_image "$top"
+    rm -rf "$top"
+    # A fresh upper directory: no row may skip on a stamp from the last one.
+    rm -f "${KRYPTIK_WORK}/.stamps/image-${name}-"*
+    mkdir -p "${top}/upper" "${top}/overlay-work" "${top}/sysroot"
+    # Stage 03 takes the chroot's root from KRYPTIK_WORK, so the overlay is that work tree's sysroot,
+    # and the real work tree's stamps, logs, build and images are bound into it as usual.
+    for d in .stamps logs build images; do ln -s "${KRYPTIK_WORK}/${d}" "${top}/${d}"; done
+    MOUNTED="$top"
+    mount -t overlay overlay -o "lowerdir=${SYSROOT},upperdir=${top}/upper,workdir=${top}/overlay-work" "${top}/sysroot"
+    env KRYPTIK_WORK="$top" KRYPTIK_KRYPTIKD_BIN= KRYPTIK_WLPROXY_BIN= \
+        "$CHROOTD" run /kryptik/build/stages/04-images.sh --inside "$name"
+    unmount_image "$top"
+    MOUNTED=""
+    "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "$SYSROOT" "${top}/upper"
+    # Without extended attributes: overlayfs keeps its own on the upper directory.
+    mkdir -p "${top}/tree"
+    rsync -aH --numeric-ids "${top}/upper/usr" "${top}/tree/"
+    rm -rf "${top}/upper" "${top}/overlay-work"
+    printf 'name: %s\nversion: %s\nfingerprint: %s\n' "$name" "$version" "$want" > "${top}/record"
+    ok "image ${name} ${version}: $(find "${top}/tree" ! -type d | wc -l) files and links"
+}
+
+names=("$@")
+if [[ "${#names[@]}" -eq 0 ]]; then
+    for d in "${DEFS}"/*.sh; do names+=("$(basename "$d" .sh)"); done
+fi
+log "Kryptik software images: ${names[*]}"
+for n in "${names[@]}"; do
+    [[ -f "${DEFS}/${n}.sh" ]] || die "no image ${n}: nothing at ${DEFS}/${n}.sh"
+    build_image "$n"
+done
+ok "software images built: ${names[*]}"
+dim "Next: make media packs each one beside the root (stage 06)"
