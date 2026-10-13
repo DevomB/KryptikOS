@@ -343,8 +343,10 @@ if wait_for 10 test -s "$pf" && [[ "$(stat -c '%u %a' "$pf")" == "${UID_} 600" ]
 else
     fail "lock-pid-written" "$(stat -c '%U %a %s' "$pf" 2>&1)"
 fi
-as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/hand-off.out" 2>&1
+# Said before the hand-off, for the same reason as GT SLEEPING 1: the sleep can come before the
+# hand-off returns.
 echo "GT SLEEPING 3"
+as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/hand-off.out" 2>&1
 if grep -q '^kryptik-lock: asked the lock that is up to suspend' "$OUT/hand-off.out"; then
     slept "$slog" "$a0" 5 "lock-up-sleeps"
 else
