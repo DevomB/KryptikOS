@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Test kryptik-update's verify_payload with the real ssh-keygen: the manifest is
 # read once, before the signature check, so files swapped in after the check
-# cannot change the version or hashes. Also tests check-manifest and
-# check-pointer. Needs ssh-keygen with -Y (OpenSSH 8.2+).
+# cannot change the version or hashes, and a kernel made for another root is
+# refused, as is a compressed image that is not the one root.json names. Also
+# tests check-manifest, check-pointer and check-release. Needs ssh-keygen with
+# -Y (OpenSSH 8.2+) and zstd.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"
@@ -10,6 +12,7 @@ command -v ssh-keygen >/dev/null 2>&1 || { echo "ssh-keygen not found; cannot ru
 # With -Y, this incomplete call complains about find-principals; without, about -Y.
 probe="$(ssh-keygen -Y find-principals 2>&1 || true)"
 grep -q "find-principals" <<<"$probe" || { echo "this ssh-keygen has no -Y; cannot run"; exit 77; }
+command -v zstd >/dev/null 2>&1 || { echo "zstd not found; cannot run"; exit 77; }
 
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
@@ -20,28 +23,33 @@ trap 'rm -rf "$T"' EXIT
 cd "$T" || exit 1
 
 # The signed payload (version 2) and an unsigned replacement (version 3).
-mkpayload() {   # mkpayload DIR VERSION
-    local d="$1" v="$2" hash
+mkpayload() {   # mkpayload DIR VERSION [ROOT-HASH-IN-KERNEL-B [OTHER-IMAGE-IN-THE-ZST]]
+    local d="$1" v="$2" hash img
     mkdir -p "$d"
     hash="$(printf '%*s' 64 '' | tr ' ' "$v")"
-    printf 'harmless fixture root %s\n' "$v" > "$d/kryptik-root.img"
+    img="$T/image-$(basename "$d")"
+    printf 'harmless fixture root %s\n' "$v" > "$img"
     printf '%s\n' "$hash" > "$d/kryptik-a.efi"
-    printf '%s\n' "$hash" > "$d/kryptik-b.efi"
+    printf '%s\n' "${3:-$hash}" > "$d/kryptik-b.efi"
     # The layout stage 06 writes and the tool reads: one key per line, two spaces in.
     {
         echo "{"
         printf '  "root_hash": "%s",\n' "$hash"
-        printf '  "total_bytes": %s,\n' "$(stat -c %s "$d/kryptik-root.img")"
-        printf '  "sha256": "%s"\n' "$(sha256sum "$d/kryptik-root.img" | cut -c1-64)"
+        printf '  "total_bytes": %s,\n' "$(stat -c %s "$img")"
+        printf '  "sha256": "%s"\n' "$(sha256sum "$img" | cut -c1-64)"
         echo "}"
     } > "$d/root.json"
+    # The payload carries the image compressed, as stage 06 writes it.
+    if [[ -n "${4:-}" ]]; then printf '%s\n' "$4" | zstd -q -c > "$d/kryptik-root.img.zst"
+    else zstd -q -c "$img" > "$d/kryptik-root.img.zst"; fi
     {
         echo "KRYPTIK-MANIFEST-1"
         echo "role: development"
         echo "version: $v"
+        echo "created: 2027-03-02T12:00:00Z"
         echo "files: 4"
         echo "--"
-        for f in kryptik-a.efi kryptik-b.efi kryptik-root.img root.json; do
+        for f in kryptik-a.efi kryptik-b.efi kryptik-root.img.zst root.json; do
             printf '%s  %s  %s\n' "$(sha256sum "$d/$f" | cut -c1-64)" "$(stat -c %s "$d/$f")" "$f"
         done
     } > "$d/manifest"
@@ -51,8 +59,7 @@ mkpayload replacement 3
 
 ssh-keygen -q -t ed25519 -N '' -f key >/dev/null 2>&1 || { echo "cannot make a key"; exit 77; }
 ssh-keygen -q -t ed25519 -N '' -f latestkey >/dev/null 2>&1 || { echo "cannot make a key"; exit 77; }
-# The trust anchor as stage 04 installs it: each key limited to its own
-# namespace (release: manifests; latest: statements of what is current).
+# The trust anchor as stage 04 installs it: each key limited to its own namespace.
 {
     printf 'kryptik-release namespaces="kryptik-release" %s\n' "$(cut -d' ' -f1,2 key.pub)"
     printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 latestkey.pub)"
@@ -60,8 +67,7 @@ ssh-keygen -q -t ed25519 -N '' -f latestkey >/dev/null 2>&1 || { echo "cannot ma
 ssh-keygen -Y sign -f key -n kryptik-release signed/manifest >/dev/null 2>&1 || { echo "cannot sign"; exit 77; }
 printf 'development\n' > role
 
-# The tool's functions, verbatim, with the environment they expect. die exits,
-# so each case runs in its own bash.
+# The tool's functions verbatim, with their environment; die exits, so each case runs alone.
 {
     echo 'NAMESPACE=kryptik-release'
     echo 'MAGIC=KRYPTIK-MANIFEST-1'
@@ -73,15 +79,16 @@ printf 'development\n' > role
     echo 'die() { printf "REFUSED: %s\n" "$*"; exit 1; }'
     echo 'hdr() { awk -F": " -v k="$2" '"'"'$1==k {print $2; exit}'"'"' "$1"; }'
     echo 'running_version() { echo 1; }'
+    # The checks below are the unprivileged path, whoever runs the suite: as root, verify_manifest
+    # hands the signature to kryptikd, which only the image has. The cases as root say so themselves.
+    echo 'id() { if [ "$1" = -u ]; then echo 1000; else command id "$@"; fi; }'
     sed -n '/^pin() {/,/^cmd_apply() {/p' "$TOOL" | sed '$d'
 } > verify.sh
 grep -q '^verify_payload() {' verify.sh || { echo "could not extract verify_payload from $TOOL"; exit 1; }
 
 grep -q '^pin() {' verify.sh || { echo "could not extract pin from $TOOL"; exit 1; }
 
-# run_case NAME WHAT: verify_payload over a fresh copy of the signed payload,
-# with WHAT changed the moment ssh-keygen verifies. Prints the tool's output,
-# plus VERSION=<reported> if it accepted.
+# run_case NAME WHAT: verify_payload on a copy of the signed payload, WHAT changed as it verifies.
 run_case() {
     local name="$1" what="$2"
     rm -rf "$T/payload" "$T/snap-$name"; cp -a "$T/signed" "$T/payload"; mkdir -p "$T/snap-$name"
@@ -99,9 +106,9 @@ ssh-keygen() {
     # Before anything is judged: what a payload directory may simply contain.
     if [ "\${2:-}" = verify ]; then
         case "$what" in
-            link)     mv $T/payload/kryptik-root.img $T/payload-root.img; ln -s $T/payload-root.img $T/payload/kryptik-root.img ;;
+            link)     mv $T/payload/kryptik-root.img.zst $T/payload-root.img.zst; ln -s $T/payload-root.img.zst $T/payload/kryptik-root.img.zst ;;
             dotfile)  echo "ride along" > $T/payload/.hidden ;;
-            lookalike) echo "ride along" > $T/payload/kryptik-rootXimg ;;
+            lookalike) echo "ride along" > $T/payload/kryptik-rootXimg.zst ;;
         esac
     fi
     return "\$rc"
@@ -116,8 +123,7 @@ EOF
 out="$(run_case plain none)"
 if [[ "$out" == *"VERSION=2"* ]]; then ok "the signed payload verifies and reports version 2"; else bad "the signed payload did not verify: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
 
-# Only the manifest replaced: the kept copy still matches the files, so the
-# answer is version 2, never 3.
+# Only the manifest replaced: the kept copy still matches the files, so the answer stays 2.
 out="$(run_case manifest manifest)"
 if [[ "$out" == *"VERSION=3"* ]]; then
     bad "the replaced, unsigned manifest was read after the signature check (version 3)"
@@ -148,7 +154,7 @@ if [[ "$out" == *"REFUSED:"*"not a regular file"* ]]; then ok "a root image that
 out="$(run_case dotfile dotfile)"
 if [[ "$out" == *"REFUSED:"*"unlisted file in the payload: .hidden"* ]]; then ok "an unlisted file whose name begins with a dot is seen and refused"; else bad "a dotfile stowaway: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
 out="$(run_case lookalike lookalike)"
-if [[ "$out" == *"REFUSED:"*"unlisted file in the payload: kryptik-rootXimg"* ]]; then ok "a name that only matches a listed one as a pattern is refused"; else bad "a look-alike name: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
+if [[ "$out" == *"REFUSED:"*"unlisted file in the payload: kryptik-rootXimg.zst"* ]]; then ok "a name that only matches a listed one as a pattern is refused"; else bad "a look-alike name: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
 
 if command ssh-keygen -Y verify -f signers -I kryptik-release -n kryptik-release -s "$T/payload/manifest.sig" < "$T/replacement/manifest" >/dev/null 2>&1; then
     bad "control: the replacement manifest has a valid signature, which it must not"
@@ -156,9 +162,7 @@ else
     ok "control: the real verifier rejects the replacement manifest"
 fi
 
-# --- the update channel's two checks -----------------------------------------
-# Zone 0 runs these before it believes a manifest or a statement of what is
-# current (docs/design/update-channel.md).
+# --- check-manifest and check-pointer, run by zone 0 before it believes either -----
 check() {   # check FUNCTION ARGS... -> the tool's output, REFUSED: on a refusal
     { echo "source $T/verify.sh"; printf 'SNAP=%q\n' "$(mktemp -d "$T/snap.XXXXXX")"; printf '%q ' "$@"; echo; } > "$T/check.sh"
     bash "$T/check.sh" 2>&1
@@ -167,17 +171,32 @@ staged() {   # staged NAME -> a directory holding only the signed manifest and i
     rm -rf "${T:?}/$1"; mkdir -p "$T/$1"; cp "$T/signed/manifest" "$T/signed/manifest.sig" "$T/$1/"
 }
 
+# Signed, every file as listed, and kryptik-b.efi made for another root.
+mkpayload mixed 2 "$(printf '%*s' 64 '' | tr ' ' 7)"
+ssh-keygen -Y sign -f key -n kryptik-release mixed/manifest >/dev/null 2>&1
+out="$(check verify_payload "$T/mixed" 0)"
+[[ "$out" == *"match the manifest"* && "$out" == *"REFUSED: kryptik-b.efi does not embed the root hash"*"not one release"* ]] \
+    && ok "a signed release whose kernel embeds another root hash is refused, though every file matches the manifest" \
+    || bad "a kernel made for another root: $(tail -2 <<<"$out" | tr '\n' ' ')"
+
+# Signed, every file as listed, and the compressed image not the one root.json names.
+mkpayload swapped 2 "" "an image root.json does not name"
+ssh-keygen -Y sign -f key -n kryptik-release swapped/manifest >/dev/null 2>&1
+out="$(check verify_payload "$T/swapped" 0)"
+[[ "$out" == *"match the manifest"* && "$out" == *"REFUSED: kryptik-root.img.zst does not decompress to the image root.json names"* ]] \
+    && ok "a signed release whose compressed image is not the one root.json names is refused before anything is written" \
+    || bad "a compressed image root.json does not name: $(tail -2 <<<"$out" | tr '\n' ' ')"
+
 staged stage
 out="$(check cmd_check_manifest "$T/stage")"
 want_sha="$(sha256sum "$T/signed/manifest" | cut -c1-64)"
 if [[ "$out" == *"version: 2"* && "$out" == *"sha256: $want_sha"* && "$(grep -c '^file [0-9]* ' <<<"$out")" = 4 ]] \
-   && grep -qx "file $(stat -c %s "$T/signed/kryptik-root.img") kryptik-root.img" <<<"$out"; then
+   && grep -qx "file $(stat -c %s "$T/signed/kryptik-root.img.zst") kryptik-root.img.zst" <<<"$out"; then
     ok "check-manifest: a signed manifest with no payload beside it verifies, and prints its version, its hash and the four files with their sizes"
 else
     bad "check-manifest on a signed manifest: $(tail -3 <<<"$out" | tr '\n' ' ')"
 fi
-# Zone 0 reads only stdout and wants the version on its first line
-# (compartments/kryptikd/src/update.rs); the case above searches both streams.
+# Zone 0 (kryptikd's update.rs) reads the version from stdout's first line; above, both streams.
 staged stage
 check cmd_check_manifest "$T/stage" > /dev/null
 first="$(bash "$T/check.sh" 2>/dev/null | head -1)"
@@ -185,8 +204,7 @@ first="$(bash "$T/check.sh" 2>/dev/null | head -1)"
     && ok "check-manifest: the first line of its standard output is the version, as zone 0 reads it" \
     || bad "check-manifest: the first line zone 0 reads is '${first}', not 'version: 2'"
 
-# Signed by the right key in the pointer's namespace: a pointer's signature
-# must never pass for a manifest's.
+# The right key in the pointer's namespace: a pointer's signature must not pass for a manifest's.
 staged crossed; rm -f "$T/crossed/manifest.sig"
 ssh-keygen -Y sign -f key -n kryptik-latest "$T/crossed/manifest" >/dev/null 2>&1
 out="$(check cmd_check_manifest "$T/crossed")"
@@ -202,8 +220,7 @@ out="$(check cmd_check_manifest "$T/stranger")"
     && ok "check-manifest: a manifest signed by a key that is not enrolled is refused" \
     || bad "check-manifest accepted a stranger's key: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
-# apply's rules too, as it is the same function: the role, and no downgrade
-# (a network delivery is never a recovery).
+# apply's rules too (the same function): the role, and no downgrade, as a download is no recovery.
 resigned() {   # resigned NAME SED-EXPRESSION -> the signed manifest, edited, signed again
     rm -rf "${T:?}/$1"; mkdir -p "$T/$1"
     sed "$2" "$T/signed/manifest" > "$T/$1/manifest"
@@ -255,8 +272,7 @@ out="$(check cmd_check_pointer "$T/ptr/stranger" "$T/ptr/stranger.sig")"
     && ok "check-pointer: a pointer signed by a key that is not enrolled is refused" \
     || bad "check-pointer accepted a stranger's key: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
-# Each key is enrolled for one namespace only, both ways round; this is what
-# lets the statement key live where a timer can reach it.
+# Each key holds one namespace, both ways round, so the statement key can live where a timer runs.
 cp "$T/ptr/latest" "$T/ptr/by-release-key"
 ssh-keygen -Y sign -f key -n kryptik-latest "$T/ptr/by-release-key" >/dev/null 2>&1
 out="$(check cmd_check_pointer "$T/ptr/by-release-key" "$T/ptr/by-release-key.sig")"
@@ -284,12 +300,79 @@ out="$(check cmd_check_pointer "$T/ptr/manifest-as-pointer" "$T/ptr/manifest-as-
     && ok "check-pointer: a manifest presented as a pointer is refused by its first line" \
     || bad "check-pointer accepted a manifest: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
-# The tool itself: the two checks need neither root nor this system's disks.
+# --- the release kept for the clock's floor ------------------------------------
+# check-release believes a kept manifest as apply would, in any version order,
+# and zone 0 reads its version and signed date from stdout alone.
+staged kept
+check cmd_check_release "$T/kept" > /dev/null
+said="$(bash "$T/check.sh" 2>/dev/null)"
+[[ "$said" == $'version: 2\ncreated: 2027-03-02T12:00:00Z' ]] \
+    && ok "check-release: a signed manifest gives its version and signed date, and nothing else, on stdout" \
+    || bad "check-release on a signed manifest printed: $(tr '\n' ' ' <<<"$said")"
+out="$(check cmd_check_release "$T/older")"
+[[ "$out" == *"version: 0.9"* && "$out" != *"REFUSED:"* ]] \
+    && ok "check-release: an older release, which check-manifest refuses, is read" \
+    || bad "check-release refused an older release: $(tail -2 <<<"$out" | tr '\n' ' ')"
+resigned running 's/^version: 2/version: 1/'
+out="$(check cmd_check_release "$T/running")"
+[[ "$out" == *"version: 1"* && "$out" != *"REFUSED:"* ]] \
+    && ok "check-release: the running release is read" \
+    || bad "check-release refused the running release: $(tail -2 <<<"$out" | tr '\n' ' ')"
+for c in "prod:this image requires 'development'" "crossed:does NOT verify" "stranger:not enrolled" "by-latest-key:does NOT verify"; do
+    out="$(check cmd_check_release "$T/${c%%:*}")"
+    [[ "$out" == *"REFUSED:"*"${c#*:}"* && "$out" != *"created:"* ]] \
+        && ok "check-release refuses what check-manifest refuses: ${c%%:*}" \
+        || bad "check-release accepted ${c%%:*}: $(tail -2 <<<"$out" | tr '\n' ' ')"
+done
+resigned undated '/^created: /d'
+out="$(check cmd_check_release "$T/undated")"
+[[ "$out" == *"REFUSED:"*"no created date"* && "$out" != *"version: 2"* ]] \
+    && ok "check-release: a signed manifest without a date gives none" \
+    || bad "check-release on a manifest without a date: $(tail -2 <<<"$out" | tr '\n' ' ')"
+
+# --- as root, the signature is kryptikd's to check, as nobody -----------------
+# id says root, ssh-keygen says that it ran, and kryptikd answers as the real
+# one does: a refusal is the checker's last line.
+mkdir -p "$T/asroot"
+cat > "$T/asroot/kryptikd" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "${0%/*}/asked"
+[ -f "$2/manifest" ] && [ -f "$2/manifest.sig" ] || { echo "kryptikd: check-release: no pair in $2" >&2; exit 1; }
+[ "$(cat "${0%/*}/answer")" = ok ] && exit 0
+echo "kryptikd: check-release: FAILED: the manifest's signing key is not enrolled in /usr/share/kryptik/trust/release-signers" >&2
+exit 1
+EOF
+chmod +x "$T/asroot/kryptikd"
+asroot() {   # asroot ANSWER FUNCTION ARGS... -> the output, as root sees it
+    echo "$1" > "$T/asroot/answer"; shift
+    rm -f "$T/asroot/asked"
+    { echo "source $T/verify.sh"
+      echo 'id() { if [ "$1" = -u ]; then echo 0; else command id "$@"; fi; }'
+      echo 'ssh-keygen() { echo "ssh-keygen ran as root" >&2; return 1; }'
+      printf 'PATH=%q:$PATH\n' "$T/asroot"
+      printf 'SNAP=%q\n' "$(mktemp -d "$T/snap.XXXXXX")"
+      printf '%q ' "$@"; echo; } > "$T/check.sh"
+    bash "$T/check.sh" 2>&1
+}
+out="$(asroot ok verify_manifest "$T/signed" 0)"
+[[ "$out" == *"signature verifies, checked as nobody"* && "$out" != *"ssh-keygen ran"* && "$(cat "$T/asroot/asked" 2>/dev/null)" == "check-release $T/snap."* ]] \
+    && ok "as root, apply has kryptikd check the copied pair's signature, and runs no ssh-keygen itself" \
+    || bad "verify_manifest as root: $(tail -2 <<<"$out" | tr '\n' ' ')"
+out="$(asroot refused verify_manifest "$T/signed" 0)"
+[[ "$out" == *"REFUSED: the manifest's signing key is not enrolled in /usr/share/kryptik/trust/release-signers"* && "$out" != *"ssh-keygen ran"* ]] \
+    && ok "as root, kryptikd's refusal is apply's, in the checker's words" \
+    || bad "verify_manifest as root, refused: $(tail -2 <<<"$out" | tr '\n' ' ')"
+
+# The tool itself: the checks need neither root nor this system's disks.
 if [[ "$(id -u)" != 0 ]]; then
     out="$(sh "$TOOL" check-pointer "$T/ptr/latest" "$T/ptr/latest.sig" 2>&1)"
     [[ "$out" != *"must run as root"* && "$out" == *"no trust anchor at /usr/share/kryptik/trust/release-signers"* ]] \
         && ok "check-pointer runs without root and stops at the image's trust anchor, which this host does not have" \
         || bad "the tool's own check-pointer, unprivileged: $(tail -2 <<<"$out" | tr '\n' ' ')"
+    out="$(sh "$TOOL" check-release "$T/kept" 2>&1)"
+    [[ "$out" != *"must run as root"* && "$out" == *"no trust anchor at /usr/share/kryptik/trust/release-signers"* ]] \
+        && ok "check-release runs without root and stops at the image's trust anchor as well" \
+        || bad "the tool's own check-release, unprivileged: $(tail -2 <<<"$out" | tr '\n' ' ')"
     # The exit trap removes the tool's copy directory, so the environment must
     # not choose it.
     mkdir -p "$T/precious"; echo keep > "$T/precious/marker"

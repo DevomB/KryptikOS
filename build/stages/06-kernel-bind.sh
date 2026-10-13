@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Stage 06, chroot half: relink bzImage with images/cmdlines/VARIANT.txt as its
-# built-in command line, into images/kernels/VARIANT.efi for the host to sign.
-# Not a fragment setting: the line carries the verity root hash, which exists
-# only once the root image, holding this kernel's modules, is built.
+# Stage 06, chroot half: relink bzImage with images/cmdlines/VARIANT.txt built in, for the host to sign.
+# Not a fragment setting: the line holds the verity root hash, known only once the root image is built.
 #   03-chroot-prep.sh run /kryptik/build/stages/06-kernel-bind.sh VARIANT...
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
@@ -19,6 +17,9 @@ JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
 mkdir -p "$KERNELS"
 
 cd "$KSRC"
+# As stage 05 built it, or each relink would stamp its own time and build number.
+export KBUILD_BUILD_USER=kryptik KBUILD_BUILD_HOST=kryptik KBUILD_BUILD_VERSION=1
+[[ -z "${SOURCE_DATE_EPOCH:-}" ]] || { KBUILD_BUILD_TIMESTAMP="$(date -u -d "@${SOURCE_DATE_EPOCH}")"; export KBUILD_BUILD_TIMESTAMP; }
 grep -q '^CONFIG_CMDLINE_OVERRIDE=y' .config || die "CONFIG_CMDLINE_OVERRIDE is not set in the kernel config; the command line would not be bound"
 grep -q '^CONFIG_EFI_STUB=y' .config || die "CONFIG_EFI_STUB is not set; the kernel is not a UEFI application"
 

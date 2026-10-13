@@ -1,14 +1,11 @@
-//! Capability bounding set for zones.
-//!
-//! Everything is dropped except `CAP_NET_BIND_SERVICE` and what the zone's
-//! policy keeps from `KEEPABLE`. The network capabilities matter most: in a
-//! zone that owns a veth they would let it re-address its link or forge frames.
+//! Zone capability bounding set: everything is dropped but `CAP_NET_BIND_SERVICE` and what
+//! the zone's policy keeps from `KEEPABLE`.
 
 use std::io;
 
 /// Capability numbers from `linux/capability.h` (stable ABI; `libc` lacks them).
 #[allow(dead_code)]
-mod cap {
+pub(crate) mod cap {
     use libc::c_int;
     pub const CHOWN: c_int = 0;
     pub const DAC_OVERRIDE: c_int = 1;
@@ -18,13 +15,13 @@ mod cap {
     pub const KILL: c_int = 5;
     pub const SETGID: c_int = 6;
     pub const SETUID: c_int = 7;
-    pub const SETPCAP: c_int = 8;
     pub const NET_BIND_SERVICE: c_int = 10;
     pub const NET_BROADCAST: c_int = 11;
     pub const NET_ADMIN: c_int = 12;
     pub const NET_RAW: c_int = 13;
     pub const IPC_LOCK: c_int = 14;
     pub const SYS_MODULE: c_int = 16;
+    pub const SYS_CHROOT: c_int = 18;
     pub const SYS_PTRACE: c_int = 19;
     pub const SYS_ADMIN: c_int = 21;
     pub const SYS_NICE: c_int = 23;
@@ -34,15 +31,23 @@ mod cap {
 /// Always kept: binding a low port inside the zone's own namespace is harmless.
 pub const KEEP: libc::c_int = cap::NET_BIND_SERVICE;
 
-/// What a zone policy may keep (`keep-capability CAP_X`). Each is scoped to
-/// the zone's own namespace, processes or files; nothing here reaches the host.
+/// What a zone policy may keep (`keep-capability CAP_X`): each is scoped to the zone's own
+/// namespaces, processes or files.
 pub const KEEPABLE: &[libc::c_int] = &[
     cap::NET_BIND_SERVICE, cap::NET_ADMIN, cap::NET_RAW, cap::NET_BROADCAST,
     cap::SYS_NICE, cap::IPC_LOCK, cap::KILL, cap::CHOWN, cap::FOWNER, cap::FSETID,
-    cap::DAC_READ_SEARCH,
+    cap::DAC_READ_SEARCH, cap::SETUID, cap::SETGID, cap::SYS_CHROOT,
 ];
 
-/// Every capability number the kernel defines today, by name.
+/// What a daemon needs to drop to a user of its own (dhcpcd's privilege separation): kept
+/// together or not at all, and each opens the calls `seccomp::CAP_CALLS` names.
+pub const PRIVSEP: &[libc::c_int] = &[cap::SETUID, cap::SETGID, cap::SYS_CHROOT];
+
+pub fn keeps_privsep(keep: &[libc::c_int]) -> bool {
+    PRIVSEP.iter().all(|c| keep.contains(c))
+}
+
+/// Capability numbers by name, as linux/capability.h defines them.
 pub const CAP_NAMES: &[(&str, libc::c_int)] = &[
     ("CAP_CHOWN", 0), ("CAP_DAC_OVERRIDE", 1), ("CAP_DAC_READ_SEARCH", 2), ("CAP_FOWNER", 3),
     ("CAP_FSETID", 4), ("CAP_KILL", 5), ("CAP_SETGID", 6), ("CAP_SETUID", 7), ("CAP_SETPCAP", 8),
@@ -57,8 +62,9 @@ pub const CAP_NAMES: &[(&str, libc::c_int)] = &[
     ("CAP_CHECKPOINT_RESTORE", 40),
 ];
 
-/// Only the NIC zone may keep these (see `policy::check_for_zone`).
-pub const NIC_ONLY: &[libc::c_int] = &[cap::NET_ADMIN, cap::NET_RAW];
+/// Only the nic zone may keep these (`policy::check_for_zone`): another zone could use the
+/// network ones to re-address its veth or forge frames, and only dhcpcd there needs `PRIVSEP`.
+pub const NIC_ONLY: &[libc::c_int] = &[cap::NET_ADMIN, cap::NET_RAW, cap::SETUID, cap::SETGID, cap::SYS_CHROOT];
 
 pub fn cap_by_name(name: &str) -> Option<libc::c_int> {
     CAP_NAMES.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
@@ -68,8 +74,7 @@ pub fn cap_name(cap: libc::c_int) -> &'static str {
     CAP_NAMES.iter().find(|(_, v)| *v == cap).map(|(n, _)| *n).unwrap_or("CAP_?")
 }
 
-/// Highest capability the running kernel defines. Read at run time so
-/// capabilities newer than our headers are dropped too.
+/// Highest capability the running kernel defines, so ones newer than our table are dropped too.
 fn last_cap() -> libc::c_int {
     match std::fs::read_to_string("/proc/sys/kernel/cap_last_cap") {
         Ok(s) => s.trim().parse().unwrap_or(40),
@@ -95,9 +100,7 @@ impl std::fmt::Display for CapError {
     }
 }
 
-/// Drop every capability from the bounding set except `KEEP` and the
-/// `KEEPABLE` ones in `keep`. Runs after the mounts and `pivot_root` (which
-/// need `CAP_SYS_ADMIN`) and right before `execvp`. Any failed drop is fatal.
+/// Drop every bounding-set capability but `KEEP` and the `KEEPABLE` ones in `keep`.
 pub fn drop_bounding_set_except(keep: &[libc::c_int]) -> Result<(), CapError> {
     let last = last_cap();
     for cap in 0..=last {

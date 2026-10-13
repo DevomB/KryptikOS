@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# locales: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# Locales, with stage 01's localedef, first and apart from the glibc rebuild:
-# perl needs them (Configure probes LC_ALL), and glibc's rebuild waits for
-# python, which comes after perl.
+# Early, with stage 01's localedef: perl's Configure probes LC_ALL, and glibc waits for python.
 s_locales() {
     mkdir -p /usr/lib/locale
     localedef -i C -f UTF-8 C.UTF-8

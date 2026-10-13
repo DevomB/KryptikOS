@@ -21,9 +21,11 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
 - `allow-syscall`: a name from `seccomp::ADDABLE`. A syscall on the base
   denied list (`DENIED_RATIONALE`: `ptrace`, `mount`, `setns`, `bpf`, ...)
   cannot be re-allowed, one on the base allowlist is reported as already
-  allowed, and any other name is an error. The id and capability calls on
-  the denied list fail with EPERM instead of killing the caller; the trace
-  paragraph below says why.
+  allowed, and any other name is an error. The id and capability calls and
+  `unshare` on the denied list fail with EPERM instead of killing the caller.
+  The one way back for a denied call is a kept capability: `CAP_SETUID`,
+  `CAP_SETGID` and `CAP_SYS_CHROOT` open `setuid` and `capset`, `setgid`
+  and `setgroups`, and `chroot` (`seccomp::CAP_CALLS`).
 - `allow-socket`: `AF_PACKET`, `AF_KEY`, `AF_ALG`, `AF_VSOCK`, `AF_BLUETOOTH`,
   `AF_CAN`, `AF_RDS`, `AF_TIPC` or `AF_XDP`; `AF_NETLINK` drops the netlink
   protocol check. `socketpair(2)` stays `AF_UNIX` only whatever the file
@@ -34,18 +36,21 @@ keep-capability   CAP_NET_RAW         # left in the bounding set
   `CAP_NET_BIND_SERVICE`, which every zone keeps. `CAP_NET_ADMIN` and
   `CAP_NET_RAW` are accepted only for the `network.mode = "nic"` zone
   (`Policy::check_for_zone`): with either, a routed zone could re-address its
-  veth or forge frames. The chown, chmod and xattr calls are in the base
-  list, so keeping `CAP_CHOWN`, `CAP_FOWNER` or `CAP_FSETID` takes effect
-  with no `allow-syscall` line. A zone's user namespace maps only its root
-  and nobody, so the most such a zone can do is move its own files between
-  those two.
+  veth or forge frames. So are `CAP_SETUID`, `CAP_SETGID` and
+  `CAP_SYS_CHROOT`, which are kept together or not at all (`caps::PRIVSEP`):
+  they let dhcpcd drop to a user of its own and dnsmasq to nobody, and a
+  zone that keeps them also gets dhcpcd's user, id 100, mapped and named in
+  its passwd. The chown, chmod and xattr calls are in the base list, so
+  keeping `CAP_CHOWN`, `CAP_FOWNER` or `CAP_FSETID` takes effect with no
+  `allow-syscall` line. A zone's user namespace maps only its root and
+  nobody (and in the nic zone dhcpcd's user), so the most such a zone can do
+  is move its own files between those.
 
 To find what a program needs, run it under the base filter with `kryptikd
 seccomp-trace -- CMD [ARGS]`. Each call the filter would kill the program for
 is printed as `KRYPTIK_SECCOMP_DENIED <nr> <name>` and fails with ENOSYS
-instead, so one run lists them all rather than stopping at the first. A call
-a zone gets an errno for rather than being killed is printed with `soft`
-after its name and gets the same errno here:
+instead, so one run lists them all. A call that a zone gets an errno for, not
+a kill, is printed with `soft` after its name and gets the same errno here:
 
 - `inotify_init` and `inotify_init1` fail with ENOSYS: a watch on the `/usr`
   every zone shares would see each program started anywhere, and programs
@@ -55,6 +60,11 @@ after its name and gets the same errno here:
   `setfsgid`, and `sudo`, `su` and daemons that drop privilege as root call
   the rest, so a kill would take them down unexplained. They stay on the denied
   list, and no id or capability changes either way.
+- `unshare`, and `clone` with namespace flags, fail with EPERM: Firefox,
+  Chromium and bubblewrap probe for user namespaces at start and must hear
+  no, as the kernel tells an unprivileged caller. `unshare` stays on the
+  denied list, and `setns`, which would enter another zone's namespaces, is
+  killed.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
 list; a call refused for its arguments (namespace flags to `clone`,
@@ -63,13 +73,13 @@ list; a call refused for its arguments (namespace flags to `clone`,
 included, so a second run shows what is still refused.
 
 An unknown directive or name, a denied syscall, a capability outside
-`KEEPABLE`, a duplicate line or an unreadable file is an error that names the
+`KEEPABLE`, a duplicate line or an unreadable file is an error that gives the
 file and line; a line the base already covers is a warning. Every shipped
 zone names a policy file, and only `net.seccomp` adds anything. `kryptikd
 explain` prints the additions:
 
 ```text
-policy     policy/net.seccomp: socket AF_PACKET, netlink NETLINK_NETFILTER, netlink NETLINK_GENERIC, keep CAP_NET_ADMIN, keep CAP_NET_RAW
+policy     policy/net.seccomp: socket AF_PACKET, netlink NETLINK_NETFILTER, netlink NETLINK_GENERIC, keep CAP_NET_ADMIN, keep CAP_NET_RAW, keep CAP_SETUID, keep CAP_SETGID, keep CAP_SYS_CHROOT
 ```
 
 ## Landlock policy files
@@ -89,13 +99,19 @@ inside the zone after `pivot_root`. There is no `deny`: Landlock cannot
 subtract, and "`/home/w` except `.ssh`" would have to list every sibling of
 `.ssh` and would stop denying when a new one appeared.
 
-Refused: a relative path or one containing `..`; a path named twice; a file
-that grants nothing (omit `[policy] landlock` to keep the base rules); a path
-that does not exist when the layer is applied, since the zone would run
-narrower than its file says (so an ephemeral zone should name only paths
-that exist at launch); a path that is or passes through a symbolic link,
-since a zone that can write a granted directory's parent could swap it for
-a link to something wider and widen its own rule at its next start.
+Refused:
+
+- a relative path or one containing `..`;
+- a path named twice;
+- a file that grants nothing (omit `[policy] landlock` to keep the base
+  rules);
+- a path that does not exist when the layer is applied, since the zone would
+  run narrower than its file says (so an ephemeral zone should name only
+  paths that exist at launch);
+- a path that is or passes through a symbolic link, since a zone that can
+  write a granted directory's parent could swap it for a link to something
+  wider and widen its own rule at its next start.
+
 `explain` prints the base rules, then
 `-- and then narrowed by <file>, which grants only:` and the file's rules.
 No shipped zone has a Landlock policy yet.
@@ -103,14 +119,15 @@ No shipped zone has a Landlock policy yet.
 ## Tests
 
 Unit tests in `policy.rs` and `seccomp.rs` (a widened program still refuses
-what it does not name), and `landlock::tests::second_layer_narrows_never_widens`,
-which builds two real layers and checks that the second can remove access
-but never add it. The launcher suite's policy section checks kept
-capabilities, the NIC-only rule, refusals and `explain`. The boundary suite
-checks an allowed socket family against a zone without the policy, and that
-a zone narrowed to `/tmp` and `/dev` cannot write its `$HOME` while a control
-zone can, and that a zone which swaps a granted directory for a link to its
-`$HOME` is refused at its next start.
+what it does not name), and
+`landlock::tests::second_layer_narrows_never_widens`, which builds two real
+layers and checks that the second can remove access but never add it. The
+launcher suite's policy section checks kept capabilities, the NIC-only rule,
+refusals and `explain`. The boundary suite checks an allowed socket family
+against a zone without the policy; that a zone narrowed to `/tmp` and `/dev`
+cannot write its `$HOME` while a control zone can; and that a zone which
+swaps a granted directory for a link to its `$HOME` is refused at its next
+start.
 
 ## Files
 

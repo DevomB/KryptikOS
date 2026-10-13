@@ -67,6 +67,19 @@ fn claim_within_bound_steps_clock() {
 }
 
 #[test]
+fn degraded_boot_leaves_the_rtc_alone() {
+    // The same step as above, on a boot whose clock state is in memory.
+    let dir = scratch("degraded");
+    let mut clock = FakeClock::at(BUILT as f64 + 1e6);
+    let out = consider_with(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 42.5, sources: 3 }, &mut nobody, false);
+    assert_eq!(out, Outcome::Stepped);
+    assert_eq!((clock.steps.len(), clock.rtc_syncs), (1, 0));
+    let history = std::fs::read_to_string(dir.join("history")).unwrap();
+    assert!(history.contains("the hardware clock was left alone"), "{history}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn past_bound_needs_consent() {
     let dir = scratch("ask");
     let start = BUILT as f64;
@@ -132,6 +145,70 @@ fn refused_without_floor_or_permission() {
 }
 
 #[test]
+fn unwritable_state_believes_nothing() {
+    // Under a regular file nothing can be created, by root either.
+    let base = scratch("unwritable");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(base.join("file"), b"").unwrap();
+    let dir = base.join("file").join("time");
+    let mut clock = FakeClock::at(BUILT as f64 + 1e6);
+    let mut asked = 0;
+    // A step, a slew and one past the bound, claim after claim: no interval
+    // and no sum could be kept, so none is believed and nobody is asked.
+    for offset in [1800.0, 0.5, 9e6, 1800.0] {
+        let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset, sources: 3 }, &mut |_: &str, _: &str, _: u8| {
+            asked += 1;
+            Ok(())
+        });
+        assert!(matches!(&out, Outcome::Refused(w) if w.contains("could not be saved")), "{offset}: {out:?}");
+    }
+    assert_eq!((clock.steps.len(), clock.slews.len(), clock.rtc_syncs, asked), (0, 0, 0, 0));
+    // The floor still holds at boot, and the unsaved state is said.
+    let mut dead = FakeClock::at(946_684_800.0);
+    let said = clamp(&mut dead, &dir, Some(BUILT)).unwrap();
+    assert!(said.contains("set to 2026-09-19 18:11 UTC") && said.contains("could not be saved"), "{said}");
+    assert_eq!(dead.steps, vec![BUILT as f64]);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// A clock that, when set, notes what the saved state already says.
+struct Witness {
+    t: f64,
+    dir: std::path::PathBuf,
+    saw: Vec<(f64, Option<f64>)>,
+}
+impl Clock for Witness {
+    fn now(&self) -> f64 {
+        self.t
+    }
+    fn step(&mut self, to: f64) -> io::Result<()> {
+        let s = load_state(&self.dir);
+        self.saw.push((s.moved_unasked, s.last_claim));
+        self.t = to;
+        Ok(())
+    }
+    fn slew(&mut self, _: f64) -> io::Result<()> {
+        Ok(())
+    }
+    fn sync_rtc(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn claim_counted_before_clock_moves() {
+    let dir = scratch("ahead");
+    let start = BUILT as f64 + 1e6;
+    let mut clock = Witness { t: start, dir: dir.clone(), saw: vec![] };
+    let out = consider(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 1200.0, sources: 2 }, &mut nobody);
+    assert_eq!(out, Outcome::Stepped);
+    // When the clock was set, the sum and the claim's time, as the clock reads
+    // after the step, were on disk already.
+    assert_eq!(clock.saw, vec![(1200.0, Some(start + 1200.0))]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn clamp_raises_dead_clock_to_floor() {
     let dir = scratch("clamp");
     let mut dead = FakeClock::at(946_684_800.0);
@@ -182,7 +259,7 @@ fn below_floor_is_refused() {
     let now = BUILT as f64 + 86400.0;
     // Below the floor: refused, not asked, though far past the bound.
     match decide(&k(now), &c(-86401.0)) {
-        Decision::Refuse(why) => assert!(why.contains("before this system was built"), "{why}"),
+        Decision::Refuse(why) => assert!(why.contains("before the floor (2026-09-19 18:11 UTC)"), "{why}"),
         d => panic!("{d:?}"),
     }
     // The floor itself is the earliest time that may be asked about.
@@ -261,6 +338,127 @@ fn floor_from_image_record() {
                 "{\"built_at\": \"2026-09-19T18:11:28\"}", "{\"built_at\": \"2026-09-19 18:11:28Z\"}"] {
         assert_eq!(floor_from_image_json(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn release_only_raises_floor() {
+    assert_eq!(floor_from(BUILT, None), BUILT);
+    assert_eq!(floor_from(BUILT, Some(BUILT + 86400)), BUILT + 86400);
+    // Running a newer image than the release kept: the build date stands.
+    assert_eq!(floor_from(BUILT, Some(BUILT - 86400)), BUILT);
+}
+
+#[test]
+fn release_answer_is_strict() {
+    assert_eq!(parse_release("version: 1.0.1\ncreated: 2026-09-19T18:11:28Z\n"), Ok(("1.0.1".into(), BUILT)));
+    for bad in [
+        "", "version: 1.0.1\n", "created: 2026-09-19T18:11:28Z\n", "version: \ncreated: 2026-09-19T18:11:28Z\n",
+        "version: 1.0.1\ncreated: yesterday\n", "version: 1.0.1\ncreated: 2026-09-19 18:11:28Z\n",
+    ] {
+        assert!(parse_release(bad).is_err(), "{bad:?} was accepted");
+    }
+}
+
+/// Stands in for `kryptik-update check-release`: a signature reading "good"
+/// verifies, and the answer is the manifest's own version and created lines.
+fn check(dir: &Path) -> Result<String, String> {
+    if std::fs::read_to_string(dir.join("manifest.sig")).map_err(|e| e.to_string())? != "good" {
+        return Err("the manifest signature does NOT verify".into());
+    }
+    let m = std::fs::read_to_string(dir.join("manifest")).map_err(|e| e.to_string())?;
+    Ok(m.lines().filter(|l| l.starts_with("version: ") || l.starts_with("created: ")).map(|l| format!("{l}\n")).collect())
+}
+
+fn release(dir: &Path, version: &str, created: &str, sig: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("manifest"), format!("KRYPTIK-MANIFEST-1\nversion: {version}\ncreated: {created}\n")).unwrap();
+    std::fs::write(dir.join("manifest.sig"), sig).unwrap();
+}
+
+#[test]
+fn kept_release_must_verify() {
+    let d = scratch("kept");
+    assert_eq!(release_in(&d, &check), Ok(None));
+    release(&d, "1.0.1", "2026-09-19T18:11:28Z", "good");
+    assert_eq!(release_in(&d, &check), Ok(Some(("1.0.1".into(), BUILT))));
+    // Whoever writes the state partition cannot sign: the build date is the floor again.
+    std::fs::write(d.join("manifest.sig"), "forged").unwrap();
+    assert!(release_in(&d, &check).unwrap_err().contains("does NOT verify"));
+    std::fs::remove_file(d.join("manifest.sig")).unwrap();
+    assert!(release_in(&d, &check).is_err());
+    // A link or an outsized file is refused before the tool runs.
+    let never = |_: &Path| -> Result<String, String> { panic!("the check ran") };
+    std::fs::write(d.join("manifest.sig"), "good").unwrap();
+    std::fs::remove_file(d.join("manifest")).unwrap();
+    std::os::unix::fs::symlink("/etc/hostname", d.join("manifest")).unwrap();
+    assert!(release_in(&d, &never).is_err());
+    std::fs::remove_file(d.join("manifest")).unwrap();
+    std::fs::write(d.join("manifest"), vec![b'x'; crate::update::MANIFEST_MAX as usize + 1]).unwrap();
+    assert!(release_in(&d, &never).is_err());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A process keeps a good answer until the pair changes, and tries a failed check again after a
+/// minute: one failure does not leave its floor at the build date until it ends.
+#[test]
+fn kept_release_read_again_after_a_failure_or_a_change() {
+    let d = scratch("kept-again");
+    release(&d, "1.0.1", "2026-09-19T18:11:28Z", "good");
+    let runs = std::cell::Cell::new(0);
+    let failing = |_: &Path| -> Result<String, String> {
+        runs.set(runs.get() + 1);
+        Err("kryptik-update: could not fork".into())
+    };
+    let counted = |p: &Path| {
+        runs.set(runs.get() + 1);
+        check(p)
+    };
+    let (mut kept, t0) = (Kept::new(), std::time::Instant::now());
+    let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+    assert!(kept.get(&d, t0, &failing).is_err());
+    // Within the minute the failure stands, and nothing is checked again.
+    assert!(kept.get(&d, at(10), &counted).is_err());
+    assert_eq!(runs.get(), 1);
+    // After it, the check runs again, and the good answer it gives stands.
+    assert_eq!(kept.get(&d, at(61), &counted), Ok(Some(("1.0.1".into(), BUILT))));
+    assert_eq!(kept.get(&d, at(7200), &failing), Ok(Some(("1.0.1".into(), BUILT))));
+    assert_eq!(runs.get(), 2);
+    // A pair kept anew is read at once, whatever was learned before.
+    release(&d, "1.0.10", "2026-10-01T00:00:00Z", "good");
+    assert_eq!(kept.get(&d, at(7201), &counted).unwrap().unwrap().0, "1.0.10");
+    assert_eq!(runs.get(), 3);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn commit_keeps_newest_release() {
+    let dir = scratch("commit");
+    crate::files::private_dir(&dir).unwrap();
+    let (a, b) = (dir.join("release-a"), dir.join("release-b"));
+    release(&a, "1.0.0", "2026-08-01T00:00:00Z", "good");
+    release(&b, "1.0.1", "2026-09-19T18:11:28Z", "good");
+    let now = BUILT as f64 + 600.0;
+    let kept = || release_in(&dir.join("release"), &check);
+    assert!(keep_release(&dir, &b, "1.0.1", now, &check).unwrap().contains("release 1.0.1 (2026-09-19 18:11 UTC) is the floor now"));
+    assert_eq!(kept(), Ok(Some(("1.0.1".into(), BUILT))));
+    assert!(std::fs::read_to_string(dir.join("history")).unwrap().contains("release 1.0.1 (2026-09-19 18:11 UTC) is the floor now"));
+    // A recovery to the older release: the newer one stays the floor.
+    assert!(keep_release(&dir, &a, "1.0.0", now, &check).unwrap().contains("release 1.0.1 (2026-09-19 18:11 UTC) stays"));
+    assert_eq!(kept(), Ok(Some(("1.0.1".into(), BUILT))));
+    // Only the running release's pair is taken, and only one that verifies.
+    assert!(keep_release(&dir, &b, "1.0.0", now, &check).unwrap_err().contains("this system runs 1.0.0"));
+    let c = dir.join("release-c");
+    release(&c, "1.0.2", "2026-10-01T00:00:00Z", "forged");
+    assert!(keep_release(&dir, &c, "1.0.2", now, &check).unwrap_err().contains("does NOT verify"));
+    assert!(keep_release(&dir, &dir.join("release-x"), "1.0.2", now, &check).unwrap_err().contains("holds no manifest"));
+    assert_eq!(kept().unwrap().unwrap().0, "1.0.1");
+    // A newer one replaces it; so does any that verifies once the kept pair no longer does.
+    std::fs::write(c.join("manifest.sig"), "good").unwrap();
+    assert!(keep_release(&dir, &c, "1.0.2", now, &check).unwrap().contains("release 1.0.2"));
+    std::fs::write(dir.join("release").join("manifest.sig"), "damaged").unwrap();
+    assert!(keep_release(&dir, &a, "1.0.0", now, &check).unwrap().contains("is the floor now"));
+    assert_eq!(kept().unwrap().unwrap().0, "1.0.0");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# The installed system's state partition: found on the system's own disk, and
-# a boot that says so when it cannot use it (docs/design/boot-and-updates.md,
-# sysinit.sh).
+# The installed system's state partition: found on its own disk, and a degraded boot when unusable.
 #
 #   tools/image/state-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
-#   step 1  install, first boot, a file on the state partition
+#   step 1  install with no preseed: the first boot asks for the user and the
+#           passwords at the serial console and only then shows its login
+#           prompt, which refuses root; a file on the state partition
 #   step 2  a clone of the disk attached: its partitions are ignored; then
 #           the clone boots alone
 #   step 3  two kryptik-state partitions on the root disk: degraded
@@ -13,9 +13,12 @@
 #   step 5  no kryptik-state partition: degraded
 #   step 6  the watchdog feeder stopped: the machine resets and comes back
 #   step 7  three wrong passphrases: degraded; then the right one
+#   step 8  root changes the passphrase with `kryptik state passphrase`, which
+#           first refuses a wrong current one and a new one under 8
+#           characters: the old one no longer unlocks, the new one does
 #
-# A degraded boot has no accounts, so only its console is checked; after each
-# repair a login must find the user's file. Every disk is a file made here.
+# After each repair a login must find the user's file, and no degraded boot
+# writes the ESP or the state partition's header. Every disk is a file made here.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -28,7 +31,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -44,13 +47,19 @@ source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/state-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 
 
-# A boot that must come up degraded. Nobody can log in to power it off, so it
-# is stopped once its report ends, and only its transcript is checked: every
-# line below comes before the report's END.
+# What a boot could write on the disk: the ESP's records and boot file, and the state header.
+written() {
+    { dd if="$DISK" bs=512 count="$(part_start "$DISK" 2)" status=none
+      dd if="$DISK" bs=512 skip="$(part_start "$DISK" 4)" count=65536 status=none; } | sha256sum | cut -c1-64
+}
+# Nobody can log in to a degraded boot: stop it at its report's END and check the transcript.
 degraded_boot() {   # degraded_boot NAME REASON-REGEX
+    local before; before="$(written)"
     start_vm "$1"
     DRIVE_TIMEOUT=150 drive "expect:KRYPTIK_SMOKE: END" > /dev/null
     stop_vm
+    [[ "$(written)" == "$before" ]] && green "$1: nothing was written to the ESP or the state header" \
+        || red "$1: the degraded boot wrote to the ESP or the state header"
     local t; t="$(txt)"
     grep -q 'sysinit: \*  STATE DEGRADED' <<<"$t" && green "$1: the console banner says STATE DEGRADED" || red "$1: no degraded banner"
     grep -qE "STATE DEGRADED: $2" <<<"$t" && green "$1: the reason is named ($2)" || { red "$1: reason not as expected"; grep 'STATE DEGRADED' <<<"$t" | head -2 | sed 's/^/        /'; }
@@ -76,16 +85,34 @@ normal_boot() {   # normal_boot NAME
 }
 
 # ----------------------------------------------------------------- step 1 --
-step "step 1: install, first boot, a file on the state partition"
+step "step 1: install with no preseed; the first boot asks at the serial console"
 fresh_disk "$USB"
-install_disk state-install "$USB" --vars clean && green "installed" || { red "install failed"; exit 1; }
+# The state passphrase alone: the accounts are asked for, as when someone installs by hand.
+ctl="${VMDIR}/testctl-state-install.img"
+"${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
+    "state_passphrase=${KRYPTIK_STATE_PASSPHRASE}" > /dev/null || die "the install control disk"
+smoke state-install --usb "$USB" --disk "$DISK" --testctl "$ctl" --vars clean --timeout "$TIMEOUT" > /dev/null
+boot_txt | grep -q 'KRYPTIK_INSTALL: rc=0' && green "installed" || { red "install failed"; exit 1; }
+boot_txt | grep -q 'KRYPTIK_INSTALL: verify: preseed=none' && green "with no preseed" || red "a preseed was written"
 start_vm state-p1
-drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
+# The setup's prompts are matched unanchored: a service starting meanwhile may
+# print on their line. Root's own password at the getty is refused, as no
+# terminal is root's.
+drive "expect:User name: " "send:${TUSER}" \
+    "expect:New password for ${TUSER}: " "send:${TPASS}" "expect:Again: " "send:${TPASS}" \
+    "expect:New password for root: " "send:${RPASS}" "expect:Again: " "send:${RPASS}" \
+    "seen:kryptik-firstboot: created user '${TUSER}'" "seen:KRYPTIK_SMOKE: END" \
+    "knock:login: ?$" "send:root" "expect:Password: ?" "send:${RPASS}" "expect:Login incorrect" \
+    "login:${TUSER}:${TPASS}" \
     "run:echo state-marker > /home/${TUSER}/state-marker && sync" \
     "grab:ident:cat /run/kryptik/boot-identity" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "first boot: user created, file written" || { red "step 1 drive failed"; exit 1; }
+[[ "$rc" -eq 0 ]] && green "first boot: the user and both passwords set at the serial console, the user logged in and wrote a file" \
+    || { red "step 1 drive failed"; exit 1; }
+txt | awk '/kryptik login:/ && !l { l = NR } /User name: |New password for |Again: / { q = NR } END { exit !(l && q && l > q) }' \
+    && green "the serial console showed its login prompt only after the setup's last question" || red "a login prompt came before the setup ended"
+txt | grep -q 'Login incorrect' && green "root, with its own password, cannot log in at a terminal" || red "root's login at the console was not refused"
 txt | grep -q 'state=persistent' && green "state=persistent on the installed disk" || red "state not persistent"
 txt | grep -q 'root_disk=/dev/vda' && green "root disk identified as /dev/vda" || red "root disk not identified"
 
@@ -142,10 +169,9 @@ sfdisk --part-label "$DISK" 4 kryptik-state >/dev/null 2>&1 || die "relabel back
 normal_boot state-p5b
 
 # ----------------------------------------------------------------- step 6 --
-# Stop the feeder rather than kill it (s6 would restart it): to the timer that
-# is a hung userspace, and only the watchdog's reset can bring a second boot.
 step "step 6: nothing feeds the watchdog: the machine resets itself and comes back with its data"
 start_vm state-p6
+# The feeder stopped, not killed (s6 would restart it): a hung userspace only the watchdog resets.
 p6=( "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}"
      "$(ROOTSH 's6-svc -p /run/service/watchdog && echo FEEDER-STOPPED')" "expect:FEEDER-STOPPED"
      "expect:KRYPTIK_SMOKE: BEGIN" "expect:KRYPTIK_SMOKE: END"
@@ -158,6 +184,8 @@ boots="$(txt | grep -c 'KRYPTIK_SMOKE: BEGIN')"
 [[ "$boots" -eq 2 ]] && green "state-p6: two boots in one transcript" || red "state-p6: ${boots} boot(s) in the transcript, wanted 2"
 txt | grep -q 'KRYPTIK_SMOKE: svc_watchdog=up' && green "state-p6: the feeder is supervised and up" || red "state-p6: the feeder is not up"
 txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: .* state=active .* nowayout=1' && green "state-p6: a watchdog is armed and cannot be closed off" || red "state-p6: no armed watchdog in the boot report"
+txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: Software Watchdog state=active timeout=60s nowayout=1' \
+    && green "state-p6: the software watchdog resets after a minute (timeout=60s)" || red "state-p6: the software watchdog is not armed with a 60 s timeout"
 if txt | grep -q 'softdog: Initiating system reboot'; then green "state-p6: the software watchdog named itself as the cause"
 else echo "      note: no softdog line; the reset came from an emulated hardware timer"; fi
 txt | grep -q 'Kernel panic' && red "state-p6: kernel panic" || green "state-p6: no panic"
@@ -168,6 +196,32 @@ step "step 7: three wrong passphrases, then the right one"
 KRYPTIK_STATE_PASSPHRASE=not-the-passphrase degraded_boot state-p7 '/dev/vda4 was not unlocked in three tries'
 [[ "$(txt | grep -c 'passphrase for the state partition')" -eq 3 ]] && green "state-p7: asked three times and no more" || red "state-p7: not asked exactly three times"
 normal_boot state-p7b
+
+# ----------------------------------------------------------------- step 8 --
+# Last: the disk keeps the new passphrase. The answers are typed at the
+# terminal, each a moment after its prompt, once echo is off. A wrong current
+# passphrase and a new one under the installer's floor change nothing.
+step "step 8: root changes the state passphrase; the old one no longer unlocks"
+NEWPASS=state-pw-changed
+start_vm state-p8
+drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+    "send:su - root -c 'kryptik state passphrase; echo WRONG=\$?; kryptik state passphrase; echo SHORT=\$?; kryptik state passphrase; echo CHANGED=\$?'" \
+    "expect:Password: ?" "send:${RPASS}" \
+    "expect:the state passphrase now: ?" "sleep:1" "send:not-the-passphrase" \
+    "expect:that is not the state passphrase; nothing was changed" "expect:WRONG=1" \
+    "expect:the state passphrase now: ?" "sleep:1" "send:${KRYPTIK_STATE_PASSPHRASE}" \
+    "expect:a new one, asked at every boot: ?" "sleep:1" "send:short" \
+    "expect:again: ?" "sleep:1" "send:short" \
+    "expect:the new passphrase is 5 characters; it needs at least 8" "expect:SHORT=1" \
+    "expect:the state passphrase now: ?" "sleep:1" "send:${KRYPTIK_STATE_PASSPHRASE}" \
+    "expect:a new one, asked at every boot: ?" "sleep:1" "send:${NEWPASS}" \
+    "expect:again: ?" "sleep:1" "send:${NEWPASS}" \
+    "expect:the state passphrase is changed; the next boot asks for the new one" "expect:CHANGED=0" \
+    "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
+rc=$?; stop_vm
+[[ "$rc" -eq 0 ]] && green "state-p8: kryptik state passphrase refused a wrong current passphrase and a 5-character new one, then took the old one and the new one twice" || red "state-p8: changing the passphrase, or its refusals, failed"
+degraded_boot state-p8b '/dev/vda4 was not unlocked in three tries'
+KRYPTIK_STATE_PASSPHRASE="$NEWPASS" normal_boot state-p8c
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]] || exit 1

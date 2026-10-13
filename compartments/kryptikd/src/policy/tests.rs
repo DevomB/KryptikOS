@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn valid_file_adds_what_it_names() {
+fn valid_file_adds_directives() {
     let p = parse(
         "# comment\n\
              allow-syscall sched_setscheduler\n\
@@ -35,7 +35,7 @@ fn denied_syscall_cannot_be_allowed() {
 }
 
 #[test]
-fn bad_lines_error_with_line_number() {
+fn errors_carry_line_number() {
     for text in [
         "allow-syscall nosuchcall\n",
         "allow-socket AF_NOPE\n",
@@ -52,7 +52,7 @@ fn bad_lines_error_with_line_number() {
 
 #[test]
 fn dangerous_capabilities_cannot_be_kept() {
-    for name in ["CAP_SYS_ADMIN", "CAP_SYS_PTRACE", "CAP_DAC_OVERRIDE", "CAP_SETUID", "CAP_SYS_MODULE", "CAP_MKNOD"] {
+    for name in ["CAP_SYS_ADMIN", "CAP_SYS_PTRACE", "CAP_DAC_OVERRIDE", "CAP_SETPCAP", "CAP_SYS_MODULE", "CAP_MKNOD"] {
         let err = parse(&format!("keep-capability {name}\n"), "t").unwrap_err();
         assert!(err.to_string().contains("cannot be kept"), "{name}: {err}");
     }
@@ -87,9 +87,29 @@ fn only_nic_zone_keeps_net_caps() {
         assert!(e.to_string().contains("owns the NIC"), "{cap}: {e}");
         assert!(p.check_for_zone(&z("none")).is_err());
     }
+    // dhcpcd's three, for its drop to a user of its own, likewise.
+    let p = parse("keep-capability CAP_SETUID\nkeep-capability CAP_SETGID\nkeep-capability CAP_SYS_CHROOT\n", "t").unwrap();
+    assert!(crate::caps::keeps_privsep(&p.keep_caps));
+    assert!(p.check_for_zone(&z("nic")).is_ok());
+    assert!(p.check_for_zone(&z("routed")).unwrap_err().to_string().contains("owns the NIC"));
+    assert!(p.check_for_zone(&z("none")).is_err());
     // Other keepable capabilities are not mode-restricted.
     let p = parse("keep-capability CAP_SYS_NICE\n", "t").unwrap();
     assert!(p.check_for_zone(&z("routed")).is_ok());
+}
+
+#[test]
+fn privsep_capabilities_kept_together() {
+    for text in [
+        "keep-capability CAP_SETUID\n",
+        "keep-capability CAP_SETGID\nkeep-capability CAP_SYS_CHROOT\n",
+        "keep-capability CAP_SYS_CHROOT\nkeep-capability CAP_NET_ADMIN\n",
+    ] {
+        let err = parse(text, "t").unwrap_err();
+        assert!(err.to_string().contains("kept together or not at all"), "{text:?}: {err}");
+    }
+    let p = parse("keep-capability CAP_SYS_CHROOT\nkeep-capability CAP_SETGID\nkeep-capability CAP_SETUID\n", "t").unwrap();
+    assert_eq!(p.keep_caps.len(), 3);
 }
 
 #[test]
@@ -100,7 +120,7 @@ fn af_netlink_lifts_protocol_check() {
 }
 
 #[test]
-fn relative_path_resolves_under_zones_dir() {
+fn resolve_relative_and_absolute() {
     assert_eq!(resolve(Path::new("/etc/kryptik/zones"), "policy/net.seccomp"), PathBuf::from("/etc/kryptik/zones/policy/net.seccomp"));
     assert_eq!(resolve(Path::new("/etc/kryptik/zones"), "/abs/p.seccomp"), PathBuf::from("/abs/p.seccomp"));
 }

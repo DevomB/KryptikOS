@@ -16,12 +16,15 @@
 # Columns are whitespace separated; the note runs to the end of the line.
 #
 #   fingerprint  the full 40-character primary key fingerprint, uppercase
-#   kind         korg | wkd | github
+#   kind         korg | wkd | github | savannah
 #   locator      kind korg: the URL the armoured key was fetched from
 #                kind wkd:  the email address whose Web Key Directory serves it
 #                kind github: https://github.com/<account>.gpg
+#                kind savannah: the project's release-gpgkeys.php?group=<project>&download=1
 #   retrieved    the date the confirmation was walked
-#   signs        comma-separated source names this key signs, no spaces
+#   signs        comma-separated source names this key signs, no spaces; the row
+#                speaks for these alone, so a key published per project has a
+#                row per project
 #   note         the uid as published, and anything a reader needs
 #
 # What each kind establishes, precisely:
@@ -37,6 +40,10 @@
 #         for that address. It is a third party's statement about the key and
 #         is not upstream designating a release signer.
 #
+#   savannah  the release keyring GNU Savannah serves for the project, kept by
+#         its maintainers. A match means the project's own forge lists THIS KEY
+#         as one of its release signers.
+#
 #   github  the key GitHub publishes for a named account, AND that account is
 #         the one that published the release we pin - checked through the
 #         releases API and recorded in the note. This only ever applies to a
@@ -48,7 +55,7 @@
 #         fingerprint was not learned from the signature under test - it came
 #         from the account that publishes the releases.
 #
-# NONE IS OUT-OF-BAND CONFIRMATION. All three rest on TLS and the CA system, and
+# NONE IS OUT-OF-BAND CONFIRMATION. All four rest on TLS and the CA system, and
 # no human here has checked any of these fingerprints through a second channel.
 # They are strictly better than a keyserver lookup by the id under test, and
 # strictly weaker than a fingerprint Kryptik chose in advance - which is what
@@ -63,7 +70,9 @@
 # on purpose, its row goes, and the new key gets a row of its own.
 
 # fingerprint                               kind  locator                                                                                      retrieved   signs             note
-259B3792B3D6D319212CC4DCD5BF9FEB0313653A    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/D5BF9FEB0313653A.asc       2026-09-26  acl,attr          Andreas Gruenbacher <agruenba@redhat.com>; signs acl 2.4.0 and attr 2.6.0; Mike Frysinger signed acl 2.3.2
+ABAF11C65A2970B130ABE3C479BE3E4300411886    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/79BE3E4300411886.asc       2026-10-02  linux             Linus Torvalds <torvalds@linux-foundation.org>; signs mainline releases; kernel.org's WKD serves the same key for torvalds@kernel.org
+647F28654894E3BD457199BE38DBBDC86092693E    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/38DBBDC86092693E.asc       2026-10-02  linux             Greg Kroah-Hartman (Linux kernel stable release signing key) <greg@kroah.com>; kernel.org's WKD serves the same key for gregkh@kernel.org
+259B3792B3D6D319212CC4DCD5BF9FEB0313653A    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/D5BF9FEB0313653A.asc       2026-09-26  acl,attr,patch    Andreas Gruenbacher <agruenba@redhat.com>; signs acl 2.4.0, attr 2.6.0 and patch 2.8; Mike Frysinger signed acl 2.3.2
 9F6FC345B05BE7E766B83C8F80A77F6095CDE47E    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/80A77F6095CDE47E.asc       2026-09-11  iproute2          Stephen Hemminger (Microsoft corporate) <sthemmin@microsoft.com>
 7F2A3D07298149A0793C9A4EA45ABA544CFFD434    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/A45ABA544CFFD434.asc       2026-09-11  kbd               Alexey Gladkov <legion@kernel.org>
 EAB33C9690013C733916AC839BA2A5A630CBEA53    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/9BA2A5A630CBEA53.asc       2026-09-11  kmod              Lucas De Marchi <demarchi@kernel.org>
@@ -88,3 +97,10 @@ A785ED2755955D9E93EA59F6597F97EA9AD45549    github  https://github.com/rsmarples
 4CDE8575E547BF835FE15807A31B6BD72486CFD6    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/A31B6BD72486CFD6.asc       2026-09-19  linux-firmware    Josh Boyer <jwboyer@kernel.org>
 C0EBC440F6DA091C884D8532E0F373F37BF9099A    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/E0F373F37BF9099A.asc       2026-09-19  iw                Johannes Berg <johannes@sipsolutions.net>
 B3F2469D78D78BD09D366F37C94035C21B4F2AEB    korg  https://git.kernel.org/pub/scm/docs/kernel/pgpkeys.git/plain/keys/C94035C21B4F2AEB.asc       2026-09-19  wireless-regdb    Chen-Yu Tsai <wens@kernel.org>
+6C37DC12121A5006BC1DB804DF6FD971306037D9    savannah  https://savannah.gnu.org/project/release-gpgkeys.php?group=coreutils&download=1              2026-10-02  coreutils         Pádraig Brady <P@draigBrady.com>
+155D3FC500C834486D1EEA677FD9FCCB000BEEEE    savannah  https://savannah.gnu.org/project/release-gpgkeys.php?group=sed&download=1                    2026-10-02  sed               Jim Meyering <jim@meyering.net>
+155D3FC500C834486D1EEA677FD9FCCB000BEEEE    savannah  https://savannah.gnu.org/project/release-gpgkeys.php?group=grep&download=1                   2026-10-02  grep              Jim Meyering <jim@meyering.net>
+155D3FC500C834486D1EEA677FD9FCCB000BEEEE    savannah  https://savannah.gnu.org/project/release-gpgkeys.php?group=diffutils&download=1              2026-10-02  diffutils         Jim Meyering <jim@meyering.net>
+155D3FC500C834486D1EEA677FD9FCCB000BEEEE    savannah  https://savannah.gnu.org/project/release-gpgkeys.php?group=gzip&download=1                   2026-10-02  gzip              Jim Meyering <jim@meyering.net>
+0CF4E8D871593224842832B888DD9E08C5DDACB9    savannah  https://savannah.gnu.org/project/release-gpgkeys.php?group=findutils&download=1              2026-10-02  findutils         James Youngman <james@youngman.org>
+B1D2BD1375BECB784CF4F8C4D73CF638C53C06BE    savannah  https://savannah.gnu.org/project/release-gpgkeys.php?group=inetutils&download=1              2026-10-02  inetutils         Simon Josefsson <simon@josefsson.org>; signs with subkey A3CC9C870B9D310ABAD4CF2F51722B08FE4745A2; Savannah's copy expired 2022-10-23, the GNU keyring's runs later

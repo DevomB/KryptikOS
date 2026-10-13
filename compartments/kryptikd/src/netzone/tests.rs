@@ -10,8 +10,7 @@ fn z(mode: &str, base: Option<u32>, nic: Option<&str>) -> Zone {
     .unwrap()
 }
 
-/// This namespace plays a nic zone that inherited forwarding on; after the
-/// bridge half both forwarding knobs must read 0.
+/// A nic zone that inherited forwarding on must read 0 in both knobs after the bridge half.
 #[test]
 fn bridge_half_turns_forwarding_off() {
     use crate::netlink::tests::in_userns_netns;
@@ -52,14 +51,12 @@ fn bridge_half_turns_forwarding_off() {
     }
 }
 
-/// A veth pair and a bridge must not count. Sysfs shows the network
-/// namespace of whoever mounted it, so the child mounts its own.
+/// Veths and bridges do not count; sysfs shows its mounter's netns, so the child mounts its own.
 #[test]
-fn only_bus_devices_count_as_physical() {
+fn software_devices_not_physical() {
     use crate::netlink::tests::{in_userns_netns, step};
     use std::ffi::CString;
-    /* Before the fork: temp_dir() takes std's environment lock, and a child
-     * forked while another thread holds it waits forever. */
+    // Before the fork: temp_dir() takes std's env lock, which a forked child could wait on forever.
     let dir = std::env::temp_dir().join(format!("kryptik-sysfs-{}", std::process::id()));
     let rc = in_userns_netns(|| {
         if std::fs::create_dir_all(&dir).is_err() {
@@ -87,7 +84,7 @@ fn only_bus_devices_count_as_physical() {
                 eprintln!("a fresh namespace already counts {before:?} as physical");
                 return Err(2);
             }
-            step(3, netlink::create_veth("pa", "pb", None))?;
+            step(3, netlink::create_veth("pa", "pb", None, None))?;
             step(4, netlink::create_bridge("br-t"))?;
             if !class_net.join("pa").exists() || !class_net.join("br-t").exists() {
                 eprintln!("the mounted sysfs does not show this namespace's devices; this proved nothing");
@@ -135,6 +132,13 @@ fn plan_describes_each_mode() {
     assert!(plan(&z("none", None, None), true).contains("nothing created"));
     assert!(plan(&z("routed", Some(131072), None), false).contains("unprivileged"));
     assert!(plan(&z("routed", Some(131072), None), true).contains("10.19.0.2/24"));
+    assert!(plan(&z("routed", Some(131072), None), true).contains("refused the networks the uplinks sit on"));
+    let local = Zone::from_str(
+        "[zone]\nname = \"t\"\n[network]\nmode = \"routed\"\nlocal = true\n[storage]\nmode = \"ephemeral\"\nsize = \"64M\"\n\
+         [identity]\nuid_base = 131072\n[ui]\nborder_color = \"#123456\"\n",
+    )
+    .unwrap();
+    assert!(plan(&local, true).contains("may reach the networks the uplinks sit on"));
     assert!(plan(&z("routed", None, None), true).contains("needs [identity]"));
     assert!(plan(&z("nic", None, Some("eth0")), true).contains("eth0 moves"));
     assert!(plan(&z("nic", None, Some("*")), true).contains("every physical interface"));
@@ -170,8 +174,7 @@ fn fresh_namespace_matches_prediction() {
     }
 }
 
-/// This namespace plays the nic zone and a holder a zone with IPv6
-/// disabled; eth0 must still come out addressed, up and routed.
+/// A routed zone with IPv6 disabled must still get eth0 addressed, up and routed.
 #[test]
 fn ipv4_survives_disabled_ipv6() {
     use crate::netlink::tests::{in_userns_netns, spawn_netns_holder, step};
@@ -199,16 +202,22 @@ fn ipv4_survives_disabled_ipv6() {
                 eprintln!("attach_routed: {e}");
                 5
             })?;
-            let (routes, v6, up) = netlink::with_netns(zone_ns, || {
+            let (routes, v6, up, mac) = netlink::with_netns(zone_ns, || {
                 Ok((
                     std::fs::read_to_string("/proc/self/net/route")?,
                     std::fs::read_to_string("/proc/self/net/if_inet6").unwrap_or_default(),
                     netlink::is_up("eth0")?,
+                    netlink::mac_of("eth0")?,
                 ))
             })
             .map_err(|_| 6)?;
             if !up {
                 return Err(7);
+            }
+            // The net zone takes the zone's addresses only with this MAC.
+            if mac != netlink::zone_mac(7) {
+                eprintln!("eth0 has MAC {mac:02x?}, not {:02x?}", netlink::zone_mac(7));
+                return Err(10);
             }
             let rows: Vec<&str> = routes.lines().skip(1).collect();
             let default = rows.iter().any(|l| {
@@ -219,7 +228,7 @@ fn ipv4_survives_disabled_ipv6() {
                 eprintln!("zone routes:\n{routes}");
                 return Err(8);
             }
-            // Premise: IPv6 really was refused.
+            // Premise: IPv6 was refused.
             if v6.lines().any(|l| l.contains("eth0")) {
                 eprintln!("IPv6 was not disabled in the zone namespace; this proved nothing:\n{v6}");
                 return Err(9);
@@ -243,8 +252,7 @@ fn ipv4_survives_disabled_ipv6() {
     }
 }
 
-/// A veth end with an address and default route plays the uplink; after
-/// `carry_nic` it must be up with the same configuration in the holder.
+/// A veth end plays the uplink; `carry_nic` must leave it up in the holder with its configuration.
 #[test]
 fn uplink_config_travels_with_nic() {
     use crate::netlink::tests::{in_userns_netns, spawn_netns_holder, step};
@@ -254,7 +262,7 @@ fn uplink_config_travels_with_nic() {
             Err(c) => return c,
         };
         let r: Result<(), i32> = (|| {
-            step(1, netlink::create_veth("up0", "up1", None))?;
+            step(1, netlink::create_veth("up0", "up1", None, None))?;
             step(2, netlink::set_up("up1"))?;
             step(3, netlink::set_up("up0"))?;
             step(4, netlink::add_addr4("up0", [10, 77, 0, 5], 24))?;
@@ -267,7 +275,7 @@ fn uplink_config_travels_with_nic() {
                 eprintln!("read back {before}");
                 return Err(7);
             }
-            let carried = carry_nic("up0", zone_ns).map_err(|e| {
+            let carried = carry_nic("up0", zone_ns, false).map_err(|e| {
                 eprintln!("carry_nic: {e}");
                 8
             })?;
@@ -326,9 +334,67 @@ fn unknown_nic_refused_before_move() {
 }
 
 #[test]
+fn nic_name_escaped_in_errors() {
+    /* A net zone can rename its NIC to bytes a terminal acts on, and the NIC comes back to
+     * zone 0 under that name: kryptikd's words and netlink's both escape it. */
+    let e = carry_nic("e\u{1b}[2Jth0", -1, false).unwrap_err().to_string();
+    assert!(!e.contains('\u{1b}') && e.matches("\\u{1b}").count() == 2, "{e:?}");
+}
+
+#[test]
 fn replumb_empty_directory_attempts_nothing() {
     let dir = std::env::temp_dir().join(format!("kryptik-rp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     assert!(replumb_routed_zones(&dir, -1).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn only_plain_names_pass_on() {
+    for ok in ["eth0", "wlan0", "enp0s31f6", "wlp2s0", "enx001122334455"] {
+        assert!(plain_name(ok.as_bytes()), "{ok}");
+    }
+    // What a net zone could leave behind: an option, a quote that ends nft's string, an escape,
+    // the bridge's own name.
+    for bad in ["-k", "x\"y", "x\",\"kryptik0", "e\u{1b}th0", "kryptik0", "Eth0", "eth0.1", "0eth", "", "abcdefghijklmnop"] {
+        assert!(!plain_name(bad.as_bytes()), "{bad:?}");
+    }
+    assert!(!plain_name(b"\xff"));
+}
+
+#[test]
+fn bare_radios_are_the_ones_no_netdev_holds() {
+    let dir = std::env::temp_dir().join(format!("kryptik-radios-{}", std::process::id()));
+    let put = |path: &str, value: &str| {
+        let f = dir.join(path);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, value).unwrap();
+    };
+    put("ieee80211/phy0/index", "0\n");
+    put("ieee80211/phy3/index", "3\n");
+    put("net/wlan0/phy80211/index", "0\n");
+    put("net/eth0/ifindex", "2\n");
+    assert_eq!(bare_radios(&dir), vec![3]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_radio_switched_off_is_told_by_its_rfkill() {
+    let dir = std::env::temp_dir().join(format!("kryptik-rfkill-{}", std::process::id()));
+    let put = |path: &str, value: &str| {
+        let f = dir.join(path);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, value).unwrap();
+    };
+    for (nic, soft, hard) in [("wlan0", "1", "0"), ("wlan1", "0", "1"), ("wlan2", "0", "0")] {
+        put(&format!("{nic}/phy80211/rfkill{}/soft", &nic[4..]), soft);
+        put(&format!("{nic}/phy80211/rfkill{}/hard", &nic[4..]), hard);
+    }
+    put("eth0/ifindex", "2\n");
+    assert!(switched_off(&dir, "wlan0"), "off by software");
+    assert!(switched_off(&dir, "wlan1"), "off by a switch");
+    assert!(!switched_off(&dir, "wlan2"));
+    assert!(!switched_off(&dir, "eth0"), "a wire has no rfkill");
+    assert!(!switched_off(&dir, "gone"));
     let _ = std::fs::remove_dir_all(&dir);
 }

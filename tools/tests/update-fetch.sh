@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Test update-fetch.py (docs/design/update-channel.md), which decides nothing:
-# bytes from a loopback HTTP server must reach a stand-in broker unchanged, at
-# the offsets it asks for, and a refusal must stop the run.
+# update-fetch.py: bytes from a loopback HTTP server reach a stand-in broker unchanged, at the
+# offsets it asks for, and a refusal stops the run.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FETCH="$ROOT/tools/net/update-fetch.py"
@@ -132,7 +131,7 @@ else
 fi
 first_two="$(grep '^update-put' "$T/requests.log" | head -2 | awk '{print $2}' | tr '\n' ' ')"
 [[ "$first_two" == "manifest manifest.sig " ]] \
-    && ok "poll: the manifest and its signature cross before anything else, because that is what zone 0 asked for" \
+    && ok "poll: the manifest and its signature cross first, as zone 0 asked" \
     || bad "poll: the first two pieces were: $first_two"
 biggest="$(grep '^update-put' "$T/requests.log" | awk '{print $4}' | sort -n | tail -1)"
 pieces="$(grep -c '^update-put kryptik-root.img' "$T/requests.log")"
@@ -152,7 +151,7 @@ truncate -s 1048581 "$T/stage/kryptik-root.img"; : > "$T/norange"
 out="$(run poll 2>&1)"; rc=$?
 rm -f "$T/norange"
 [[ "$rc" = 0 ]] && identical kryptik-root.img \
-    && ok "poll: a server that ignores Range sends the whole file; the bytes before the offset are dropped, not sent to zone 0" \
+    && ok "poll: from a server that ignores Range, the bytes before the offset are dropped, not sent to zone 0" \
     || bad "poll, resume without Range: rc=$rc out=$out"
 
 # --- zone 0 has the last word ----------------------------------------------------------
@@ -175,6 +174,28 @@ printf 'channel = http://127.0.0.1:1/chan\n' > "$T/dead.conf"
 out="$(python3 "$FETCH" latest --conf "$T/dead.conf" --broker "$T/broker.sock" 2>&1)"; rc=$?
 [[ "$rc" = 1 && "$out" == update-fetch:* ]] \
     && ok "a host that does not answer is one line and exit 1, not a traceback" || bad "dead host: rc=$rc out=$out"
+
+# --- a redirect off https ------------------------------------------------------------------
+out="$(python3 - "$FETCH" <<'EOF' 2>&1
+import importlib.util, sys, urllib.error, urllib.request
+spec = importlib.util.spec_from_file_location("fetch", sys.argv[1])
+fetch = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fetch)
+h = fetch.StayOnTLS()
+req = urllib.request.Request("https://channel.example/stable/1.0.3/kryptik-root.img")
+for to in ("http://channel.example/stable/1.0.3/kryptik-root.img", "ftp://channel.example/x"):
+    try:
+        h.redirect_request(req, None, 302, "Found", {}, to)
+        print("FOLLOWED", to)
+    except urllib.error.HTTPError as e:
+        print("REFUSED", to, e.code)
+new = h.redirect_request(req, None, 302, "Found", {}, "https://objects.example/abc")
+print("HTTPS-FOLLOWED" if new.full_url == "https://objects.example/abc" else "HTTPS-LOST")
+EOF
+)"
+[[ "$out" == *"REFUSED http://"* && "$out" == *"REFUSED ftp://"* && "$out" != *FOLLOWED\ * && "$out" == *HTTPS-FOLLOWED* ]] \
+    && ok "a redirect from https to http or ftp is refused, and one to another https host is followed" \
+    || bad "redirects off https: $(tr '\n' ' ' <<<"$out")"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

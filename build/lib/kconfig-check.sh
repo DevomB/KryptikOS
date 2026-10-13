@@ -1,8 +1,5 @@
 # shellcheck shell=bash
-# Does a resolved .config honour every line of the kernel config fragments?
-# Used by stage 05 and tools/resolve-kernel-config.sh. merge_config.sh and
-# olddefconfig drop a line silently on an unmet dependency, on a `select` that
-# overrides "is not set", or when its prompt is hidden (e.g. behind EXPERT).
+# Does a resolved .config honour every fragment line? Kconfig drops unmet ones silently.
 
 # The .config as KCONFIG_HAVE[option]=value, read once for both checks.
 declare -gA KCONFIG_HAVE=()
@@ -15,8 +12,7 @@ _kconfig_load() {   # <.config>
     done < "$1"
 }
 
-# Options Kryptik's guarantees rest on. They must be present at all, so that
-# deleting one from a fragment is noticed; =y or =m is the fragment's choice.
+# Options Kryptik's guarantees rest on, so deleting one from a fragment is noticed; =y or =m pass.
 KCONFIG_CRITICAL="CONFIG_SECURITY_LANDLOCK CONFIG_SECCOMP_FILTER CONFIG_USER_NS
 CONFIG_NET_NS CONFIG_EFI_STUB CONFIG_CMDLINE_BOOL CONFIG_CMDLINE_OVERRIDE
 CONFIG_DM_INIT CONFIG_EFIVAR_FS CONFIG_OVERLAY_FS CONFIG_DRM_VIRTIO_GPU
@@ -39,9 +35,7 @@ kconfig_critical_check() {
     [[ "$missing" -eq 0 ]]
 }
 
-# kconfig_fragment_check <.config> <fragment>...
-# Each =value line must come out with that value and each "is not set" line
-# unset or absent. Prints the lines that did not; 0 when there are none.
+# kconfig_fragment_check <.config> <fragment>...: print the lines not honoured; 0 when none.
 kconfig_fragment_check() {
     local config="$1"; shift
     local frag line opt want got total=0 bad=0

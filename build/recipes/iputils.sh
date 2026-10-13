@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# iputils: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# iputils' ping alone, without libcap, with no setuid bit or file capability:
-# in a routed zone it sends over the ICMP datagram socket ping_group_range opens
-# (netzone.rs), and the patch stops it making the id calls a zone refuses.
+# ping alone, with no setuid bit or capability: zones ping over ICMP datagram sockets.
 s_iputils() {
     local src; src="$(unpack "iputils-${V_IPUTILS}.tar.xz" "iputils-${V_IPUTILS}")"
     cd "$src"
+    # Stops the id calls a zone refuses.
     apply_repo_patches "iputils-${V_IPUTILS}"
     meson setup build --prefix=/usr --buildtype=plain --wrap-mode=nodownload \
         -DBUILD_PING=true -DBUILD_ARPING=false -DBUILD_CLOCKDIFF=false -DBUILD_TRACEPATH=false \
@@ -15,8 +12,7 @@ s_iputils() {
         -DBUILD_MANS=true -DBUILD_HTML_MANS=false -DSKIP_TESTS=true
     ninja -C build
     ninja -C build install
-    # The tarball's prebuilt ping.8, installed without xsltproc, comes with an
-    # HTML copy that nothing reads.
+    # The prebuilt ping.8 comes with an HTML copy that nothing reads.
     rm -rf /usr/share/iputils
     [[ -f /usr/share/man/man8/ping.8 ]] || { echo "FAIL: ping.8 was not installed"; return 1; }
     local out; out="$(/usr/bin/ping -V)"

@@ -6,7 +6,7 @@
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
 #        [--vars-file FILE] [--mode console|smoke|serve] [--timeout N]
 #        [--log FILE] [--net none|user] [--mem MB] [--cpus N] [--gpu]
-#        [--allow-reboot] [--until REGEX] [--name TAG]
+#        [--second-head] [--allow-reboot] [--until REGEX] [--name TAG]
 #
 #   --usb IMG      the medium as a USB mass-storage device (removable),
 #                  write-protected unless --usb-writable says the guest may
@@ -18,6 +18,8 @@
 #   --disk-readonly, --blkdebug CONF
 #                  failure injection for the first --disk: read-only, or I/O
 #                  errors through QEMU's blkdebug driver
+#   --disk-4k      the first --disk with 4096-byte logical sectors (4Kn), as an
+#                  NVMe drive formatted so presents itself
 #   --testctl FILE a disk labelled kryptik-testctl (tools/image/mk-testctl.sh)
 #   --vars X       variable store template, copied fresh for this run:
 #                  clean    OVMF_VARS_4M.fd, no keys, Secure Boot off
@@ -32,6 +34,9 @@
 #                  kernel); exit code 2 if it was still running
 #   --mode serve   start detached with a serial socket and a QMP socket, print
 #                  their paths; tools/image/vm-drive.py talks to them
+#   --second-head  with --gpu in serve mode: a second output on the GPU, off
+#                  until a VNC client on the printed socket asks for a size
+#                  (vm-drive.py's head: step), which plugs a monitor in
 #   --mode console interactive serial console (Ctrl-A X quits)
 # shellcheck disable=SC2054  # commas inside QEMU options are option syntax, not array separators
 set -Eeuo pipefail
@@ -40,8 +45,8 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SELF}/../../build/lib/common.sh"
 
 USB=""; ISO=""; NOMEDIA=0; DISKS=(); TESTCTL=""; VARS="clean"; VARS_FILE=""
-MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; ALLOW_REBOOT=0; NAME="vm"
-DISK_RO=0; BLKDEBUG=""; UNTIL=""; USB_RO=on
+MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; HEAD2=0; ALLOW_REBOOT=0; NAME="vm"
+DISK_RO=0; DISK_4K=0; BLKDEBUG=""; UNTIL=""; USB_RO=on
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --usb)       USB="${2:?}"; shift 2 ;;
@@ -50,6 +55,7 @@ while [[ "$#" -gt 0 ]]; do
         --no-media)  NOMEDIA=1; shift ;;
         --disk)      DISKS+=("${2:?}"); shift 2 ;;
         --disk-readonly) DISK_RO=1; shift ;;
+        --disk-4k)   DISK_4K=1; shift ;;
         --blkdebug)  BLKDEBUG="${2:?}"; shift 2 ;;
         --testctl)   TESTCTL="${2:?}"; shift 2 ;;
         --vars)      VARS="${2:?}"; shift 2 ;;
@@ -61,10 +67,11 @@ while [[ "$#" -gt 0 ]]; do
         --mem)       MEM="${2:?}"; shift 2 ;;
         --cpus)      CPUS="${2:?}"; shift 2 ;;
         --gpu)       GPU=1; shift ;;
+        --second-head) HEAD2=1; shift ;;
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
         --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,35p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -73,6 +80,7 @@ done
 [[ -n "$USB" && -n "$ISO" ]] && die "--usb and --iso are exclusive"
 [[ "$NOMEDIA" -eq 1 && "${#DISKS[@]}" -eq 0 ]] && die "--no-media needs at least one --disk"
 [[ -n "$UNTIL" && "$MODE" != smoke ]] && die "--until is for --mode smoke"
+[[ "$HEAD2" -eq 1 && ( "$GPU" -ne 1 || "$MODE" != serve ) ]] && die "--second-head is for --gpu in --mode serve"
 
 # Files only. This hands paths to a process that writes to them.
 regular_file() {
@@ -134,7 +142,16 @@ if [[ "$GPU" -eq 1 ]]; then
     # virtio-vga, not virtio-gpu-pci: the firmware framebuffer is in its BAR,
     # so virtio-gpu replaces simpledrm and wlroots sees one DRM device (with
     # two it takes a multi-GPU path the pixman renderer cannot serve).
-    ARGS+=( -display none -vga none -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci )
+    # A second output stays off until a display asks for a size on it: the
+    # VNC server on that head is where vm-drive.py asks, and stops asking.
+    VNC2=""
+    if [[ "$HEAD2" -eq 1 ]]; then
+        VNC2="${VMDIR}/${RUN_ID}.head2"
+        ARGS+=( -display none -vga none -device virtio-vga,id=gpu0,max_outputs=2 -vnc "unix:${VNC2},display=gpu0,head=1" )
+    else
+        ARGS+=( -display none -vga none -device virtio-vga,id=gpu0 )
+    fi
+    ARGS+=( -device virtio-keyboard-pci -device virtio-mouse-pci )
 else
     ARGS+=( -display none -vga none )
 fi
@@ -160,6 +177,9 @@ for d in "${DISKS[@]}"; do
         ARGS+=( -drive "file=blkdebug:${BLKDEBUG}:${d},format=raw,if=virtio,cache=writeback,id=vd${i}" )
     elif [[ "$i" -eq 0 && "$DISK_RO" -eq 1 ]]; then
         ARGS+=( -drive "file=${d},format=raw,if=virtio,readonly=on,id=vd${i}" )
+    elif [[ "$i" -eq 0 && "$DISK_4K" -eq 1 ]]; then
+        ARGS+=( -drive "file=${d},format=raw,if=none,cache=writeback,id=vd${i}"
+                -device "virtio-blk-pci,drive=vd${i},logical_block_size=4096,physical_block_size=4096" )
     else
         ARGS+=( -drive "file=${d},format=raw,if=virtio,cache=writeback,id=vd${i}" )
     fi
@@ -245,6 +265,7 @@ serve)
     for _ in $(seq 1 50); do [[ -S "$SER" && -S "$QMP" ]] && break; sleep 0.2; done
     [[ -S "$SER" ]] || die "QEMU did not create ${SER}: $(tail -3 "${LOG}.qemu")"
     printf 'serial=%s\nqmp=%s\npid=%s\nlog=%s\nvars=%s\n' "$SER" "$QMP" "$PID" "$LOG" "$VARS_PATH"
+    [[ -z "${VNC2:-}" ]] || printf 'head2=%s\n' "$VNC2"
     ;;
 *) die "unknown --mode ${MODE}" ;;
 esac

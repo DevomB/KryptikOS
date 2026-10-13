@@ -9,10 +9,12 @@
 
 # --- the kernel is the UEFI application ---
 # The EFI stub boots the kernel without a bootloader. No EFI_MIXED (32-bit
-# firmware): x86_64 only, and a smaller signed stub.
+# firmware): x86_64 only, and a smaller signed stub. No handover entry, which
+# runs on boot parameters a loader filled in: the firmware uses the PE entry.
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
 # CONFIG_EFI_MIXED is not set
+# CONFIG_EFI_HANDOVER_PROTOCOL is not set
 CONFIG_EFI_PARTITION=y
 # efivarfs, for the updater's BootNext and Boot#### entries (the A/B trial).
 CONFIG_EFIVAR_FS=y
@@ -28,6 +30,9 @@ CONFIG_CMDLINE_OVERRIDE=y
 # --- the verified root, without an initramfs ---
 # dm-init builds the dm-verity (and for the ISO, dm-linear) device from
 # dm-mod.create= (devices by PARTLABEL=), so no unsigned initramfs is needed.
+# None is taken either: a loader that starts this kernel can offer one (a
+# LoadFile2 initrd), and its /init would run as root before the verified root.
+# CONFIG_BLK_DEV_INITRD is not set
 CONFIG_BLK_DEV_DM=y
 CONFIG_DM_INIT=y
 CONFIG_DM_VERITY=y
@@ -95,6 +100,14 @@ CONFIG_NFT_CT=y
 CONFIG_NFT_REJECT=y
 CONFIG_NF_NAT=y
 CONFIG_NF_CONNTRACK=y
+# nft's ct count: each routed zone may hold only a share of the net zone's
+# conntrack table, which every zone's flows fill together (netzone-init.sh).
+# It needs NETFILTER_ADVANCED, which the defconfig leaves off; with it on, the
+# SCTP and UDP-Lite trackers would default on, and stay off as before.
+CONFIG_NETFILTER_ADVANCED=y
+CONFIG_NFT_CONNLIMIT=y
+# CONFIG_NF_CT_PROTO_SCTP is not set
+# CONFIG_NF_CT_PROTO_UDPLITE is not set
 # No xtables: the ruleset is nft's alone, and NFT_COMPAT is off, so nothing
 # reaches them. No ctnetlink: the nic zone could reach it through its netfilter
 # netlink socket, and nothing uses it. The iptables options select xtables.
@@ -109,7 +122,7 @@ CONFIG_E1000E=m
 # --- real hardware ---
 # Storage controllers a root can sit on, and USB host controllers (a root on a
 # stick, the keyboard), are built in, or the kernel waits for a disk it cannot
-# see; the rest are modules. Not yet booted on physical hardware.
+# see; the rest are modules.
 CONFIG_BLK_DEV_NVME=y
 CONFIG_MEGARAID_SAS=y
 CONFIG_SCSI_MPT3SAS=y
@@ -126,6 +139,11 @@ CONFIG_R8169=m
 CONFIG_USB_USBNET=m
 CONFIG_USB_NET_AX88179_178A=m
 CONFIG_USB_RTL8152=m
+# usbnet's defaults also build drivers for 2001-era host-to-host cables (NetChip 1080 and the
+# CDC subset ones) and the Sharp Zaurus, which any USB device could bind by claiming their ids.
+# CONFIG_USB_NET_NET1080 is not set
+# CONFIG_USB_NET_ZAURUS is not set
+# CONFIG_USB_NET_CDC_SUBSET is not set
 CONFIG_DRM_AST=m
 CONFIG_DRM_MGAG200=m
 # VMD: from Intel's 11th generation the NVMe drive sits behind it ("RAID" or
@@ -233,8 +251,17 @@ CONFIG_RTW89_8852CE=m
 CONFIG_RTW89_8922AE=m
 CONFIG_BRCMFMAC=m
 CONFIG_BRCMFMAC_PCIE=y
+# SDIO is on by default once MMC is built in, and firmware.list ships no SDIO
+# firmware: a device it bound could not start.
+# CONFIG_BRCMFMAC_SDIO is not set
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
+# Airplane-mode keys that come through the platform's ACPI device rather than
+# the keyboard: Intel's HID event filter, the AMD, HP and Xiaomi wireless
+# button, and ASUS's radio control. rfkill-input acts on the key.
+CONFIG_INTEL_HID_EVENT=m
+CONFIG_WIRELESS_HOTKEY=m
+CONFIG_ASUS_WIRELESS=m
 
 # --- built in by defconfig, needed only as modules --------------------------
 # As a module, cfg80211 reads the regulatory database from the verified root
@@ -274,6 +301,12 @@ CONFIG_HID_TOPSEED=m
 # and does not compress.
 CONFIG_KERNEL_ZSTD=y
 # CONFIG_KERNEL_GZIP is not set
+# Modules as well, compressed by modules_install after it signs them. kmod
+# decompresses them, so the kernel parses no compressed module itself.
+CONFIG_MODULE_COMPRESS=y
+CONFIG_MODULE_COMPRESS_ZSTD=y
+CONFIG_MODULE_COMPRESS_ALL=y
+# CONFIG_MODULE_DECOMPRESS is not set
 # --- a machine that has stopped reboots itself -------------------------------
 # build/services/watchdog feeds these. Built in, so recovery does not depend on
 # module loading. NOWAYOUT: killing the feeder does not stop the timer.

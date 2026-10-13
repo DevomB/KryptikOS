@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# openssh: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# Only ssh-keygen, whose -Y verifies them; no sshd, ssh or host keys.
+# Only ssh-keygen, whose -Y verifies update manifests; no sshd, ssh or host keys.
 s_openssh() {
     local src; src="$(unpack "openssh-${V_OPENSSH}.tar.gz" "openssh-${V_OPENSSH}")"
     cd "$src"
@@ -11,8 +9,7 @@ s_openssh() {
         --with-pid-dir=/run --without-pam
     make ssh-keygen
     install -m 0755 ssh-keygen /usr/bin/ssh-keygen
-    # Captured, not piped: the usage exits non-zero. Without -Y ssh-keygen says
-    # "unknown option -- Y"; with it, it complains of missing arguments.
+    # Captured, as the usage exits non-zero; with no -Y support it says "unknown option -- Y".
     local out
     out="$(ssh-keygen -Y verify 2>&1 || true)"
     case "$out" in

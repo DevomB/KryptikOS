@@ -1,8 +1,9 @@
-//! kryptikd, the Kryptik compartment manager.
-//!
-//! Owns zone lifecycle. Runs privileged in zone 0 (ADR-003) and is the only
-//! process that creates zones or moves data between them. Anything not built
-//! is refused with an error, never a silent no-op.
+//! kryptikd, the Kryptik compartment manager: runs privileged in zone 0 (ADR-003) and is the
+//! only process that creates zones or moves data between them. Anything not built is refused
+//! with an error, never a silent no-op.
+
+// cargo fuzz builds this file with cfg(fuzzing), and libFuzzer brings its own main.
+#![cfg_attr(fuzzing, no_main, allow(dead_code))]
 
 mod broker;
 mod caps;
@@ -13,17 +14,24 @@ mod isolate;
 mod landlock;
 mod netlink;
 mod netzone;
+mod password;
 mod policy;
+mod proxy;
 mod registry;
 mod rootfs;
 mod seccomp;
 mod serve;
 mod spawn;
+mod supplicant;
 mod time;
 mod update;
 mod volume;
 mod wifi;
 mod zone;
+// The parser is private to the daemon, so its fuzz target compiles inside it (fuzz/Cargo.toml).
+#[cfg(fuzzing)]
+#[path = "../fuzz/broker_request.rs"]
+mod fuzz;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -47,27 +55,51 @@ USAGE:
     kryptikd seccomp-trace -- CMD     run CMD under the base seccomp filter; every
                    [--zone NAME]      call it refuses is named and fails with ENOSYS
                                       (--zone: NAME's filter, with its policy file)
+    kryptikd supplicant -- CMD [ARGS] in the net zone, as its root: run CMD (its
+                                      wpa_supplicant) as user 101 with CAP_NET_ADMIN
+                                      and CAP_NET_RAW alone, no nf_tables socket, and
+                                      writes only under /run/wpa_supplicant
+    kryptikd supplicant --watch RADIO as that user, so confined, with no capability:
+                                      listen to RADIO's wpa_supplicant and keep
+                                      /run/wpa_supplicant/RADIO.refused naming the
+                                      network that refused its passphrase
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
-    kryptikd status NAME              running, stale or absent
+    kryptikd status NAME              running, stale or absent; for the nic zone, as
+                                      root, the menu's Network line as well
     kryptikd list --running           the zones the registry knows about
-    kryptikd gc                       reclaim stale entries and empty cgroups
+    kryptikd gc [--rootfs DIR]        reclaim stale entries and empty cgroups, and
+                                      close volumes no running zone holds
     kryptikd clipboard move FROM TO   the zone 0 gesture: move FROM's clipboard
                                       payload to TO, emptying FROM (both running)
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
                    [--proxy-exe P] [--wifi-dir DIR]
+                   [--shadow FILE]    the screen lock's password is checked
+                                      against FILE (default: /etc/shadow)
     kryptikd wifi list                the net zone's Wi-Fi networks, SSIDs only
-    kryptikd wifi add SSID            add one, or replace its passphrase; the
-                                      passphrase is read from stdin, never argv
+    kryptikd wifi scan                the networks in range, as the net zone hears
+                                      them, with their security and signal
+    kryptikd wifi add SSID [--open] [--hidden]
+                                      add one, or replace its passphrase; the
+                                      passphrase is read from stdin, never argv;
+                                      --open saves it with none, an open network;
+                                      --hidden asks for one that hides its name
     kryptikd wifi forget SSID         remove one
                    [--wifi-dir DIR]   (the session does this through `kryptik
                                       wifi` and the launch daemon; this is root's
                                       path and the tests')
-    kryptikd time floor               at boot: a clock that reads earlier than this
-                                      system was built is set to the build date
+    kryptikd time floor               at boot: a clock that reads earlier than the
+                                      floor (the build date, or the newest release
+                                      committed to) is set to it
     kryptikd time status              the clock, the floor, and what was last done to it
+    kryptikd time committed DIR       once boot-success has committed a slot: its
+                                      release (the signed manifest in DIR) is the
+                                      floor if it is the newest
+    kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
+                                      checked as nobody on copies: how kryptik-update
+                                      apply, which runs as root, has a release checked
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -112,7 +144,7 @@ fn main() -> ExitCode {
 
     match args[0].as_str() {
         "check" => cmd_check(&zone_dir, args.iter().any(|a| a == "--target")),
-        "list" if args.iter().any(|a| a == "--running") => cmd_list_running(),
+        "list" if args.iter().any(|a| a == "--running") => cmd_list_running(&zone_dir),
         "list" => cmd_list(&zone_dir),
         "show" => match args.get(1) {
             Some(name) if !name.starts_with("--") => cmd_show(&zone_dir, name),
@@ -121,9 +153,8 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        /* confine-test ROOTFS TARGET: Landlock-confine to ROOTFS, then read
-         * TARGET. Exit 0: read succeeded (confinement failed); 4: blocked;
-         * 1: could not confine. Used by the isolation exit test. */
+        /* confine-test ROOTFS TARGET: confine to ROOTFS with Landlock, then read TARGET. Exit 0:
+         * the read worked, so confinement failed; 4: blocked; 1: could not confine. */
         "confine-test" => {
             let Some(root) = args.get(1) else {
                 eprintln!("confine-test: expected ROOTFS TARGET");
@@ -159,10 +190,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        /* seccomp-test SYSCALL|PROBE: a forked child installs the zone filter,
-         * then makes the call (probes: cmd_seccomp_probe). Exit 0: completed;
-         * 5: SIGSYS; 6: another signal; 7: refused with the intended errno;
-         * 1: filter not installed. */
+        // seccomp-test SYSCALL|PROBE: try it under the zone filter (exit codes: under_zone_filter).
         "seccomp-test" => {
             let Some(name) = args.get(1) else {
                 eprintln!("seccomp-test: expected a syscall name");
@@ -185,9 +213,23 @@ fn main() -> ExitCode {
             }
         },
         "run" => cmd_run(&zone_dir, &args),
-        /* seccomp-trace [--zone NAME] -- CMD: run CMD under the base filter, or
-         * NAME's widened by its policy file, and name every call it refuses
-         * (cmd_seccomp_trace). For writing a policy file. */
+        "supplicant" => match args.get(1).map(String::as_str) {
+            Some("--") if args.len() > 2 => {
+                eprintln!("kryptikd supplicant: {}", supplicant::exec(&args[2..]));
+                ExitCode::FAILURE
+            }
+            Some("--watch") if args.len() == 3 => match supplicant::watch(&args[2]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("kryptikd supplicant --watch: {e}");
+                    ExitCode::FAILURE
+                }
+            },
+            _ => {
+                eprintln!("supplicant: expected `-- COMMAND` or `--watch RADIO`");
+                ExitCode::from(2)
+            }
+        },
         "seccomp-trace" => {
             let Some(sep) = args.iter().position(|a| a == "--") else {
                 eprintln!("seccomp-trace: expected `-- COMMAND`");
@@ -220,17 +262,33 @@ fn main() -> ExitCode {
             }
         },
         "status" => match args.get(1) {
-            Some(name) if !name.starts_with("--") => cmd_status(name),
+            Some(name) if !name.starts_with("--") => cmd_status(&zone_dir, name),
             _ => {
                 eprintln!("status: expected a zone name");
                 ExitCode::from(2)
             }
         },
-        "gc" => cmd_gc(),
+        "gc" => cmd_gc(&rootfs_base_from(&args)),
         "volume" => cmd_volume(&zone_dir, &args),
         "serve" => serve::cmd_serve(&zone_dir, &args),
         "wifi" => cmd_wifi(&zone_dir, &args),
         "time" => cmd_time(&args),
+        "check-release" => match args.as_slice() {
+            [_, dir] => match update::check_release(Path::new(dir)) {
+                Ok(said) => {
+                    print!("{said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("kryptikd: check-release: {why}");
+                    ExitCode::FAILURE
+                }
+            },
+            _ => {
+                eprintln!("usage: kryptikd check-release DIR");
+                ExitCode::from(2)
+            }
+        },
         "clipboard" => cmd_clipboard(&args),
         "transfer" => {
             eprintln!(
@@ -250,9 +308,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Stop a running zone by signalling its launcher, which forwards the signal
-/// to pid 1 and escalates to SIGKILL after 5 s. The launcher is signalled only
-/// while its pid and start time both still match: pids are reused.
+/// Stop a zone; its launcher forwards the signal to pid 1 and escalates to SIGKILL after 5 s.
+/// The launcher is signalled only while its pid and start time both match: pids are reused.
 fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
     let mut st = match registry::state(name) {
         Ok(s) => s,
@@ -262,8 +319,7 @@ fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
         }
     };
 
-    /* "Still starting" lasts a few ms, between claim() and the fork that
-     * records the launcher pid; `run &` then `stop` often lands in it. */
+    // "Still starting" lasts a few ms after claim(); `run &` then `stop` often lands in it.
     if matches!(st, registry::State::Running { launcher: None, .. }) {
         std::thread::sleep(std::time::Duration::from_millis(100));
         st = match registry::state(name) {
@@ -305,10 +361,8 @@ fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
                 println!("zone {name:?} exited while stopping it");
                 return ExitCode::SUCCESS;
             }
-            /* --now kills the zone's pid 1, which takes the pid namespace with
-             * it, not the launcher: the launcher outlives its zone to unmount
-             * and close the zone's volume. During setup pid 1 may not yet be
-             * recorded; signal the launcher gracefully in that case. */
+            /* --now kills pid 1 and so the pid namespace, not the launcher, which outlives the
+             * zone to close its volume. Before pid 1 is recorded the launcher gets SIGTERM. */
             let (pid, sig) = match init.filter(|i| now && i.still_alive()) {
                 Some(i) => (i.pid, libc::SIGKILL),
                 None => (l.pid, libc::SIGTERM),
@@ -345,9 +399,7 @@ fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
     }
 }
 
-/// Close the volume of a zone whose launcher died without closing it, as
-/// `gc` does for every zone: otherwise the plaintext stays mounted and its
-/// key in the kernel after the zone is reported stopped.
+/// Close a volume a dead launcher left open, as `gc` does, so no plaintext outlives a stop.
 fn close_left_volume(name: &str, base: &str) {
     if !volume::mappings().iter().any(|z| z == name) || matches!(registry::state(name), Ok(registry::State::Running { .. })) {
         return;
@@ -359,9 +411,8 @@ fn close_left_volume(name: &str, base: &str) {
     }
 }
 
-/// Cross-zone paste, a zone 0 gesture: no zone's socket has a verb to fetch
-/// another zone's payload. Both zones must be running; the payload lives in
-/// one zone's registry entry at a time.
+/// Cross-zone paste, a zone 0 gesture: no zone's socket has a verb to fetch another's payload,
+/// which lives in one zone's registry entry at a time.
 fn cmd_clipboard(args: &[String]) -> ExitCode {
     let (from, to) = match (args.get(1).map(|s| s.as_str()), args.get(2), args.get(3)) {
         (Some("move"), Some(f), Some(t)) if !f.starts_with("--") && !t.starts_with("--") => (f.as_str(), t.as_str()),
@@ -386,7 +437,7 @@ fn cmd_clipboard(args: &[String]) -> ExitCode {
     }
 }
 
-fn cmd_status(name: &str) -> ExitCode {
+fn cmd_status(dir: &Path, name: &str) -> ExitCode {
     match registry::state(name) {
         Ok(registry::State::Absent) => {
             println!("{name}  absent");
@@ -401,8 +452,8 @@ fn cmd_status(name: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(registry::State::Running { launcher, init, cgroup, started }) => {
-            /* core-sched is asked of the kernel (nothing in /proc shows it): own,
-             * none, no-smt (no sibling thread online) or unavailable. */
+            // core-sched is asked of the kernel, as nothing in /proc shows it: own, none, no-smt or
+            // unavailable.
             println!(
                 "{name}  running  launcher {}  init {}  since {}{}{}",
                 launcher.map(|l| l.pid.to_string()).unwrap_or_else(|| "starting".into()),
@@ -411,6 +462,12 @@ fn cmd_status(name: &str) -> ExitCode {
                 cgroup.map(|c| format!("  cgroup {c}")).unwrap_or_default(),
                 init.map(|i| format!("  core-sched {}", isolate::core_cookie_word(i.pid))).unwrap_or_default()
             );
+            // The nic zone's word on the network, as the menu's Network line has it. Only root
+            // reads it; a file of that name in another zone says nothing.
+            let nic = zone::load_all(dir).is_ok_and(|zs| zs.iter().any(|z| z.name == name && z.network == zone::NetworkMode::Nic));
+            if let Some(n) = nic.then(|| serve::net_status(name)).flatten() {
+                println!("network  {n}");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -420,14 +477,14 @@ fn cmd_status(name: &str) -> ExitCode {
     }
 }
 
-fn cmd_list_running() -> ExitCode {
+fn cmd_list_running(dir: &Path) -> ExitCode {
     let names = registry::names();
     if names.is_empty() {
         println!("no zones are running");
         return ExitCode::SUCCESS;
     }
     for n in names {
-        let _ = cmd_status(&n);
+        let _ = cmd_status(dir, &n);
     }
     ExitCode::SUCCESS
 }
@@ -435,7 +492,7 @@ fn cmd_list_running() -> ExitCode {
 /// Reclaim stale entries, empty zone cgroups and orphaned volume mappings.
 /// A live zone is safe: an entry is stale only if its lock can be taken, and
 /// the kernel refuses `rmdir` of a populated cgroup (EBUSY).
-fn cmd_gc() -> ExitCode {
+fn cmd_gc(base: &str) -> ExitCode {
     let mut reclaimed = 0usize;
     for n in registry::names() {
         if let Ok(registry::State::Stale { .. }) = registry::state(&n) {
@@ -451,12 +508,11 @@ fn cmd_gc() -> ExitCode {
     let swept = cgroup::sweep_now();
     // A mapping with no running zone is plaintext nobody uses; the next open runs fsck -p.
     let mut closed = 0usize;
-    let base = DEFAULT_ROOTFS_BASE.to_string();
     for z in volume::mappings() {
         if let Ok(registry::State::Running { .. }) = registry::state(&z) {
             continue;
         }
-        let mnt = volume::mountpoint_for(Path::new(&base), &z).display().to_string();
+        let mnt = volume::mountpoint_for(Path::new(base), &z).display().to_string();
         match volume::close_mapping(&z, &mnt) {
             Ok(()) => {
                 println!("closed the volume of zone {z:?}, which had no running launcher");
@@ -514,6 +570,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
     println!("  user namespaces  {}", yn(s.user_ns));
     println!("  pid namespaces   {}", yn(s.pid_ns));
     println!("  net namespaces   {}", yn(s.net_ns));
+    println!("  time namespaces  {}", yn(s.time_ns));
     println!("  cgroup v2        {}", yn(s.cgroup_v2));
     println!("  seccomp          {}", yn(s.seccomp));
     match s.landlock {
@@ -531,8 +588,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
         None => println!("  landlock         NO"),
     }
 
-    /* Install the filter in a child and make an allowed call. A self-test that
-     * cannot run is a failure: this command gates a kernel as fit for zones. */
+    // A self-test that cannot run is a failure: this command gates a kernel as fit for zones.
     let self_test = std::env::current_exe()
         .map_err(|e| format!("current_exe: {e}"))
         .and_then(|exe| {
@@ -555,8 +611,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
         }
     }
 
-    /* On the target only CAP_SYS_ADMIN in the initial namespace may create a
-     * user namespace. Read the knob, then prove it by trying. */
+    // On the target only CAP_SYS_ADMIN may create a user namespace: read the knob, then try.
     let knob = isolate::userns_restriction_sysctl();
     match isolate::probe_userns_restriction() {
         Ok(true) => println!(
@@ -639,8 +694,7 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
                         }
                     }
                 }
-                /* Parsed as the launcher parses it (spawn.rs), so a file that
-                 * would stop a launch fails the check. */
+                // Parsed as spawn.rs does, so a file that would stop a launch fails the check.
                 if let Some(rel) = &z.landlock {
                     let path = policy::resolve(dir, rel);
                     match std::fs::read_to_string(&path)
@@ -776,8 +830,7 @@ fn cmd_explain(dir: &Path, name: &str, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Argument-rule and soft-refusal probes for `seccomp-test`; None when `name`
-/// is not a probe.
+/// Argument-rule and soft-refusal probes for `seccomp-test`; None if `name` is not one.
 fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
     // Runs in the filtered child: 7 if refused with the intended errno, else 0.
     let probe: fn() -> i32 = match name {
@@ -793,7 +846,11 @@ fn cmd_seccomp_probe(name: &str) -> Option<ExitCode> {
             if r > 0 {
                 libc::waitpid(r as libc::pid_t, std::ptr::null_mut(), 0);
             }
-            0
+            if r < 0 && *libc::__errno_location() == libc::EPERM { 7 } else { 0 }
+        },
+        "unshare-newuser" => || unsafe {
+            let r = libc::unshare(libc::CLONE_NEWUSER);
+            if r < 0 && *libc::__errno_location() == libc::EPERM { 7 } else { 0 }
         },
         "clone3" => || unsafe {
             let r = libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize);
@@ -859,8 +916,8 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
     })
 }
 
-/// An encrypted zone's LUKS2 container, outside any launch
-/// (docs/design/encrypted-volumes.md). init and passwd need root.
+/// An encrypted zone's LUKS2 container, outside any launch (docs/design/encrypted-volumes.md).
+/// init, passwd and destroy need root.
 ///
 ///   volume init NAME [--size 512M] --passphrase-file F [--zone-uid N --zone-gid N]
 ///   volume passwd NAME --passphrase-file OLD --new-passphrase-file NEW
@@ -952,7 +1009,7 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
             }
             let old = match pass_from("--passphrase-file") { Ok(p) => p, Err(c) => return c };
             let new = match pass_from("--new-passphrase-file") { Ok(p) => p, Err(c) => return c };
-            done("passphrase changed", volume::change_key(&vol, &old, &new))
+            done("passphrase changed", volume::change_key(name, &vol, &old, &new))
         }
         "backup-header" => {
             let Some(file) = args.get(3) else { eprintln!("volume backup-header NAME FILE"); return ExitCode::from(2) };
@@ -980,9 +1037,11 @@ fn wifi_dir_from(args: &[String]) -> PathBuf {
     PathBuf::from(value(args, "--wifi-dir").unwrap_or(wifi::DEFAULT_DIR))
 }
 
-/// `kryptikd time floor | status` (docs/design/time.md). The clock is set only
-/// here, from the floor, and in the broker, from a net zone claim zone 0 judged.
+/// `kryptikd time floor | status | committed DIR` (docs/design/time.md). The
+/// clock is set only here, from the floor, and in the broker, from a net zone
+/// claim zone 0 judged.
 fn cmd_time(args: &[String]) -> ExitCode {
+    use time::Clock;
     let dir = Path::new(time::STATE_DIR);
     match args.get(1).map(String::as_str) {
         Some("floor") => match time::clamp(&mut time::SystemClock, dir, time::floor_of_this_system()) {
@@ -995,12 +1054,35 @@ fn cmd_time(args: &[String]) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("committed") => {
+            let Some(offered) = args.get(2) else {
+                eprintln!("usage: kryptikd time committed DIR");
+                return ExitCode::from(2);
+            };
+            let running = update::running_version();
+            match time::keep_release(dir, Path::new(offered), &running, time::SystemClock.now(), &update::check_release) {
+                Ok(said) => {
+                    println!("kryptikd: time: {said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("kryptikd: time: {why}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("status") => {
-            use time::Clock;
             println!("clock    {}", time::format_utc(time::SystemClock.now()));
-            match time::floor_of_this_system() {
-                Some(f) => println!("floor    {} (this system's build date; nothing earlier is believed)", time::format_utc(f as f64)),
-                None => println!("floor    unknown: {} is missing or unreadable, so every claim is refused", time::IMAGE_JSON),
+            let release = time::committed_release();
+            match (time::floor_of_this_system(), &release) {
+                (None, _) => println!("floor    unknown: {} is missing or unreadable, so every claim is refused", time::IMAGE_JSON),
+                (Some(f), Ok(Some((v, at)))) if *at == f => {
+                    println!("floor    {} (release {v}, the newest this machine committed to; nothing earlier is believed)", time::format_utc(f as f64))
+                }
+                (Some(f), _) => println!("floor    {} (this system's build date; nothing earlier is believed)", time::format_utc(f as f64)),
+            }
+            if let Err(why) = &release {
+                println!("release  not used: {why}");
             }
             match std::fs::read_to_string(dir.join("history")) {
                 Ok(h) => match h.lines().last() {
@@ -1012,21 +1094,19 @@ fn cmd_time(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("usage: kryptikd time floor | status");
+            eprintln!("usage: kryptikd time floor | status | committed DIR");
             ExitCode::from(2)
         }
     }
 }
 
-/// `kryptikd wifi list | add SSID | forget SSID`: the net zone's Wi-Fi networks,
-/// for root and the tests (the session goes through the launch daemon). The
-/// passphrase is one line on stdin, never an argument.
+/// The net zone's Wi-Fi networks, for root and the tests; a passphrase comes on stdin, never argv.
 fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
     let dir = wifi_dir_from(args);
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let ssid = args.get(2).filter(|a| !a.starts_with("--"));
     let usage = || {
-        eprintln!("usage: kryptikd wifi list | add SSID | forget SSID   [--wifi-dir DIR]");
+        eprintln!("usage: kryptikd wifi list | scan | add SSID [--open] [--hidden] | forget SSID   [--wifi-dir DIR]");
         ExitCode::from(2)
     };
     let refused = |e: String| {
@@ -1043,24 +1123,35 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
             }
             Err(e) => refused(e),
         },
+        // Run as root, as `kryptikd serve` runs it for the desktop: it signals the nic zone.
+        ("scan", None) => match wifi::scan(zones_dir) {
+            Ok(s) => {
+                print!("{}", wifi::scan_said(&s, &wifi::list(&dir).unwrap_or_default()));
+                ExitCode::SUCCESS
+            }
+            Err(e) => refused(e),
+        },
         ("add", Some(ssid)) => {
             // Refuse a bad SSID before asking for its passphrase.
             if let Err(e) = wifi::check_ssid(ssid) {
                 return refused(e);
             }
-            let pass = match wifi::read_passphrase(&format!("passphrase for {ssid}: ")) {
-                Ok(p) => p,
-                Err(e) => return refused(e),
+            let open = args.iter().any(|a| a == "--open");
+            let hidden = args.iter().any(|a| a == "--hidden");
+            let pass = if open {
+                None
+            } else {
+                match wifi::read_passphrase(&format!("passphrase for {ssid}: ")) {
+                    Ok(p) => Some(p),
+                    Err(e) => return refused(e),
+                }
             };
             let owner = match wifi::owner_for(zones_dir) {
                 Ok(o) => o,
                 Err(e) => return refused(e),
             };
-            match wifi::add(&dir, owner, ssid, &pass) {
-                Ok(wifi::Added::New) => println!("added network {ssid:?}; {}", wifi::restart_net_zone(&dir)),
-                Ok(wifi::Added::Replaced) => {
-                    println!("replaced the passphrase of network {ssid:?}; {}", wifi::restart_net_zone(&dir))
-                }
+            match wifi::add(&dir, owner, ssid, pass.as_deref(), hidden) {
+                Ok((a, hidden)) => println!("{}; {}", wifi::said(ssid, a, open, hidden), wifi::restart_net_zone(&dir)),
                 Err(e) => return refused(e),
             }
             ExitCode::SUCCESS
@@ -1130,7 +1221,7 @@ const fn seccomp_iowr(nr: u32, size: usize) -> libc::c_ulong {
 const NOTIF_RECV: libc::c_ulong = seccomp_iowr(0, std::mem::size_of::<libc::seccomp_notif>());
 const NOTIF_SEND: libc::c_ulong = seccomp_iowr(1, std::mem::size_of::<libc::seccomp_notif_resp>());
 
-/// The filter zone `name` runs under: the base, widened by its policy file.
+/// The filter zone `name` runs under: the base, widened by its policy file and kept capabilities.
 fn trace_filter(dir: &Path, name: &str) -> Result<(Vec<libc::c_long>, seccomp::SocketPolicy), String> {
     let zones = zone::load_all(dir).map_err(|e| e.to_string())?;
     let z = zones.iter().find(|z| z.name == name).ok_or_else(|| format!("no zone named {name:?}"))?;
@@ -1140,13 +1231,11 @@ fn trace_filter(dir: &Path, name: &str) -> Result<(Vec<libc::c_long>, seccomp::S
     let p = policy::load(&policy::resolve(dir, rel))
         .and_then(|p| p.check_for_zone(z).map(|_| p))
         .map_err(|e| format!("{rel}: {e}"))?;
-    Ok((seccomp::widened(&p.extra_syscalls).map_err(|e| e.to_string())?, p.sockets))
+    Ok((seccomp::widened_for(&p.extra_syscalls, &p.keep_caps).map_err(|e| e.to_string())?, p.sockets))
 }
 
-/* Run CMD under a zone filter and name every call it refuses. Refused calls
- * come here by seccomp user notification (Kryptik forbids ptrace) and fail
- * with ENOSYS, so one run lists them all. The child shares our descriptor
- * table until exec: the zone filter has no sendmsg to pass its listener. */
+/// Run CMD under a zone filter, naming every call it refuses. Refusals arrive by user
+/// notification (Kryptik forbids ptrace) and fail with ENOSYS, so one run lists them all.
 fn cmd_seccomp_trace(cmd: &[String], allow: &[libc::c_long], sockets: &seccomp::SocketPolicy) -> ExitCode {
     use std::ffi::CString;
 
@@ -1165,7 +1254,7 @@ fn cmd_seccomp_trace(cmd: &[String], allow: &[libc::c_long], sockets: &seccomp::
         return ExitCode::FAILURE;
     }
 
-    // A fork that shares the descriptor table; the child's exec unshares it.
+    // Shares the descriptor table until exec: the zone filter has no sendmsg to pass the listener.
     let pid = unsafe { libc::syscall(libc::SYS_clone, libc::CLONE_FILES | libc::SIGCHLD, 0, 0, 0, 0) } as libc::pid_t;
     if pid < 0 {
         eprintln!("seccomp-trace: clone: {}", std::io::Error::last_os_error());
@@ -1219,7 +1308,7 @@ fn cmd_seccomp_trace(cmd: &[String], allow: &[libc::c_long], sockets: &seccomp::
             let nr = libc::c_long::from(req.data.nr);
             let name = seccomp::name_of(nr).unwrap_or("");
             // A soft refusal gets the errno a zone gets, and is marked.
-            let soft = seccomp::REFUSED_SOFTLY.iter().find(|(n, _)| *n == nr).map(|&(_, e)| e as libc::c_int);
+            let soft = seccomp::soft_errno(&req.data).map(|e| e as libc::c_int);
             eprintln!("KRYPTIK_SECCOMP_DENIED {nr} {name}{}", if soft.is_some() { " soft" } else { "" });
             refused += 1;
             let mut resp: libc::seccomp_notif_resp = unsafe { std::mem::zeroed() };
@@ -1251,9 +1340,8 @@ fn cmd_seccomp_test(name: &str, nr: libc::c_long) -> ExitCode {
     })
 }
 
-/// Run `probe` in a child under the zone filter and say how it ended. Exit 5:
-/// killed by SIGSYS; 6: another signal; 7: refused with the intended errno;
-/// 1: no filter; 0: completed.
+/// Run `probe` in a child under the zone filter. Exit 5: killed by SIGSYS; 6: another signal;
+/// 7: refused with the intended errno; 1: no filter; 0: completed.
 fn under_zone_filter(name: &str, probe: impl FnOnce() -> i32) -> ExitCode {
     // SAFETY: fork in a program that does no threading before this point.
     let pid = unsafe { libc::fork() };

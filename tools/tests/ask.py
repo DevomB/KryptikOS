@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""build/service-scripts/ask.sh, what sysinit and firstboot ask a person: the
-question appears on every console, the first line typed on any of them is the
-answer, echo is off while a secret is asked and back on afterwards, and no
-answer in time, or no console left to answer on, is a failure, not a hang.
-Two pseudo-terminals stand in for the screen and a serial port."""
+"""build/service-scripts/ask.sh, with two pseudo-terminals for the screen and a serial port."""
 import os
 import pty
 import select
@@ -35,8 +31,7 @@ def consoles():
 
 
 def start(args, ttys, run):
-    # consoles() is replaced after sourcing, as the terminals are not the
-    # machine's; everything else is the file as it ships.
+    # Only consoles() is replaced, as these terminals are not the machine's.
     script = ('. "$ASK"; ask_dir="$RUN"; '
               'consoles() { for t in $TTYS; do echo "$t"; done; }; ask ' + args)
     env = dict(os.environ, ASK=ASK, RUN=run, TTYS=" ".join(t[2] for t in ttys))

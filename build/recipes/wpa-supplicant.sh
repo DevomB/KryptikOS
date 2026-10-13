@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# wpa-supplicant: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# wpa_supplicant from its own .config: nl80211 through libnl, the unix control
-# interface for wpa_cli (no D-Bus or readline), OpenSSL for WPA3-SAE, OWE, DPP
-# and enterprise EAP, 802.11r and protected management frames, and AP mode,
-# which only the zones suite uses: its access point on mac80211_hwsim is this
-# binary in a namespace of its own. Its Makefile takes CFLAGS from the
-# environment, so the hardening flags apply.
+# CONFIG_AP is for the zones suite, whose hwsim access point is this binary in its own namespace.
+# No DPP: with it the station takes DPP and GAS action frames from any radio in range,
+# unassociated, for a way of joining networks nothing here offers.
 s_wpa_supplicant() {
     local src; src="$(unpack "wpa_supplicant-${V_WPA_SUPPLICANT}.tar.gz" "wpa_supplicant-${V_WPA_SUPPLICANT}")"
-    cd "$src/wpa_supplicant"
+    cd "$src"
+    # Scan ages that the net zone's time namespace would otherwise put hours in the past.
+    apply_repo_patches "wpa_supplicant-${V_WPA_SUPPLICANT}"
+    cd wpa_supplicant
     cat > .config <<'EOF'
 CONFIG_DRIVER_NL80211=y
 CONFIG_LIBNL32=y
@@ -22,7 +20,6 @@ CONFIG_IEEE80211W=y
 CONFIG_IEEE80211R=y
 CONFIG_SAE=y
 CONFIG_OWE=y
-CONFIG_DPP=y
 CONFIG_EAP_TLS=y
 CONFIG_EAP_PEAP=y
 CONFIG_EAP_TTLS=y

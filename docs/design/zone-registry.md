@@ -28,10 +28,10 @@ directory without a lock file reads as not held.
 
 Stale entries are reclaimed by `run`, by `stop` (which says `zone "<name>" was
 not running (stale entry from pid N reclaimed)` and exits 0) and by `gc`;
-`list` and `status` show them as `stale`. Reclaim = take the lock; if
-`<entry>/cgroup` names a directory under kryptikd's cgroup tree, write
-`cgroup.kill` and retry `rmdir` for up to 2 s; then remove the entry. The
-recorded pid is never signalled: pids are reused, and `cgroup.kill` reaches
+`list` and `status` show them as `stale`. A reclaim takes the lock, writes
+`cgroup.kill` and retries `rmdir` for up to 2 s if `<entry>/cgroup` names a
+directory under kryptikd's cgroup tree, then removes the entry. A reclaim
+never signals the recorded pid: pids are reused, and `cgroup.kill` reaches
 only what is in the cgroup.
 
 ## Entries
@@ -68,13 +68,15 @@ run:   mkdir entry (or reclaim + retry)  -> flock lock, write started
 ## Stop
 
 `stop <name>` sends `SIGTERM` to the launcher, which forwards it to zone pid 1
-and sends `SIGKILL` 5 s later; `stop --now` sends `SIGKILL` to the launcher
-and the parent-death chain takes the zone down. There is no graceful-only
-mode: a zone that ignores `SIGTERM` must not keep itself alive. `stop` waits
-up to 8 s for the entry to go, so `stop && run` works. It exits 0 when the
-zone is gone or was stale, 1 if it was not running, 2 if the launcher
-survived. There is one instance per zone name. `gc` also removes empty
-`kryptik/*` cgroups and closes volume mappings whose zone is not running.
+and sends `SIGKILL` 5 s later. `stop --now` sends `SIGKILL` to zone pid 1,
+which takes the pid namespace with it, and leaves the launcher to unmount and
+close the zone's volume; before pid 1 is recorded it sends `SIGTERM` to the
+launcher instead. There is no graceful-only mode: a zone that ignores
+`SIGTERM` must not keep itself alive. `stop` waits up to 8 s for the entry to
+go, so `stop && run` works. It exits 0 when the zone is gone or was stale, 1
+if it was not running, 2 if the launcher survived. There is one instance per
+zone name. `gc` also removes empty `kryptik/*` cgroups and closes volume
+mappings whose zone is not running.
 
 ## Tests
 

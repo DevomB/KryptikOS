@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# firmware: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# copy-firmware.sh lays the pinned linux-firmware release out as the kernel
-# names the files; build/config/firmware.list (format in its header) picks what
-# ships, beside wireless-regdb. Files are zstd-compressed, as the kernel looks
-# for name.zst (CONFIG_FW_LOADER_COMPRESS_ZSTD), and links are repointed.
+# The linux-firmware files build/config/firmware.list picks, and wireless-regdb, zstd-compressed.
 s_firmware() {
     echo "list digest: ${1:-none}"
     local list="${KRYPTIK_ROOT}/build/config/firmware.list"
@@ -19,21 +14,22 @@ s_firmware() {
 
     local dest="${KRYPTIK_DESTDIR}/lib/firmware"
     rm -rf "$dest"; mkdir -p "$dest"
-    local line keep pattern matches n total=0 missing=0
+    local line keep pattern out matches n total=0 missing=0
     local selected="${src}/.selected"
-    : > "$selected"
+    : > "$selected"; : > "${selected}.except"
     while IFS= read -r line; do
         line="${line%%#*}"
         line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
         [[ -n "$line" ]] || continue
-        keep=0; pattern="$line"
+        keep=0; pattern="$line"; out="$selected"
         if [[ "$line" =~ ^newest[[:space:]]+([0-9]+)[[:space:]]+(.+)$ ]]; then
             keep="${BASH_REMATCH[1]}"; pattern="${BASH_REMATCH[2]}"
+        elif [[ "$line" =~ ^except[[:space:]]+(.+)$ ]]; then
+            pattern="${BASH_REMATCH[1]}"; out="${selected}.except"
         fi
         matches="$(find "$tree" -path "${tree}/${pattern}" \( -type f -o -type l \) -print | sort)"
         if [[ "$keep" -gt 0 && -n "$matches" ]]; then
-            # Group by the name with its trailing -NUMBER removed, keep the
-            # highest NUMBERs of each group; a name without one is kept as is.
+            # Keep the newest $keep of each name by trailing -NUMBER; a name without one is kept.
             matches="$(printf '%s\n' "$matches" | while IFS= read -r f; do
                 b="${f##*/}"; stem="${b%.*}"; ext="${b##*.}"; ver="${stem##*-}"
                 if [[ "$ver" =~ ^[0-9]+$ ]]; then
@@ -43,20 +39,23 @@ s_firmware() {
                 fi
             done | sort -t "$(printf '\t')" -k1,1 -k2,2nr | awk -F '\t' -v k="$keep" '{ if (++c[$1] <= k) print $3 }')"
         fi
-        n="$(printf '%s\n' "$matches" | grep -c .)"
+        n="$(printf '%s\n' "$matches" | grep -c . || true)"
         if [[ "$n" -eq 0 ]]; then
             echo "  MISSING  ${pattern}: matches nothing in linux-firmware-${V_LINUX_FIRMWARE}"
             missing=$((missing + 1))
         else
-            printf '%s\n' "$matches" >> "$selected"
+            printf '%s\n' "$matches" >> "$out"
             printf '  %5d  %s\n' "$n" "$line"
         fi
-        total=$((total + n))
+        if [[ "$out" == "$selected" ]]; then total=$((total + n)); fi
     done < "$list"
     if [[ "$missing" -gt 0 ]]; then
         echo "FAIL: ${missing} pattern(s) in firmware.list match nothing; the list must name what this release has"
         return 1
     fi
+    # An except line takes back what any other line chose.
+    sort -u "$selected" | comm -23 - <(sort -u "${selected}.except") > "${selected}.kept"
+    mv "${selected}.kept" "$selected"
     # A symlink's target comes too, wherever it points inside the tree.
     local f t
     while IFS= read -r f; do
@@ -74,8 +73,7 @@ s_firmware() {
     local regdb; regdb="$(unpack "wireless-regdb-${V_WIRELESS_REGDB}.tar.xz" "wireless-regdb-${V_WIRELESS_REGDB}")"
     install -m 0644 "${regdb}/regulatory.db" "${regdb}/regulatory.db.p7s" "$dest/"
 
-    # Compress the regular files, then repoint every symlink at the .zst. zstd
-    # takes its files one at a time, so several run at once.
+    # The kernel looks for name.zst (FW_LOADER_COMPRESS_ZSTD): compress, then repoint the links.
     find "$dest" -type f ! -name '*.zst' -print0 \
         | xargs -0 -r -P"${KRYPTIK_JOBS:-$(nproc)}" -n 32 zstd -19 -q --rm
     while IFS= read -r -d '' f; do

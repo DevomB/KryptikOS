@@ -5,8 +5,7 @@ name        = "vault"
 description = "Keys, password store, secrets. No network stack."
 
 [network]
-# "none": a network namespace with only loopback; there is no interface to
-# route through.
+# "none": a network namespace with only loopback, so there is no interface to route through.
 mode = "none"
 
 [storage]
@@ -21,15 +20,13 @@ memory_max = "2G"
 pids_max   = 128
 
 [identity]
-# Host uid/gid range: root inside maps to 393216, nobody to 458750. Fixed,
-# never derived from zone order (docs/design/privileged-launch.md).
+# Root inside maps to host uid/gid 393216, nobody to 458750; fixed, never derived from zone order.
 uid_base = 393216
 
 [ui]
-# Colour, glyph and label must differ from every other zone's; the pattern
-# is checked but nothing draws it. Pick colours with `zoneid propose`;
-# `zoneid audit` checks the set, `zoneid explain` the rule.
+# Colour, glyph and label must be unique; `zoneid propose` picks colours, `zoneid audit` checks.
 border_color   = "#9e80ac"
+# The pattern is checked, but nothing draws it.
 border_pattern = "double"
 glyph          = "★"
 label          = "VAULT"

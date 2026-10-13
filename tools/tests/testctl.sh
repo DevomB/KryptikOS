@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Tests for the medium's control-disk check (build/service-scripts/testctl.sh)
-# and the tool that makes a control disk (tools/image/mk-testctl.sh): a file
-# is honoured only with a signature by the kryptik-testctl key the anchor
-# lists, in that key's namespace. Offline, with throwaway keys; the disk image
-# itself is made only where mtools and sfdisk are.
+# The medium's control-disk check (build/service-scripts/testctl.sh) and tools/image/mk-testctl.sh:
+# a file counts only when signed by the anchor's kryptik-testctl key, in its namespace.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -58,6 +55,34 @@ if TESTCTL_ANCHOR="${W}/anchor-stranger" testctl_signed "${W}/kryptik-test.conf"
     red "a key listed under another name was honoured"
 else
     green "the signer must be listed as kryptik-testctl, not merely listed"
+fi
+
+# --- what was verified is what is read ---------------------------------------------
+TESTCTL_COPIES="$W"
+mkdir -p "${W}/disk"
+printf 'install_target=/dev/vda\nsmoke_poweroff=1\n' > "${W}/disk/kryptik-test.conf"
+sign "${W}/kryptik-testctl" kryptik-testctl "${W}/disk/kryptik-test.conf"
+if declare -F testctl_take >/dev/null && testctl_take "${W}/disk"; then
+    # The disk now serves other bytes, as a device could on a later read.
+    printf 'install_target=/dev/sda\n' > "${W}/disk/kryptik-test.conf"
+    if [[ "$(testctl_get install_target)" == /dev/vda ]]; then
+        green "every key is read from the copy that was verified, not from the disk again"
+    else
+        red "a key was read from the disk after its check: install_target=$(testctl_get install_target)"
+    fi
+else
+    red "a signed control file was not taken"
+fi
+rm -f "${W}/disk/kryptik-test.conf.sig"
+if testctl_take "${W}/disk" 2>/dev/null; then red "a control file with no signature was taken"; else green "a control file with no signature is not taken"; fi
+[[ -z "$TESTCTL_FILE" ]] && green "and a refusal leaves no file to read keys from" || red "a refused file left TESTCTL_FILE=${TESTCTL_FILE}"
+# Signed, and too large to copy into /run before its check.
+{ printf 'install_target=/dev/vda\n'; head -c 70000 /dev/zero | tr '\0' '#'; printf '\n'; } > "${W}/disk/kryptik-test.conf"
+sign "${W}/kryptik-testctl" kryptik-testctl "${W}/disk/kryptik-test.conf"
+if testctl_signed "${W}/disk/kryptik-test.conf" && ! testctl_take "${W}/disk" 2>/dev/null; then
+    green "a control file over 64 KiB is not taken, though signed"
+else
+    red "a 70 KB control file was taken, or its signature did not hold"
 fi
 
 # --- the tool signs what it packs ------------------------------------------------------

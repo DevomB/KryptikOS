@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn hash_in_string_is_not_comment() {
+fn quoted_hash_kept() {
     let d = parse("[ui]\nborder_color = \"#aa3333\"\n").unwrap();
     assert_eq!(d.get("ui", "border_color"), Some("#aa3333"));
 }
@@ -13,7 +13,7 @@ fn comment_after_colour() {
 }
 
 #[test]
-fn full_line_comments_and_blank_lines() {
+fn comments_and_blank_lines() {
     let d = parse("# a zone\n\n[zone]\nname = \"work\"\n").unwrap();
     assert_eq!(d.get("zone", "name"), Some("work"));
 }
@@ -60,7 +60,7 @@ fn unsupported_constructs_are_errors() {
 }
 
 #[test]
-fn unterminated_string_is_an_error() {
+fn unterminated_string_refused() {
     let e = parse("[a]\nv = \"oops\n").unwrap_err();
     assert_eq!(e.kind, TomlErrorKind::UnterminatedString);
 }
@@ -85,9 +85,9 @@ fn trailing_garbage_refused() {
     assert!(matches!(e.kind, TomlErrorKind::TrailingGarbage(_)));
 }
 
-/// A real zone file, verbatim.
+/// A whole zone file, in the shipped layout.
 #[test]
-fn parses_real_zone_file() {
+fn parses_zone_file() {
     // r##: the file contains `"#`.
     let src = r##"
 # untrusted - for opening things you do not trust.

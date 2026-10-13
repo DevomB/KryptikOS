@@ -1,7 +1,6 @@
 use super::*;
 
-/// Run `body` in a forked child and return its exit status: these tests
-/// change descriptors and mount namespaces the test harness shares.
+/// Run `body` in a forked child: these tests change descriptors and namespaces the harness shares.
 fn in_child(body: impl FnOnce() -> i32) -> i32 {
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed");
@@ -65,7 +64,7 @@ fn device_list_is_minimal() {
 }
 
 #[test]
-fn etc_view_excludes_identity_and_secrets() {
+fn etc_view_excludes_secrets() {
     let all: Vec<&str> = ETC_RO_FILES.iter().chain(ETC_RO_DIRS).copied().collect();
     for banned in [
         "/etc/machine-id", "/etc/hostname", "/etc/hosts", "/etc/passwd", "/etc/group",
@@ -82,7 +81,19 @@ fn etc_view_excludes_identity_and_secrets() {
 }
 
 #[test]
-fn bridge_resolver_names_only_bridge() {
+fn proc_hides_host_activity() {
+    // What times keystrokes in other zones, and what shows which encrypted zones are open.
+    for f in ["interrupts", "stat", "loadavg", "partitions", "diskstats", "vmstat", "zoneinfo", "buddyinfo"] {
+        assert!(PROC_MASKED.contains(&f), "/proc/{f} must be masked");
+    }
+    for f in ["pressure/cpu", "pressure/memory", "pressure/io", "sys/fs/file-nr", "sys/fs/inode-nr", "sys/fs/dentry-state"] {
+        assert!(PROC_MASKED.contains(&f), "/proc/{f} must be masked");
+    }
+    assert!(!PROC_MASKED.contains(&"meminfo"), "free and most runtimes read /proc/meminfo");
+}
+
+#[test]
+fn bridge_resolver() {
     let r = resolv_conf_for_bridge();
     assert_eq!(r.lines().count(), 2);
     assert!(r.contains("nameserver 10.19.0.1") && r.contains("nameserver fd19::1"));
@@ -90,17 +101,27 @@ fn bridge_resolver_names_only_bridge() {
 }
 
 #[test]
-fn identity_names_zone_not_host() {
-    let pw = passwd_for("work", "/home/work");
+fn identity_names_zone() {
+    let pw = passwd_for("work", "/home/work", false);
     assert!(pw.starts_with("root:x:0:0:work:/home/work:"), "{pw}");
     assert_eq!(pw.lines().count(), 2);
+    assert_eq!(group_for(false).lines().count(), 2);
+    // The nic zone's dhcpcd drops to the third mapped id, chrooted to an empty directory, and its
+    // wpa_supplicant runs as the fourth.
+    let pw = passwd_for("net", "/home/net", true);
+    assert_eq!(pw.lines().count(), 4);
+    assert!(pw.contains("\ndhcpcd:x:100:100:dhcpcd:/var/empty:/bin/false\n"));
+    assert!(pw.contains("\nwpa:x:101:101:wpa_supplicant:/run/wpa_supplicant:/bin/false\n"));
+    assert!(group_for(true).contains("\ndhcpcd:x:100:\nwpa:x:101:\n"));
+    assert_eq!(crate::isolate::SERVICE_ID, 100);
+    assert_eq!(crate::isolate::WIFI_ID, 101);
     assert!(hosts_for("work").contains("127.0.0.1 localhost work"));
     assert_eq!(zone_home("work"), "/home/work");
     assert!(nsswitch().contains("passwd: files"));
 }
 
 #[test]
-fn data_dir_refuses_symlinks_other_owners() {
+fn data_dir_refusals() {
     let base = std::env::temp_dir().join(format!("kryptik-rootfs-test-{}", std::process::id()));
     let real = base.join("real");
     let link = base.join("link");
@@ -136,7 +157,7 @@ fn leftover_names_are_escaped() {
 }
 
 #[test]
-fn close_inherited_fds_keeps_only_stdio() {
+fn close_fds_keeps_stdio() {
     let rc = in_child(|| {
         open_at(3);
         open_at(4095);
@@ -163,7 +184,7 @@ fn close_inherited_fds_keeps_only_stdio() {
 }
 
 #[test]
-fn ensure_stdio_reopens_closed_fd() {
+fn ensure_stdio_reopens() {
     let rc = in_child(|| {
         unsafe { libc::close(0) };
         if is_open(0) {
@@ -178,12 +199,10 @@ fn ensure_stdio_reopens_closed_fd() {
     assert_eq!(rc, 0);
 }
 
-/// A submount inside the bound tree must be read-only too. Needs an
-/// unprivileged user namespace; skips without one.
+/// A submount in the bound tree must be read-only too; skips without an unprivileged userns.
 #[test]
-fn read_only_bind_is_recursive() {
-    /* Before the fork: temp_dir() takes std's environment lock, which
-     * another test thread may hold at fork time, hanging the child. */
+fn ro_bind_recursive() {
+    // Before the fork: temp_dir() takes std's env lock, which, held at fork time, hangs the child.
     let base = std::env::temp_dir().join(format!("kryptik-ro-test-{}", std::process::id()));
     let rc = in_child(|| {
         let uid = unsafe { libc::getuid() };
@@ -233,4 +252,47 @@ fn read_only_bind_is_recursive() {
         SKIP => eprintln!("no unprivileged user namespace here; skipping"),
         other => panic!("read-only bind check failed with code {other}"),
     }
+}
+
+#[test]
+fn nic_sysfs_keeps_its_devices_and_no_others() {
+    use std::os::unix::fs::symlink;
+    let base = std::env::temp_dir().join(format!("kryptik-nic-sysfs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    // A PCI NIC, a radio on a virtual device, the bridge, and a disk, linked as sysfs links them.
+    for d in [
+        "devices/pci0000:00/0000:00:03.0/net/eth0",
+        "devices/virtual/mac80211_hwsim/hwsim0/net/wlan0",
+        "devices/virtual/mac80211_hwsim/hwsim0/ieee80211/phy0",
+        "devices/virtual/net/kryptik0",
+        "devices/pci0000:00/0000:00:1f.2/ata1/host0/block/sda",
+        "class/net",
+        "class/ieee80211",
+        "class/block",
+    ] {
+        fs::create_dir_all(base.join(d)).unwrap();
+    }
+    for (link, to) in [
+        ("devices/pci0000:00/0000:00:03.0/net/eth0/device", "../../../0000:00:03.0"),
+        ("devices/virtual/mac80211_hwsim/hwsim0/net/wlan0/device", "../../../hwsim0"),
+        ("devices/virtual/mac80211_hwsim/hwsim0/ieee80211/phy0/device", "../../../hwsim0"),
+        ("class/net/eth0", "../../devices/pci0000:00/0000:00:03.0/net/eth0"),
+        ("class/net/wlan0", "../../devices/virtual/mac80211_hwsim/hwsim0/net/wlan0"),
+        ("class/net/kryptik0", "../../devices/virtual/net/kryptik0"),
+        ("class/ieee80211/phy0", "../../devices/virtual/mac80211_hwsim/hwsim0/ieee80211/phy0"),
+        ("class/block/sda", "../../devices/pci0000:00/0000:00:1f.2/ata1/host0/block/sda"),
+    ] {
+        symlink(to, base.join(link)).unwrap();
+    }
+    let kept = nic_sysfs(base.to_str().unwrap());
+    let _ = fs::remove_dir_all(&base);
+    let want = [
+        "class/net",
+        "devices/virtual/net",
+        "devices/system/cpu",
+        "class/ieee80211",
+        "devices/pci0000:00/0000:00:03.0",
+        "devices/virtual/mac80211_hwsim/hwsim0",
+    ];
+    assert_eq!(kept, want, "the kept list, in order, once each");
 }

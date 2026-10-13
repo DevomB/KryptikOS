@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# Stage 04: the hardened base system, built in the chroot with the full flag
-# set from build/config/hardening.env. The recipes are one file per step under
-# build/recipes; this file holds the flags, the helpers, the order and the runner.
+# Stage 04: the hardened base system, built in the chroot; one recipe per step in build/recipes.
 # usage: make system   (or, in the chroot, 04-base-system.sh [--redo <step>])
 #        04-base-system.sh --list   print the build order and stop
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
 
-# --- hardening --------------------------------------------------------------
-# The first stage with hardening flags: these packages ship (docs/hardening.md).
+# --- hardening: the first stage with flags, since these packages ship -------
 load_hardening
 validate_hardening_exceptions
 
@@ -47,8 +44,7 @@ mkdir -p "$STAMPS" "$LOGS" "$BUILDDIR"
 # a step argument that stands for files the step reads by path.
 tree_digest() {
     local f
-    # if, not &&: a last path that is not there must not fail the loop, and
-    # with it the stage's PACKAGES assignment.
+    # if, not &&: a missing last path must not fail the loop and the PACKAGES assignment.
     for f in "$@"; do
         if [[ -d "$f" ]]; then find "$f" -type f -print0
         elif [[ -f "$f" ]]; then printf '%s\0' "$f"
@@ -69,7 +65,7 @@ exception_flags_for() {
 set_flags_for() {
     local pkg="$1" drop
     export CFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
-    export CXXFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
+    export CXXFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING} ${KRYPTIK_CXXFLAGS_HARDENING}"
     export LDFLAGS="${KRYPTIK_LDFLAGS_HARDENING}"
 
     while read -r drop; do
@@ -173,8 +169,7 @@ PACKAGES=(
     # Before python, whose install (ensurepip) unzips a bundled wheel.
     "zlib"        "s_zlib"
     "python"      "s_python"
-    # No XS modules: texinfo links them without the hardening, and texi2any
-    # runs as plain Perl without them.
+    # No XS modules: texinfo links them unhardened, and texi2any runs as plain Perl.
     "texinfo"     "native_build texinfo-${V_TEXINFO}.tar.xz texinfo-${V_TEXINFO} --disable-perl-xs"
     # --disable-makeinstall-chown: wall's setgid tty is under that hook, not the setuid one.
     "util-linux"  "native_build util-linux-${V_UTIL_LINUX}.tar.xz util-linux-${V_UTIL_LINUX} --libdir=/usr/lib --runstatedir=/run --disable-chfn-chsh --disable-login --disable-nologin --disable-su --disable-setpriv --disable-runuser --disable-pylibmount --disable-liblastlog2 --disable-makeinstall-setuid --disable-makeinstall-chown --disable-static --without-python"
@@ -186,8 +181,7 @@ PACKAGES=(
     "readline"    "s_readline"
     "m4"          "native_build m4-${V_M4}.tar.xz m4-${V_M4}"
     "flex"        "native_build flex-${V_FLEX}.tar.gz flex-${V_FLEX} --disable-static"
-    # Before everything that asks pkg-config for its dependencies (e2fsprogs,
-    # iproute2, kmod, eudev).
+    # Before everything that asks pkg-config for dependencies (e2fsprogs, iproute2, kmod, eudev).
     "pkgconf"     "s_pkgconf"
     "binutils"    "s_binutils_native"
     "gmp"         "native_build gmp-${V_GMP}.tar.xz gmp-${V_GMP} --enable-cxx --disable-static"
@@ -199,8 +193,7 @@ PACKAGES=(
     "acl"         "native_build acl-${V_ACL}.tar.xz acl-${V_ACL} --disable-static"
     "libcap"      "s_libcap"
     "shadow"      "s_shadow"
-    # --enable-pc-files needs --with-pkg-config-libdir, or no .pc files are
-    # installed and pkg-config finds no ncursesw.
+    # --enable-pc-files needs --with-pkg-config-libdir, or pkg-config finds no ncursesw.
     "ncurses"     "native_build ncurses-${V_NCURSES}.tar.gz ncurses-${V_NCURSES} --mandir=/usr/share/man --with-shared --without-debug --without-normal --with-cxx-shared --enable-pc-files --with-pkg-config-libdir=/usr/lib/pkgconfig"
     "sed"         "native_build sed-${V_SED}.tar.xz sed-${V_SED}"
     "psmisc"      "native_build psmisc-${V_PSMISC}.tar.xz psmisc-${V_PSMISC}"
@@ -211,8 +204,7 @@ PACKAGES=(
     "inetutils"   "s_inetutils"
     "less"        "native_build less-${V_LESS}.tar.gz less-${V_LESS} --sysconfdir=/etc"
     "openssl"     "s_openssl"
-    # --with-gcc-arch=x86-64, not LFS's "native": inert while CFLAGS are set,
-    # but the image must never be tuned to the build machine's CPU.
+    # x86-64, not LFS's "native": inert while CFLAGS are set, but never tune to the build CPU.
     "libffi"      "native_build libffi-${V_LIBFFI}.tar.gz libffi-${V_LIBFFI} --disable-static --with-gcc-arch=x86-64"
     "python-final" "s_python_final"
     "coreutils"   "s_coreutils"
@@ -226,19 +218,19 @@ PACKAGES=(
     "patch"       "native_build patch-${V_PATCH}.tar.xz patch-${V_PATCH}"
     "tar"         "s_tar"
     "groff"       "s_groff"
-    # For the kernel build, which generates timeconst.h with `bc -q`. After flex
-    # and bison, which bc needs.
+    # The kernel build runs `bc -q` for timeconst.h; after flex and bison, which bc needs.
     "bc"          "s_bc"
     # --disable-manpages: kmod's man pages need scdoc, which is not pinned.
     "kmod"        "native_build kmod-${V_KMOD}.tar.xz kmod-${V_KMOD} --sysconfdir=/etc --with-openssl --with-xz --with-zstd --with-zlib --disable-manpages"
     "libpipeline" "native_build libpipeline-${V_LIBPIPELINE}.tar.gz libpipeline-${V_LIBPIPELINE}"
-    # gdbm before man-db, whose configure otherwise picks another database
-    # interface silently.
+    # Before man-db, whose configure otherwise silently picks another database interface.
     "gdbm"        "s_gdbm"
     "man-db"      "s_man_db"
     "procps-ng"   "native_build procps-ng-${V_PROCPS}.tar.xz procps-ng-${V_PROCPS} --docdir=/usr/share/doc/procps-ng-${V_PROCPS} --disable-static --disable-kill"
     "e2fsprogs"   "s_e2fsprogs"
     "elfutils"    "s_elfutils"
+    # Before iproute2, which otherwise builds with it only when a cached tree already holds it.
+    "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
     "iproute2"    "s_iproute2"
     "kbd"         "s_kbd"
     "eudev"       "s_eudev"
@@ -257,13 +249,12 @@ PACKAGES=(
     # --- updates: the installed system verifies update manifests itself.
     "openssh"     "s_openssh"
     # --- the net zone: NAT, a resolver and a DHCP client.
-    "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
     "libnftnl"    "native_build libnftnl-${V_LIBNFTNL}.tar.xz libnftnl-${V_LIBNFTNL} --disable-static"
     "nftables"    "native_build nftables-${V_NFTABLES}.tar.xz nftables-${V_NFTABLES} --without-cli --disable-man-doc --disable-python --with-json=no --disable-static"
     "dnsmasq"     "s_dnsmasq"
     "dhcpcd"      "s_dhcpcd"
     # --- the net zone's Wi-Fi (docs/design/net-zone.md).
-    "libnl"       "native_build libnl-${V_LIBNL}.tar.gz libnl-${V_LIBNL} --sysconfdir=/etc --disable-static"
+    "libnl"       "s_libnl"
     "wpa-supplicant" "s_wpa_supplicant"
     "iw"          "s_iw"
     # --- what the net zone verifies a release server by.
@@ -294,9 +285,8 @@ PACKAGES=(
     "fonts"       "s_fonts"
     "lynx"        "s_lynx"
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
-    # The desktop's own pieces; the proxy's path and hash are arguments, as for
-    # kryptikd.
-    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none)"
+    # The desktop's own pieces; the proxy's path and hash are arguments, as for kryptikd.
+    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-lock.c" 2>/dev/null || echo none) ${V_DWL}"
 
     # From here the steps configure the system rather than build packages.
     "etc"         "s_etc"
@@ -305,18 +295,19 @@ PACKAGES=(
     # After init, whose stage 2 scripts look for the database; before the
     # updater and efiboot, whose checks source the devices.sh it installs. The
     # digest covers the files the recipe reads by path, which declare -f cannot.
-    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf)"
+    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf "${KRYPTIK_ROOT}"/build/config/keyboard-layouts)"
     # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
-    "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/update-fetch.py" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     "hwreport"    "s_hwreport $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-hwreport.sh" 2>/dev/null || echo none)"
     # The binary's path and hash, and a digest of the zone files: kryptikd
     # validates them at install time, so the two must move together.
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(tree_digest "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/*) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
+    # After kryptikd and efiboot: its check runs kryptik-update, which refuses to start without either.
+    "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
     # The suites and guest checks the VM drivers run; every file is an input.
-    "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
+    "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/seccomp.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
     # The tarballs it reads are pinned by sources.lock and named by fetch-sources.
     "licences"    "s_licences $(sha256_of "${KRYPTIK_ROOT}/sources.lock") $(sha256_of "${KRYPTIK_ROOT}/tools/fetch-sources.sh") $(sha256_of "${KRYPTIK_ROOT}/LICENSE") $(tree_digest "${KRYPTIK_ROOT}/build/licences")"
     "boot-check"  "--check s_boot_check"
@@ -353,8 +344,7 @@ if [[ "$MODE" == "list" ]]; then
     exit 0
 fi
 
-# The commit that built this image, for /etc/os-release, passed in from outside
-# (the chroot has no git): no commit is better than a wrong one.
+# For /etc/os-release, passed in as the chroot has no git; no commit is better than a wrong one.
 KRYPTIK_BUILD_COMMIT="${KRYPTIK_BUILD_COMMIT:-unknown}"
 export KRYPTIK_BUILD_COMMIT
 
@@ -367,15 +357,14 @@ echo
 # Outside the chroot the packages would link against host libraries.
 require_inside_chroot "stage 04" "system"
 
-# Built by stage 02's toolchain: rebuilding it invalidates every stamp here.
-# gcc2 is its last build step; verify after it is a check.
+# Stage 02's last build step (verify is a check): a toolchain rebuild invalidates every stamp here.
 stage_depends_on "tt-" gcc2
 
 for ((i = 0; i < ${#PACKAGES[@]}; i += 2)); do
     name="${PACKAGES[i]}"
     recipe="${PACKAGES[i+1]}"
     [[ -n "$recipe" ]] || die "${name}: a row with no recipe"
-    # shellcheck disable=SC2086  # recipe is a deliberately word-split command
+    # shellcheck disable=SC2086  # recipe is a word-split command
     step "$name" $recipe
 done
 

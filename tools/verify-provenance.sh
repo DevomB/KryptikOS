@@ -23,9 +23,7 @@ for a in "$@"; do
 done
 [[ -n "$REPORT" ]] && : > "$REPORT"
 
-# GrapheneOS's release key, pinned from https://grapheneos.org/allowed_signers
-# (2026-09-11; it signs tags 12-14). Its only trust root is TLS to that site:
-# the fingerprint has not been confirmed out of band.
+# GrapheneOS's key from https://grapheneos.org/allowed_signers (retrieved 2026-09-11), on TLS alone.
 HM_REPO="GrapheneOS/hardened_malloc"
 HM_SIGNER_PRINCIPAL="contact@grapheneos.org"
 HM_SIGNER_ENTRY="contact@grapheneos.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIUg/m5CoP83b0rfSCzYSVA4cw4ir49io5GPoxbgxdJE"
@@ -33,13 +31,10 @@ HM_SIGNER_FPR="SHA256:AhgHif0mei+9aNyKLfMZBh2yptHdw/aN7Tlh/j2eFwM"
 
 HM_REMOTE="https://github.com/${HM_REPO}"
 
-# Overrides for tools/tests/verify-provenance.sh. They substitute the trust
-# anchor, so they are refused without KRYPTIK_PROVENANCE_SELFTEST=1.
+# Overrides for tools/tests/verify-provenance.sh; they replace the trust anchor.
 if [[ -n "${KRYPTIK_HM_REMOTE:-}${KRYPTIK_HM_SIGNERS:-}${KRYPTIK_HM_FPR:-}" ]]; then
-    [[ "${KRYPTIK_PROVENANCE_SELFTEST:-0}" == "1" ]] || die \
-"A provenance override is set (KRYPTIK_HM_REMOTE / KRYPTIK_HM_SIGNERS /
-KRYPTIK_HM_FPR) but KRYPTIK_PROVENANCE_SELFTEST is not.
-Refusing to verify provenance against substituted inputs."
+    [[ "${KRYPTIK_PROVENANCE_SELFTEST:-0}" == "1" ]] \
+        || die "Refusing to verify provenance against substituted inputs without KRYPTIK_PROVENANCE_SELFTEST=1"
     warn "SELF-TEST MODE: provenance inputs are substituted, not upstream"
     [[ -n "${KRYPTIK_HM_REMOTE:-}" ]] && HM_REMOTE="$KRYPTIK_HM_REMOTE"
 fi
@@ -58,23 +53,21 @@ else
     printf '%s\n' "$HM_SIGNER_ENTRY" > "$SIGNERS"
 fi
 
-# A fail is always fatal. unavail (could not be tested: offline, not
-# downloaded) and prereq (a needed tool is missing) are fatal under --strict.
+# fail is always fatal; unavail (offline, not downloaded) and prereq (no tool) only under --strict.
 PASS_N=0; FAIL_N=0; UNAVAIL_N=0; PREREQ_N=0
-declare -a PASS_LIST=() FAIL_LIST=() UNAVAIL_LIST=() PREREQ_LIST=()
+declare -a FAIL_LIST=() UNAVAIL_LIST=() PREREQ_LIST=()
 
 # The source the current checks belong to, for --report lines.
 RSRC="-"
 
-# report <assertion> <result> <detail>
-# Appends "source<TAB>assertion:result<TAB>detail" for provenance-inventory.sh.
+# report ASSERTION RESULT DETAIL, as source<TAB>assertion:result<TAB>detail for the inventory.
 report() {
     [[ -n "$REPORT" ]] || return 0
     local detail="${3//$'\n'/ }"
     printf '%s\t%s:%s\t%s\n' "$RSRC" "$1" "$2" "${detail//$'\t'/ }" >> "$REPORT"
 }
 
-pass()    { ok   "[$1] $2";           PASS_N=$((PASS_N+1));       PASS_LIST+=("[$1] $2");    report "$1" established  "$2"; }
+pass()    { ok   "[$1] $2";           PASS_N=$((PASS_N+1));       report "$1" established  "$2"; }
 fail()    { err  "[$1] $2";           FAIL_N=$((FAIL_N+1));       FAIL_LIST+=("[$1] $2");    report "$1" failed       "$2"; }
 unavail() { warn "[$1] UNVERIFIED: $2"; UNAVAIL_N=$((UNAVAIL_N+1)); UNAVAIL_LIST+=("[$1] $2"); report "$1" unverified   "$2"; }
 prereq()  { warn "[$1] CANNOT CHECK: $2"; PREREQ_N=$((PREREQ_N+1)); PREREQ_LIST+=("[$1] $2"); report "$1" uncheckable  "$2"; }
@@ -84,8 +77,7 @@ lock_hash_for() {
     awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$KRYPTIK_LOCK"
 }
 
-# http_get <url> <dest>: curl's exit status decides success. HTTP_CODE (the
-# last redirect hop's) only tells a 404 from no answer.
+# http_get URL DEST: curl's exit status decides; HTTP_CODE only tells a 404 from no answer.
 http_get() {
     local url="$1" dest="$2" rc=0
     HTTP_CODE="$(curl -fsSL --max-time 30 --retry 2 --retry-delay 2 \
@@ -93,10 +85,7 @@ http_get() {
     return "$rc"
 }
 
-# hardened_malloc: fetch the tag with git, verify its signature against the
-# pinned key, and require the downloaded archive to reproduce the tag's tree.
-# Its manifest row gives the tag and the archive's name.
-
+# hardened_malloc: its tag must be signed by the pinned key, and the archive reproduce its tree.
 HM_NAME="hardened-malloc"
 HM_TAG=""
 HM_ARCHIVE=""
@@ -111,8 +100,7 @@ verify_hm_lock() {
         return 1
     fi
     if [[ ! -f "$path" ]]; then
-        unavail lock "${HM_LABEL}: ${HM_ARCHIVE} is not downloaded, so the
-       bytes that would be built cannot be checked at all. Run 'make sources'."
+        unavail lock "${HM_LABEL}: ${HM_ARCHIVE} is not downloaded. Run 'make sources'."
         return 1
     fi
     actual="$(sha256_of "$path")"
@@ -133,8 +121,7 @@ verify_hm_tree() {
     local archive="${KRYPTIK_SOURCES}/${HM_ARCHIVE}"
 
     if [[ -z "$HM_TAG" ]]; then
-        fail id "${HM_LABEL}: its manifest row names no tag to authenticate
-       against"
+        fail id "${HM_LABEL}: its manifest row names no tag to authenticate against"
         return
     fi
 
@@ -143,8 +130,7 @@ verify_hm_tree() {
     have ssh-keygen|| missing="${missing} ssh-keygen (openssh-client)"
     have tar       || missing="${missing} tar"
     if [[ -n "$missing" ]]; then
-        prereq tree "${HM_LABEL}: missing${missing}; the allocator source cannot
-       be bound to its signed tag"
+        prereq tree "${HM_LABEL}: missing${missing}; the allocator source cannot be bound to its signed tag"
         return
     fi
 
@@ -157,8 +143,7 @@ verify_hm_tree() {
     local ferr="${WORK}/fetch.err"
     if ! git --git-dir="$repo" fetch -q --depth=1 "$HM_REMOTE" \
              "refs/tags/${HM_TAG}:refs/tags/${HM_TAG}" 2>"$ferr"; then
-        unavail tree "${HM_LABEL}: could not fetch refs/tags/${HM_TAG} from
-       ${HM_REMOTE}: $(tr -d '\n' < "$ferr" | cut -c1-160)"
+        unavail tree "${HM_LABEL}: could not fetch refs/tags/${HM_TAG} from ${HM_REMOTE}: $(tr -d '\n' < "$ferr" | cut -c1-160)"
         return
     fi
 
@@ -166,8 +151,7 @@ verify_hm_tree() {
     local objtype
     objtype="$(git --git-dir="$repo" cat-file -t "refs/tags/${HM_TAG}" 2>/dev/null || true)"
     if [[ "$objtype" != "tag" ]]; then
-        fail sig "${HM_LABEL}: ${HM_TAG} is not an annotated tag object
-       (git reports it as a ${objtype:-missing} ref), so it cannot be signed"
+        fail sig "${HM_LABEL}: ${HM_TAG} is not an annotated tag object, so it cannot be signed (git: ${objtype:-missing})"
         return
     fi
 
@@ -182,65 +166,51 @@ verify_hm_tree() {
         return
     fi
 
-    # A key missing from the allowed-signers file still gets 'Good "git"
-    # signature' (then "No principal matched." and a non-zero exit), so the
-    # exit status, the principal and the fingerprint must all match.
+    # An unlisted key still prints 'Good "git" signature': status, principal and key must all match.
     local vout="${WORK}/verify.txt" vrc=0
     git --git-dir="$repo" -c gpg.ssh.allowedSignersFile="$SIGNERS" \
         verify-tag --raw "refs/tags/${HM_TAG}" > "$vout" 2>&1 || vrc=$?
 
     if [[ "$vrc" -ne 0 ]]; then
-        fail id "${HM_LABEL}: tag ${HM_TAG} is not signed by the pinned
-       ${HM_SIGNER_PRINCIPAL} key: $(tr '\n' ' ' < "$vout" | cut -c1-200)"
+        fail id "${HM_LABEL}: tag ${HM_TAG} is not signed by the pinned ${HM_SIGNER_PRINCIPAL} key: $(tr '\n' ' ' < "$vout" | cut -c1-200)"
         return
     fi
     if ! grep -qF "signature for ${HM_SIGNER_PRINCIPAL}" "$vout"; then
-        fail id "${HM_LABEL}: tag ${HM_TAG} verified, but not for principal
-       ${HM_SIGNER_PRINCIPAL}: $(tr '\n' ' ' < "$vout" | cut -c1-200)"
+        fail id "${HM_LABEL}: tag ${HM_TAG} verified, but not for principal ${HM_SIGNER_PRINCIPAL}: $(tr '\n' ' ' < "$vout" | cut -c1-200)"
         return
     fi
     if [[ -n "$HM_SIGNER_FPR" ]] && ! grep -qF "$HM_SIGNER_FPR" "$vout"; then
-        fail id "${HM_LABEL}: tag ${HM_TAG} verified for the right principal
-       with the WRONG key. Expected ${HM_SIGNER_FPR}, got:
-       $(tr '\n' ' ' < "$vout" | cut -c1-200)"
+        fail id "${HM_LABEL}: tag ${HM_TAG} verified for the right principal with the WRONG key. Expected ${HM_SIGNER_FPR}, got: $(tr '\n' ' ' < "$vout" | cut -c1-200)"
         return
     fi
 
     local signed_by
     signed_by="$(sed -n 's/.*with \([A-Z0-9]*\) key \(SHA256:[^ ]*\).*/\1 \2/p' "$vout" | head -1)"
     pass sig "${HM_LABEL}: tag ${HM_TAG} carries a valid ${SIGKIND} signature"
-    pass id  "${HM_LABEL}: signed by the pinned ${HM_SIGNER_PRINCIPAL} key
-       (${signed_by:-$HM_SIGNER_FPR})"
+    pass id  "${HM_LABEL}: signed by the pinned ${HM_SIGNER_PRINCIPAL} key (${signed_by:-$HM_SIGNER_FPR})"
 
-    # Bind the signature to the bytes in sources/: the archive must reproduce
-    # the tag's tree. Tarball hashes cannot be compared, since GitHub
-    # regenerates archives and their compression is not stable.
+    # The archive must reproduce the tag's tree: GitHub regenerates archives, so their hashes vary.
     if [[ ! -f "$archive" ]]; then
-        unavail tree "${HM_LABEL}: ${HM_ARCHIVE} is not downloaded, so there is
-       nothing to bind to the authenticated tree"
+        unavail tree "${HM_LABEL}: ${HM_ARCHIVE} is not downloaded, so nothing is bound to the signed tree"
         return
     fi
 
     mkdir -p "$extract"
     if ! tar xzf "$archive" -C "$extract" 2>"${WORK}/tar.err"; then
-        fail tree "${HM_LABEL}: ${HM_ARCHIVE} did not extract:
-       $(tr -d '\n' < "${WORK}/tar.err" | cut -c1-160)"
+        fail tree "${HM_LABEL}: ${HM_ARCHIVE} did not extract: $(tr -d '\n' < "${WORK}/tar.err" | cut -c1-160)"
         return
     fi
 
     local -a tops=()
     while IFS= read -r d; do tops+=("$d"); done < <(cd "$extract" && ls -A)
     if [[ "${#tops[@]}" -ne 1 || ! -d "${extract}/${tops[0]}" ]]; then
-        fail tree "${HM_LABEL}: ${HM_ARCHIVE} does not contain exactly one
-       top-level directory (found ${#tops[@]}: ${tops[*]:-none})"
+        fail tree "${HM_LABEL}: ${HM_ARCHIVE} does not contain exactly one top-level directory (found ${#tops[@]}: ${tops[*]:-none})"
         return
     fi
     local top="${extract}/${tops[0]}"
 
     if [[ -e "${top}/.gitattributes" ]]; then
-        warn "[tree] ${HM_LABEL}: the archive contains .gitattributes; text"
-        warn "       normalisation attributes can make this re-derivation"
-        warn "       inexact. Read a mismatch below with that in mind."
+        warn "[tree] ${HM_LABEL}: the archive has a .gitattributes, which can make the re-derived tree inexact"
     fi
 
     # The -c settings and add -f keep the user's git config out of the hashing.
@@ -258,23 +228,15 @@ verify_hm_tree() {
     tagtree="$(git --git-dir="$repo" rev-parse "refs/tags/${HM_TAG}^{tree}")"
 
     if [[ "$derived" == "$tagtree" ]]; then
-        pass tree "${HM_LABEL}: ${HM_ARCHIVE} reproduces the tree of the
-       verified tag (${tagtree})"
+        pass tree "${HM_LABEL}: ${HM_ARCHIVE} reproduces the tree of the verified tag (${tagtree})"
     else
         fail tree "${HM_LABEL}: ${HM_ARCHIVE} IS NOT THE SIGNED TREE"
         err  "       signed tag ${HM_TAG} points at tree ${tagtree}"
         err  "       the downloaded archive contains tree ${derived}"
-        err  "       The tag signature is valid and the lock hash may match,"
-        err  "       and the contents are still not what was signed."
     fi
 }
 
-# Publisher checksums: a .sha256 or .sha256.txt beside the release. It comes
-# from the same host over the same TLS as the tarball, so it is not a
-# signature. skarnet keeps one only for its current release; versions.env
-# keeps the s6 stack current.
-
-# verify_published_sha256 <name> <url> <suffix>
+# verify_published_sha256 NAME URL SUFFIX: a publisher's checksum, over the same TLS as the tarball.
 verify_published_sha256() {
     local name="$1" url="$2" suffix="$3"
     local sum="${url}${suffix}"
@@ -311,13 +273,11 @@ verify_published_sha256() {
     local rc=0
     http_get "$sum" "$body" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
+        # skarnet keeps a checksum only for its current release.
         if [[ "${HTTP_CODE:-000}" == "404" ]]; then
-            unavail pub "${name}: the publisher no longer serves a ${suffix}
-       for this version, so the pin may be stale, and it cannot be checked
-       by publisher checksum."
+            unavail pub "${name}: the publisher no longer serves a ${suffix} for this version; the pin may be stale"
         else
-            unavail pub "${name}: could not fetch ${sum}
-       (curl exit ${rc}, HTTP ${HTTP_CODE:-none})"
+            unavail pub "${name}: could not fetch ${sum} (curl exit ${rc}, HTTP ${HTTP_CODE:-none})"
         fi
         return
     fi
@@ -325,8 +285,7 @@ verify_published_sha256() {
     local expected
     expected="$(awk 'NF{print $1; exit}' "$body" 2>/dev/null || true)"
     if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        fail pub "${name}: ${sum} is not a sha256 digest
-       (got $(head -c 80 "$body" | tr -d '\n' || true))"
+        fail pub "${name}: ${sum} is not a sha256 digest (got $(head -c 80 "$body" | tr -d '\n' || true))"
         return
     fi
     expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
@@ -348,8 +307,7 @@ fi
 [[ "$OFFLINE" -eq 1 ]] && warn "--offline: no network check will be performed"
 echo
 
-# The manifest's sig column hands this script its tag and sha256 rows. Read
-# whole first, so no command a check runs can take the rows as its stdin.
+# The manifest's tag and sha256 rows, read whole so no command a check runs takes them as stdin.
 MANIFEST="${WORK}/manifest"
 "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list > "$MANIFEST" \
     || die "tools/fetch-sources.sh --list failed, so there is nothing to check against."
@@ -362,8 +320,7 @@ for row in "${TAG_ROWS[@]}"; do
     RSRC="$name"
     # A key is pinned for one project's tags; any other tag row has none.
     if [[ "$name" != "$HM_NAME" ]]; then
-        fail id "${name}: the manifest says a signed tag vouches for it, and no
-       signer is pinned here for its tags"
+        fail id "${name}: the manifest says a signed tag vouches for it, and no signer is pinned for its tags"
         continue
     fi
     HM_TAG="$ver"
@@ -371,8 +328,7 @@ for row in "${TAG_ROWS[@]}"; do
     verify_hm_lock || true
     verify_hm_tree
 done
-# Its signer is pinned above, so a row that stops declaring the tag must not
-# quietly end the check.
+# The allocator's signer is pinned, so its row may not quietly stop declaring the tag.
 if [[ -z "$HM_TAG" ]]; then
     RSRC="$HM_NAME"
     fail id "${HM_LABEL}: the manifest declares no signed tag for ${HM_NAME}"
@@ -414,9 +370,7 @@ fi
 
 if [[ "$STRICT" -eq 1 ]] && [[ "$((UNAVAIL_N + PREREQ_N))" -gt 0 ]]; then
     err "${UNAVAIL_N} assertion(s) unverified and ${PREREQ_N} uncheckable"
-    die "--strict will not pass provenance that was not established.
-Install the missing tools, download the sources, restore network access, or
-update the pins - but do not ship on the strength of a check that did not run."
+    die "--strict will not pass provenance that was not established: install the missing tools, download the sources, restore network access or update the pins."
 fi
 if [[ "$((UNAVAIL_N + PREREQ_N))" -gt 0 ]]; then
     warn "$((UNAVAIL_N + PREREQ_N)) assertion(s) were NOT established."

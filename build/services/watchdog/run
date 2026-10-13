@@ -1,5 +1,3 @@
 #!/bin/sh
-# Watchdog feeder, restarted well inside the timeout if it dies. If it stops
-# being scheduled the machine reboots; in an A/B trial BootNext is spent by
-# then, so the reboot lands on the committed slot.
+# A starved feeder reboots the machine, which in an A/B trial lands on the committed slot.
 exec /usr/libexec/kryptik/watchdog.sh

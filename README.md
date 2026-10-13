@@ -19,7 +19,7 @@ GNU bash, version 5.2.32(1)-release (x86_64-kryptik-linux-gnu)
 
 ## Status
 
-A pre-release, v0.1.0, is on the repository's Releases page. The build
+Releases are on the repository's Releases page. The build
 produces a hardened kernel with the linux-hardened patchset; install media (a
 USB image and an ISO) that boot by UEFI firmware alone; an installer; an
 installed system that verifies its root with dm-verity on every boot and
@@ -29,33 +29,70 @@ boot and recovery from the medium; and a zoned Wayland desktop.
 is cut only from a run in which every suite passed.
 
 What is tested, and what the last acceptance run proved, is in
-[docs/status.md](docs/status.md). Everything so far has run under QEMU with
-OVMF firmware; nothing has run on physical hardware, and every release so far
-is signed by keys the build generated. What a release is, how it is numbered
-and how a production release will differ is in
-[docs/releases.md](docs/releases.md).
+[docs/status.md](docs/status.md). The suites run under QEMU with OVMF
+firmware; testing on physical hardware is planned for October 2026. From
+1.0.0 on, a release is signed by the project's release keys, which are held
+in the repository's protected release environment and used only by a release
+tag's build, after the maintainer approves it. What a release is and how it
+is numbered is in [docs/releases.md](docs/releases.md).
 
 ## Get it
 
 From the Releases page take the medium, its signed checksums and the anchor:
 `kryptik-VERSION-usb.img.zst` (or `kryptik-VERSION.iso.zst`),
 `kryptik-VERSION.SHA256SUMS` with its `.sig`, and `release-signers`. Check
-the download, then write it to a USB stick:
+the download, then write it to a USB stick. The stick is overwritten whole:
+be sure of the disk you name.
+
+**Linux**
 
 ```sh
 zstd -d kryptik-VERSION-usb.img.zst
 ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
     -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
 sha256sum -c --ignore-missing kryptik-VERSION.SHA256SUMS
+lsblk                              # the stick is a whole disk, such as /dev/sdX
 sudo dd if=kryptik-VERSION-usb.img of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
-The anchor comes with the download, so this proves the files belong together,
-not who made them; a production release's anchor will be the one made
-offline. Boot with Secure Boot off, or enrol `kryptik-sb.der` from the same
-page in the firmware first. Installing, the first boot, daily use, updating
-and recovery are in the [user guide](docs/user-guide.md), which every release
-also ships as `INSTRUCTIONS.md`.
+**macOS**, with zstd from Homebrew (`brew install zstd`)
+
+```sh
+zstd -d kryptik-VERSION-usb.img.zst
+ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
+    -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
+shasum -a 256 -c --ignore-missing kryptik-VERSION.SHA256SUMS
+diskutil list                      # the stick is an external disk, such as /dev/disk4
+diskutil unmountDisk /dev/diskN
+sudo dd if=kryptik-VERSION-usb.img of=/dev/rdiskN bs=4m
+diskutil eject /dev/diskN
+```
+
+**Windows**, in Command Prompt, since PowerShell has no `<`. `zstd.exe` is
+on zstd's releases page, and 7-Zip 24 and later unpacks the image too;
+`ssh-keygen` comes with Windows 11, and with Windows 10 once its OpenSSH is
+8.1 or later (`ssh -V`).
+
+```bat
+zstd -d kryptik-VERSION-usb.img.zst
+ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
+certutil -hashfile kryptik-VERSION-usb.img SHA256
+findstr usb.img kryptik-VERSION.SHA256SUMS
+```
+
+The hash `certutil` prints must be the one `findstr` shows. Then write
+`kryptik-VERSION-usb.img` to the stick with Rufus, which writes a disk image
+as it is (DD mode), or with balenaEtcher. When macOS or Windows offers to
+initialise or format the stick afterwards, decline.
+
+The anchor comes with the download, so by itself this proves the files belong
+together, not who made them. From 1.0.0 on the anchor is the project's, and
+this repository holds it: compare the download's `release-signers` with
+`build/config/release/release-signers`. Boot with Secure Boot off, or enrol
+`kryptik-sb.der` from the same page in the firmware first. Installing, the
+first boot, daily use, updating and recovery are in the
+[user guide](docs/user-guide.md), which every release also ships as
+`INSTRUCTIONS.md`.
 
 ## Hardware
 
@@ -68,24 +105,29 @@ the firmware from the pinned linux-firmware release
 
 - **Storage:** NVMe (including Intel VMD), AHCI and PIIX SATA, eMMC and SD on
   SDHCI, LSI MegaRAID and MPT3 SAS, HPE Smart Array, USB mass storage and UAS,
-  virtio, VMware PVSCSI, Hyper-V.
+  virtio, VMware PVSCSI, Hyper-V. The disk Kryptik installs to needs 512-byte
+  logical sectors: 512e is fine, and a 4Kn disk is refused.
 - **Wired network:** Intel e1000/e1000e, igb, igc, ixgbe, i40e; Broadcom tg3
   and bnxt; Realtek r8169; Aquantia AQtion; Mellanox ConnectX-4 and later;
   USB adapters (AX88179, RTL8152); virtio, VMware vmxnet3, Hyper-V.
 - **Wi-Fi:** Intel from the 7260 on; Qualcomm QCA6174, QCA9377, QCA6390,
-  WCN6855, WCN7850; MediaTek MT7921, MT7922, MT7925; Realtek rtw88, rtw89 and
-  rtl8xxxu; Broadcom over PCIe. The net zone owns the radio
+  WCN6855, QCA2066, QCA6698AQ, WCN7850; MediaTek MT7920, MT7921, MT7922,
+  MT7925; Realtek rtw88, rtw89 and rtl8xxxu (not its RTL8188CU and RTL8192CU
+  sticks); Broadcom over PCIe. The net zone owns the radio
   ([net zone design](docs/design/net-zone.md)). No Bluetooth.
 - **Display:** the firmware framebuffer (simpledrm) everywhere; Intel (i915,
-  xe) and AMD (amdgpu) with their firmware; ASPEED and Matrox server BMCs;
-  virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines use the firmware
-  framebuffer. The compositor renders with pixman, so no GPU acceleration is
-  needed.
+  xe) and AMD from GCN 3 on (amdgpu) with their firmware; ASPEED and Matrox
+  server BMCs; virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines, and AMD's
+  GCN 1 and 2 parts, use the firmware framebuffer. The compositor renders
+  with pixman, so no GPU acceleration is needed.
 - **Input:** USB HID, PS/2, I2C touchpads and touchscreens on Intel and AMD
   laptops, VMware and Hyper-V input.
 
-CPU microcode for Intel and AMD is built into the signed kernel. Hyper-V
-trusts only Microsoft's keys, so run Kryptik there with Secure Boot off.
+CPU microcode for Intel and AMD is built into the signed kernel. On a Zen 5
+processor, and a few EPYC models, the kernel loads it only once the machine's
+firmware has AMD's 2025 microcode-signature fix
+([user guide](docs/user-guide.md#1-boot-the-medium)). Hyper-V trusts only
+Microsoft's keys, so run Kryptik there with Secure Boot off.
 
 A machine outside that list boots a kernel that cannot find its disk or its
 network. Adding a driver is one line in the fragment, a firmware file one line
@@ -285,9 +327,9 @@ docs/               Architecture, threat model, decisions, status
 The `Distro` workflow (`.github/workflows/distro.yml`) builds and tests
 everything on GitHub's runners: stages 01–02, then stages 04–06, then
 `make acceptance` under KVM, uploading the acceptance report and the tested
-images. A tag `v<version>` builds that version from nothing and, for a
-development release, drafts it on the Releases page. To build locally, on
-Linux:
+images. A tag `v<version>` builds that version from nothing, tests it and
+drafts it on the Releases page; from `v1` on, the build signs with the
+release keys once the maintainer approves it. To build locally, on Linux:
 
 ```sh
 make check      # what the host is missing
@@ -306,7 +348,7 @@ make acceptance EXPORT=DIR  # every suite on the newest media; root and KVM
 
 Host setup: [docs/building.md](docs/building.md). Booting, installing,
 updating and recovering a release: [docs/user-guide.md](docs/user-guide.md).
-A production release, signed with keys made offline:
+The keys that sign a release, and where they are held:
 [docs/release-keys.md](docs/release-keys.md).
 
 ## Documentation
@@ -335,6 +377,11 @@ Designs of the individual parts:
 - [Boot and updates](docs/design/boot-and-updates.md): firmware boot, A/B slots, signed updates, recovery
 - [Update channel](docs/design/update-channel.md): fetching releases through the net zone
 - [State encryption](docs/design/state-encryption.md): the encrypted state partition
+- [Keyboard layout](docs/design/keyboard-layout.md): one layout for the passphrase prompt, the console and the desktop
+- [Removable storage](docs/design/removable-storage.md): a USB stick read in the zone the user gives it to
+- [Camera](docs/design/camera.md): a camera granted to one zone at a time, its driver loaded only for the grant
+- [Bluetooth](docs/design/bluetooth.md): none for 1.0, then a zone of its own for a headset's audio
+- [Input methods](docs/design/input-methods.md): one per zone, its virtual keyboard bound to the zone
 
 ## License
 

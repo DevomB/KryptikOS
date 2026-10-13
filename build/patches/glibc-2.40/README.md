@@ -2,8 +2,8 @@
 
 Applied by `s_glibc` in stages 01 and 04 through `apply_repo_patches
 "glibc-${V_GLIBC}"` (build/lib/common.sh), after the LFS FHS patch. The
-whole directory is an input to those steps' fingerprints; `SHA256SUMS` is
-verified before anything is applied.
+patches and `SHA256SUMS` are inputs to those steps' fingerprints, and
+`SHA256SUMS` is verified before anything is applied.
 
 ## What is here
 
@@ -16,7 +16,7 @@ The signed tarball stays the base. `glibc-2.40.tar.xz` is verified against
 the GNU keyring like every other GNU source, and its contents are
 byte-identical to the tree of the `glibc-2.40` tag (`git archive glibc-2.40`
 against the unpacked tarball: no differing entry), so a diff between two
-commit ids is exactly a diff against the tarball.
+commit ids is a diff against the tarball.
 
 ## Why the whole branch
 
@@ -51,7 +51,7 @@ with no message: `_dl_find_object` attributes every object loaded after
 startup to `ld-linux-x86-64.so.2` itself, so libgcc's unwinder reads ld.so's
 `.eh_frame`, finds no FDE and calls `abort()`. Bug 31943 (an ld.so mapped
 with gaps between its LOAD segments) gives the same symptom; its fix is on
-the branch, in 0001, but it was not the cause here.
+the branch, in 0001, and does not cure this one.
 
 **Bug 33088**: the loader stores its own map bounds -
 `l_map_start = &__ehdr_start`, `l_map_end = _end` - in `_dl_start`, before
@@ -63,11 +63,11 @@ the load of it to the top of `_dl_start`, above `ELF_DYNAMIC_RELOCATE`.
 The word holds the link-time value, 0, at that moment, so ld.so records
 itself as `[0, _end)`. `_dl_find_object` then answers "ld.so" for every
 address below libc that belongs to nothing it knows - which is where every
-later `dlopen` is mapped. On Kryptik, `ldd` printed
+later `dlopen` is mapped. Unpatched, `ldd` prints
 `/lib64/ld-linux-x86-64.so.2 (0x0000000000000000)` and
-`_dl_find_object((void *) 0x1000)` returned ld.so. Recompiling `rtld.c`
-with `-fno-tree-slp-vectorize` or `-O1` removed the relocated constant;
-none of the hardening flags mattered. Upstream fixed it in 2.42 with two
+`_dl_find_object((void *) 0x1000)` returns ld.so. Compiling `rtld.c` with
+`-fno-tree-slp-vectorize` or `-O1` removes the relocated constant; the
+hardening flags play no part. Upstream fixed it in 2.42 with two
 `asm` barriers (GCC bug 120653 records the compiler side). It was never
 backported to `release/2.40/master`, and is not on it at `cdaa5d6d`.
 
@@ -112,8 +112,8 @@ from having to understand git's rename headers, so anyone with a clone gets
 these bytes. The range contains no binary change and no mode-only change
 (`git diff --numstat` and `--summary` over the same range), which patch(1)
 could not have carried. `UPSTREAM-SHA256SUMS` records the sha256 of that
-command's output; it equals the file's entry in `SHA256SUMS`, because nothing
-was edited afterwards.
+command's output; it equals the file's entry in `SHA256SUMS`, as the file is
+unedited.
 
 The check that the patch is the branch and nothing else: unpack the tarball,
 apply the LFS FHS patch, 0001 and 0004, and `diff -r` the result against

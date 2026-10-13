@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for tools/check-kernel-hardening.sh, with a stand-in checker that prints
-# canned findings in the real one's JSON shape. Exit 77 without python3.
+# Tests for tools/check-kernel-hardening.sh against a stand-in checker; exit 77 without python3.
 
 set -uo pipefail
 
@@ -20,8 +19,7 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 77; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# The stand-in prints $FAKE_JSON in json mode and records its arguments, and
-# the command line it was given, in $FAKE_ARGS.
+# The stand-in prints $FAKE_JSON in json mode and logs its arguments and command line to $FAKE_ARGS.
 mkdir -p "$TMP/khc/bin"
 cat > "$TMP/khc/bin/kernel-hardening-checker" <<'PY'
 import os, sys
@@ -154,7 +152,7 @@ else
     red "stage 06's COMMON_ARGS carry the SMT parameters (got: ${want})"
 fi
 
-# The repository's own list, fed findings in which exactly its options fail.
+# The repository's own list, fed findings in which only its options fail.
 mapfile -t entries < <(sed -e 's/#.*//' "$REAL_ACCEPTED" | awk 'NF == 2 {print $1":"$2":fail"}')
 if [[ "${#entries[@]}" -gt 0 ]]; then
     findings "${entries[@]}"

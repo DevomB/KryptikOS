@@ -4,38 +4,41 @@
 # Runs in zone 0 on the compositor directly, with no proxy in between: what it
 # shows comes from the compositor and the launch daemon, never from a zone, and
 # dwl gives its windows the UNZONED border (build/desktop/zone-colours.h). No
-# zone can draw over it, read its input or capture it: the proxy passes no
-# layer shell, global input or screencopy.
+# zone can draw over it by itself, read its input or capture it: the proxy
+# passes no layer shell, global input or screencopy, dwl never draws a
+# zone's cursor image, and a zone's window covers the chrome only
+# fullscreen, by the user's Alt+e, until the chrome opens another window.
 #
 #   kryptik-chrome                 dwl's startup command (`dwl -s`): reads
 #                                  dwl's status stream on stdin, records the
 #                                  focused zone in $XDG_RUNTIME_DIR/kryptik/
 #                                  focus as text (and the last zone window's
-#                                  in focus.zone), and opens the launcher
-#   kryptik-chrome --menu          the launcher: zones, their state, apps
+#                                  in focus.zone), opens the launcher and
+#                                  starts the idle lock
+#   kryptik-chrome --menu          the launcher: zones, their state, apps,
+#                                  the network as the net zone reports it, a
+#                                  release that waits to be installed, a
+#                                  channel with nothing new for 30 days, and
+#                                  the net zone's Wi-Fi networks (w)
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
 #                                  ask for the zone's passphrase in a trusted
 #                                  window, then launch (kryptik-launch hands
 #                                  over here when it has no terminal)
 #   kryptik-chrome --focus         print the focused zone, from the record
-#   kryptik-chrome --confirm ID    ask the broker's question ID in a trusted
-#                                  window and write back the answer: yes only
+#   kryptik-chrome --confirm ID    ask the broker's question ID in a trusted window: yes only
 #                                  for the code it shows, typed after it shows
 #
 # Passphrases are read by kryptik-launch on the chrome's own terminal and go
 # to the daemon as a descriptor, never in argv or the environment.
 
-# The verified root's zone files, not /etc's: /etc is an overlay the state
-# partition can shadow, and the labels shown must match the colours dwl draws.
+# The verified root's zone files, which dwl's colours match: the state partition can shadow /etc.
 ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
-# `havoc [option...] [program [args...]]`: no -e, and an unknown option makes
-# it print its usage and exit.
+# havoc takes the program as plain arguments: it has no -e, and exits on an unknown option.
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
 FOCUS="$RT/kryptik/focus"
-# The last window from a zone. The menu shows this one: opening the menu
-# focuses the menu, so the plain record would only ever name zone 0.
+# The last zone window, for the menu: once the menu has focus, the focus record names zone 0.
 FOCUS_ZONE="$RT/kryptik/focus.zone"
 CONSENT=/run/kryptik-consent
 
@@ -49,61 +52,29 @@ zone_is_nic() { grep -q '^mode[[:space:]]*=[[:space:]]*"nic"' "$ZONES/$1.toml" 2
 
 # --- the status stream ---------------------------------------------------------
 
-# dwl writes `<output> title <t>`, `<output> appid <id>`, `<output> fullscreen
-# <0|1>` ... on every focus or state change. The proxy stamps a zone window's
-# app_id kryptik.<zone>.<claimed>; any other app_id is zone 0's.
-run_status() {
-    mkdir -p "$RT/kryptik" 2>/dev/null
-    appid=""; title=""; fs=""; selected=0
-    # The launcher window, so a fresh session shows something usable.
-    "$TERMINAL" /usr/bin/kryptik-chrome --menu &
-    # The consent watcher: one trusted window per question the broker leaves.
-    # Holding watcher.lock exclusively tells the broker someone is here to ask
-    # (consent.rs refuses at once if it can take the lock shared); the kernel
-    # drops it when this subshell dies. Confirm windows must not inherit it,
-    # and a second session's watcher exits quietly.
-    (
-        exec 9> "$CONSENT/watcher.lock" 2>/dev/null || exit 0
-        flock -n 9 || exit 0
-        # From here a write creates, never follows or clobbers: any member of
-        # group kryptik can plant a link in the directory. That also makes the
-        # .dialog claim one exclusive create.
-        set -C
-        while :; do
-            for ask in "$CONSENT"/*.ask; do
-                [ -e "$ask" ] || continue
-                id="${ask##*/}"; id="${id%.ask}"
-                [ -e "$CONSENT/$id.dialog" ] && continue
-                : > "$CONSENT/$id.dialog" 2>/dev/null || continue
-                "$TERMINAL" /usr/bin/kryptik-chrome --confirm "$id" 9>&- &
-            done
-            # A window writes its code and answer even for a question
-            # withdrawn meanwhile; whatever outlives its question goes.
-            for f in "$CONSENT"/*.dialog "$CONSENT"/*.code "$CONSENT"/*.answer; do
-                [ -e "$f" ] || continue
-                [ -e "${f%.*}.ask" ] || rm -f "$f"
-            done
-            sleep 1
-        done
-    ) &
+# dwl writes `<output> title <t>`, `<output> appid <id>`, `<output> zone <z>`,
+# `<output> fullscreen <0|1>` ... on every focus or state change, one output
+# after another, each output's lines ending with layout. The zone is the one
+# whose socket the window's client came through, 0 for dwl's own socket, and
+# empty with no window; an app_id, like a title, is the client's own word.
+#
+# The record is the selected output's window. Only that output's layout line
+# publishes: with two monitors, the one dwl writes last need not be the one
+# in use.
+status_to_focus() {
+    zone=""; title=""; fs=""; selected=0
     while IFS= read -r line; do
         out="${line%% *}"; rest="${line#* }"; key="${rest%% *}"; val="${rest#* }"
         [ "$key" = "$rest" ] && val=""
         case "$key" in
-            title) title="$val"; appid=""; fs=""; selected=0 ;;
-            appid) appid="$val" ;;
-            fullscreen) fs="$val" ;;
+            title) title="$val"; zone=""; fs=""; selected=0; continue ;;
+            zone) zone="$val"; continue ;;
+            fullscreen) fs="$val"; continue ;;
             selmon) selected="$val"; continue ;;
             layout) [ "$selected" = 1 ] || continue ;;
             *) continue ;;
         esac
-        # dwl ends each output's status block with layout. Publish only the
-        # selected output after its title, app_id and fullscreen all arrived.
-        case "$appid" in
-            kryptik.*) zone="${appid#kryptik.}"; zone="${zone%%.*}" ;;
-            "") zone="-" ;;
-            *) zone="0" ;;
-        esac
+        [ -n "$zone" ] || zone="-"
         label="$(zone_field "$zone" label)"
         glyph="$(zone_field "$zone" glyph)"
         [ "$zone" = "0" ] && label="ZONE 0 (trusted)"
@@ -112,13 +83,52 @@ run_status() {
         tmp="$FOCUS.tmp.$$"
         printf 'output=%s\nzone=%s\nlabel=%s\nglyph=%s\ntitle=%s\nfullscreen=%s\n' \
             "$out" "$zone" "$label" "$glyph" "$title" "$fs" > "$tmp" && mv -f "$tmp" "$FOCUS"
-        # The zone comes from the app_id the proxy stamps; a title is the zone's own words.
+        # The zone is dwl's, from the socket; a title is the zone's own words.
         case "$zone" in
             0|-) ;;
             *) cp -f "$FOCUS" "$FOCUS_ZONE.tmp.$$" && mv -f "$FOCUS_ZONE.tmp.$$" "$FOCUS_ZONE" ;;
         esac
         echo "focus: zone=$zone label=$label fullscreen=$fs title=$title" >&2
     done
+}
+
+run_status() {
+    mkdir -p "$RT/kryptik" 2>/dev/null
+    # The menu window, so a fresh session shows something usable.
+    "$TERMINAL" /usr/bin/kryptik-chrome --menu &
+    # The screen locks after ten minutes without input, or the minutes the user's
+    # lock-idle file holds; 0 never. expr reads 08 as eight, where $((...)) fails.
+    idle="$(tr -cd 0-9 2>/dev/null < "${XDG_CONFIG_HOME:-$HOME/.config}/kryptik/lock-idle" | cut -c1-4)"
+    idle="$(expr "${idle:-10}" \* 60)"
+    [ "$idle" -gt 0 ] && /usr/bin/kryptik-lock --idle "$idle" &
+    # The consent watcher. Holding watcher.lock tells the broker someone is here
+    # to ask: consent.rs refuses at once if it can take the lock shared. The
+    # kernel drops it with this subshell, and a second session's watcher exits
+    # quietly.
+    (
+        exec 9> "$CONSENT/watcher.lock" 2>/dev/null || exit 0
+        flock -n 9 || exit 0
+        # Writes create, never follow or clobber: group kryptik can plant links here.
+        # That also makes each .dialog claim one exclusive create.
+        set -C
+        while :; do
+            for ask in "$CONSENT"/*.ask; do
+                [ -e "$ask" ] || continue
+                id="${ask##*/}"; id="${id%.ask}"
+                [ -e "$CONSENT/$id.dialog" ] && continue
+                : > "$CONSENT/$id.dialog" 2>/dev/null || continue
+                # A window must not hold the lock past the watcher's death.
+                "$TERMINAL" /usr/bin/kryptik-chrome --confirm "$id" 9>&- &
+            done
+            # A window may write its code and answer after its question is withdrawn.
+            for f in "$CONSENT"/*.dialog "$CONSENT"/*.code "$CONSENT"/*.answer; do
+                [ -e "$f" ] || continue
+                [ -e "${f%.*}.ask" ] || rm -f "$f"
+            done
+            sleep 1
+        done
+    ) &
+    status_to_focus
 }
 
 # --- the launcher ---------------------------------------------------------------
@@ -142,6 +152,78 @@ menu_zones() {
     done
 }
 
+# The net zone's own word on the network, which the daemon passes on only in its own words:
+# ready or not, the Wi-Fi network, the uplink's address and DNS.
+menu_network() {
+    for f in "$ZONES"/*.toml; do
+        [ -f "$f" ] || continue
+        z="$(basename "$f" .toml)"
+        zone_is_nic "$z" || continue
+        info="$("$LAUNCH" --info "$z" 2>/dev/null)"
+        net="$(printf '%s\n' "$info" | sed -n 's/^network //p')"
+        if [ -z "$net" ]; then
+            printf '%s\n' "$info" | grep -qx 'running yes' && net="starting" || net="the net zone is not running"
+        fi
+        echo
+        echo "Network: $net"
+    done
+}
+
+# A release that has arrived whole waits for the user, so the launcher says so.
+# So does a channel gone quiet: statements are re-signed on a schedule, and a
+# net zone that withholds them leaves only their age to show it.
+menu_update() {
+    st="$("$LAUNCH" --update status 2>/dev/null)"
+    v="$(printf '%s\n' "$st" | sed -n 's/^staged *\([^:]*\): .*, complete.*/\1/p')"
+    # kryptikd's words up to their reason: the newest statement's age or, with none ever accepted, the install's.
+    quiet="$(printf '%s\n' "$st" | sed -n 's/^ *\(no statement from the release key [^:]*\):.*/\1/p' | head -1)"
+    # A trial armed or failed: what is staged is the release it tries or tried, which apply would refuse.
+    trial="$(printf '%s\n' "$st" | sed -n 's/^trial *//p' | head -1)"
+    [ -n "$v$quiet$trial" ] || return 0
+    echo
+    [ -z "$quiet" ] || echo "Update: ${quiet} (u for more)"
+    case "$trial" in
+        "the trial of "*) echo "Update: ${trial%%;*}; this machine runs the release before it (u for more)"; return 0 ;;
+        "slot "?" is armed:"*) echo "Update: ${trial%%:*}: the next boot tries it (u for more)"; return 0 ;;
+        "slot "?" is on trial:"*) echo "Update: ${trial%%:*}: it stays once it comes up healthy (u for more)"; return 0 ;;
+    esac
+    [ -z "$v" ] && return 0
+    echo "Update: ${v} has arrived. u installs it, and the next boot tries it."
+}
+
+# The update channel's verbs through the launch daemon, as `kryptik update` has
+# them at the administration login. Installing asks first: it arms a trial of
+# the release at the next boot.
+run_update() {
+    while :; do
+        clear 2>/dev/null
+        echo "================ KRYPTIK - updates (zone 0) ================"
+        "$LAUNCH" --update status 2>&1 | sed 's/^/  /'
+        echo
+        echo "f fetch the newest release   x forget it   i install what has arrived"
+        echo "a fetch each release as it comes   m only when asked   Enter back"
+        printf 'choice: '
+        read -r c || return 0
+        case "$c" in
+            "") return 0 ;;
+            f) "$LAUNCH" --update fetch ;;
+            x) "$LAUNCH" --update forget ;;
+            i) printf 'install it, for a trial at the next boot? (y/N): '
+               read -r yes || return 0
+               [ "$yes" = y ] || continue
+               echo "installing: the other slot is written and read back, which takes a few minutes"
+               if "$LAUNCH" --update apply; then
+                   echo "To try it, reboot: at the administration login (Ctrl+Alt+F2), su, then reboot."
+               fi
+               printf '(Enter) '; read -r _ || return 0; continue ;;
+            a) "$LAUNCH" --update auto on ;;
+            m) "$LAUNCH" --update auto off ;;
+            *) echo "?" ;;
+        esac
+        sleep 3
+    done
+}
+
 run_menu() {
     while :; do
         clear 2>/dev/null
@@ -151,16 +233,21 @@ run_menu() {
         echo
         echo "Zones:"
         menu_zones
+        menu_network
+        menu_update
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
+        echo "Admin: u updates: what the channel names, fetch, forget, install"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
-        echo "       f the last zone window's zone   r refresh   q close this window"
+        echo "       w Wi-Fi networks   f the last zone window's zone   r refresh   q close this window"
         echo
         printf 'choice (e.g. 1t): '
         if ! read -r choice; then break; fi
         case "$choice" in
             q) break ;;
+            u) run_update; continue ;;
             r|"") continue ;;
+            w) run_wifi; continue ;;
             f) if [ -r "$FOCUS_ZONE" ]; then
                    printf 'The last zone window you had: %s %s (zone %s)\n  %s\n' \
                        "$(sed -n 's/^glyph=//p' "$FOCUS_ZONE")" "$(sed -n 's/^label=//p' "$FOCUS_ZONE")" \
@@ -186,10 +273,103 @@ run_menu() {
                           b) set -- "$TERMINAL" /usr/bin/lynx ;;
                       esac
                       echo "launching in zone $z: $*"
-                      # --ask: a passphrase is read on this zone 0 terminal,
-                      # never on a zone's.
+                      # --ask: a passphrase is read on this zone 0 terminal, never a zone's.
                       "$LAUNCH" --ask "$z" -- "$@" || sleep 3
                       ;;
+            *) echo "?"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- Wi-Fi ----------------------------------------------------------------------
+
+# A scan's answer with the networks numbered; the lines about radios as they came.
+heard_list() {   # heard_list SCAN
+    printf '%s\n' "$1" | awk '/^"/ { printf "%2d %s\n", ++n, $0; next } { print "   " $0 }'
+}
+# The name of the Nth network a scan heard, from the daemon's quoted line, and on a second line
+# its security as the line words it. A name with a backslash in that line holds a byte quoted so
+# no terminal acts on it: it is typed instead.
+heard_name() {   # heard_name SCAN N
+    line="$(printf '%s\n' "$1" | grep '^"' | sed -n "${2}p" 2>/dev/null)"
+    case "$line" in
+        "" | *\\*) return 1 ;;
+    esac
+    line="${line#\"}"
+    rest="${line#*\"  }"
+    printf '%s\n%s\n' "${line%%\"*}" "${rest%%  *}"
+}
+# What a or o may save of the Nth network a scan heard: its name, or why not. Saved the other
+# way, a network would never be joined, and an open one saved over a network's passphrase would
+# lose the passphrase.
+heard_pick() {   # heard_pick a|o SCAN N
+    picked="$(heard_name "$2" "$3")" || { echo "the scan has no network $3 the menu can pass on by number: type its name"; return 1; }
+    ssid="$(printf '%s\n' "$picked" | sed -n 1p)"
+    kind="$(printf '%s\n' "$picked" | sed -n 2p)"
+    case "$kind" in
+        open) want=o ;;
+        WPA | WPA2 | WPA3 | WPA2/WPA3) want=a ;;
+        *) echo "network $ssid is $kind"; return 1 ;;
+    esac
+    if [ "$1" != "$want" ]; then
+        if [ "$want" = o ]; then
+            echo "network $ssid is open: o saves it"
+        else
+            echo "network $ssid is $kind: a saves it, with its passphrase"
+        fi
+        return 1
+    fi
+    printf '%s\n' "$ssid"
+}
+
+# The net zone's saved networks, through the launch daemon, as `kryptik wifi` has
+# them at the administration login: kryptik-launch reads a passphrase here,
+# unechoed, and the net zone restarts to join.
+run_wifi() {
+    # A number picks from a scan made in this window, never an earlier one.
+    heard=""
+    while :; do
+        clear 2>/dev/null
+        echo "================ KRYPTIK - Wi-Fi networks (zone 0) ================"
+        echo "Saved networks:"
+        nets="$("$LAUNCH" --wifi-list 2>&1)"
+        printf '%s\n' "${nets:-none}" | sed 's/^/  /'
+        echo
+        echo "s the networks in range   a add, or change a passphrase   o add an open one"
+        echo "f forget one   Enter back"
+        printf 'choice: '
+        read -r c || return 0
+        case "$c" in
+            "") return 0 ;;
+            # The net zone scans every channel, which takes some seconds. Its answer is kept, so
+            # a or o can take a network by its number.
+            s) echo "asking the net zone what it hears..."
+               heard="$("$LAUNCH" --wifi-scan 2>&1)"
+               heard_list "$heard"
+               printf 'Enter: back to the networks '
+               read -r c || return 0 ;;
+            # IFS=: an SSID may begin or end with a space.
+            a|o|f) [ "$c" = o ] && echo "An open network has no passphrase: anyone in range reads what crosses it."
+                   if [ "$c" != f ] && [ -n "${heard:-}" ]; then
+                       printf 'network name (SSID), or its number from the scan: '
+                   else
+                       printf 'network name (SSID): '
+                   fi
+                   IFS= read -r ssid || return 0
+                   [ -n "$ssid" ] || continue
+                   case "$c:$ssid" in
+                       [ao]:[1-9] | [ao]:[1-9][0-9])
+                           if [ -n "${heard:-}" ]; then
+                               ssid="$(heard_pick "$c" "$heard" "$ssid")" || { echo "$ssid"; sleep 3; continue; }
+                               echo "network: $ssid"
+                           fi ;;
+                   esac
+                   case "$c" in
+                       a) "$LAUNCH" --wifi-add "$ssid" ;;
+                       o) "$LAUNCH" --wifi-add-open "$ssid" ;;
+                       f) "$LAUNCH" --wifi-forget "$ssid" ;;
+                   esac
+                   sleep 3 ;;
             *) echo "?"; sleep 1 ;;
         esac
     done
@@ -216,8 +396,7 @@ run_confirm() { # ID
     # A question with no kind is a transfer.
     kind="$(sed -n 's/^kind=//p' "$ask")"
     if [ "$kind" = clock ]; then
-        # The clock (docs/design/time.md): the network's time is too far from
-        # this machine's to accept unasked. Only the user, with a watch, can say.
+        # The network's time is too far from this machine's to accept unasked (docs/design/time.md).
         now="$(sed -n 's/^now=//p' "$ask")"; proposed="$(sed -n 's/^proposed=//p' "$ask")"
         sources="$(sed -n 's/^sources=//p' "$ask")"
         echo "================ KRYPTIK - set the clock? (zone 0) ================"
@@ -254,14 +433,11 @@ run_confirm() { # ID
         [ "$(cat | wc -c)" -eq 0 ] || echo "(what was typed before this question showed is ignored)"
         stty "$was"
     fi
-    # The answer is a code drawn for this question alone: no zone sees this
-    # window, so none can type it. It is kept beside the question for zone 0's
-    # tests; whatever can read this directory could write the answer anyway.
-    # Writes here create, never follow or clobber: any member of group kryptik
-    # can plant a link in the directory. An answer that cannot be written is
-    # no answer, which the broker takes as a refusal.
+    # Writes create, never follow or clobber: any member of group kryptik can plant a link.
     set -C
+    # A code for this question alone: no zone sees this window, so none can type it.
     code=$(( $(od -An -N1 -tu1 /dev/urandom) % 90 + 10 ))
+    # Kept for zone 0's tests; whatever can read it could write the answer anyway.
     (umask 077; printf '%s\n' "$code" > "$CONSENT/$id.code") 2>/dev/null \
         || echo "kryptik-chrome --confirm $id: the code could not be written beside the question" >> "$RT/kryptik/session.log"
     printf 'Type %s and Enter to allow; anything else refuses: ' "$code"
@@ -269,6 +445,7 @@ run_confirm() { # ID
     if read -r reply; then
         [ "$reply" = "$code" ] && answer=yes
     fi
+    # An answer that cannot be written is none: the broker takes that as a refusal.
     if printf '%s\n' "$answer" > "$CONSENT/$id.answer.tmp" && mv -f "$CONSENT/$id.answer.tmp" "$CONSENT/$id.answer"; then
         echo "-> $answer"
     else

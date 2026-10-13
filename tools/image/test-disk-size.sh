@@ -6,12 +6,10 @@
 # Prints one word for `truncate -s`, such as 17536M.
 #
 #   --medium FILE    the USB medium the suite installs from
-#   --payloads N     how many update payloads the suite keeps on kryptik-state
-#                    at the same moment (default 0)
+#   --payloads N     update payloads the suite keeps on kryptik-state at once (default 0)
 #   --extra-mib M    more room on kryptik-state for the suite's own data
 #
-# Mirrors the installer's arithmetic (tools/install/kryptik-install.sh), with
-# the medium's size as an upper bound on the root image; a mismatch fails the install.
+# Mirrors tools/install/kryptik-install.sh's arithmetic, with the medium bounding the root image.
 set -euo pipefail
 
 MEDIUM=""; PAYLOADS=0; EXTRA=0
@@ -20,7 +18,7 @@ while [[ $# -gt 0 ]]; do
         --medium)    MEDIUM="${2:?--medium needs a file}"; shift 2 ;;
         --payloads)  PAYLOADS="${2:?--payloads needs a number}"; shift 2 ;;
         --extra-mib) EXTRA="${2:?--extra-mib needs a number}"; shift 2 ;;
-        -h|--help)   sed -n '2,14p' "${BASH_SOURCE[0]}" | cut -c3-; exit 0 ;;
+        -h|--help)   sed -n '2,12p' "${BASH_SOURCE[0]}" | cut -c3-; exit 0 ;;
         *) echo "test-disk-size: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -32,8 +30,7 @@ img_mib=$(( ($(stat -c %s "$MEDIUM") + MIB - 1) / MIB ))
 room_mib=$(( img_mib / 2 )); [[ "$room_mib" -ge 512 ]] || room_mib=512
 slot_mib=$(( (img_mib + room_mib + 63) / 64 * 64 ))
 esp_mib=1024          # an allowance, not the ESP's size: it is a few hundred MiB
-# The installer's floor for state is one payload and 1 GiB of data (image +
-# 128 + 1024 MiB); add the suite's other payloads and 1 GiB more to work in.
+# The installer's state floor (image + 128 + 1024 MiB), the suite's other payloads, 1 GiB more.
 more=$(( PAYLOADS > 1 ? PAYLOADS - 1 : 0 ))
 state_mib=$(( img_mib + 128 + 1024 + more * img_mib + 1024 + EXTRA ))
 total_mib=$(( (2 + esp_mib + 2 * slot_mib + state_mib + 63) / 64 * 64 ))

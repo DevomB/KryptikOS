@@ -1,10 +1,5 @@
-//! A small TOML reader for what zone files use, hand-rolled as ADR-010 argues
-//! for kryptikd: comments, `[section]` headers, and `key = value` with a basic,
-//! literal or bare value, all kept as text.
-//!
-//! Anything else (arrays, inline tables, dotted keys, array-of-tables,
-//! multi-line strings) is an error, never skipped. Comments are stripped by the
-//! scanner that tracks quotes, so `"#aa3333"` keeps its `#`.
+//! The TOML subset zone files use (ADR-010): comments, `[section]` headers, and `key = value`
+//! with a basic, literal or bare value, kept as text. Anything else is an error, never skipped.
 
 use std::fmt;
 
@@ -44,20 +39,13 @@ impl fmt::Display for TomlError {
             TomlErrorKind::TrailingGarbage(s) => {
                 write!(f, "unexpected text after value: {s:?}")
             }
-            TomlErrorKind::Unsupported(what) => write!(
-                f,
-                "{what} is not supported by this reader. It is refused rather \
-                 than skipped so that a zone file using it is never read as \
-                 something other than what it says"
-            ),
+            TomlErrorKind::Unsupported(what) => write!(f, "{what} is not supported"),
             TomlErrorKind::BadEscape(c) => write!(f, "unknown string escape \\{c}"),
         }
     }
 }
 
-/// Sections in file order, each a list of key/value pairs. Read as kryptikd
-/// reads it (a repeated `[section]` continues, a repeated key is an error), so
-/// zoneid audits the colour kryptikd enforces.
+/// Sections in file order, read as kryptikd reads them, so the audited colour is the enforced one.
 #[derive(Debug, Default, Clone)]
 pub struct Document {
     pub sections: Vec<Section>,
@@ -163,7 +151,6 @@ pub fn parse(input: &str) -> Result<Document, TomlError> {
 fn strip_comment(line: &str) -> Result<&str, TomlErrorKind> {
     let bytes = line.as_bytes();
     let mut i = 0;
-    // The quote character, if any, this position is inside.
     let mut quote: Option<u8> = None;
 
     while i < bytes.len() {
@@ -215,8 +202,7 @@ fn parse_value(v: &str) -> Result<String, TomlErrorKind> {
     Ok(v.to_string())
 }
 
-/// Read a basic string body (after the opening quote). Returns the unescaped
-/// value and how many bytes of `s` were consumed including the closing quote.
+/// Unescape a basic string body after its opening quote; returns it and the bytes consumed.
 fn read_basic_string(s: &str) -> Result<(String, usize), TomlErrorKind> {
     let mut out = String::new();
     let mut it = s.char_indices();

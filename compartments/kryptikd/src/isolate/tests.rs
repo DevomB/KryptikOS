@@ -9,10 +9,9 @@ fn zone(mode: &str) -> Zone {
     .unwrap()
 }
 
-/// Taken in a forked child and read from the parent, as `kryptikd status`
-/// reads a zone's; the test process itself keeps no cookie.
+/// Taken in a forked child and read from the parent, as `kryptikd status` reads a zone's.
 #[test]
-fn task_takes_own_core_cookie() {
+fn own_core_cookie() {
     let me = unsafe { libc::getpid() };
     match core_scheduling() {
         CoreSched::Cookies => {}
@@ -63,7 +62,7 @@ fn task_takes_own_core_cookie() {
 }
 
 #[test]
-fn every_zone_gets_net_namespace() {
+fn net_namespace_always() {
     assert_ne!(namespace_flags(&zone("none")) & libc::CLONE_NEWNET, 0);
     assert_ne!(namespace_flags(&zone("routed")) & libc::CLONE_NEWNET, 0);
     // The parent moves the physical NIC into this one.
@@ -71,11 +70,34 @@ fn every_zone_gets_net_namespace() {
 }
 
 #[test]
-fn every_zone_gets_core_namespaces() {
+fn core_namespaces_always() {
     for m in ["none", "routed", "nic"] {
         let f = namespace_flags(&zone(m));
         for (flag, name) in &NAMESPACES[..5] {
             assert_ne!(f & flag, 0, "zone mode {m} is missing the {name} namespace");
         }
     }
+}
+
+#[test]
+fn time_namespace_always() {
+    for m in ["none", "routed", "nic"] {
+        assert_ne!(namespace_flags(&zone(m)) & CLONE_NEWTIME, 0, "zone mode {m} would read the machine's boot clock");
+    }
+    assert!(namespace_names(ZONE_NAMESPACES).contains(&"time"));
+}
+
+#[test]
+fn time_offsets_reach_the_origin() {
+    let hour = 3600 * 1_000_000_000u64;
+    // A clock short of the origin moves forward.
+    assert_eq!(
+        time_offsets(hour, 10_500_000_000, 10_500_000_000),
+        "monotonic 3589 500000000\nboottime 3589 500000000\n"
+    );
+    // One past it moves back: the seconds go negative and the nanoseconds stay below a second.
+    assert_eq!(
+        time_offsets(hour, 7_200_250_000_000, 7_300_000_000_000),
+        "monotonic -3601 750000000\nboottime -3700 0\n"
+    );
 }

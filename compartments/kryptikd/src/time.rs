@@ -1,30 +1,23 @@
-//! Wall-clock policy for zone 0 (docs/design/time.md).
-//!
-//! Only zone 0 may set the clock and it has no network, so the time arrives
-//! as a claim from the untrusted net zone. A claim may not cross the floor,
-//! and past a bound on what is believed unasked, the user decides.
-//! `decide` is pure: it reads no clock, file or environment.
+//! Wall-clock policy for zone 0 (docs/design/time.md). Only zone 0 sets the clock and it has no
+//! network, so the time is a claim from the untrusted net zone: no claim crosses the floor, and
+//! past the bound the user decides.
 
 /// Corrections below this many seconds are slewed, so the clock never runs backwards.
 pub const SLEW_BELOW_SECS: f64 = 1.0;
-/// Offsets below this many seconds are ignored.
 pub const IGNORE_BELOW_SECS: f64 = 0.005;
 /// Seconds believed without asking, per claim and in total, either direction.
 pub const DEFAULT_BOUND_SECS: i64 = 3600;
-/// One claim is considered per interval; others are refused unread, so a
-/// hostile zone cannot flood the user with consent prompts.
+/// One claim is considered per interval, so a hostile zone cannot flood the user with prompts.
 pub const CLAIM_INTERVAL_SECS: u64 = 600;
 
-/// The net zone's claim: add `offset` seconds, the median of what `sources`
-/// time servers answered. Untrusted, like the zone.
+/// The net zone's untrusted claim: add `offset` seconds, the median of `sources` time servers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Claim {
     pub offset: f64,
     pub sources: u8,
 }
 
-/// Parse `<seconds> <sources>`: optional sign, up to ten integer and six
-/// fractional digits, and 1 to 16 sources. No exponent, infinity or NaN.
+/// Parse `<seconds> <sources>`: plain decimal seconds (no exponent, inf or NaN), 1 to 16 sources.
 pub fn parse_claim(args: &str) -> Result<Claim, String> {
     let mut it = args.split(' ');
     let (Some(secs), Some(sources), None) = (it.next(), it.next(), it.next()) else {
@@ -54,8 +47,7 @@ pub struct Knowledge {
     pub floor: i64,
     /// What is believed without asking.
     pub bound: i64,
-    /// Unasked corrections since the clock was last anchored (by consent or
-    /// the floor). The bound applies to this sum, so small lies cannot add up.
+    /// Unasked corrections since the last consent or floor, bounded so small lies cannot add up.
     pub moved_unasked: f64,
 }
 
@@ -65,13 +57,13 @@ pub enum Decision {
     Ignore,
     /// Apply gradually; the clock never steps backwards.
     Slew { offset: f64 },
-    /// Set the clock to `to`.
     Step { to: f64 },
     /// Past the bound: the user decides, shown both times.
     Ask { to: f64 },
     Refuse(String),
 }
 
+/// Pure: reads no clock, file or environment.
 pub fn decide(k: &Knowledge, c: &Claim) -> Decision {
     if !c.offset.is_finite() || !k.now.is_finite() {
         return Decision::Refuse("the offset is not a number".into());
@@ -80,7 +72,7 @@ pub fn decide(k: &Knowledge, c: &Claim) -> Decision {
     // The floor comes before consent: an impossible time is never offered.
     if to < k.floor as f64 {
         return Decision::Refuse(format!(
-            "{} is before this system was built ({}); not offered, not applied",
+            "{} is before the floor ({}); not offered, not applied",
             format_utc(to),
             format_utc(k.floor as f64)
         ));
@@ -99,8 +91,7 @@ pub fn decide(k: &Knowledge, c: &Claim) -> Decision {
     }
 }
 
-/// `moved_unasked` once `d` is carried out: an unasked correction adds to it,
-/// and consent resets it.
+/// `moved_unasked` once `d` is carried out: unasked corrections add to it, consent resets it.
 pub fn moved_after(k: &Knowledge, c: &Claim, d: &Decision, consented: bool) -> f64 {
     match d {
         Decision::Slew { .. } | Decision::Step { .. } => k.moved_unasked + c.offset.abs(),
@@ -109,14 +100,12 @@ pub fn moved_after(k: &Knowledge, c: &Claim, d: &Decision, consented: bool) -> f
     }
 }
 
-/// The time to set a clock that reads below the floor (say, after a dead RTC
-/// battery), or None. Needs no network: the system cannot predate its build.
+/// The floor if `now` is below it, as after a dead RTC battery: no system predates its build.
 pub fn clamp_to_floor(now: f64, floor: i64) -> Option<f64> {
     (now < floor as f64).then_some(floor as f64)
 }
 
-/// `built_at` from the image record, as written by `date -Iseconds`, in epoch
-/// seconds. Anything else is None: no floor known, never zero.
+/// The image record's `built_at` (from `date -Iseconds`) in epoch seconds, or None: never zero.
 pub fn floor_from_image_json(text: &str) -> Option<i64> {
     let at = text.find("\"built_at\"")?;
     let rest = &text[at + "\"built_at\"".len()..];
@@ -189,10 +178,13 @@ pub fn format_utc(t: f64) -> String {
 use std::io::{self, Write};
 use std::path::Path;
 
-/// The image record whose `built_at` is the floor.
+/// The image record; its `built_at` is the lowest the floor can be.
 pub const IMAGE_JSON: &str = "/etc/kryptik-image.json";
 /// What zone 0 remembers about the clock between claims and across boots.
 pub const STATE_DIR: &str = "/var/lib/kryptik/time";
+/// sysinit's mark of a boot whose state partition could not be used: its `/var`, and with it
+/// `STATE_DIR`, is memory.
+pub const DEGRADED: &str = "/run/kryptik/state-degraded";
 
 /// The wall clock, behind a trait so tests can use a fake: no test should set the real one.
 pub trait Clock {
@@ -252,10 +244,92 @@ impl Clock for SystemClock {
     }
 }
 
-/// This system's floor, or None if the image record is missing or does not
-/// parse; with no floor every claim is refused.
+/// This system's floor: the image's build date, or the signed date of the
+/// newest release it has committed to if that is later. None if the image
+/// record is missing or does not parse; with no floor every claim is refused.
 pub fn floor_of_this_system() -> Option<i64> {
-    floor_from_image_json(&std::fs::read_to_string(IMAGE_JSON).ok()?)
+    let built = floor_from_image_json(&std::fs::read_to_string(IMAGE_JSON).ok()?)?;
+    Some(floor_from(built, committed_release().ok().flatten().map(|(_, at)| at)))
+}
+
+/// A committed release raises the floor and never lowers it.
+pub fn floor_from(built: i64, release: Option<i64>) -> i64 {
+    release.map_or(built, |at| at.max(built))
+}
+
+/// Under `STATE_DIR`: the manifest and signature of the newest release committed to.
+const RELEASE: &str = "release";
+
+/// The release whose signed manifest `dir` holds, as `check` (`kryptik-update
+/// check-release`) verifies it: its version and signed date, or None when
+/// there is no manifest. The files are looked at first, so a link or a huge
+/// file left on the state partition never reaches the tool.
+pub fn release_in(dir: &Path, check: &dyn Fn(&Path) -> Result<String, String>) -> Result<Option<(String, i64)>, String> {
+    for name in ["manifest", "manifest.sig"] {
+        let path = dir.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.is_file() && m.len() <= crate::update::MANIFEST_MAX => {}
+            Ok(_) => return Err(format!("{} is not a file of a manifest's size", path.display())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound && name == "manifest" => return Ok(None),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    parse_release(&check(dir)?).map(Some)
+}
+
+/// `check-release`'s answer: `version: V` and `created: DATE` lines.
+pub fn parse_release(text: &str) -> Result<(String, i64), String> {
+    let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k));
+    let version = field("version: ").filter(|v| !v.is_empty()).ok_or("the check named no version")?;
+    let created = field("created: ").ok_or("the check named no date")?;
+    let at = parse_iso8601(created).ok_or_else(|| format!("created {created:?} is not a date"))?;
+    Ok((version.to_string(), at))
+}
+
+/// The newest release this machine has committed to, as a process last checked it: a claim from
+/// the net zone must not cost a signature check each.
+pub fn committed_release() -> Result<Option<(String, i64)>, String> {
+    static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(Kept::new());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    kept.get(&Path::new(STATE_DIR).join(RELEASE), std::time::Instant::now(), &crate::update::check_release)
+}
+
+/// A check that failed is tried again after this, so a flood of claims costs one check a minute.
+const RETRY_FAILED: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What the files of a kept pair are: a pair kept anew, by rename, is new files.
+type Stamp = [Option<(u64, u64, i64, i64)>; 2];
+/// `release_in`'s answer.
+type Answer = Result<Option<(String, i64)>, String>;
+
+fn stamp(dir: &Path) -> Stamp {
+    use std::os::unix::fs::MetadataExt;
+    ["manifest", "manifest.sig"].map(|n| std::fs::symlink_metadata(dir.join(n)).ok().map(|m| (m.ino(), m.len(), m.mtime(), m.mtime_nsec())))
+}
+
+/// The kept release a process last read. A good answer stands until the pair changes, as when
+/// boot-success keeps a newer one; a failed check is tried again once the pair changes or after
+/// `RETRY_FAILED`, so one failure does not leave the floor at the build date for good.
+struct Kept {
+    seen: Option<(Stamp, std::time::Instant, Answer)>,
+}
+
+impl Kept {
+    const fn new() -> Self {
+        Kept { seen: None }
+    }
+
+    fn get(&mut self, dir: &Path, now: std::time::Instant, check: &dyn Fn(&Path) -> Result<String, String>) -> Answer {
+        let files = stamp(dir);
+        if let Some((seen, at, answer)) = &self.seen {
+            if *seen == files && (answer.is_ok() || now.saturating_duration_since(*at) < RETRY_FAILED) {
+                return answer.clone();
+            }
+        }
+        let answer = release_in(dir, check);
+        self.seen = Some((files, now, answer.clone()));
+        answer
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -322,8 +396,7 @@ impl Outcome {
     }
 }
 
-/// Decide on a claim, ask the user if needed, and carry it out.
-/// `ask(now, proposed, sources)` is only called with a proposal at or above the floor.
+/// Decide on a claim and carry it out, calling `ask(now, to, sources)` only at or above the floor.
 pub fn consider(
     clock: &mut dyn Clock,
     dir: &Path,
@@ -331,6 +404,21 @@ pub fn consider(
     bound: i64,
     claim: &Claim,
     ask: &mut dyn FnMut(&str, &str, u8) -> Result<(), String>,
+) -> Outcome {
+    /* A degraded boot keeps the unasked sum in memory, so every such boot starts it afresh:
+     * its steps stay out of the hardware clock that the next boot starts from. */
+    consider_with(clock, dir, floor, bound, claim, ask, !Path::new(DEGRADED).exists())
+}
+
+/// `consider`, setting the hardware clock after a step only when `set_rtc`.
+fn consider_with(
+    clock: &mut dyn Clock,
+    dir: &Path,
+    floor: Option<i64>,
+    bound: i64,
+    claim: &Claim,
+    ask: &mut dyn FnMut(&str, &str, u8) -> Result<(), String>,
+    set_rtc: bool,
 ) -> Outcome {
     let Some(floor) = floor else {
         return Outcome::Refused(format!("no floor is known ({IMAGE_JSON} is missing or unreadable), so no claim can be judged"));
@@ -346,6 +434,20 @@ pub fn consider(
     state.last_claim = Some(now);
     let know = Knowledge { now, floor, bound, moved_unasked: state.moved_unasked };
     let decision = decide(&know, claim);
+    /* Counted before it is believed or asked: the claim's time, as the clock
+     * will read after a step, and what it adds to the unasked sum. Unwritten,
+     * the next claim would meet neither the interval nor the bound. */
+    if matches!(decision, Decision::Slew { .. } | Decision::Step { .. } | Decision::Ask { .. }) {
+        let ahead = State {
+            moved_unasked: moved_after(&know, claim, &decision, false),
+            last_claim: Some(if let Decision::Step { to } = &decision { *to } else { now }),
+        };
+        if let Err(e) = save_state(dir, &ahead) {
+            let out = Outcome::Refused(format!("the clock's state could not be saved, so no claim is believed: {e}"));
+            record(dir, now, &format!("{} offset={:+.6} sources={}", out.reply(), claim.offset, claim.sources));
+            return out;
+        }
+    }
     let mut consented = false;
     let outcome = match &decision {
         Decision::Ignore => Outcome::Ignored,
@@ -374,7 +476,9 @@ pub fn consider(
     if applied {
         state.moved_unasked = moved_after(&know, claim, &decision, consented);
         if !matches!(outcome, Outcome::Slewed) {
-            if let Err(e) = clock.sync_rtc() {
+            if !set_rtc {
+                record(dir, clock.now(), "the hardware clock was left alone: this boot's state is in memory");
+            } else if let Err(e) = clock.sync_rtc() {
                 record(dir, clock.now(), &format!("the hardware clock was not updated: {e}"));
             }
         }
@@ -393,16 +497,49 @@ pub fn clamp(clock: &mut dyn Clock, dir: &Path, floor: Option<i64>) -> Result<St
     let floor = floor.ok_or_else(|| format!("no floor is known: {IMAGE_JSON} is missing or unreadable"))?;
     let now = clock.now();
     let Some(to) = clamp_to_floor(now, floor) else {
-        return Ok(format!("the clock ({}) is not before this system was built ({}); left alone", format_utc(now), format_utc(floor as f64)));
+        return Ok(format!("the clock ({}) is not before the floor ({}); left alone", format_utc(now), format_utc(floor as f64)));
     };
     clock.step(to).map_err(|e| format!("the clock could not be set to the floor: {e}"))?;
     let _ = clock.sync_rtc();
     let mut state = load_state(dir);
     // The floor anchors the clock, as consent does.
     state.moved_unasked = 0.0;
-    let _ = save_state(dir, &state);
-    record(dir, to, &format!("set to the floor: the clock read {}, before this system was built", format_utc(now)));
-    Ok(format!("the clock read {}, before this system was built; set to {}", format_utc(now), format_utc(to)))
+    let saved = save_state(dir, &state);
+    record(dir, to, &format!("set to the floor: the clock read {}", format_utc(now)));
+    let said = format!("the clock read {}, before the floor; set to {}", format_utc(now), format_utc(to));
+    match saved {
+        Ok(()) => Ok(said),
+        // Unsaved, the unasked sum stays what it was: more is asked, not less.
+        Err(e) => Ok(format!("{said}; the clock's state could not be saved: {e}")),
+    }
+}
+
+/// `kryptikd time committed DIR`, from boot-success once it has committed the
+/// running slot: DIR holds the manifest and signature `kryptik-update apply`
+/// verified for it. They are kept under `dir` if they verify, name the
+/// running release and are dated later than the release kept there.
+pub fn keep_release(dir: &Path, offered: &Path, running: &str, now: f64, check: &dyn Fn(&Path) -> Result<String, String>) -> Result<String, String> {
+    let (version, at) = release_in(offered, check)?.ok_or_else(|| format!("{} holds no manifest", offered.display()))?;
+    if version != running {
+        return Err(format!("{} holds release {version}, and this system runs {running}", offered.display()));
+    }
+    let kept = dir.join(RELEASE);
+    if let Ok(Some((v, d))) = release_in(&kept, check) {
+        if d >= at {
+            return Ok(format!("release {v} ({}) stays the floor", format_utc(d as f64)));
+        }
+    }
+    for d in [dir, kept.as_path()] {
+        crate::files::private_dir(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    // A cut between the two leaves a pair that does not verify, and the build date is the floor.
+    for name in ["manifest.sig", "manifest"] {
+        let bytes = std::fs::read(offered.join(name)).map_err(|e| format!("{name}: {e}"))?;
+        crate::files::write_atomic(&kept.join(name), &[bytes.as_slice()], 0o600, None).map_err(|e| format!("{name}: {e}"))?;
+    }
+    let said = format!("release {version} ({}) is the floor now", format_utc(at as f64));
+    record(dir, now, &said);
+    Ok(said)
 }
 
 #[cfg(test)]

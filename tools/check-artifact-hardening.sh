@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Audit the hardening of the ELF objects a build actually produced.
+# Audit the hardening of the ELF objects a build produced.
 #
-#   tools/check-artifact-hardening.sh [ROOT] [--strict] [--json FILE]
-#                                     [--accepted FILE]
+#   tools/check-artifact-hardening.sh [ROOT] [--strict] [--unstripped] [--json FILE] [--accepted FILE]
 #
-# ROOT defaults to the sysroot for the current KRYPTIK_WORK. RWX, TEXTREL,
-# EXEC-STACK and BUILD-RPATH (an rpath into the build tree) always fail. The
-# rest are reported, except where the accepted list (by default
-# build/config/artifact-accepted.txt) gives the reason. --strict fails on a
-# reported finding and on a list entry that matched nothing; without it, a
-# sysroot mid-build holds unfinished objects.
+#   ROOT          default: the sysroot
+#   --strict      also fail on reported findings and on accepted entries that matched nothing
+#   --unstripped  a tree that keeps its symbols on purpose (the sysroot): no NOT-STRIPPED findings
+#   --accepted    findings kept, each with a reason; default build/config/artifact-accepted.txt
+#
+# RWX, TEXTREL, EXEC-STACK, NO-GNU-STACK and BUILD-RPATH (an rpath into the build tree) always fail.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -18,12 +17,14 @@ trap - ERR
 set +e
 
 STRICT=0
+STRIPPED=1
 JSON=""
 ROOT=""
 ACCEPTED=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         --strict)   STRICT=1; shift ;;
+        --unstripped) STRIPPED=0; shift ;;
         --json)     JSON="${2:?--json needs a path}"; shift 2 ;;
         --accepted) ACCEPTED="${2:?--accepted needs a file}"; shift 2
                     [[ -f "$ACCEPTED" ]] || die "no accepted list at ${ACCEPTED}" ;;
@@ -42,9 +43,10 @@ Give a root to inspect, or build one first:
   make temp-tools && make system"
 
 have readelf || die "readelf is required (binutils)"
+# The canary search reads raw bytes with a PCRE pattern.
+printf 'a' | LC_ALL=C grep -qaP '\x61' || die "grep -P is required (GNU grep built with PCRE)"
 
-# Not shipped: /tools is the stage 01 cross toolchain, built without hardening
-# and deleted before release; /kryptik* are bind-mount points.
+# Not shipped: /tools is stage 01's unhardened cross toolchain; /kryptik* are bind-mount points.
 EXCLUDE_RE='^(tools|kryptik|kryptik-work|kryptik-sources|usr/src|usr/share/doc)(/|$)'
 
 log "Artifact hardening audit"
@@ -62,9 +64,7 @@ declare -a NO_SSP=() NO_FORTIFY=()
 
 bump() { COUNT["$1"]=$(( ${COUNT["$1"]:-0} + 1 )); }
 
-# The accepted list: `FINDING PATH # why`, or `RPATH PATH RPATH # why`, the
-# paths being globs. An RPATH entry names the rpath too, since that is what
-# it accepts. Only reported findings can be listed, and only with a reason.
+# The accepted list: `FINDING GLOB  # why`, or `RPATH GLOB RPATH  # why` naming the rpath accepted.
 declare -a ACC_KIND=() ACC_PATH=() ACC_RPATH=() ACC_USED=() ACC_LINE=()
 if [[ -n "$ACCEPTED" ]]; then
     n=0
@@ -74,7 +74,7 @@ if [[ -n "$ACCEPTED" ]]; then
         [[ "$line" == *"#"* ]] || die "${ACCEPTED}:${n}: an accepted finding needs its reason after '#'"
         read -r kind path rp extra <<<"${line%%#*}"
         case "$kind" in
-            NO-RELRO|NO-BIND-NOW|NO-PIE|NO-CET)
+            NO-RELRO|NO-BIND-NOW|NO-PIE|NO-CET|NO-SSP|NO-FORTIFY|NOT-STRIPPED)
                 [[ -n "$path" && -z "$rp" ]] || die "${ACCEPTED}:${n}: ${kind} takes one path" ;;
             RPATH)
                 [[ -n "$rp" && -z "$extra" ]] || die "${ACCEPTED}:${n}: RPATH takes a path and the rpath it accepts" ;;
@@ -99,8 +99,8 @@ accepted() {   # accepted KIND REL [RPATH]
 }
 
 hard() { HARD=$((HARD + 1)); HARD_LINES+=("  $1  $2"); bump "$1"; }
-soft() {   # soft KIND REL [RPATH]
-    local line="  $1  $2${3:+  [$3]}"
+soft() {   # soft KIND REL [RPATH [NOTE]]: NOTE is shown, never matched
+    local line="  $1  $2${3:+  [$3]}${4:+  ($4)}"
     bump "$1"
     if accepted "$1" "$2" "${3:-}"; then ACCEPTED_LINES+=("$line"); else SOFT_LINES+=("$line"); fi
 }
@@ -115,7 +115,7 @@ audit_one() {
     local f="$1" rel="${1#"$ROOT"/}"
     local out
     # One readelf run per file covers everything read below.
-    out="$(readelf -W -h -l -d -n --dyn-syms "$f" 2>/dev/null)" || return 0
+    out="$(readelf -W -h -S -l -d -n --dyn-syms "$f" 2>/dev/null)" || return 0
     [[ -n "$out" ]] || return 0
 
     local type kind
@@ -132,7 +132,7 @@ audit_one() {
         kind=lib; LIBS=$((LIBS + 1))
     fi
 
-    # Hard failures. First, a LOAD segment carrying all three permission bits.
+    # Hard failures, starting with a LOAD segment that carries all three permission bits.
     if awk '/^ +LOAD/ { if ($0 ~ /RWE/) exit 1 } END { exit 0 }' <<<"$out"; then :; else
         hard "RWX" "$rel"
     fi
@@ -140,6 +140,8 @@ audit_one() {
     if grep -qE '^ +GNU_STACK.*RWE' <<<"$out"; then
         hard "EXEC-STACK" "$rel"
     fi
+    # Without the header the kernel and the loader give the object an executable stack.
+    grep -qE '^ +GNU_STACK' <<<"$out" || hard "NO-GNU-STACK" "$rel"
 
     if grep -q 'TEXTREL' <<<"$out"; then
         hard "TEXTREL" "$rel"
@@ -176,14 +178,33 @@ audit_one() {
         soft "NO-PIE" "$rel"
     fi
 
-    grep -qE 'IBT|SHSTK' <<<"$out" || soft "NO-CET" "$rel"
+    grep -qE 'x86 feature:.*(IBT|SHSTK)' <<<"$out" || soft "NO-CET" "$rel"
 
-    # Counted, never failed: a function without a local array gets no canary
-    # and a call with no known size no _chk variant, so an object with neither
-    # shows nothing about its flags. The record names them.
-    if grep -q '__stack_chk_fail' <<<"$out"; then bump "HAS-SSP"; else NO_SSP+=("$rel"); fi
-    if grep -qE '__[a-z_]+_chk@|__[a-z_]+_chk$' <<<"$out"; then bump "HAS-FORTIFY"; else NO_FORTIFY+=("$rel"); fi
+    [[ "$STRIPPED" -eq 0 ]] || ! grep -qE '^ +\[ *[0-9]+\] \.(symtab|z?debug_[A-Za-z_]+) ' <<<"$out" \
+        || soft "NOT-STRIPPED" "$rel"
+
+    local imports
+    imports="$(awk '/^Symbol table .\.dynsym./ { d = 1; next } d && NF == 0 { d = 0 }
+                    d && $7 == "UND" && $8 != "" { n = $8; sub(/@.*/, "", n); print n }' <<<"$out")"
+
+    # A canary is read from %fs:0x28; static and loader code call a __stack_chk_fail no dynamic symbol shows.
+    if grep -q '__stack_chk_fail' <<<"$out" || LC_ALL=C grep -qaP "$CANARY" "$f"; then
+        bump "HAS-SSP"
+    else
+        NO_SSP+=("$rel")
+        soft "NO-SSP" "$rel"
+    fi
+
+    if grep -qE '^__[a-z0-9_]+_chk$' <<<"$imports"; then bump "HAS-FORTIFY"; else NO_FORTIFY+=("$rel"); fi
+    local unchecked
+    unchecked="$(grep -xE "$UNCHECKED" <<<"$imports" | LC_ALL=C sort -u | tr '\n' ' ')"
+    [[ -z "$unchecked" ]] || soft "NO-FORTIFY" "$rel" "" "${unchecked% }"
 }
+
+# mov, sub, xor or cmp of any register with %fs:0x28, the stack guard glibc and musl keep there.
+CANARY='\x64[\x48\x4c][\x8b\x2b\x33\x3b][\x04\x0c\x14\x1c\x24\x2c\x34\x3c]\x25\x28\x00\x00\x00'
+# Under _FORTIFY_SOURCE=2 or 3 every call to these becomes its _chk variant, whatever the sizes.
+UNCHECKED='v?f?w?printf|v?dprintf|v?swprintf|v?syslog|_?longjmp|siglongjmp|explicit_bzero|obstack_v?printf'
 
 log "scanning"
 while IFS= read -r -d '' f; do
@@ -195,8 +216,7 @@ done < <(find "$ROOT" -xdev -type f -print0 2>/dev/null)
 
 echo
 if [[ "$TOTAL" -eq 0 ]]; then
-    warn "no ELF objects found under ${ROOT}"
-    warn "Either the build has not produced anything yet, or ROOT is wrong."
+    warn "no ELF objects found under ${ROOT}: nothing built yet, or the wrong ROOT"
     exit 1
 fi
 
@@ -209,7 +229,7 @@ printf '  %-14s %d\n' "with FORTIFY" "${COUNT[HAS-FORTIFY]:-0}"
 
 echo
 log "Findings"
-for k in RWX EXEC-STACK TEXTREL BUILD-RPATH NO-RELRO NO-BIND-NOW NO-PIE NO-CET RPATH; do
+for k in RWX EXEC-STACK NO-GNU-STACK TEXTREL BUILD-RPATH NO-RELRO NO-BIND-NOW NO-PIE NO-CET NO-SSP NO-FORTIFY NOT-STRIPPED RPATH; do
     n="${COUNT[$k]:-0}"
     [[ "$n" -eq 0 ]] && continue
     printf '  %-13s %5d\n' "$k" "$n"
@@ -232,15 +252,13 @@ fi
 if [[ "${#HARD_LINES[@]}" -gt 0 ]]; then
     echo
     err "objects with no legitimate explanation:"
-    printf '%s\n' "${HARD_LINES[@]}" | sort | head -50 >&2
-    [[ "${#HARD_LINES[@]}" -gt 50 ]] && echo "  ... and $(( ${#HARD_LINES[@]} - 50 )) more" >&2
+    printf '%s\n' "${HARD_LINES[@]}" | sort >&2
 fi
 
 if [[ "$STRICT" -eq 1 && "${#SOFT_LINES[@]}" -gt 0 ]]; then
     echo
     warn "reported findings (--strict promotes these to failures):"
-    printf '%s\n' "${SOFT_LINES[@]}" | sort | head -50 >&2
-    [[ "${#SOFT_LINES[@]}" -gt 50 ]] && echo "  ... and $(( ${#SOFT_LINES[@]} - 50 )) more" >&2
+    printf '%s\n' "${SOFT_LINES[@]}" | sort >&2
 fi
 
 if [[ -n "$JSON" ]]; then
@@ -250,7 +268,7 @@ if [[ -n "$JSON" ]]; then
         printf '  "findings": {\n'
         sep=""
         for k in "${!COUNT[@]}"; do
-            # A real newline: through %s, "\n" would print as two characters.
+            # $',\n' holds a newline; "\n" through %s would print as two characters.
             printf '%s    "%s": %d' "$sep" "$k" "${COUNT[$k]}"
             sep=$',\n'
         done
@@ -280,11 +298,9 @@ fi
 
 echo
 if [[ "$HARD" -gt 0 ]]; then
-    die "${HARD} object(s) failed a check that has no legitimate explanation.
-
-Do not fix these by removing flags from build/config/hardening.env. Find the
-package, read its link line in ${KRYPTIK_WORK}/logs, and either correct how it
-takes LDFLAGS or add a justified per-package exception."
+    die "${HARD} object(s) failed a hard check.
+Do not remove flags from build/config/hardening.env: read the package's link line in
+${KRYPTIK_WORK}/logs and fix how it takes LDFLAGS, or add a justified per-package exception."
 fi
 if [[ "$STRICT" -eq 1 && "${#SOFT_LINES[@]}" -gt 0 ]]; then
     die "${#SOFT_LINES[@]} reported finding(s), and --strict was requested."

@@ -6,7 +6,7 @@ verified before anything is applied.
 `crc32_combine()`, `crc32_combine_gen()` and their 64-bit forms never return
 when the length they are given is negative. They walk the length's bits by
 shifting it right until it is zero, and a negative length shifted right never
-is. zlib.h already said the length must not be negative. This is
+is. zlib.h says the length must not be negative. This is
 CVE-2026-27171; the fix has them return 0 instead.
 
 zlib 1.3.2 is the release that fixes it, and it is not taken because it adds

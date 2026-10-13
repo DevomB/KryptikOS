@@ -25,8 +25,8 @@ against its `.sig` and the GNU keyring. All six are signed by
 
 GNU writes them for `patch -p0`, and `apply_repo_patches` applies `-p1` with
 no fuzz, so their file-header lines are rewritten: `*** ../readline-8.3/FILE`
-became `*** a/FILE` (some name `../readline-8.3-patched/`, and 002 names
-`../readline-8.2/patchlevel`), and `--- FILE` became `--- b/FILE`. Hunk lines
+to `*** a/FILE` (some name `../readline-8.3-patched/`, and 002 names
+`../readline-8.2/patchlevel`), and `--- FILE` to `--- b/FILE`. Hunk lines
 and bodies are GNU's. Two copies of the tarball, one patched with the six
 originals at `-p0` and one with these at `-Np1 -F0`, are the same tree
 (`diff -r`), and `patchlevel` reads 6 in both.

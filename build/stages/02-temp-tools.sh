@@ -138,9 +138,7 @@ s_binutils_pass2() {
     local src; src="$(unpack "binutils-${V_BINUTILS}.tar.xz" "binutils-${V_BINUTILS}")"
     cd "$src"
 
-    # libtool adds an install-prefix -L path when relinking, which poisons a
-    # cross build. LFS removes it by line number; find the line by content
-    # instead. It occurs twice and LFS patches the second, so require two.
+    # libtool's relink -L to the install prefix poisons a cross build; LFS edits the second of two.
     local -a lines
     mapfile -t lines < <(grep -n -F 'add_dir="$add_dir -L$inst_prefix_dir$libdir"' ltmain.sh | cut -d: -f1)
 
@@ -156,7 +154,6 @@ s_binutils_pass2() {
     echo "patching ltmain.sh line ${target} (second of ${#lines[@]} occurrences)"
     sed -i "${target}s/\$add_dir//" ltmain.sh
 
-    # Prove it took.
     if sed -n "${target}p" ltmain.sh | grep -qF 'add_dir="$add_dir'; then
         echo "ltmain.sh patch did not apply"
         return 1
@@ -183,8 +180,7 @@ s_gcc_pass2() {
         x86_64) sed -e "/m64=/s/lib64/lib/" -i.orig gcc/config/i386/t-linux64 ;;
     esac
 
-    # libgcc and libstdc++ can now be built with threads, but the generated
-    # gthr header still points at the pass-1 placeholder.
+    # Pass 2 builds with threads, but the generated gthr header names the pass-1 placeholder.
     sed '/thread_header =/s/@.*@/gthr-posix.h/' \
         -i libgcc/Makefile.in libstdc++-v3/include/Makefile.in
 
