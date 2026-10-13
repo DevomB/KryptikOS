@@ -197,8 +197,9 @@ A desktop someone can live in, built the same way.
   suspend and resume with volume keys dropped across it, power management,
   hotplug and multiple monitors, input methods and a second keyboard layout
   to switch to.
-- **USB sticks.** Read in the zone the user gives one to, through a
-  descriptor and a reader of Kryptik's own, never mounted
+- **USB sticks.** Decided (ADR-025): read in the zone the user gives one
+  to, through a descriptor and a reader of Kryptik's own, never mounted;
+  FAT first, exFAT a named gap, FUSE a later decision of its own
   ([removable storage](design/removable-storage.md)).
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.

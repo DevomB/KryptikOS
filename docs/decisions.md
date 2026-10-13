@@ -550,7 +550,7 @@ A compromised compositor still controls what the user sees and types.
 **Rejected:** splitting dwl into an input process and a renderer, which
 leaves the renderer drawing the borders and every zone talking to it.
 
-## ADR-025 (proposed): A USB stick is read in the zone the user gives it to, never mounted
+## ADR-025: A USB stick is read in the zone the user gives it to, never mounted
 
 When a stick appears, the chrome names it from sysfs and asks which zone
 gets which partition, read-only unless the user says otherwise. kryptikd
@@ -571,5 +571,6 @@ a broker verb that hands a descriptor out.
 
 **Rejected:** mounting in zone 0 and transferring, which parses the stick in
 the shared kernel and puts file picking in zone 0. FUSE in the chosen zone,
-which lets every program there browse the stick, waits: it adds a kernel
-subsystem, and is weighed again if copying first proves too clumsy.
+which would let every program there browse the stick, stays out: it adds a
+kernel subsystem, and needs a decision of its own, weighed against
+`CONFIG_FUSE_FS`, if copying first proves too clumsy.

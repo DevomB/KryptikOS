@@ -6,7 +6,7 @@ today. This design keeps the rules the architecture already set: zone 0
 runs no user applications ([ADR-003](../decisions.md)), a zone reaches
 zone 0 only through its proxy and its [broker](broker.md), and every zone
 shares one kernel, so whatever the kernel parses for one zone it parses
-for all of them. [ADR-025](../decisions.md) is proposed.
+for all of them. [ADR-025](../decisions.md) decides it: no mount.
 
 ## Where things stand
 
@@ -88,12 +88,13 @@ chosen or written with the same care. NTFS waits.
   no mount table changes. The cost is a copy step: a file on the stick
   reaches Firefox's file picker only once it is copied into the zone.
 
-## Recommendation
+## The decision
 
-No mount, first. It adds nothing to the shared kernel, and the reader is
-needed by both options, so the work is not lost if FUSE follows. FUSE
-comes later if copying first proves too clumsy, as a separate decision
-weighed against the kernel code it adds.
+ADR-025 decides: no mount. It adds nothing to the shared kernel, and the
+reader would serve FUSE too, so the work is not lost if FUSE follows.
+FUSE needs a decision of its own, weighed against the kernel code it adds,
+if copying first proves too clumsy. FAT comes first; exFAT is a named gap
+until its reader is chosen.
 
 - **The user picks the zone.** When a stick appears, the chrome names it
   from sysfs, not from its filesystem: vendor, model, size and its
@@ -104,7 +105,7 @@ weighed against the kernel code it adds.
   stick nobody vouches for goes to `untrusted`, where a reader its
   filesystem subverts holds nothing worth taking.
 - **Zones that never get one.** The net zone never does. A zone's file
-  may refuse sticks (`[storage] removable = false`), as `vault` would.
+  may refuse sticks (`[storage] removable = false`), as `vault`'s does.
 - **The broker hands it over.** The zone asks with `stick`. The reply
   carries the descriptor only while the user's grant names that zone and
   that partition, the same way the microphone's grant is held. The grant
