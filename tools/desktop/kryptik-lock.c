@@ -1,6 +1,7 @@
 /* kryptik-lock: lock the session until the login password is typed (docs/design/laptop.md).
  *
  *   kryptik-lock
+ *   kryptik-lock --idle SECONDS    lock each time the session has had no input that long
  *
  * Through ext-session-lock-v1 the compositor shows nothing but this program's surfaces, one
  * per output, and gives them the keyboard. The lock runs in a child, started again if a
@@ -8,6 +9,8 @@
  * `kryptik-launch --check-password` on a pipe, and the launch daemon answers: this process
  * never reads a password hash. It says "kryptik-lock: locked", "kryptik-lock: refused: WHY"
  * and "kryptik-lock: unlocked" on stderr, the session log.
+ * With --idle it waits on the compositor's idle notification (ext-idle-notify-v1), which no
+ * zone can bind, and runs itself as the lock when it comes, until the session ends.
  * Exit: 0 unlocked; 1 the compositor would not lock, or there is no display; 2 usage.
  */
 #define _GNU_SOURCE
@@ -24,6 +27,7 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
+#include "ext-idle-notify-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
 
 /* dwl's root colour behind, a grey no zone has for the marks, and a red for a refusal. */
@@ -466,11 +470,97 @@ static int lock_session(void)
 	return locked ? 3 : 1;
 }
 
+static struct ext_idle_notifier_v1 *notifier;
+static int idled;
+
+static void watch_global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version)
+{
+	(void)data;
+	if (!strcmp(iface, wl_seat_interface.name) && !seat)
+		seat = wl_registry_bind(r, name, &wl_seat_interface, 1);
+	else if (!strcmp(iface, ext_idle_notifier_v1_interface.name) && version >= 2)
+		notifier = wl_registry_bind(r, name, &ext_idle_notifier_v1_interface, 2);
+}
+
+static void watch_global_remove(void *data, struct wl_registry *r, uint32_t name)
+{
+	(void)data; (void)r; (void)name;
+}
+
+static const struct wl_registry_listener watch_registry_listener = {
+	.global = watch_global,
+	.global_remove = watch_global_remove,
+};
+
+static void idle_idled(void *data, struct ext_idle_notification_v1 *n)
+{
+	(void)data; (void)n;
+	idled = 1;
+}
+
+static void idle_resumed(void *data, struct ext_idle_notification_v1 *n)
+{
+	(void)data; (void)n;
+}
+
+static const struct ext_idle_notification_v1_listener idle_listener = {
+	.idled = idle_idled,
+	.resumed = idle_resumed,
+};
+
+/* --idle: a lock of its own each time the session has been idle `secs`, while the session
+ * lasts. Only the seat and the notifier are bound: no keyboard, so no key reaches it. */
+static int watch_idle(long secs)
+{
+	display = wl_display_connect(NULL);
+	if (!display) {
+		say("no Wayland display to watch");
+		return 1;
+	}
+	struct wl_registry *registry = wl_display_get_registry(display);
+	wl_registry_add_listener(registry, &watch_registry_listener, NULL);
+	wl_display_roundtrip(display);
+	if (!seat || !notifier) {
+		say("the compositor offers no idle notification that counts input alone");
+		return 1;
+	}
+	/* Input alone counts, not idle inhibitors: what may hold the screen awake, a video in a
+	 * zone say, must never hold the session unlocked. */
+	struct ext_idle_notification_v1 *n = ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)secs * 1000, seat);
+	ext_idle_notification_v1_add_listener(n, &idle_listener, NULL);
+	pid_t locker = 0;
+	while (wl_display_dispatch(display) != -1) {
+		if (!idled)
+			continue;
+		idled = 0;
+		/* While its lock is up the session idles too, with nobody at the keyboard. */
+		if (locker > 0 && waitpid(locker, NULL, WNOHANG) == 0)
+			continue;
+		fprintf(stderr, "kryptik-lock: no input for %ld s, locking\n", secs);
+		locker = fork();
+		if (locker == 0) {
+			execl("/proc/self/exe", "kryptik-lock", (char *)NULL);
+			_exit(127);
+		}
+	}
+	say("the display went away");
+	return 1;
+}
+
 int main(int argc, char **argv)
 {
-	(void)argv;
+	if (argc == 3 && !strcmp(argv[1], "--idle")) {
+		char *end;
+		long secs = strtol(argv[2], &end, 10);
+		/* Up to a week, so the compositor's milliseconds fit 32 bits. */
+		if (*argv[2] && !*end && secs > 0 && secs <= 7 * 24 * 3600) {
+			signal(SIGPIPE, SIG_IGN);
+			return watch_idle(secs);
+		}
+	}
 	if (argc != 1) {
-		fputs("usage: kryptik-lock   (locks the session until the login password is typed)\n", stderr);
+		fputs("usage: kryptik-lock [--idle SECONDS]   (locks the session until the login password is typed;\n"
+		      "       with --idle, each time the session has had no input that long)\n", stderr);
 		return 2;
 	}
 	/* A refused pipe write is told by write's return, not a signal. */
