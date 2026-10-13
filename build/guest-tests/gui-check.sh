@@ -768,8 +768,9 @@ else
     fail "lock-refuses-wrong-password" "$(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
 fi
 # Killed, the lock's program leaves the session locked with no window given the keyboard,
-# and the lock locks again.
-pkill -KILL -P "$(pgrep -o -x -u "$USER_NAME" kryptik-lock)" -x kryptik-lock 2>/dev/null
+# and the lock locks again. The newest kryptik-lock is the one drawing: the process that
+# starts it again came before it.
+pkill -KILL -n -x -u "$USER_NAME" kryptik-lock 2>/dev/null
 if wait_for 20 more locked "$((locked0 + 1))" && grep -q 'the lock died of signal 9; locking again' "$slog" \
    && [[ "$(entered0)" -eq 1 ]] && ! since_mark lock untrusted | grep -q '^keyboard entered'; then
     pass "lock-survives-its-death" "killed, the lock locked again, and no window got the keyboard meanwhile"
