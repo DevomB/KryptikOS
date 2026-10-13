@@ -447,6 +447,8 @@ static int password_main(int argc)
 		fputs(r, stderr);
 	free(r);
 	return ok ? 0 : 1;
+}
+
 /* One request to a zone's proxy on the move gesture's socket (kryptik-wlproxy's control.rs),
  * `body` after its line: the answer's line in `line`, and the bytes an "ok GEN TYPE N" answer
  * announces in *data. -1 when the zone has no proxy to ask. */
