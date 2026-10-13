@@ -93,6 +93,12 @@ static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "-
 static const char *menucmd[]      = { "havoc", "/usr/bin/kryptik-chrome", "--menu", NULL };
 /* The screen lock, opened by the login password (docs/design/laptop.md). */
 static const char *lockcmd[]      = { "kryptik-lock", NULL };
+/* Zone 0's mixer (docs/design/laptop.md): the volume in steps, mute, and the microphone taken
+ * back from whichever zone holds it. */
+static const char *volupcmd[]     = { "/usr/libexec/kryptik/kryptik-sound", "--control", "volume +5", NULL };
+static const char *voldowncmd[]   = { "/usr/libexec/kryptik/kryptik-sound", "--control", "volume -5", NULL };
+static const char *mutecmd[]      = { "/usr/libexec/kryptik/kryptik-sound", "--control", "mute toggle", NULL };
+static const char *micbackcmd[]   = { "/usr/libexec/kryptik/kryptik-sound", "--control", "revoke", NULL };
 
 static const Key keys[] = {
 	/* modifier                  key                  function          argument */
@@ -101,6 +107,10 @@ static const Key keys[] = {
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_p,           spawn,            {.v = personalcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_u,           spawn,            {.v = untrustedcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_l,           spawn,            {.v = lockcmd} },
+	{ 0,                         XKB_KEY_XF86AudioRaiseVolume, spawn,   {.v = volupcmd} },
+	{ 0,                         XKB_KEY_XF86AudioLowerVolume, spawn,   {.v = voldowncmd} },
+	{ 0,                         XKB_KEY_XF86AudioMute,        spawn,   {.v = mutecmd} },
+	{ 0,                         XKB_KEY_XF86AudioMicMute,     spawn,   {.v = micbackcmd} },
 	{ MODKEY,                    XKB_KEY_j,           focusstack,       {.i = +1} },
 	{ MODKEY,                    XKB_KEY_k,           focusstack,       {.i = -1} },
 	{ MODKEY,                    XKB_KEY_i,           incnmaster,       {.i = +1} },

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Sound suite, run as root in the installed guest by tools/image/sound-test.sh, which boots it
 # with two of QEMU's HD Audio cards: the first only plays, the second plays and records.
+#   sound-check.sh USER    USER is the session's, whose chrome menu is typed into
 # Verdicts: "GT PASS|FAIL name - detail".
 set -u
 cd / || exit 1
+USER_NAME="${1:-tester}"
 PASS=0; FAIL=0
 pass() { echo "GT PASS $1${2:+ - $2}"; PASS=$((PASS + 1)); }
 fail() { echo "GT FAIL $1${2:+ - $2}"; FAIL=$((FAIL + 1)); }
@@ -179,6 +181,52 @@ if [[ ( "$answer" == "b''" || "$answer" == closed:* ) \
     pass "foreign-uid-refused" "root's connection to untrusted's socket was closed unanswered"
 else
     fail "foreign-uid-refused" "answer: ${answer}; refusals logged: ${before} then $(mixer_said 'zone untrusted: refused a peer')"
+fi
+
+# --- the chrome ----------------------------------------------------------------------------
+# The trusted menu, typed into as the session's user: the gesture that grants the microphone and
+# takes it back, the volume of all and of one zone, and mute. It names zones by number.
+menu() {   # menu CHOICE: the menu's screen, with CHOICE typed into it, in $LOG/menu.out
+    su -s /bin/sh "$USER_NAME" -c "printf '%s\nq\n' '$1' | XDG_RUNTIME_DIR=/run/user/$(id -u "$USER_NAME") /usr/bin/kryptik-chrome --menu" \
+        > "$LOG/menu.out" 2>&1
+}
+menu r
+n="$(sed -n 's/^ *\([0-9]\)) untrusted .*/\1/p' "$LOG/menu.out" | head -1)"
+st() { ctl status | grep "^$1"; }
+menu "c$n"
+if [[ -n "$n" ]] && st "zone untrusted" | grep -q ' granted$'; then
+    menu r
+    if grep -q '^Sound: volume [0-9]*; the microphone: untrusted$' "$LOG/menu.out"; then
+        pass "chrome-grants-microphone" "c${n} granted untrusted the microphone, which the menu names"
+    else
+        fail "chrome-grants-microphone" "granted, but the menu says: $(grep '^Sound:' "$LOG/menu.out")"
+    fi
+else
+    fail "chrome-grants-microphone" "untrusted is ${n:-not listed}; status: $(ctl status | tr '\n' ' ')"
+fi
+menu c
+if ! ctl status | grep -q ' granted'; then
+    pass "chrome-takes-microphone-back" "c alone left no zone the microphone"
+else
+    fail "chrome-takes-microphone-back" "$(ctl status | tr '\n' ' ')"
+fi
+menu "v${n}0"; zone_vol="$(st "zone untrusted")"
+menu v9; master_vol="$(st master)"
+menu x; muted="$(st master)"
+menu x; unmuted="$(st master)"
+if [[ "$zone_vol" == "zone untrusted 0" && "$master_vol" == "master 100" && "$muted" == "master 100 muted" \
+      && "$unmuted" == "master 100" ]]; then
+    pass "chrome-sets-volume" "v${n}0 silenced untrusted, v9 set the volume to 100, x muted and x unmuted"
+else
+    fail "chrome-sets-volume" "after v${n}0: ${zone_vol}; v9: ${master_vol}; x: ${muted}; x: ${unmuted}"
+fi
+# The keys' steps: dwl runs these for the volume keys.
+ctl volume -5 > /dev/null; ctl volume -5 > /dev/null; stepped="$(st master)"
+ctl volume +100 > /dev/null; top="$(st master)"
+if [[ "$stepped" == "master 90" && "$top" == "master 100" ]]; then
+    pass "volume-steps" "two steps down came to 90, and a step past the top stops at 100"
+else
+    fail "volume-steps" "${stepped}; ${top}"
 fi
 
 echo "GT SUMMARY passed=${PASS} failed=${FAIL}"

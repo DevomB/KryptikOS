@@ -15,9 +15,10 @@
  * raw interleaved frames, 48 kHz, two channels, signed 16-bit little-endian, and nothing else is
  * parsed: a zone that sends noise plays noise in its own stream. Control: one line a connection,
  * answered "ok", "error: WHY", or for status a line each and "end":
- *   status | volume [ZONE] 0..100 | mute [ZONE] on|off | grant ZONE | revoke [ZONE]
- * volume and mute without a zone are the master's. revoke ZONE, which kryptikd says when a zone
- * stops, ends that zone's grant alone.
+ *   status | volume [ZONE] N|+N|-N | mute [ZONE] on|off|toggle | grant ZONE | revoke [ZONE]
+ * volume (0 to 100, or a step from where it is) and mute without a zone are the master's: the
+ * keys' steps and toggle. revoke ZONE, which kryptikd says when a zone stops, ends that zone's
+ * grant alone.
  */
 #define _GNU_SOURCE
 #include <alsa/asoundlib.h>
@@ -312,16 +313,21 @@ static int zone_named(const char *name)
 	return -1;
 }
 
-static int percent(const char *s)
+/* "N", or "+N" and "-N" from `now`, kept within 0..100; -1 for anything else. */
+static int level(const char *s, int now)
 {
 	char *end;
 	long v = strtol(s, &end, 10);
-	return *s && !*end && v >= 0 && v <= 100 ? (int)v : -1;
+	if (!*s || *end || v < -100 || v > 100 || (*s != '+' && *s != '-' && (*s < '0' || *s > '9')))
+		return -1;
+	if (*s == '+' || *s == '-')
+		v += now;
+	return v < 0 ? 0 : v > 100 ? 100 : (int)v;
 }
 
-static int on_off(const char *s)
+static int switched(const char *s, int now)
 {
-	return !strcmp(s, "on") ? 1 : !strcmp(s, "off") ? 0 : -1;
+	return !strcmp(s, "on") ? 1 : !strcmp(s, "off") ? 0 : !strcmp(s, "toggle") ? !now : -1;
 }
 
 static void end_records(int keep)
@@ -358,13 +364,13 @@ static void control_line(struct conn *c)
 		answer = NULL;
 	} else if (names_zone && z < 0)
 		answer = "error: no zone with sound by that name\n";
-	else if (is_volume && n == 2 && (v = percent(b)) >= 0)
+	else if (is_volume && n == 2 && (v = level(b, master)) >= 0)
 		master = v;
-	else if (is_volume && n == 3 && (v = percent(d)) >= 0)
+	else if (is_volume && n == 3 && (v = level(d, zones[z].volume)) >= 0)
 		zones[z].volume = v;
-	else if (is_mute && n == 2 && (v = on_off(b)) >= 0)
+	else if (is_mute && n == 2 && (v = switched(b, master_muted)) >= 0)
 		master_muted = v;
-	else if (is_mute && n == 3 && (v = on_off(d)) >= 0)
+	else if (is_mute && n == 3 && (v = switched(d, zones[z].muted)) >= 0)
 		zones[z].muted = v;
 	else if (!strcmp(a, "grant") && n == 2) {
 		/* One zone at a time: a grant moves, and what another zone recorded ends. */
@@ -378,7 +384,7 @@ static void control_line(struct conn *c)
 			granted = -1;
 		}
 	} else
-		answer = "error: status | volume [ZONE] 0..100 | mute [ZONE] on|off | grant ZONE | revoke [ZONE]\n";
+		answer = "error: status | volume [ZONE] N|+N|-N | mute [ZONE] on|off|toggle | grant ZONE | revoke [ZONE]\n";
 	if (answer)
 		reply(c->fd, answer);
 	end_conn(c);

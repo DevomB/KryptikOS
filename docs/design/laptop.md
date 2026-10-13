@@ -19,9 +19,12 @@ The kernel builds HD Audio and USB audio as signed modules
 (`boot.fragment`), and the image carries alsa-lib without its MIDI,
 sequencer, use-case manager and DSP topology parts. `kryptik-sound` mixes
 in zone 0 and every zone but the net zone plays through it, as the
-recommendation below has it. The microphone is granted, and volume and
-mute set, on its control socket (`kryptik-sound --control`, group
-`kryptik`): the chrome's gesture and keys are still to come.
+recommendation below has it. The chrome's menu grants the microphone
+(`c<N>`, and `c` takes it back), sets the volume of all and of each zone
+(`v<D>`, `v<N><D>`) and mutes (`x`), and names the zone that may record and
+whether it does; the keyboard's volume keys step the volume, its mute key
+mutes, and its microphone key takes the microphone back. The menu shows the
+recording when it is open; nothing on screen shows it otherwise yet.
 
 ### The kernel side
 
@@ -88,7 +91,9 @@ row.
   holds it at a time. The chrome shows which zone is recording (the
   control socket's `status`), and a zone hears nothing of any other zone.
 - **Volume** and mute per zone are the chrome's, along with a key that mutes
-  everything. The mixer applies them, squared so the steps sound even, and
+  everything (`mute toggle`) and the volume keys' steps (`volume +5`,
+  `volume -5`); the microphone key says `revoke`. The mixer applies the
+  volumes, squared so the steps sound even, and
   sets the card's own controls to unity when it opens it, so a card that
   came up muted plays.
 - **The card** is a USB device when one is plugged in, as it is plugged in
@@ -104,15 +109,17 @@ row.
 ### Check
 
 QEMU's HDA device with its output written to a WAV file on the host (`-audiodev wav`),
-in `make sound-test`, all of which it checks but the chrome's part:
+in `make sound-test`, all of which it checks but the keys, which the
+desktop suite does not press yet:
 
 - the card registers at boot with its codec bound, every codec driver
   loaded ahead of the controller;
 - a tone played in a zone arrives in the file;
 - two zones playing at once are mixed;
-- `record` without a grant is refused, works after the grant (the
-  control socket's, until the chrome's gesture), shows in the status while
-  it records, and is refused again once the zone stops;
+- `record` without a grant is refused, works after the grant, shows in the
+  status while it records, and is refused again once the zone stops;
+- the chrome's menu grants the microphone, names the zone that has it and
+  takes it back, and sets the volume of all and of one zone and mutes;
 - a connection from another uid than the zone's is refused;
 - no zone's `/dev` has a sound node, and no zone reaches the control
   socket;

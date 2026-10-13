@@ -18,8 +18,9 @@
 #   kryptik-chrome --menu          the launcher: zones, their state, apps,
 #                                  the network as the net zone reports it, a
 #                                  release that waits to be installed, a
-#                                  channel with nothing new for 30 days, and
-#                                  the net zone's Wi-Fi networks (w)
+#                                  channel with nothing new for 30 days, the
+#                                  net zone's Wi-Fi networks (w), and sound:
+#                                  the volume, and which zone may record
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
 #                                  ask for the zone's passphrase in a trusted
 #                                  window, then launch (kryptik-launch hands
@@ -34,6 +35,7 @@
 # The verified root's zone files, which dwl's colours match: the state partition can shadow /etc.
 ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
+SOUND=/usr/libexec/kryptik/kryptik-sound
 # havoc takes the program as plain arguments: it has no -e, and exits on an unknown option.
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
@@ -194,6 +196,17 @@ menu_update() {
     echo "Update: ${v} has arrived. u installs it, and the next boot tries it."
 }
 
+# Zone 0's mixer on one line: the volume, and the zone that may record and whether it does.
+menu_sound() {
+    st="$("$SOUND" --control status 2>/dev/null)" || return 0
+    vol="$(printf '%s\n' "$st" | sed -n 's/^master \([0-9]*\).*/\1/p')"
+    printf '%s\n' "$st" | grep -q '^master [0-9]* muted' && vol="$vol, muted"
+    mic="$(printf '%s\n' "$st" | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p')"
+    printf '%s\n' "$st" | grep -q ' recording$' && mic="$mic, RECORDING NOW"
+    echo
+    echo "Sound: volume ${vol}; the microphone: ${mic:-no zone}"
+}
+
 # The update channel's verbs through the launch daemon, as `kryptik update` has
 # them at the administration login. Installing asks first: it arms a trial of
 # the release at the next boot.
@@ -238,11 +251,14 @@ run_menu() {
         menu_zones
         menu_network
         menu_update
+        menu_sound
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
         echo "Admin: u updates: what the channel names, fetch, forget, install"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
         echo "       w Wi-Fi networks   f the last zone window's zone   r refresh   q close this window"
+        echo "Sound: c<N> let zone N use the microphone until it stops (c alone takes it back)"
+        echo "       v<D> the volume, 0 to 9   v<N><D> zone N's own   x mute or unmute everything"
         echo
         printf 'choice (e.g. 1t): '
         if ! read -r choice; then break; fi
@@ -259,6 +275,22 @@ run_menu() {
                    echo "no zone window yet"
                fi
                sleep 3; continue ;;
+            c) "$SOUND" --control revoke > /dev/null && echo "no zone may record now"
+               sleep 1; continue ;;
+            c[1-9]) idx="${choice#c}"; eval "z=\"\${Z$idx:-}\""
+                    [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                    # The gesture is the grant: one zone at a time, and the zone's stop ends it.
+                    if "$SOUND" --control "grant $z" > /dev/null; then
+                        echo "zone $z may use the microphone until it stops, or until c"
+                    else
+                        echo "the microphone was not granted (is the mixer running?)"
+                    fi
+                    sleep 1; continue ;;
+            v[0-9]) "$SOUND" --control "volume $(( ${choice#v} * 100 / 9 ))" > /dev/null; continue ;;
+            v[1-9][0-9]) a="${choice#v}"; d="${a#?}"; idx="${a%?}"; eval "z=\"\${Z$idx:-}\""
+                    [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                    "$SOUND" --control "volume $z $(( d * 100 / 9 ))" > /dev/null; continue ;;
+            x) "$SOUND" --control "mute toggle" > /dev/null; continue ;;
             m[1-9][1-9]) a="${choice#m}"; b="${a#?}"; a="${a%?}"
                       eval "za=\"\${Z$a:-}\""; eval "zb=\"\${Z$b:-}\""
                       [ -n "$za" ] && [ -n "$zb" ] || { echo "no such zones"; sleep 1; continue; }

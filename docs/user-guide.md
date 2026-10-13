@@ -287,6 +287,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+Shift+p | a terminal in the personal zone |
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |
 | Alt+Shift+l | lock the screen until the login password is typed |
+| volume keys, mute, microphone mute | the volume up or down a step, mute or unmute everything, and take the microphone back from whichever zone has it |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |
@@ -324,6 +325,15 @@ shows the ones in range with `s`, numbered, adds one by its name or that
 number, asking for its passphrase in the menu's own window, adds an open one
 with `o`, or forgets one, as `kryptik wifi` does at the administration login.
 A name with a character a terminal would not show plainly is typed instead.
+
+Every zone but the net zone plays sound through zone 0's mixer, and none
+hears another. No zone may record until you let it: in the menu, `c` and the
+zone's number lets that zone use the microphone until it stops, one zone at
+a time, and `c` alone takes it back, as does the keyboard's microphone key.
+The menu's Sound line names the zone that may record and says when it is
+recording. `v` and a digit sets the volume, 0 to 9, `v`, a zone's number and
+a digit sets that zone's own, and `x` mutes or unmutes everything. Sound
+plays on a USB device when one is plugged in, otherwise on the built-in one.
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
