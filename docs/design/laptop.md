@@ -23,10 +23,11 @@ recommendation below has it. The chrome's menu grants the microphone
 (`c<N>`, and `c` takes it back), sets the volume of all and of each zone
 (`v<D>`, `v<N><D>`) and mutes (`x`), and names the zone that may record and
 whether it does; the keyboard's volume keys step the volume, its mute key
-mutes, and its microphone key takes the microphone back. While a zone holds
-the microphone, a window of the chrome's says so, and says when it records;
-it opens on the grant, so it takes the keyboard from the menu the gesture was
-typed in, not from a zone, and closes when the grant ends.
+mutes, and its microphone key takes the microphone back, under the screen
+lock too. While a zone holds the microphone, a window of the chrome's says
+so, and says when it records; it opens on the grant, so it takes the
+keyboard from the menu the gesture was typed in, not from a zone, and
+closes when the grant ends.
 
 ### The kernel side
 
@@ -117,8 +118,8 @@ row.
 ### Check
 
 QEMU's HDA device with its output written to a WAV file on the host (`-audiodev wav`),
-in `make sound-test`, all of which it checks but the keys, which the
-desktop suite does not press yet:
+in `make sound-test`, all of which it checks but the keys, which
+`make gui-test` presses:
 
 - the card registers at boot with its codec bound, every codec driver
   loaded ahead of the controller;
@@ -133,7 +134,10 @@ desktop suite does not press yet:
 - a connection from another uid than the zone's is refused;
 - no zone's `/dev` has a sound node, and no zone reaches the control
   socket;
-- the mixer runs as uid 87 in group `audio` alone.
+- the mixer runs as uid 87 in group `audio` alone;
+- the volume-down key steps the mixer's volume, and under the screen lock
+  the volume-up and mute keys still act while Alt+p opens no menu
+  (`make gui-test`, where the mixer runs without a card).
 
 ## Bluetooth
 
@@ -217,7 +221,8 @@ to resume can run from the root while the state partition is suspended.
    its supervisor's pid to `$XDG_RUNTIME_DIR/kryptik/lock.pid`, and
    `kryptik-lock --suspend` asks that lock instead (SIGUSR1) when the
    file is the user's own, mode 600, and names a process of this program
-   run by the user. dwl runs no binding while locked, so the lock takes the
+   run by the user. dwl runs only the volume and brightness keys while
+   locked (`lockedkeys` in its configuration), so the lock takes the
    power key itself, but none for 10 s after a wake: on some machines the
    press that wakes it reaches the input layer as the power key, which
    would put it straight back to sleep. A lid that closes while an output

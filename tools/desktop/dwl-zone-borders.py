@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Patch dwl.c (dwl v0.8) for zone borders, focus, scene layers and popups.
+"""Patch dwl.c (dwl v0.8) for zone borders, focus, scene layers, popups, the lid
+and the keys heeded under the screen lock.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -751,6 +752,25 @@ createswitch(struct wlr_switch *sw)
 void
 inputdevice(struct wl_listener *listener, void *data)
 {
+"""),
+    # Locked, dwl heeds no key at all, so a laptop that starts to play aloud under the lock
+    # is silenced only by unlocking. It heeds config.h's lockedkeys instead: the volume and
+    # brightness keys, which reach no zone and nothing typed at the lock. A key held from
+    # before the lock repeats through the same table.
+    ("""\tconst Key *k;
+\tfor (k = keys; k < END(keys); k++) {
+""",
+     """\t/* Kryptik: while the session is locked, lockedkeys alone. */
+\tconst Key *k = locked ? lockedkeys : keys, *end = locked ? END(lockedkeys) : END(keys);
+\tfor (; k < end; k++) {
+"""),
+    ("""\t/* On _press_ if there is no active screen locker,
+\t * attempt to process a compositor keybinding. */
+\tif (!locked && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+""",
+     """\t/* On _press_ attempt to process a compositor keybinding, which while
+\t * the session is locked is one of lockedkeys. */
+\tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 """),
 ]
 

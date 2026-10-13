@@ -157,6 +157,18 @@ static const Key keys[] = {
 	CHVT(7), CHVT(8), CHVT(9), CHVT(10), CHVT(11), CHVT(12),
 };
 
+/* The only keys heeded while the session is locked (Kryptik's patch to dwl): how loud and how
+ * bright, and the microphone taken back, none of which reaches a zone or the lock's password.
+ * The power key is the lock's own, as a lock already up has the machine sleep. */
+static const Key lockedkeys[] = {
+	{ 0,                         XKB_KEY_XF86AudioRaiseVolume, spawn,   {.v = volupcmd} },
+	{ 0,                         XKB_KEY_XF86AudioLowerVolume, spawn,   {.v = voldowncmd} },
+	{ 0,                         XKB_KEY_XF86AudioMute,        spawn,   {.v = mutecmd} },
+	{ 0,                         XKB_KEY_XF86AudioMicMute,     spawn,   {.v = micbackcmd} },
+	{ 0,                         XKB_KEY_XF86MonBrightnessUp,   spawn,  {.v = brightupcmd} },
+	{ 0,                         XKB_KEY_XF86MonBrightnessDown, spawn,  {.v = brightdowncmd} },
+};
+
 static const Button buttons[] = {
 	{ MODKEY, BTN_LEFT,   moveresize,     {.ui = CurMove} },
 	{ MODKEY, BTN_MIDDLE, togglefloating, {0} },

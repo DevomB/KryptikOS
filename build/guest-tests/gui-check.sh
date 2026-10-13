@@ -24,7 +24,11 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT KEY-VOLUME-DOWN                              press the volume-down key
 #   GT KEY-LOCK-LAYOUT                              press Alt+Shift+l
+#   GT KEY-LOCKED-VOLUME-UP                         press the volume-up key
+#   GT KEY-LOCKED-MUTE, GT KEY-LOCKED-MUTE-AGAIN    press the mute key
+#   GT KEY-LOCKED-MENU                              press Alt+p, then Escape
 #   GT KEY-LAYOUT-NEXT, GT KEY-LAYOUT-BACK          press Super+Space (the next layout)
 #   GT LOCK-TYPE-OTHER-LAYOUT, GT LOCK-TYPE-FIRST-LAYOUT
 #                                                   type the user's password and Enter
@@ -976,6 +980,16 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+# The volume keys are dwl's bindings to zone 0's mixer, which runs without a card here.
+mixer() { /usr/libexec/kryptik/kryptik-sound --control status 2>&1 | sed -n 's/^master //p'; }
+master_is() { [[ "$(mixer)" == "$1" ]]; }
+m0="$(mixer)"; m0="${m0%% *}"
+echo "GT KEY-VOLUME-DOWN"
+if [[ "$m0" =~ ^[0-9]+$ ]] && wait_for 10 master_is "$(( m0 >= 5 ? m0 - 5 : 0 ))"; then
+    pass "volume-key" "the volume-down key took the mixer from ${m0} to $(mixer)"
+else
+    fail "volume-key" "before: ${m0:-no answer}; after: $(mixer)"
+fi
 # With two layouts the lock names the one in force, as Super+Space switches: the password typed
 # in de, where this keyboard's - key types another character, is refused, and typed again once
 # Super+Space is back on us, it opens the lock.
@@ -985,6 +999,28 @@ us0="$(layout_said US)"; de0="$(layout_said DE)"
 locked2="$(said locked)"; refused2="$(said refused)"; unlocked2="$(said unlocked)"
 echo "GT KEY-LOCK-LAYOUT"
 wait_for 20 more locked "$locked2" && wait_for 10 layout_more US "$us0"; named_us=$?
+# Under that lock the volume keys still act, and no other binding does: Alt+p opens no menu.
+# Escape then clears the p the lock took as typed.
+m1="$(mixer)"; m1="${m1%% *}"; up1="$(( ${m1:-0} + 5 > 100 ? 100 : ${m1:-0} + 5 ))"
+menus_locked="$(menu_windows)"
+echo "GT KEY-LOCKED-VOLUME-UP"
+wait_for 10 master_is "$up1"; went_up=$?
+echo "GT KEY-LOCKED-MUTE"
+wait_for 10 master_is "$up1 muted"; went_mute=$?
+echo "GT KEY-LOCKED-MUTE-AGAIN"
+wait_for 10 master_is "$up1"; went_back=$?
+if [[ "$m1" =~ ^[0-9]+$ && "$went_up/$went_mute/$went_back" == 0/0/0 ]]; then
+    pass "lock-passes-volume-keys" "locked, the volume-up key took the mixer from ${m1} to ${up1}, and the mute key muted it and unmuted it"
+else
+    fail "lock-passes-volume-keys" "from ${m1:-no answer}: up ${went_up}, mute ${went_mute}, unmute ${went_back} (0 is done); now $(mixer)"
+fi
+echo "GT KEY-LOCKED-MENU"
+sleep 4
+if [[ "$(menu_windows)" -eq "$menus_locked" && "$(said unlocked)" -eq "$unlocked2" ]]; then
+    pass "lock-holds-other-keys" "under the lock Alt+p opened no menu, and the session stayed locked"
+else
+    fail "lock-holds-other-keys" "menu windows: ${menus_locked} before Alt+p, $(menu_windows) after; $(grep 'kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+fi
 echo "GT KEY-LAYOUT-NEXT"
 wait_for 10 layout_more DE "$de0"; named_de=$?
 if [[ "$named_us/$named_de" == 0/0 ]]; then

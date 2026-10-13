@@ -547,7 +547,8 @@ static void keyboard_key(void *data, struct wl_keyboard *kb, uint32_t serial, ui
 		return;
 	xkb_keycode_t code = key + 8;
 	xkb_keysym_t sym = xkb_state_key_get_one_sym(xstate, code);
-	/* The power key: dwl runs no binding while locked, so the lock has the machine sleep. */
+	/* The power key: dwl runs only the volume and brightness keys while locked, so the lock
+	 * has the machine sleep. */
 	if (sym == XKB_KEY_XF86PowerOff) {
 		suspend_now();
 		return;
