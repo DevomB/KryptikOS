@@ -186,7 +186,8 @@ trap cleanup EXIT INT TERM
 
 ESP_SRC=""      # a block device or a regular file holding the ESP image
 IMG_SRC=""      # the medium's software images, if it carries any
-medium_image() { cat "$IMG_SRC/$1.img"; }   # medium_image NAME
+# Image NAME as the medium carries it, never past the size its list signs and one byte.
+medium_image() { head -c "$(( $2 + 1 ))" "$IMG_SRC/$1.img"; }   # medium_image NAME BYTES
 ROOT_SRC=""     # block device holding the root image at ROOT_OFF
 ROOT_OFF=0
 case "$media" in
@@ -201,7 +202,7 @@ case "$media" in
         # The release's software images, when the medium carries them, in a partition of their own.
         IMG_DEV="$(kryptik_part kryptik-images 2>/dev/null)" || IMG_DEV=""
         if [ -b "$IMG_DEV" ]; then
-            mount -t ext4 -o ro,nosuid,nodev,noexec "$IMG_DEV" "$MNT_BASE/images" || die "could not mount the medium's kryptik-images"
+            mount -t vfat -o ro,nosuid,nodev,noexec "$IMG_DEV" "$MNT_BASE/images" || die "could not mount the medium's kryptik-images"
             IMG_SRC="$MNT_BASE/images"
         fi
         ;;
