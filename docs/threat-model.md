@@ -213,8 +213,8 @@ ship as vendor binaries (ADR-012).
 
 Keys are in RAM while zones run. Cold-boot and DMA attacks on a running or
 suspended machine are out of scope, and no software helps against coercion.
-The screen lock (Alt+Shift+l) keeps whoever lacks the login password from
-every window, but takes no key out of RAM.
+The screen lock (Alt+Shift+l) keeps whoever is at the keyboard without the
+login password from every window, but takes no key out of RAM.
 
 ### Microarchitectural side channels
 

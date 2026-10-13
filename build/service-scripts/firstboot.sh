@@ -25,6 +25,8 @@ has_password() { awk -F: -v u="$1" '$1==u && $2 ~ /^\$/ {ok=1} END {exit !ok}' /
 # account database rather than a marker, so the next boot finishes a setup
 # that was cut short.
 complete() { u="$(regular_user)"; [ -n "$u" ] && has_password "$u" && has_password root; }
+# The screen lock checks SHA-512 and SHA-256 crypt (kryptikd's password.rs); login takes more kinds.
+lockable_hash() { case "$1" in '$6$'*|'$5$'*) return 0 ;; *) return 1 ;; esac; }
 
 create_user() {   # create_user NAME
     case "$1" in
@@ -48,8 +50,12 @@ if [ -r "$PRESEED" ]; then
     rhash="$(sed -n 's/^root_password_hash=//p' "$PRESEED" | head -1)"
     if [ -n "$name" ] && [ -n "$hash" ]; then
         id "$name" >/dev/null 2>&1 || create_user "$name" || say "preseed FAILED"
-        # The hashes go through stdin, never argv.
-        printf '%s:%s\n' "$name" "$hash" | chpasswd -e || say "preseed FAILED: the user's password was not set"
+        if lockable_hash "$hash"; then
+            # The hashes go through stdin, never argv.
+            printf '%s:%s\n' "$name" "$hash" | chpasswd -e || say "preseed FAILED: the user's password was not set"
+        else
+            say "preseed FAILED: the user's password_hash is not SHA-512 crypt (openssl passwd -6), which the screen lock checks"
+        fi
     else
         say "preseed file is incomplete; ignoring it"
     fi
