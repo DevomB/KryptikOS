@@ -1205,6 +1205,8 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
         return None;
     };
     let uid = peer.uid;
+    // Before authorised(), which reads /etc/group over the suspended state partition and would
+    // hang; meanwhile the socket's 0660 root:kryptik is the gate.
     if crate::suspend::state_suspended() {
         let said = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
             Ok((mut raw, carried)) => {
