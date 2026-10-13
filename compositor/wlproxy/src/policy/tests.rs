@@ -24,6 +24,22 @@ fn capture_and_clipboard_are_hidden() {
     assert!(own_version("wl_data_device_manager").is_some() && served("wl_data_device_manager"));
 }
 
+/// The gesture carries the types the broker's clipboard takes, no more: a type only one of them
+/// knew would leave a payload one path can carry and the other cannot.
+#[test]
+fn move_types_are_the_brokers() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../compartments/kryptikd/src/broker.rs");
+    let broker = std::fs::read_to_string(&path).expect("broker.rs");
+    let start = broker.find("pub const MIME_TYPES: &[&str] = &[").expect("the broker's MIME list");
+    let end = start + broker[start..].find("];").expect("the end of that list");
+    let mut theirs: Vec<&str> = broker[start..end].split('"').skip(1).step_by(2).collect();
+    let mut ours = MOVE_TYPES.to_vec();
+    theirs.sort_unstable();
+    ours.sort_unstable();
+    assert_eq!(ours, theirs);
+    assert_eq!(MOVE_TYPES[0], "text/plain;charset=utf-8", "text with its charset is taken first");
+}
+
 /// Only delete_id frees objects, and only client-created ones: no event the compositor can send
 /// creates one. The server range is then the proxy's own, for the offers it makes (clipboard.rs);
 /// a global let through whose events create objects fails here before its ids could collide.

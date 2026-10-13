@@ -1,7 +1,7 @@
 use super::*;
 
 fn sel(owner: u64, source: u32) -> Option<Selection> {
-    Some(Selection { owner, source, mimes: vec!["text/plain".into()] })
+    Some(Selection { owner, source, mimes: vec!["text/plain".into()], data: None })
 }
 
 fn kinds(c: &mut Clipboard) -> Vec<String> {
