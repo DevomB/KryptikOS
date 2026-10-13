@@ -928,17 +928,32 @@ fi
 pkill -u "$USER_NAME" -f 'wlprobe oversize 0 300 lock-0' 2>/dev/null; wait "$lock0_pid" 2>/dev/null
 stop_zone untrusted
 # Idle, the session locks itself: kryptik-lock --idle, as the chrome starts it, locks after
-# its seconds without input, and again after the next quiet stretch once unlocked.
-as_user "/usr/bin/kryptik-lock --idle 8" > "$LOG/idle-lock.out" 2>&1 &
+# its seconds without input, turns the screens off --blank seconds later and on again at the
+# first key, and locks again after the next quiet stretch once unlocked. The compositor tells
+# the watcher each screen's power as it changes, so its log says what was done, not asked.
+as_user "/usr/bin/kryptik-lock --idle 8 --blank 4" > "$LOG/idle-lock.out" 2>&1 &
 idle_pid=$!
 idle_said() { [[ "$(grep -c "^kryptik-lock: $1" "$LOG/idle-lock.out")" -ge "$2" ]]; }
+# The compositor's word: a screen off, and one on again after that, however many there are.
+power_off() { grep -qE '^kryptik-lock: screen [0-9]+ power off$' "$LOG/idle-lock.out"; }
+power_back() { sed -n '/^kryptik-lock: screen [0-9]* power off$/,$p' "$LOG/idle-lock.out" | grep -qE '^kryptik-lock: screen [0-9]+ power on$'; }
 if wait_for 30 idle_said locked 1 && grep -q '^kryptik-lock: no input for 8 s, locking' "$LOG/idle-lock.out"; then
     pass "idle-locks" "8 s without input locked the session"
 else
     fail "idle-locks" "$(tr '\n' ' ' < "$LOG/idle-lock.out"); session.log: $(grep 'kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
 fi
+if wait_for 15 idle_said 'screens off' 1 && wait_for 5 power_off; then
+    pass "idle-blanks" "4 s after the lock the screens went off, and the compositor says the output's power is off"
+else
+    fail "idle-blanks" "the watcher: $(tr '\n' ' ' < "$LOG/idle-lock.out")"
+fi
 echo "GT LOCK-TYPE-IDLE"
-if wait_for 30 idle_said unlocked 1 && wait_for 30 idle_said locked 2; then
+if wait_for 30 idle_said unlocked 1 && wait_for 5 power_back && idle_said 'screens on' 1; then
+    pass "key-wakes-screens" "the first key turned the screens on again, and the password unlocked"
+else
+    fail "key-wakes-screens" "the watcher: $(tr '\n' ' ' < "$LOG/idle-lock.out")"
+fi
+if wait_for 30 idle_said locked 2; then
     pass "idle-locks-again" "unlocked by the password, the session locked itself again after 8 s more without input"
 else
     fail "idle-locks-again" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
@@ -946,7 +961,7 @@ fi
 echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
-pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
 # chrome's record follows the monitor in use, and pulling the monitor out

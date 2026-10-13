@@ -2,7 +2,7 @@
 
 # The launch client, session and chrome scripts, and the Wayland proxy built outside (as kryptikd).
 s_desktop() {
-    local wl="$1" wl_sha="${2:-absent}" launch_sha="${3:-none}" session_sha="${4:-none}" chrome_sha="${5:-none}" probe_sha="${6:-none}" lock_sha="${7:-none}"
+    local wl="$1" wl_sha="${2:-absent}" launch_sha="${3:-none}" session_sha="${4:-none}" chrome_sha="${5:-none}" probe_sha="${6:-none}" lock_sha="${7:-none}" dwl_ver="${8:-none}"
     [[ "$wl" == "none" ]] && wl=""
     local d="${KRYPTIK_ROOT}/tools/desktop"
     echo "inputs: wlprobe.c ${probe_sha}"
@@ -10,6 +10,7 @@ s_desktop() {
     echo "        kryptik-session   ${session_sha}"
     echo "        kryptik-chrome    ${chrome_sha}"
     echo "        kryptik-lock.c    ${lock_sha}"
+    echo "        dwl's protocols   v${dwl_ver}"
     echo "        kryptik-wlproxy   ${wl:-<none>} (${wl_sha})"
     local f
     for f in kryptik-launch.c kryptik-session kryptik-chrome wlprobe.c kryptik-lock.c; do
@@ -33,22 +34,24 @@ s_desktop() {
     [[ "$out" == *usage:* ]] || { echo "FAIL: wlprobe does not run here: ${out}"; return 1; }
     echo "wlprobe: built and runs"
 
-    # The screen lock: a client of ext-session-lock-v1 and ext-idle-notify-v1, whose code
-    # wayland-scanner makes from wayland-protocols' descriptions, with xkbcommon for the
-    # user's keyboard layout.
-    local gen p xml
+    # The screen lock: a client of ext-session-lock-v1 and ext-idle-notify-v1, and of wlroots'
+    # screen power control, whose description dwl's pinned source carries; wayland-scanner
+    # makes their code, and xkbcommon reads the user's keyboard layout.
+    local gen p xml dwlsrc
     gen="$(mktemp -d)"
-    for p in ext-session-lock ext-idle-notify; do
-        xml="/usr/share/wayland-protocols/staging/${p}/${p}-v1.xml"
-        [[ -f "$xml" ]] || { echo "FAIL: no ${xml}"; rm -rf "$gen"; return 1; }
-        wayland-scanner client-header "$xml" "$gen/${p}-v1-client-protocol.h"
-        wayland-scanner private-code "$xml" "$gen/${p}-v1-protocol.c"
+    dwlsrc="$(unpack "dwl-v${V_DWL}.tar.gz" "dwl-v${V_DWL}")"
+    for xml in /usr/share/wayland-protocols/staging/ext-session-lock/ext-session-lock-v1.xml \
+               /usr/share/wayland-protocols/staging/ext-idle-notify/ext-idle-notify-v1.xml \
+               "${dwlsrc}/protocols/wlr-output-power-management-unstable-v1.xml"; do
+        [[ -f "$xml" ]] || { echo "FAIL: no ${xml}"; rm -rf "$gen" "$dwlsrc"; return 1; }
+        p="$(basename "$xml" .xml)"
+        wayland-scanner client-header "$xml" "$gen/${p}-client-protocol.h"
+        wayland-scanner private-code "$xml" "$gen/${p}-protocol.c"
     done
     # shellcheck disable=SC2086,SC2046
-    gcc ${CFLAGS} ${LDFLAGS} -I"$gen" -o /usr/bin/kryptik-lock "$d/kryptik-lock.c" \
-        "$gen/ext-session-lock-v1-protocol.c" "$gen/ext-idle-notify-v1-protocol.c" \
+    gcc ${CFLAGS} ${LDFLAGS} -I"$gen" -o /usr/bin/kryptik-lock "$d/kryptik-lock.c" "$gen"/*-protocol.c \
         $(pkg-config --cflags --libs wayland-client xkbcommon)
-    rm -rf "$gen"
+    rm -rf "$gen" "$dwlsrc"
     chmod 0755 /usr/bin/kryptik-lock
     out="$(/usr/bin/kryptik-lock --help 2>&1 || true)"
     [[ "$out" == *usage:* ]] || { echo "FAIL: kryptik-lock does not run here: ${out}"; return 1; }

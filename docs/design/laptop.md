@@ -188,11 +188,15 @@ in a child that starts again when a signal kills it. At resume the state
 passphrase will be the unlock instead: whoever knows it already owns the
 machine. On idle, the chrome starts `kryptik-lock --idle`, which waits on
 dwl's `ext-idle-notify-v1` and locks after ten minutes without input, or
-the minutes in `~/.config/kryptik/lock-idle` (0 never). It counts input
-alone (the protocol's version 2), so an idle inhibitor, which the browser
-design would let a zone hold to keep the screen awake, never keeps the
-session unlocked. No zone can bind the notifier, which would tell it when
-the user is away. Locking before suspend is still to come.
+the minutes in `~/.config/kryptik/lock-idle` (0 never). A minute after the
+lock it turns the screens off through dwl's
+`zwlr_output_power_manager_v1`, and the first key or movement turns them on
+again; an unlock turns them on as well, should the watcher be gone. It
+counts input alone (the protocol's version 2), so an idle inhibitor, which
+the browser design would let a zone hold to keep the screen awake, never
+keeps the session unlocked or the screens lit. No zone can bind the
+notifier, which would tell it when the user is away. Locking before
+suspend is still to come.
 
 The lock's check, in `make gui-test`:
 
@@ -208,7 +212,9 @@ The lock's check, in `make gui-test`:
 - a grab a zone makes while locked keeps no key from the lock;
 - the login password unlocks, and zone 0's window has the keyboard again;
 - the chrome arms the idle lock at ten minutes, and an idle lock of 8 s
-  locks the session, and locks it again after the next 8 s once unlocked.
+  locks the session, turns the screen off 4 s later as the compositor
+  reports to it, turns it on at the first key, and locks again after the
+  next 8 s once unlocked.
 
 **The watchdog** must not reset a sleeping machine. The drivers stop their
 timers across suspend; the suite proves it with a sleep longer than the
@@ -262,10 +268,26 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 - **Brightness.** An eudev rule gives the `video` group write access to the
   backlight, the session user is in it, and dwl's keys run a small tool.
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
-  zone 0 tool to blank the screen, then lock, then suspend. The lock is
-  built (`kryptik-lock --idle`, above); blanking and suspend are not. Zones may hold the screen awake through the
-  proxy's idle inhibition (the browser design), and the chrome shows which
-  zone does.
+  zone 0 tool to blank the screen, then lock, then suspend. The lock and
+  blanking are built (`kryptik-lock --idle`, above), in the other order: a
+  screen turned off while unlocked would come back on to an open session at
+  the first touch. Suspend is not built.
+- **Holding the screen awake.** A zone playing a video may hold off both the
+  lock and the blanking, through the proxy's idle inhibition (the browser
+  design), under these conditions. They come with the browser image, the
+  first thing that needs them; until then no zone can, and both count input
+  alone.
+  - The zone's file on the verified root opts in (`[desktop] hold_awake =
+    true`). It is off by default, and never set for `untrusted`, where
+    unknown links open.
+  - A hold counts only while the inhibiting surface is mapped and visible on
+    a lit output and its zone's window has the keyboard; losing either ends
+    it.
+  - It is capped at four hours, after which the lock comes as usual, and any
+    zone 0 action, a lid close or a suspend ends it. The chrome shows which
+    zone holds the screen awake for as long as it does.
+  - The moment no hold qualifies, the lock and the blanking count input
+    alone again.
 - The chrome shows the battery and AC state.
 
 ### Check

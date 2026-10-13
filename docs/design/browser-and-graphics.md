@@ -264,7 +264,10 @@ Four things are needed, each with its own review. The first two are built.
   ([broker](broker.md#clipboard)).
 - **`wp_fractional_scale_v1`**, for sharp text on high-density screens.
 - **`zwp_idle_inhibit_manager_v1`**, so video keeps the screen awake; the
-  chrome shows which zone holds it.
+  chrome shows which zone holds it. It comes with the browser image, under
+  the conditions the [laptop design](laptop.md#power-management-without-logind)
+  sets for holding the screen awake; until then nothing a zone does holds
+  off the lock or the blanking.
 
 `xdg_activation_v1` stays hidden: it lets a client take focus, and a zone
 must not raise a window over another zone's. Input methods are in the
