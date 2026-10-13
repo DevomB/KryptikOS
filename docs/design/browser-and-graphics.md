@@ -197,6 +197,16 @@ floors are given with each layer.
     into the chroot, and the runner is in stage 04's cache key. The
     alternative is an offline build inside the chroot from crates fetched
     beforehand.
+  - **Two gigabytes of sources.** Firefox's source is 0.8 GB and LLVM's
+    build 1.2 GB even as `.tar.zst`. In the one sources cache, every image
+    pin's bump would copy the root's set beside them, against the
+    repository's 10 GB. The images' sources need a cache of their own,
+    keyed by `build/images/sources.lock`.
+  - **Mozilla's key from Mozilla.** Its signing subkey was replaced in
+    August 2026 after a copy leaked, and the keyserver's copy carries
+    neither the new subkey nor the old one's revocation. The key must come
+    from the `KEY` file beside each release, which needs a provenance kind
+    for a project's own key file.
 
 ## GPU rendering, zone by zone
 
