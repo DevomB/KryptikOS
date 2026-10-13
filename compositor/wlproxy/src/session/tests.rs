@@ -768,7 +768,7 @@ fn truncated_ancillary_data_is_refused() {
 /// requests, only create_pool carries one forward, and the pool bound comes first.)
 #[test]
 fn outgoing_descriptors_are_bounded() {
-    let (mut s, _c, sv) = make();
+    let (mut s, c, sv) = make();
     s.objects.place(3, (protocol::find("wl_keyboard").unwrap(), 1));
     let (a, mut b) = UnixStream::pair().unwrap();
     b.set_nonblocking(true).unwrap();
@@ -785,6 +785,8 @@ fn outgoing_descriptors_are_bounded() {
     }
     drop(a);
     s.refuse("outgoing descriptor limit");
+    // The refusal sends the client what was queued; the client gone, nothing holds a copy.
+    drop(c);
     assert_eq!(b.read(&mut [0u8; 1]).unwrap(), 0);
 }
 
