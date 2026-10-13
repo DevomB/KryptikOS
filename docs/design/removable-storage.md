@@ -34,6 +34,10 @@ When a stick is plugged in:
 - **Its filesystem is written by whoever had it last.** Filesystem drivers
   are a well-worn target for crafted images, and the kernel's are shared by
   every zone: a bug reached through one mount is a bug in all of them.
+- **Its filesystem can keep a reader busy.** Read by a program in the zone
+  it was given to, a filesystem made to loop can keep that program spinning
+  until the user stops it. Kryptik's reader stops at whatever claims more
+  than the stick has room for, and the stick reaches nothing past that zone.
 - **Its partition table** is parsed by the kernel and by libblkid in zone
   0 whatever is decided here. Those parsers are small and long fuzzed. A
   rule that skips eudev's probe for USB disks
