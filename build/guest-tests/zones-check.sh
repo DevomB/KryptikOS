@@ -1241,7 +1241,7 @@ fi
 # A network that hides its name is joined once saved with --hidden: its access point beacons with
 # no SSID and answers only a probe request that names it, which the station then sends.
 HIDDEN_SSID=kryptik-hwsim-hidden
-hidden_up=0; heard_nameless=""; sta_scan=""
+hidden_up=0; heard_nameless=""
 if [[ "$ap_up" = 1 ]]; then
     ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
     [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
@@ -1264,26 +1264,32 @@ network={
 EOF
     ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-hidden.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-hidden-wpa.log" >> "$LOG/ap.err" 2>&1
     for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { hidden_up=1; break; }; sleep 1; done
-    # Its beacons name nothing, as the station hears them. The supplicant, which lost its access
-    # point a moment ago, scans on its own and holds the radio (EBUSY), and what its scans heard
-    # stays in the kernel's results: a scan of the station's own or those results, a while apart.
-    nameless() { awk '/^BSS / { b = ($2 ~ /^02:00:00:00:01:03/) } b && /^[[:space:]]*SSID:/ { print; exit }'; }
-    for _ in $(seq 1 15); do
-        sta_scan="$(sta_iw scan passive)"
-        heard_nameless="$(nameless <<<"$sta_scan")"
-        [[ -z "$heard_nameless" ]] && heard_nameless="$(sta_iw scan dump | nameless)"
-        [[ -n "$heard_nameless" ]] && break
-        sleep 2
-    done
+    # Its beacons name nothing, as hwsim's monitor (hwsim0) hears every frame on the air. The
+    # station is no witness: its supplicant, which lost its access point a moment ago, holds the
+    # radio for its own scans and joins, and a scan of the station's own gets EBUSY.
+    heard_nameless="$(timeout 10 python3 - 2>> "$LOG/hwsim.err" <<'PY'
+import socket
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+s.bind(("hwsim0", 0))
+while True:
+    f = s.recv(4096)
+    h = f[int.from_bytes(f[2:4], "little"):]
+    # A beacon from 02:00:00:00:01:03, whose first element, after 24 bytes of header and 12 of
+    # fixed fields, is the SSID.
+    if len(h) >= 38 and h[0] == 0x80 and h[10:16] == bytes.fromhex("020000000103") and h[36] == 0:
+        print("SSID %r" % h[38:38 + h[37]] if h[37] else "an SSID element of length 0", flush=True)
+        break
+PY
+)"
 fi
 before="$(ready_count)"
 printf '%s\n' "$AP_PASS" | "$KD" wifi add "$HIDDEN_SSID" --hidden --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-add-hidden.out" 2>&1
 line="$(ready_after "$before" " wifi=$HIDDEN_SSID " 90)"
-if [[ "$hidden_up" = 1 && -n "$heard_nameless" && "$heard_nameless" != *"$HIDDEN_SSID"* && "$line" == *" wifi=$HIDDEN_SSID "* ]] \
+if [[ "$hidden_up" = 1 && "$heard_nameless" == "an SSID element of length 0" && "$line" == *" wifi=$HIDDEN_SSID "* ]] \
    && grep -q "added hidden network \"$HIDDEN_SSID\"" "$LOG/wifi-add-hidden.out"; then
-    pass "wifi-hidden" "its beacons name nothing ($(tr -s '\t' ' ' <<<"$heard_nameless")), and saved with --hidden it was joined: ${line#*netzone: }"
+    pass "wifi-hidden" "its beacons name nothing (${heard_nameless}, as hwsim0 heard them), and saved with --hidden it was joined: ${line#*netzone: }"
 else
-    fail "wifi-hidden" "access point up: ${hidden_up}; its beacons, as the station heard them: ${heard_nameless:-not heard ($(head -1 <<<"$sta_scan" | cut -c1-120))}; $(tr '\n' ' ' < "$LOG/wifi-add-hidden.out"); newest READY: ${line:-none}; $(tail -2 "$LOG/ap-hidden-wpa.log" 2>/dev/null | tr '\n' ' ')"
+    fail "wifi-hidden" "access point up: ${hidden_up}; its beacons on hwsim0: ${heard_nameless:-none heard in 10 s ($(tail -1 "$LOG/hwsim.err"))}; $(tr '\n' ' ' < "$LOG/wifi-add-hidden.out"); newest READY: ${line:-none}; $(tail -2 "$LOG/ap-hidden-wpa.log" 2>/dev/null | tr '\n' ' ')"
 fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
