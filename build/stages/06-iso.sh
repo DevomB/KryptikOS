@@ -569,12 +569,12 @@ make_images_fs() {
 }
 
 make_gpt_image() {   # make_gpt_image OUT ESP-IMG ROOT-IMG ROOT-LABEL [IMAGES-FS]
-    local out="$1" esp="$2" root="$3" label="$4" images="${5:-}"
+    local out="$1" esp="$2" root="$3" label="$4" imgfs="${5:-}"
     local esp_bytes root_bytes images_sectors=0
     esp_bytes="$(stat -c %s "$esp")"; root_bytes="$(stat -c %s "$root")"
     local esp_sectors=$(( esp_bytes / 512 ))
     local root_sectors=$(( (root_bytes + 1048575) / 1048576 * 2048 ))
-    [[ -z "$images" ]] || images_sectors=$(( ($(stat -c %s "$images") + 1048575) / 1048576 * 2048 ))
+    [[ -z "$imgfs" ]] || images_sectors=$(( ($(stat -c %s "$imgfs") + 1048575) / 1048576 * 2048 ))
     local esp_start=2048
     local root_start=$(( esp_start + esp_sectors ))
     local images_start=$(( root_start + root_sectors ))
@@ -584,14 +584,14 @@ unit: sectors
 start=${esp_start}, size=${esp_sectors}, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=\"kryptik-esp\"
 start=${root_start}, size=${root_sectors}, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=\"${label}\""
     # The release's software images, after the root: the installer copies them into the store.
-    [[ -z "$images" ]] || table+="
+    [[ -z "$imgfs" ]] || table+="
 start=${images_start}, size=${images_sectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"kryptik-images\""
     rm -f "$out"
     truncate -s $(( total * 512 )) "$out"
     sfdisk --quiet --wipe always "$out" <<< "$table"
     dd if="$esp" of="$out" bs=512 seek="$esp_start" conv=notrunc,sparse status=none
     dd if="$root" of="$out" bs=512 seek="$root_start" conv=notrunc,sparse status=none
-    [[ -z "$images" ]] || dd if="$images" of="$out" bs=512 seek="$images_start" conv=notrunc,sparse status=none
+    [[ -z "$imgfs" ]] || dd if="$imgfs" of="$out" bs=512 seek="$images_start" conv=notrunc,sparse status=none
     sfdisk -l "$out" | sed 's/^/  /'
 }
 
@@ -611,7 +611,7 @@ s_usb() {
 }
 
 make_iso() {   # make_iso OUT ESP-IMG [IMAGES-DIR]
-    local out="$1" esp="$2" images="${3:-}"
+    local out="$1" esp="$2" imgdir="${3:-}"
     local t; t="$(mktemp -d)"
     cp "$SB_CERT" "$t/kryptik-sb.crt"
     cp "${IMG}/root.json" "$t/"
@@ -623,10 +623,10 @@ from a USB stick use the USB image instead: this ISO's kernel looks for
 /dev/sr0.
 EOF
     local graft=(esp.img="$esp" kryptik-sb.crt="$t/kryptik-sb.crt" root.json="$t/root.json" README.txt="$t/README.txt")
-    if [[ -n "$images" ]]; then
+    if [[ -n "$imgdir" ]]; then
         printf '%s\n' "The software images under images/ are named by images.manifest, which the" \
             "release key signs (images.manifest.sig); the installer copies them." >> "$t/README.txt"
-        graft+=(images="$images")
+        graft+=(images="$imgdir")
     fi
     rm -f "$out"
     # Linux filesystem data, as a GUID: xorriso takes an MBR type byte or a
@@ -649,13 +649,13 @@ s_bind_iso() {
     echo "inputs digest: $1"
     echo "--- pass 1: layout (a placeholder ESP of the final size) ---"
     make_esp "${IMG}/esp-iso.img" slot-a .efi
-    local images=""
+    local imgdir=""
     if medium_images "${IMG}/iso-images"; then
-        images="${IMG}/iso-images"
+        imgdir="${IMG}/iso-images"
         # Signed at sign time: one 2048-byte block holds the signature, as it holds this.
-        [[ -f "${images}/images.manifest.sig" ]] || printf 'placeholder\n' > "${images}/images.manifest.sig"
+        [[ -f "${imgdir}/images.manifest.sig" ]] || printf 'placeholder\n' > "${imgdir}/images.manifest.sig"
     fi
-    make_iso "${IMG}/layout.iso" "${IMG}/esp-iso.img" ${images:+"$images"}
+    make_iso "${IMG}/layout.iso" "${IMG}/esp-iso.img" ${imgdir:+"$imgdir"}
     local start; start="$(part2_start "${IMG}/layout.iso")"
     [[ -n "$start" ]] || { echo "could not read the appended partition's start"; sfdisk -d "${IMG}/layout.iso"; return 1; }
     echo "appended root partition starts at sector ${start}"
@@ -682,12 +682,12 @@ s_iso() {
     sign_one media-iso
     echo "--- pass 2: the real ESP and ISO ---"
     make_esp "${IMG}/esp-iso.img" media-iso
-    local images=""
+    local imgdir=""
     if medium_images "${IMG}/iso-images"; then
-        images="${IMG}/iso-images"
-        [[ -f "${images}/images.manifest.sig" ]] || { echo "images.manifest is not signed"; return 1; }
+        imgdir="${IMG}/iso-images"
+        [[ -f "${imgdir}/images.manifest.sig" ]] || { echo "images.manifest is not signed"; return 1; }
     fi
-    make_iso "$iso" "${IMG}/esp-iso.img" ${images:+"$images"}
+    make_iso "$iso" "${IMG}/esp-iso.img" ${imgdir:+"$imgdir"}
     rm -rf "${IMG}/iso-images"
     local start2; start2="$(part2_start "$iso")"
     [[ "$start2" == "$start" ]] || { echo "FAIL: the root partition moved from where the ISO kernel was bound (${start} -> ${start2})"; return 1; }
