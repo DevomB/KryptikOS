@@ -4,7 +4,7 @@
      '-Wno-unused-function',
      # XXX This does not seem to have any effect on some versions of GCC.
      '-Wno-deprecated-declarations',
-+     '-Wno-incompatible-pointer-types',
++    '-Wno-incompatible-pointer-types',
  ]
  if CONFIG['CC_TYPE'] in ('clang', 'clang-cl'):
      CFLAGS += [
