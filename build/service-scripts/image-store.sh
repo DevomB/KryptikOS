@@ -4,9 +4,11 @@
 # for, each image it names under its own root hash. Sourced; the caller defines say, die and uncache.
 
 # images_keep LIST SIG STORE BASE READER: keep in STORE the images LIST names, for the root BASE, which
-# LIST must be built for. READER NAME writes image NAME's bytes to stdout. Each copy is checked against
-# the size and hash LIST signs before it takes its name, none takes its name until every one has
-# checked, and LIST and SIG are kept last. kryptikd checks LIST's signature at every use.
+# LIST must be built for. READER NAME BYTES writes image NAME's bytes to stdout, and never more than
+# BYTES and one, so a source that changed since it was checked cannot fill the state partition. Each
+# copy is checked against the size and hash LIST signs before it takes its name, none takes its name
+# until every one has checked, a refusal takes the copies already made with it, and LIST and SIG are
+# kept last. kryptikd checks LIST's signature at every use.
 images_keep() {
     _l="$1"; _s="$2"; _store="$3"; _base="$4"; _read="$5"
     [ "$(head -1 "$_l")" = KRYPTIK-IMAGES-1 ] || die "the image list is not a KRYPTIK-IMAGES-1"
@@ -16,22 +18,23 @@ images_keep() {
     while read -r _ _name _ _bytes _sha _ _hash _; do
         [ -n "$_name" ] || continue
         _bytes="${_bytes#bytes=}"; _sha="${_sha#sha256=}"; _hash="${_hash#root-hash=}"
-        case "$_name" in ''|*[!a-z0-9-]*) die "the image list names '$_name'" ;; esac
-        case "$_bytes" in ''|*[!0-9]*) die "image $_name: its size in the list is not a number" ;; esac
-        case "$_hash$_sha" in *[!0-9a-f]*) die "image $_name: its hashes in the list are not hex" ;; esac
-        [ "${#_hash}" = 64 ] && [ "${#_sha}" = 64 ] || die "image $_name: its hashes in the list are not 64 digits"
+        case "$_name" in ''|*[!a-z0-9-]*) _images_fail "the image list names '$_name'" ;; esac
+        case "$_bytes" in ''|*[!0-9]*) _images_fail "image $_name: its size in the list is not a number" ;; esac
+        case "$_hash$_sha" in *[!0-9a-f]*) _images_fail "image $_name: its hashes in the list are not hex" ;; esac
+        [ "${#_hash}" = 64 ] && [ "${#_sha}" = 64 ] || _images_fail "image $_name: its hashes in the list are not 64 digits"
         _f="$_store/$_name/$_hash.img"
         if [ -f "$_f" ] && [ "$(stat -c %s "$_f")" = "$_bytes" ] && [ "$(sha256sum "$_f" | cut -c1-64)" = "$_sha" ]; then
             say "image $_name: already kept"
             continue
         fi
-        mkdir -p "$_store/$_name" || die "cannot make $_store/$_name"
-        "$_read" "$_name" > "$_f.new" || { rm -f "$_f.new"; die "image $_name could not be read, or written into the store"; }
+        mkdir -p "$_store/$_name" || _images_fail "cannot make $_store/$_name"
+        "$_read" "$_name" "$_bytes" > "$_f.new" \
+            || { rm -f "$_f.new"; _images_fail "image $_name could not be read, or written into the store"; }
         sync -f "$_f.new"
         uncache "$_f.new"
         if [ "$(stat -c %s "$_f.new")" != "$_bytes" ] || [ "$(sha256sum "$_f.new" | cut -c1-64)" != "$_sha" ]; then
             rm -f "$_f.new"
-            die "image $_name is not the bytes its list signs"
+            _images_fail "image $_name is not the bytes its list signs"
         fi
         _staged="$_staged $_f"
         say "image $_name: kept and checked ($_bytes bytes)"
@@ -43,6 +46,13 @@ EOF
         && sync && mv -f "$_store/$_base.manifest.new" "$_store/$_base.manifest" \
         && mv -f "$_store/$_base.manifest.sig.new" "$_store/$_base.manifest.sig" \
         || die "the image list could not be kept"
+}
+
+# A refusal partway through images_keep: the copies already made go with it, or a browser's would sit
+# on /var until the next update.
+_images_fail() {   # _images_fail MESSAGE
+    for _x in $_staged; do rm -f "$_x.new"; done
+    die "$1"
 }
 
 # images_prune STORE ROOT-HASH...: keep the lists for those roots and the images they name; a list for
