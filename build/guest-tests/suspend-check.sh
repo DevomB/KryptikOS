@@ -81,17 +81,31 @@ thawed() { [[ "$(zone_frozen "$1")" == 0 ]]; }
 # A zone that waits for its volume's passphrase: frozen, its volume suspended.
 waits() { [[ "$(zone_frozen "$1")" == 1 && "$(dm_flag "kryptik-zone-$1")" == 1 ]]; }
 none_frozen() { local f; f="$(zones_frozen)"; [[ -n "$f" && "$f" != *=1* ]]; }
-# Processes waiting on a disk (state D) in two looks 3 s apart, but the writer, which must.
+# Processes waiting on a disk (state D) in two looks 3 s apart, but the writer, which must, and
+# kernel threads (PF_KTHREAD in stat's flags): ext4 setting up a fresh volume's inode tables
+# writes through its loop device onto the partition, and this is about what userspace answers.
 blocked() {
-    local p s second="" first=()
+    local p s fl second="" first=()
     for p in /proc/[0-9]*; do s="$(< "$p/stat")" 2>/dev/null || continue; [[ "${s##*) }" == D* ]] && first+=("${p#/proc/}"); done
     sleep 3
     for p in "${first[@]}"; do
         [[ "$p" == "$writer" ]] && continue
         s="$(< "/proc/$p/stat")" 2>/dev/null || continue
+        read -r _ _ _ _ _ _ fl _ <<<"${s##*) }"
+        (( ${fl:-0} & 0x200000 )) && continue
         [[ "${s##*) }" == D* ]] && second+=" $p:$(< "/proc/$p/comm")"
     done
     echo "${second# }"
+}
+# What the session's programs wait on, for a round that found the lock or the compositor stuck:
+# each one's state and kernel wait, and the session log's last lines, onto the serial line.
+stuck_report() {
+    local p c
+    for p in $(pgrep -x 'dwl|kryptik-lock|kryptik-chrome|seatd'); do
+        c="$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)"
+        info "pid ${p} ${c:0:60}: state $(awk '{print $3}' "/proc/$p/stat" 2>/dev/null), waits in $(cat "/proc/$p/wchan" 2>/dev/null); $(tr '\n' '|' < "/proc/$p/stack" 2>/dev/null | cut -c1-300)"
+    done
+    tail -n 25 "$slog" 2>/dev/null | sed 's/^/GT INFO session.log: /'
 }
 boot_id="$(< /proc/sys/kernel/random/boot_id)"
 
@@ -346,6 +360,11 @@ if wait_for 60 more unlocked "$unlocked0" && state_is 0 && wait_for 15 test ! -d
     pass "resumed-after-refusal" "the passphrase gave the partition its key after the refused sleep, the read ended, and the lock opened"
 else
     fail "resumed-after-refusal" "flag $(state_flag): $(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+    stuck_report
+    # The rounds after this one need a lock that answers: the stuck lock is killed, and its
+    # supervisor, whose pid the lock file holds, locks again as after any signal.
+    sup="$(cat "$RT/kryptik/lock.pid" 2>/dev/null)"
+    [[ -n "$sup" ]] && pkill -KILL -P "$sup" -x kryptik-lock
 fi
 wait_for 15 none_frozen || fail "zones-thawed-after-refusal" "$(zones_frozen)"
 
