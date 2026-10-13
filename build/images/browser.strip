@@ -1,0 +1,3 @@
+# What the browser image never ships to a zone (stage 06's pack_image): the telemetry ping sender,
+# which the policies' DisableTelemetry leaves nothing to send.
+usr/lib/firefox/pingsender
