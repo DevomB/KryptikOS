@@ -14,6 +14,7 @@ mod isolate;
 mod landlock;
 mod netlink;
 mod netzone;
+mod password;
 mod policy;
 mod registry;
 mod rootfs;
@@ -74,6 +75,8 @@ USAGE:
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
                    [--proxy-exe P] [--wifi-dir DIR]
+                   [--shadow FILE]    the screen lock's password is checked
+                                      against FILE (default: /etc/shadow)
     kryptikd wifi list                the net zone's Wi-Fi networks, SSIDs only
     kryptikd wifi scan                the networks in range, as the net zone hears
                                       them, with their security and signal

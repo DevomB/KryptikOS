@@ -20,7 +20,8 @@
 # runs, photographed with a zone's window on it, and pulled out again.
 # With the pointer moved onto a zone's window, the cursor image the zone asks
 # for must not be taken by the compositor; zone 0's, which is, shows the
-# guest's check can tell.
+# guest's check can tell. The screen lock (Alt+Shift+l) is photographed alone
+# on the screen, and the user's password typed on the guest's keyboard opens it.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -51,6 +52,13 @@ SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
 SHOT_OVER="${VMDIR}/gui-untrusted-oversize.ppm"
 SHOT_HEAD="${VMDIR}/gui-second-head.ppm"
 SHOT_POPUP="${VMDIR}/gui-untrusted-popup.ppm"
+SHOT_LOCKED="${VMDIR}/gui-locked.ppm"
+# The login password as keystrokes for the lock: its lower-case letters, digits and hyphens.
+PW_KEYS=()
+for ((i = 0; i < ${#TPASS}; i++)); do
+    c="${TPASS:i:1}"
+    if [[ "$c" == - ]]; then PW_KEYS+=("key:minus"); else PW_KEYS+=("key:${c}"); fi
+done
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install"
@@ -59,11 +67,11 @@ install_disk gui-install "$USB" --vars clean && green "installed" || { red "inst
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"
-rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_HEAD" "$SHOT_POPUP"
+rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_HEAD" "$SHOT_POPUP" "$SHOT_LOCKED"
 start_vm gui-p2 --net user --gpu --second-head --mem 3072
 DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
-    "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \
+    "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} ${TPASS} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \
     "expect:Password: ?" "send:${RPASS}" \
     "expect:GT KEY-FOCUS-AWAY" "key:alt+j" \
     "expect:GT KEY-FOCUS-CHILD" "key:alt+j" \
@@ -101,6 +109,10 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT SCREENSHOT-POPUP" "sleep:2" "screendump:${SHOT_POPUP}" \
     "expect:GT KEY-MENU-POPUP" "key:alt+p" \
     "expect:GT KEY-FOCUS-POPUP" "key:alt+j" \
+    "expect:GT KEY-LOCK" "key:alt+shift+l" \
+    "expect:GT SCREENSHOT-LOCKED" "sleep:2" "screendump:${SHOT_LOCKED}" \
+    "expect:GT LOCK-TYPE-WRONG" "key:n" "key:o" "key:ret" \
+    "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT HEAD-ON" "head:${HEAD2}:1024x768" \
     "expect:GT KEY-FOCUS-HEAD\r?\n" "key:alt+dot" \
     "expect:GT KEY-FOCUS-HEAD-WINDOW" "key:alt+j" \
@@ -130,6 +142,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
             second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
+            password-check-pauses lock-takes-keyboard lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
@@ -141,11 +154,14 @@ done
 step "step 3: the screenshots show every window framed on all four sides"
 check_shot() {   # check_shot FILE WHAT ZONE:focused|unfocused|fullscreen...
 local shot="$1" what="$2" verdict
+local good="every window is framed in its zone's colour, at its width, on all four sides" bad="a window's frame or bar is missing or wrong"
 shift 2
+[[ "${1:-}" == lock:* ]] && good="the lock alone shows, over every window" bad="something besides the lock shows, or the lock is not drawn"
 if [[ -s "$shot" ]]; then
     # The colours, widths and lettering dwl was built with: its inputs are the single source.
     verdict="$(python3 - "$shot" "${SELF}/../../build/desktop/zone-colours.h" "${SELF}/../../build/desktop/dwl-config.h" "${SELF}/../desktop/dwl-zone-borders.py" "$@" <<'PY'
 import importlib.util, re, sys
+from collections import Counter
 shot, colours_h, config_h, borders_py, *want = sys.argv[1:]
 h = open(colours_h).read()
 c = open(config_h).read()
@@ -223,6 +239,20 @@ def bar(name, col):
 
 ok = True
 for spec in want:
+    if spec.startswith("lock:"):
+        # lock:BG:INK - the lock alone: its background nearly everywhere, its word drawn, and
+        # not one pixel in a zone's colour or a probe's (magenta, cyan); a cursor may remain.
+        _, bgx, inkx = spec.split(":")
+        bgc, inkc = bytes.fromhex(bgx), bytes.fromhex(inkx)
+        seen = Counter(px[i:i + 3] for i in range(0, len(px), 3))
+        banned = set(named.values()) | {bytes.fromhex("ff00ff"), bytes.fromhex("00ffff")}
+        leaked = sum(n for c, n in seen.items() if c in banned)
+        other = w * hgt - seen[bgc] - seen[inkc] - leaked
+        good = seen[bgc] * 100 >= w * hgt * 95 and seen[inkc] > 0 and leaked == 0 and other <= 32 * 32
+        print(f"  the lock: {seen[bgc]} px #{bgx}, {seen[inkc]} px #{inkx}, {leaked} px in a zone's or a probe's colour,"
+              f" {other} px of any other{'' if good else '  <- WRONG'}")
+        ok = ok and good
+        continue
     if spec.startswith("inside:"):
         # inside:ZONE:RRGGBB - pixels of that colour on screen, all within the zone's frame.
         _, zone, rgb = spec.split(":")
@@ -282,7 +312,7 @@ print("FRAME-OK" if ok else "FRAME-BAD")
 PY
 )"
     printf '%s\n' "$verdict" | grep -v 'FRAME-'
-    [[ "$verdict" == *FRAME-OK* ]] && green "${what}: every window is framed in its zone's colour, at its width, on all four sides (${shot})" || red "${what}: a window's frame or bar is missing or wrong (${shot})"
+    [[ "$verdict" == *FRAME-OK* ]] && green "${what}: ${good} (${shot})" || red "${what}: ${bad} (${shot})"
 else
     red "${what}: no screenshot was taken"
 fi
@@ -299,7 +329,10 @@ check_shot "$SHOT_HEAD" "second head" untrusted:focused
 # screen, that may be neither moved nor resized: it must show only inside the
 # window, which keeps its whole frame, and zone 0's window keeps the keyboard.
 check_shot "$SHOT_POPUP" "zone popup" untrusted:unfocused inside:untrusted:00ffff
+# The lock covers zone 0's window and a zone's, whose popup grabbed the keyboard: only its own
+# background and word show (tools/desktop/kryptik-lock.c draws them).
+check_shot "$SHOT_LOCKED" "screen lock" lock:101418:e6e6e6
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER} ${SHOT_HEAD} ${SHOT_POPUP}"
+echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER} ${SHOT_HEAD} ${SHOT_POPUP} ${SHOT_LOCKED}"
 [[ "$FAIL" -eq 0 ]] || exit 1

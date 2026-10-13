@@ -15,6 +15,8 @@
  *   kryptik-launch --wifi-forget SSID   remove one
  *   kryptik-launch --update status|fetch|forget|apply   show, fetch, drop or install a release
  *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
+ *   kryptik-launch --check-password    whether the line on stdin is the login password: the
+ *                                      screen lock asks, and the daemon pauses after a wrong one
  *
  * A display goes through the zone's own proxy at $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0, which the
  * daemon binds into the zone: a zone never sees the compositor's own socket.
@@ -308,7 +310,8 @@ static void usage(void)
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID [--hidden] | --wifi-add-open SSID [--hidden] | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
-	      "       kryptik-launch --update status|fetch|forget|apply | --update auto on|off\n", stderr);
+	      "       kryptik-launch --update status|fetch|forget|apply | --update auto on|off\n"
+	      "       kryptik-launch --check-password   (the password on standard input)\n", stderr);
 	exit(2);
 }
 
@@ -427,6 +430,23 @@ static int update_main(int argc, char **argv)
 	return ok ? 0 : 1;
 }
 
+/* The screen lock's question, the password in the request's body. Exit 0 if it is the login
+ * password; 1, with the daemon's reason, if not or not yet. */
+static int password_main(int argc)
+{
+	if (argc != 2)
+		usage();
+	char pass[512], req[600];
+	secret_from_stdin("password: ", pass, sizeof pass);
+	snprintf(req, sizeof req, "check-password\npassword %s\nend\n", pass);
+	explicit_bzero(pass, sizeof pass);
+	char *r = talk(req, -1);
+	explicit_bzero(req, sizeof req);
+	int ok = strcmp(r, "ok\n") == 0;
+	if (!ok)
+		fputs(r, stderr);
+	free(r);
+	return ok ? 0 : 1;
 /* One request to a zone's proxy on the move gesture's socket (kryptik-wlproxy's control.rs),
  * `body` after its line: the answer's line in `line`, and the bytes an "ok GEN TYPE N" answer
  * announces in *data. -1 when the zone has no proxy to ask. */
@@ -553,6 +573,8 @@ int main(int argc, char **argv)
 		return wifi_main(argc, argv);
 	if (argc >= 2 && strcmp(argv[1], "--update") == 0)
 		return update_main(argc, argv);
+	if (argc >= 2 && strcmp(argv[1], "--check-password") == 0)
+		return password_main(argc);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();

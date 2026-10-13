@@ -38,6 +38,20 @@ is "a user and root who can both authenticate: done"
 state "svc:x:999:999::/:/bin/false" "root:${HASH}:1:::::: svc:${HASH}:1::::::"
 not "a system account is not the desktop user"
 
+# A preseeded password the screen lock could not check would leave the user a lock that
+# never opens: only SHA-512 and SHA-256 crypt are set.
+sed -n '/^lockable_hash() /p' "$SRC" > "$T/lockable.sh"
+# shellcheck source=/dev/null
+. "$T/lockable.sh"
+declare -F lockable_hash >/dev/null || { echo "no lockable_hash in $SRC"; exit 1; }
+for h in "$HASH" '$5$salt$abcdefghijklmnopqrstuvwxyz'; do
+    lockable_hash "$h" && ok "a preseeded ${h:0:3} hash is set" || bad "a preseeded ${h:0:3} hash is refused"
+done
+for h in '$y$j9T$salt$hash' '$2b$10$abcdefghijklmnopqrstuv' '$1$salt$hash' 'abJnggxhB/yWI' ''; do
+    lockable_hash "$h" && bad "a preseeded '${h:0:3}' hash is set, which the lock cannot check" || ok "a preseeded '${h:0:3}' hash is refused"
+done
+grep -q 'if lockable_hash "$hash"; then' "$SRC" && ok "the preseed's user hash goes through it" || bad "the preseed sets the user's hash without lockable_hash"
+
 # Every question has a time limit: the service holds up the login prompt and
 # boot-success, so an unanswered one would hang a headless boot.
 unbounded="$(grep -nE '\$\(ask ' "$SRC" | grep -vE '\$\(ask (-s )?"\$PROMPT_SECS" ')"
