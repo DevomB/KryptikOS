@@ -68,21 +68,21 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
 - **Its sandbox inside a zone.** Firefox confines its content processes with
   seccomp-bpf, installed with `seccomp(2)` and `SECCOMP_FILTER_FLAG_TSYNC`,
   and adds a namespace layer (chroot, no network) where it can create user
-  namespaces. Two things stop it in a zone today:
+  namespaces.
   - At start it probes for user namespaces by calling
-    `clone(CLONE_NEWUSER)` in its own process (`SandboxInfo.cpp`), unless
-    `MOZ_ASSUME_USER_NS` says the answer. The zone filter kills that call,
-    and the browser with it.
-  - `seccomp(2)` is not in the base list, so the call is killed too.
+    `clone(CLONE_NEWUSER)` in its own process (`SandboxInfo.cpp`). The zone
+    filter answers `clone` and `unshare` with namespace flags with `EPERM`,
+    as the kernel answers an unprivileged caller, so the probe fails and the
+    browser starts; Chromium and bubblewrap probe the same way, and an
+    `EPERM` grants nothing.
+  - `seccomp(2)` is not in the base list. The browser image needs it
+    (`build/images/browser.needs`), and the zones that run the browser,
+    `untrusted`, `personal` and `work`, grant it with
+    `allow-syscall seccomp`, which `kryptikd check` holds them to.
 
-  The fix for the first is general: answer `clone` and `unshare` with
-  namespace flags with `EPERM`, as the kernel itself answers an unprivileged
-  caller, instead of killing. Chromium, bubblewrap and Firefox all probe this
-  way, and an `EPERM` grants nothing. The second is a policy line,
-  `allow-syscall seccomp`, in the zones that run the browser. Firefox's
-  filters then stack under the zone's, and the stricter answer wins. Its
-  namespace layer stays off, the price of no nested user namespaces
-  (`hardened.fragment`).
+  Firefox's filters then stack under the zone's, and the stricter answer
+  wins. Its namespace layer stays off, the price of no nested user
+  namespaces (`hardened.fragment`).
 - **Updates.** The extended-support release (ESR) has a security release
   every four weeks, like the rapid channel, with fewer feature changes.
 
