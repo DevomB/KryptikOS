@@ -154,6 +154,17 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
     Ok(Proxy { session, zone: zone.name.clone(), pid, socket: sock, upstream, _cgroup: cgroup })
 }
 
+/// Kill every proxy an earlier daemon left behind, as a daemon that starts has none of its own yet:
+/// one it does not know of would serve on outside one desktop at a time.
+pub fn kill_leftovers() {
+    let Ok(base) = crate::cgroup::available() else { return };
+    for e in fs::read_dir(&base).into_iter().flatten().flatten() {
+        if e.file_name().to_string_lossy().starts_with("proxy.") {
+            let _ = fs::write(e.path().join("cgroup.kill"), "1");
+        }
+    }
+}
+
 /// In the forked child: the proxy's descriptors (the listener as 3, dwl's socket as 4), cgroup,
 /// namespaces, limits, ids and confinement, then the exec. Returns only why it could not.
 fn become_proxy(

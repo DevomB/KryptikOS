@@ -201,7 +201,7 @@ else
     fail "proxy-own-user" "pid ${ppid_:-none}: $(grep -E '^(Uid|Gid|Groups|CapPrm|CapEff|NoNewPrivs|Seccomp):' "$st" 2>/dev/null | tr '\n' ' ')net $(readlink "/proc/$ppid_/ns/net" 2>/dev/null) against $(readlink /proc/1/ns/net)"
 fi
 pcg="$(sed -n 's/^0:://p' "/proc/${ppid_:-none}/cgroup" 2>/dev/null)"
-if [[ "$pcg" == */proxy-untrusted.* && "$(cat "/sys/fs/cgroup$pcg/memory.max" 2>/dev/null)" == 134217728 && "$(cat "/sys/fs/cgroup$pcg/pids.max" 2>/dev/null)" == 1 ]]; then
+if [[ "$pcg" == */proxy.untrusted.* && "$(cat "/sys/fs/cgroup$pcg/memory.max" 2>/dev/null)" == 134217728 && "$(cat "/sys/fs/cgroup$pcg/pids.max" 2>/dev/null)" == 1 ]]; then
     pass "proxy-cgroup" "$pcg: memory.max 128 MiB, pids.max 1"
 else
     fail "proxy-cgroup" "cgroup ${pcg:-none}: memory.max $(cat "/sys/fs/cgroup$pcg/memory.max" 2>&1), pids.max $(cat "/sys/fs/cgroup$pcg/pids.max" 2>&1)"

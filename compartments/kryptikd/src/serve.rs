@@ -1378,6 +1378,9 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
     let mut proxies: Vec<Proxy> = Vec::new();
+    if !cfg.developer {
+        crate::proxy::kill_leftovers();
+    }
     // The login prompt carries what `kryptik update status` says of a stale statement, on the
     // installed system's instance: checked as it starts, then hourly, as days are what count.
     let mut notice_due = (!cfg.developer).then(Instant::now);
