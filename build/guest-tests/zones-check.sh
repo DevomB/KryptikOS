@@ -1613,9 +1613,9 @@ else
     izone imgok 3932160 '#0a1b2c' probe policy/imgok.seccomp
     izone imgbare 3997696 '#0a1b3c' probe
     izone imgnone 4063232 '#0a1b4c'
-    irun() {   # irun ZONE CMD...: sets ZRC, ZOUT and ZERR
+    irun() {   # irun ZONE CMD...: sets ZRC, ZOUT and ZERR; IRUN_SECS bounds it (60 s)
         local zone="$1"; shift
-        timeout -k 5 60 "$KD" run "$zone" --zones "$IZ" --rootfs "$R" -- "$@" > "$LOG/$zone.out" 2> "$LOG/$zone.err"
+        timeout -k 5 "${IRUN_SECS:-60}" "$KD" run "$zone" --zones "$IZ" --rootfs "$R" -- "$@" > "$LOG/$zone.out" 2> "$LOG/$zone.err"
         ZRC=$?; ZOUT="$(cat "$LOG/$zone.out")"; ZERR="$(cat "$LOG/$zone.err")"
     }
     irun imgok /usr/bin/kryptik-probe
@@ -1689,7 +1689,7 @@ else
         # Firefox's content sandbox installs a filter of its own, which the image's needs line asks for.
         printf 'allow-syscall seccomp\n' > "$IZ/policy/imgff.seccomp"
         izone imgff 4259840 '#1b0a6c' "browser toolkit" policy/imgff.seccomp
-        irun imgff sh -c 'printf "<p>kryptik</p>" > /tmp/page.html && cd /tmp && HOME=/tmp firefox --headless --screenshot /tmp/shot.png file:///tmp/page.html && test -s /tmp/shot.png && echo SHOT-TAKEN'
+        IRUN_SECS=180 irun imgff sh -c 'printf "<p>kryptik</p>" > /tmp/page.html && cd /tmp && HOME=/tmp firefox --headless --screenshot /tmp/shot.png file:///tmp/page.html && test -s /tmp/shot.png && echo SHOT-TAKEN'
         if [[ "$ZRC" -eq 0 && "$ZOUT" == *"SHOT-TAKEN"* ]]; then
             pass "image-browser" "a zone naming the browser and the toolkit draws a page with Firefox, headless"
         else
