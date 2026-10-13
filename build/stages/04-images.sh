@@ -13,6 +13,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
 
 DEFS="${KRYPTIK_ROOT}/build/images"
+# The last stage 04 step an image builds against. The base system up to it is in every image's
+# inputs; the steps after it, zone 0's own programs and applications, which no image links or runs
+# while it builds, are not, so changing them rebuilds no image.
+IMAGES_BASE="wlroots"
 SYSROOT="${KRYPTIK_WORK}/sysroot"
 CHROOTD="${KRYPTIK_ROOT}/build/stages/03-chroot-prep.sh"
 
@@ -24,18 +28,47 @@ image_setting() {
     ( source "${DEFS}/${1}.sh"; declare -n v="$2"; printf '%s' "${v[*]:-}" )
 }
 
-# What an image is built from: its definition and files, the recipes and flags, the pins, the base
-# system, and what the images it is built over are built from, so a cached image needs none of them
-# built to be found current. CHAIN is the images it is being read under.
+# Each row's recipe as stage 04 fingerprints a step: its code and every helper it reaches, wherever
+# that is defined, its arguments, the sources it names and the V_* it reads.
+image_rows_of() {   # image_rows_of NAME
+    (
+        # shellcheck source=/dev/null
+        source "${KRYPTIK_ROOT}/build/lib/recipes.sh"
+        # shellcheck source=/dev/null
+        source "${DEFS}/${1}.sh"
+        # shellcheck disable=SC2154  # image_rows comes from the image's definition
+        for ((i = 0; i < ${#image_rows[@]}; i += 2)); do
+            # shellcheck disable=SC2086  # a recipe is a word-split command, as the chroot runs it
+            printf 'row %s %s\n' "${image_rows[i]}" "$(recipe_fingerprint ${image_rows[i+1]})"
+        done
+    )
+}
+
+# The names of what a build can find in the sysroot: headers, libraries and pkg-config files. A
+# configure check or a meson feature left on auto finds one a step past IMAGES_BASE added as surely
+# as one before it, so adding or removing one rebuilds every image; the base stamp covers the rest.
+link_surface() {
+    ( cd "$SYSROOT" && find usr/include usr/lib usr/share/pkgconfig \( -type f -o -type l \) \
+        \( -path 'usr/include/*' -o -name '*.so' -o -name '*.so.*' -o -name '*.a' -o -name '*.pc' \) 2>/dev/null || true ) \
+        | LC_ALL=C sort | sha256_of_stdin
+}
+
+# What an image is built from: its definition and files, the shared recipe helpers and the flags,
+# its pins and the manifest rows its licences are read by, its rows' recipes, the base system up to
+# IMAGES_BASE and the sysroot's headers and libraries, and what the images it is built over are
+# built from, so a cached image needs none of them built to be found current. CHAIN is the images it
+# is being read under.
 image_inputs() {   # image_inputs NAME [CHAIN]
     local f dep h chain="${2:-} ${1}"
-    for f in "${DEFS}/${1}.sh" "${DEFS}/${1}"/* "${KRYPTIK_ROOT}/build/lib/recipes.sh" "${KRYPTIK_ROOT}"/build/recipes/*.sh \
+    for f in "${DEFS}/${1}.sh" "${DEFS}/${1}"/* "${KRYPTIK_ROOT}/build/lib/recipes.sh" \
              "${BASH_SOURCE[0]}" "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "${KRYPTIK_ROOT}/build/config/hardening.env" \
-             "${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt" "${KRYPTIK_ROOT}/build/config/versions.env" \
-             "${KRYPTIK_ROOT}/sources.lock" "${DEFS}/versions.env" "${DEFS}/sources.lock"; do
+             "${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt" "${DEFS}/versions.env" "${DEFS}/sources.lock"; do
         if [[ -f "$f" ]]; then printf '%s %s\n' "${f#"${KRYPTIK_ROOT}/"}" "$(sha256_of "$f")"; fi
     done
-    printf 'base %s\n' "$(_stamp_read "${KRYPTIK_WORK}/.stamps/bs-licences")"
+    printf 'sources %s\n' "$("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list-image "$1" | sha256_of_stdin)"
+    image_rows_of "$1"
+    printf 'base %s %s\n' "$IMAGES_BASE" "$(_stamp_read "${KRYPTIK_WORK}/.stamps/bs-${IMAGES_BASE}")"
+    printf 'link surface %s\n' "$(link_surface)"
     for dep in $(image_setting "$1" image_over); do
         [[ " ${chain} " != *" ${dep} "* ]] || die "image ${dep} is built over itself:${chain} ${dep}"
         [[ -f "${DEFS}/${dep}.sh" ]] || die "image ${1} is built over ${dep}, which has no ${DEFS}/${dep}.sh"
@@ -65,6 +98,8 @@ build_image() {   # build_image NAME
     read -ra over <<< "$(image_setting "$name" image_over)"
     want="$(image_inputs "$name" | sha256_of_stdin)"
     if [[ -d "${top}/tree/usr" ]] && grep -qx "fingerprint: ${want}" "${top}/record" 2>/dev/null; then
+        # The root past IMAGES_BASE can change under a kept tree, which still may hold no file of the root's.
+        "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "$SYSROOT" "${top}/tree"
         dim "  skip ${name} ${version} (already built, inputs unchanged)"
         return 0
     fi
@@ -102,6 +137,7 @@ build_images() {   # build_images [NAME...]
     [[ "$EUID" -eq 0 ]] || die "the image stage mounts an overlay over the sysroot: run it as root (make images)"
     require_outside_chroot "the image stage"
     [[ -f "${KRYPTIK_WORK}/.stamps/bs-licences" ]] || die "stage 04 has not finished: make system first"
+    [[ -f "${KRYPTIK_WORK}/.stamps/bs-${IMAGES_BASE}" ]] || die "stage 04 has no step ${IMAGES_BASE}, the last one images build against (IMAGES_BASE)"
     trap '[[ -z "$MOUNTED" ]] || unmount_image "$MOUNTED"' EXIT
     local names=("$@") d n
     if [[ "${#names[@]}" -eq 0 ]]; then
@@ -139,7 +175,8 @@ umask 022
 source "${KRYPTIK_ROOT}/build/lib/recipes.sh"
 # shellcheck source=/dev/null
 source "${DEFS}/${name}.sh"
-# Stage 04's last build step: a rebuilt base system rebuilds every image.
+# Stage 04 finished: the rows run over the whole base system. Whether an image is built again at all
+# is image_inputs' call, on the host.
 stage_depends_on "bs-" licences
 # shellcheck disable=SC2154  # image_rows comes from the image's definition
 for ((i = 0; i < ${#image_rows[@]}; i += 2)); do

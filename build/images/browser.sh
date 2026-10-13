@@ -22,6 +22,21 @@ s_browser_firefox() {
     local src llvm="/usr/lib/llvm-${V_LLVM%%.*}"
     src="$(unpack "firefox-${V_FIREFOX}esr.source.tar.xz" "firefox-${V_FIREFOX}")"
     cd "$src"
+    # Configure requires unzip, which only packaging runs (make_unzip.py: `unzip ARCHIVE`, into the
+    # current directory) and the base system does not have: Python's zipfile does that, here alone.
+    cat > kryptik-unzip <<'EOF'
+#!/usr/bin/env python3
+import sys, zipfile
+args = [a for a in sys.argv[1:] if a not in ("-q", "-o", "-qo", "-oq")]
+dest = "."
+if len(args) == 3 and args[1] == "-d":
+    dest = args.pop(2)
+    args.pop(1)
+if len(args) != 1:
+    sys.exit("kryptik-unzip: only ARCHIVE [-d DIR]: " + " ".join(sys.argv[1:]))
+zipfile.ZipFile(args[0]).extractall(dest)
+EOF
+    chmod 0755 kryptik-unzip
     cat > mozconfig <<EOF
 ac_add_options --prefix=/usr
 ac_add_options --enable-application=browser
@@ -43,6 +58,7 @@ ac_add_options --without-wasm-sandboxed-libraries
 ac_add_options --with-libclang-path=${llvm}/lib
 ac_add_options --with-clang-path=${llvm}/bin/clang
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj
+export UNZIP=${src}/kryptik-unzip
 EOF
     env CC=gcc CXX=g++ MOZBUILD_STATE_PATH="${src}/.mozbuild" MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=none \
         MOZ_NOSPAM=1 ./mach --no-interactive build
