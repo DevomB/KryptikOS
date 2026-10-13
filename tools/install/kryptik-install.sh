@@ -104,6 +104,7 @@ mounted_on() {   # mounted_on DEVS < TABLE: "SOURCE on WHERE" for each source th
 . /usr/libexec/kryptik/medium-root.sh
 # The ESP's kernels and records, written as every other tool writes them.
 . /usr/libexec/kryptik/esp-records.sh
+. /usr/libexec/kryptik/image-store.sh
 [ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
 [ -z "$PRESEED" ] || preseed_ok "$PRESEED"
 
@@ -170,11 +171,11 @@ fi
 # --- what we are installing, from the medium ---------------------------------
 media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
 [ -n "$media" ] || die "this is not an install medium (no kryptik.media= on the signed command line)"
-mkdir -p "$MNT_BASE/media" "$MNT_BASE/esp" "$MNT_BASE/state" "$MNT_BASE/tesp"
+mkdir -p "$MNT_BASE/media" "$MNT_BASE/esp" "$MNT_BASE/state" "$MNT_BASE/tesp" "$MNT_BASE/images"
 MAPPING=kryptik-install-state
 cleanup() {
     [ -t 0 ] && stty echo 2>/dev/null || true
-    for m in "$MNT_BASE/tesp" "$MNT_BASE/state" "$MNT_BASE/esp" "$MNT_BASE/media"; do
+    for m in "$MNT_BASE/tesp" "$MNT_BASE/state" "$MNT_BASE/images" "$MNT_BASE/esp" "$MNT_BASE/media"; do
         mountpoint -q "$m" 2>/dev/null && umount "$m" 2>/dev/null || true
         rmdir "$m" 2>/dev/null || true
     done
@@ -184,6 +185,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 ESP_SRC=""      # a block device or a regular file holding the ESP image
+IMG_SRC=""      # the medium's software images, if it carries any
+medium_image() { cat "$IMG_SRC/$1.img"; }   # medium_image NAME
 ROOT_SRC=""     # block device holding the root image at ROOT_OFF
 ROOT_OFF=0
 case "$media" in
@@ -195,6 +198,12 @@ case "$media" in
         [ -b "$ESP_SRC" ] || die "no single kryptik-esp partition on the medium this system booted from"
         mount -t vfat -o ro "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP"
         ROOT_JSON="$MNT_BASE/esp/kryptik/root.json"
+        # The release's software images, when the medium carries them, in a partition of their own.
+        IMG_DEV="$(kryptik_part kryptik-images 2>/dev/null)" || IMG_DEV=""
+        if [ -b "$IMG_DEV" ]; then
+            mount -t ext4 -o ro,nosuid,nodev,noexec "$IMG_DEV" "$MNT_BASE/images" || die "could not mount the medium's kryptik-images"
+            IMG_SRC="$MNT_BASE/images"
+        fi
         ;;
     iso)
         mount -t iso9660 -o ro /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
@@ -203,6 +212,7 @@ case "$media" in
         # For its kernels, read before anything is written.
         mount -t vfat -o ro,loop "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP image"
         ROOT_JSON="$MNT_BASE/media/root.json"
+        if [ -f "$MNT_BASE/media/images/images.manifest" ]; then IMG_SRC="$MNT_BASE/media/images"; fi
         ROOT_SRC=/dev/sr0
         # The signed linear table "0 N linear /dev/sr0 START" puts the root image at sector START.
         ROOT_OFF="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"
@@ -212,6 +222,14 @@ case "$media" in
     *) die "unknown medium type '${media}'" ;;
 esac
 medium_root "$ROOT_JSON" /proc/cmdline
+ROOT_HASH="$(json_field "$ROOT_JSON" root_hash)"
+# The medium's image list, read before anything is written: for this medium's root, and signed.
+# Each image is checked against it as it is copied (image-store.sh); kryptikd checks the signature.
+if [ -n "$IMG_SRC" ]; then
+    [ -f "$IMG_SRC/images.manifest.sig" ] || die "the medium's image list has no signature"
+    [ "$(sed -n 's/^base: //p' "$IMG_SRC/images.manifest")" = "$ROOT_HASH" ] \
+        || die "the medium's image list is for another root than the one it installs"
+fi
 for s in a b; do
     kernel_names_root "$MNT_BASE/esp/EFI/kryptik/kryptik-$s.efi" \
         || die "the medium's kernel for slot $s does not carry the root hash its signed command line names; nothing was written"
@@ -385,6 +403,10 @@ fi
 # --- the state partition: what installed this, and the first-boot preseed --
 mount -t ext4 -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"
 mkdir -p "$MNT_BASE/state/lib/kryptik"
+if [ -n "$IMG_SRC" ]; then
+    images_keep "$IMG_SRC/images.manifest" "$IMG_SRC/images.manifest.sig" "$MNT_BASE/state/lib/kryptik/images" "$ROOT_HASH" medium_image
+    say "images       $(grep -c '^image: ' "$IMG_SRC/images.manifest") kept for ${VERSION}"
+fi
 cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
 {
   "installed_at": "$(date -Iseconds 2>/dev/null || echo unknown)",

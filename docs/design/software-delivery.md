@@ -236,7 +236,14 @@ up ADR-001 in the zones where the applications run.
   that the list is for the root the payload carries, and decompresses each
   image into the store, where the copy is checked against the size and hash
   the list signs before it takes its name. Once the trial is armed, the
-  store drops the release the slot held.
+  store drops the release the slot held. The install medium carries the same
+  list and images, in a partition of their own on the USB image and under
+  `/images` on the ISO; the installer checks the list is for the root it
+  installs before it writes anything, and keeps each image as `apply` does.
+  `kryptik-recover --restore-slot` does not open the state partition, so a
+  slot it restores finds its images only if the store still holds that
+  release's, from the install or a kept update; otherwise a zone that names
+  one is refused until the next update brings them.
 - **Fetched** alone for an image-only fix, by the same verbs as a release.
   The statement of what is current gains one line per image for each base
   it serves; zone 0 fetches only images whose hash it does not hold, never
