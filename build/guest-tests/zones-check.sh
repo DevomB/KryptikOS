@@ -1109,6 +1109,42 @@ if [[ "$wpa2_keys" == *"AKMSuiteSelector=00-0f-ac-2 "* && "$wpa2_keys" != *"[MFP
 else
     fail "wifi-wpa2-plain" "the station at the WPA2 access point: ${wpa2_keys:-none}"
 fi
+# SAE by hash-to-element alone, as every 6 GHz access point and some others take it: the access
+# point says so in its rates, and a station on wpa_supplicant's default passes it over.
+h2e_up=0
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+    cat > /root/zt/ap-h2e.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$AP_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=SAE
+    sae_pwe=1
+    ieee80211w=2
+    proto=RSN
+    pairwise=CCMP
+    psk="$AP_PASS"
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-h2e.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-h2e-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { h2e_up=1; break; }; sleep 1; done
+fi
+h2e_keys=""
+for _ in $(seq 1 90); do
+    h2e_keys="$(sta_keys)"
+    [[ "$h2e_up" = 1 && "$h2e_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* ]] && break
+    sleep 1
+done
+if [[ "$h2e_up" = 1 && "$h2e_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* ]]; then
+    pass "wifi-sae-h2e" "offered SAE by hash-to-element alone, the access point was joined by SAE: ${h2e_keys}"
+else
+    fail "wifi-sae-h2e" "access point up: ${h2e_up}; the station at it: ${h2e_keys:-none}; $(sta_wpa status | cut -c1-200); $(tail -3 "$LOG/ap-h2e-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
 sae_up=0
 if [[ "$ap_up" = 1 ]]; then
     ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"

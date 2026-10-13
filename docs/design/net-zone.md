@@ -344,7 +344,12 @@ configured the zone keeps its IPv4 path and the launcher says so.
   802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed,
   wpa_supplicant would take `WPA-PSK WPA-EAP` and never SAE. Management frames
   are protected wherever the access point offers it (`ieee80211w=1`), and SAE
-  always has them. A file an older kryptikd wrote is rewritten so. A network
+  always has them. SAE derives its password element by hash-to-element
+  wherever the access point offers it, and by the older loop only where it
+  does not (`sae_pwe=2` in the file's header): the loop alone,
+  wpa_supplicant's default, passes over an access point that takes
+  hash-to-element only, and it is the method side channels have leaked
+  passwords from. A file an older kryptikd wrote is rewritten so. A network
   saved as open (`kryptik wifi add SSID --open`, an `open` line in place of
   `psk` in the request) is joined by no key at all (`key_mgmt=NONE`), so a
   beacon offering one changes nothing, and has no management frames to
