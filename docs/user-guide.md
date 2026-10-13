@@ -317,7 +317,8 @@ in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. On a machine with a battery, a Power
 line under the zones gives its charge and whether the machine runs on it;
 on battery at 3% the zones are stopped, each closing its volume, and the
-machine powers off, so save work before then. Under the zones, a
+machine powers off, so save work before then: a window warns at 10% and
+again at 5%, and closes once the machine is plugged in. Under the zones, a
 Network line says what the net zone reports: whether it is ready, the
 Wi-Fi network it joined (or
 that Wi-Fi is switched off, by a switch or an airplane-mode key; switched on

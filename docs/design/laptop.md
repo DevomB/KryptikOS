@@ -312,9 +312,18 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   service), in zone 0, reads the battery and the mains adapter or USB
   charger from `/sys/class/power_supply` every 30 s; a mouse's battery
   (scope `Device`) does not count, and of two batteries the fuller does. On
-  battery at 3% or under, seen twice running, it stops every zone as
-  `kryptikd stop` does, each launcher closing its volume, and powers the
-  machine off, since there is no hibernation.
+  battery at 10% and again at 5% it warns, once each a discharge: the
+  chrome's status loop opens a window that says what comes at 3% and
+  follows the charge until the machine is on mains. At 3% or under, seen
+  twice running, it stops every zone as `kryptikd stop` does, each launcher
+  closing its volume, and powers the machine off, since there is no
+  hibernation. Each look is written to `/run/kryptik-power/state`, which the
+  chrome reads, so the menu says what the service acts on.
+- **A gauge that reads too low.** A worn battery whose gauge says 3% or less
+  while it still holds charge powers the machine off a minute after every
+  boot on battery. Requiring a reading above 3% earlier in the boot would
+  stop that, at the cost of an unclean death for a boot that starts at 2%.
+  Which to take is for the tests on physical hardware.
 - **The energy preference.** The same service sets
   `energy_performance_preference` to `balance_power` on battery and
   `balance_performance` on mains whenever the source changes, on each
@@ -350,8 +359,8 @@ and the power key, idle and inhibitors, suspend, and runtime directories
     zone holds the screen awake for as long as it does.
   - The moment no hold qualifies, the lock and the blanking count input
     alone again.
-- The chrome's menu has a Power line: on mains or on battery, the charge,
-  and on battery what happens at 3%.
+- The chrome's menu has a Power line, from the power service's state: on
+  mains or on battery, the charge, and on battery what happens at 3%.
 
 ### Check
 
@@ -363,7 +372,8 @@ machine down with every volume closed.
 
 `make power-test` does the battery's part with `test_power`: the service
 follows the adapter both ways, the menu's Power line names the source and
-the charge, and with the battery at 2% unplugged the service stops the
+the charge, a window warns at 10% and again at 5%, follows the charge and
+closes on mains, and with the battery at 2% unplugged the service stops the
 zones and powers off; the host then finds on the state partition that it
 said so and that a running zone's volume was closed first. The energy
 preference, which QEMU's processors do not offer, is checked against

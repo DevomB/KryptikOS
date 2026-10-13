@@ -3,7 +3,7 @@
 # test_power module stands in for a battery, a mains adapter and a USB charger. The host acts on:
 #   GT CRITICAL    the battery is set to 2% with nothing plugged in: the power service stops the
 #                  zones and powers off, and the host reads the state partition afterwards
-#   power-check.sh USER    USER is the session's, whose chrome menu is read
+#   power-check.sh USER    USER is the session's, whose chrome is run
 # Verdicts: "GT PASS|FAIL name - detail".
 set -u
 cd / || exit 1
@@ -23,12 +23,17 @@ wait_for() {   # wait_for SECONDS CMD...
 uncaught() { cat /run/uncaught-logs/@* /run/uncaught-logs/previous /run/uncaught-logs/current 2>/dev/null; }
 said() { uncaught | grep -ac "power: $1"; }
 more() { [[ "$(said "$1")" -gt "$2" ]]; }
+# The power service's last look, which the chrome reads.
+state() { sed -n "s/^$1=//p" /run/kryptik-power/state 2>/dev/null; }
+looked() { [[ "$(state source)" == "$1" && "$(state charge)" == "$2" ]]; }   # looked SOURCE CHARGE
+warned_at() { [[ "$(state warning)" == "$1" ]]; }
 # The menu's Power line, as the session's user sees it.
 power_line() { su -s /bin/sh "$USER_NAME" -c "printf 'q\\n' | /usr/bin/kryptik-chrome --menu" 2>&1 | grep '^Power:' | tail -1; }
 
 # --- with no battery, as a VM has none ------------------------------------------------------
-if pgrep -f /usr/libexec/kryptik/power.sh > /dev/null && wait_for 10 more "on mains" 0; then
-    pass "power-service" "running, and on mains: $(uncaught | grep -a 'power:' | tail -1)"
+if pgrep -f /usr/libexec/kryptik/power.sh > /dev/null && wait_for 10 more "on mains" 0 \
+   && [[ "$(state charge)" == none ]]; then
+    pass "power-service" "running, and on mains with no battery: $(tr '\n' ' ' < /run/kryptik-power/state)"
 else
     fail "power-service" "$(uncaught | grep -a 'power' | tail -3 | tr '\n' ' ')"
 fi
@@ -41,11 +46,12 @@ if modprobe test_power && wait_for 10 test -d /sys/class/power_supply/test_batte
 else
     fail "test-power" "modprobe test_power: $(dmesg | tail -2 | tr '\n' ' ')"
 fi
+wait_for 45 looked mains 50
 line="$(power_line)"
-if [[ "$line" == "Power: on mains, the battery at 50%, charging" ]]; then
+if [[ "$line" == "Power: on mains, the battery at 50%" ]]; then
     pass "chrome-power-mains" "$line"
 else
-    fail "chrome-power-mains" "${line:-no Power line}"
+    fail "chrome-power-mains" "${line:-no Power line}; state: $(tr '\n' ' ' < /run/kryptik-power/state)"
 fi
 
 batt="$(said 'on battery, the battery at 40%')"
@@ -56,14 +62,31 @@ else
     fail "power-on-battery" "$(uncaught | grep -a 'power:' | tail -2 | tr '\n' ' ')"
 fi
 line="$(power_line)"
-if [[ "$line" == "Power: on battery, at 40%, discharging; at 3% the zones stop and the machine powers off" ]]; then
+if [[ "$line" == "Power: on battery, at 40%; at 3% the zones stop and the machine powers off" ]]; then
     pass "chrome-power-battery" "$line"
 else
     fail "chrome-power-battery" "${line:-no Power line}"
 fi
 
+# --- the warnings: at 10% and at 5%, in a window of the chrome's, as its status loop opens one
+echo 9 > "$TP/battery_capacity"
+warned_10="no"; wait_for 45 warned_at 10 && warned_10="yes"
+su -s /bin/sh "$USER_NAME" -c "/usr/bin/kryptik-chrome --battery" > "$LOG/battery.out" 2>&1 &
+bp=$!
+echo 4 > "$TP/battery_capacity"
+warned_5="no"; wait_for 45 warned_at 5 && warned_5="yes"
+told() { grep -qx "$1" "$LOG/battery.out"; }
+wait_for 15 told 'at 4%'
 mains="$(said 'on mains')"
 echo on > "$TP/ac_online"; echo charging > "$TP/battery_status"
+closed() { ! kill -0 "$bp" 2>/dev/null; }
+if [[ "$warned_10/$warned_5" == yes/yes ]] && wait_for 50 closed && told 'at 9%' && told 'at 4%' \
+   && told 'On mains now.' && warned_at ""; then
+    pass "battery-warnings" "a warning at 10% and at 5%, a window that followed the charge and closed on mains: $(grep -v '^=' "$LOG/battery.out" | tr '\n' '|')"
+else
+    kill "$bp" 2>/dev/null
+    fail "battery-warnings" "warned at 10%: ${warned_10}, at 5%: ${warned_5}; window: $(tr '\n' '|' < "$LOG/battery.out"); state: $(tr '\n' ' ' < /run/kryptik-power/state)"
+fi
 if wait_for 45 more 'on mains' "$mains"; then
     pass "power-on-mains-again" "and saw it come back"
 else

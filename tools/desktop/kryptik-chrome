@@ -32,6 +32,7 @@
 #   kryptik-chrome --microphone ZONE
 #                                  say, for as long as ZONE holds the microphone,
 #                                  that it does and whether it is recording
+#   kryptik-chrome --battery       warn that the battery is low, until on mains
 #
 # Passphrases are read by kryptik-launch on the chrome's own terminal and go
 # to the daemon as a descriptor, never in argv or the environment.
@@ -47,6 +48,8 @@ FOCUS="$RT/kryptik/focus"
 # The last zone window, for the menu: once the menu has focus, the focus record names zone 0.
 FOCUS_ZONE="$RT/kryptik/focus.zone"
 CONSENT=/run/kryptik-consent
+# The power service's last look (power.sh): the source, the charge and its warning.
+POWER=/run/kryptik-power/state
 
 die() { echo "kryptik-chrome: $*" >&2; exit 1; }
 
@@ -137,19 +140,43 @@ run_status() {
             sleep 1
         done
     ) &
-    # While a zone holds the microphone, a window of the chrome's says so, and when it records.
+    # While a zone holds the microphone, a window of the chrome's says so, and when it records;
+    # and as the battery reaches 10% and again 5%, a window warns of the power-off at 3%.
     (
-        shown=""
+        shown="" warned=""
         while :; do
             mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
             if [ -n "$mic" ] && [ "$mic" != "$shown" ]; then
                 "$TERMINAL" /usr/bin/kryptik-chrome --microphone "$mic" &
             fi
             shown="$mic"
+            w="$(power_field warning)"
+            if [ -n "$w" ] && [ "$w" != "$warned" ]; then
+                "$TERMINAL" /usr/bin/kryptik-chrome --battery &
+            fi
+            warned="$w"
             sleep 1
         done
     ) &
     status_to_focus
+}
+
+# The battery's warning: the charge, what comes at 3%, and the charge again as it falls; it
+# closes once the machine is on mains, or after ten minutes (Alt+Shift+c closes it sooner).
+run_battery() {
+    clear 2>/dev/null
+    echo "================ KRYPTIK - the battery (zone 0) ================"
+    echo "The battery is low. At 3% the zones stop, each closing its volume, and the"
+    echo "machine powers off. Plug it in, or save what you are working on now."
+    echo
+    said="" n=0
+    while [ "$(power_field source)" = battery ] && [ "$n" -lt 120 ]; do
+        chg="$(power_field charge)"
+        [ "$chg" = "$said" ] || { echo "at ${chg}%"; said="$chg"; }
+        n=$((n + 1))
+        sleep 5
+    done
+    [ "$(power_field source)" = battery ] || { echo "On mains now."; sleep 2; }
 }
 
 # The microphone's window: open from the grant to its end, with each change of state on a line.
@@ -212,24 +239,17 @@ menu_network() {
     done
 }
 
-# The battery and whether the machine runs on it, as /sys has them; nothing without a battery.
-# The power service shuts the machine down at 3% (power.sh).
+# The battery and whether the machine runs on it, as the power service last saw them, so the
+# menu says what the service acts on; nothing without a battery.
+power_field() { sed -n "s/^$1=//p" "$POWER" 2>/dev/null; }
 menu_power() {
-    bat="" mains=""
-    for d in /sys/class/power_supply/*; do
-        [ -r "$d/type" ] || continue
-        case "$(cat "$d/type")" in
-            Mains|USB) [ "$(cat "$d/online" 2>/dev/null)" = 1 ] && mains=yes ;;
-            Battery) [ "$(cat "$d/scope" 2>/dev/null)" = Device ] && continue
-                     bat="$(cat "$d/capacity" 2>/dev/null)%, $(tr 'A-Z' 'a-z' < "$d/status" 2>/dev/null)" ;;
-        esac
-    done
-    [ -n "$bat" ] || return 0
+    chg="$(power_field charge)"
+    case "$chg" in ""|*[!0-9]*) return 0 ;; esac
     echo
-    if [ -n "$mains" ]; then
-        echo "Power: on mains, the battery at $bat"
+    if [ "$(power_field source)" = battery ]; then
+        echo "Power: on battery, at ${chg}%; at 3% the zones stop and the machine powers off"
     else
-        echo "Power: on battery, at $bat; at 3% the zones stop and the machine powers off"
+        echo "Power: on mains, the battery at ${chg}%"
     fi
 }
 
@@ -554,7 +574,8 @@ case "${1:-}" in
     --confirm) [ -n "${2:-}" ] || die "--confirm needs an id"; run_confirm "$2" ;;
     --menu) run_menu ;;
     --microphone) [ -n "${2:-}" ] || die "--microphone needs a zone"; run_microphone "$2" ;;
+    --battery) run_battery ;;
     --prompt) shift; run_prompt "$@" ;;
     --focus) cat "$FOCUS" 2>/dev/null || { echo "zone=-"; exit 1; } ;;
-    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus | --microphone ZONE]" ;;
+    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus | --microphone ZONE | --battery]" ;;
 esac
