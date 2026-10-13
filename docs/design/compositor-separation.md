@@ -20,10 +20,10 @@ ADR-024 in [decisions](../decisions.md).
   export-dmabuf, data-control, primary selection, the virtual keyboard and
   pointer, layer-shell, session lock and the rest, and its own socket in the
   user's runtime directory offers them all. Each zone's socket, in
-  `/run/kryptik-compositor/<uid>/`, offers only the proxy's eight globals
-  (`tools/desktop/dwl-zone-borders.py`) and takes only the session and that
-  zone's proxy, so the proxy (`compositor/wlproxy/src/policy.rs`) and dwl
-  must both be wrong before a zone's client binds a hidden one.
+  `/run/kryptik-compositor/<uid>/`, offers only the globals the proxy passes
+  on (`tools/desktop/dwl-zone-borders.py`) and takes only the session and
+  that zone's proxy, so the proxy (`compositor/wlproxy/src/policy.rs`) and
+  dwl must both be wrong before a zone's client binds a hidden one.
 - **So a proxy bug gives a zone what it had.** A zone that gains code
   execution in its proxy runs as that proxy's uid, with no file to open,
   no network and no group. It reaches its own zone's socket of dwl's,
@@ -99,7 +99,11 @@ since the session user cannot switch uid:
   daemon without following a link and taken only if the session owns it:
   the session owns that directory, and could otherwise point the proxy at
   another user's compositor. A new socket there, as when dwl starts again,
-  gets a new proxy at the next start.
+  gets a new proxy at the next start;
+- with the move gesture's socket made by the daemon at
+  `/run/kryptik-proxy/<uid>/<zone>.control`, the session's alone (0600),
+  and passed listening as `--control-fd`, with `--control-uid` naming the
+  one uid the proxy answers there.
 
 `connect(2)` to the zone's compositor socket is not a Landlock access, so
 new clients still reach dwl, which takes a client on a zone's socket only

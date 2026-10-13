@@ -6,9 +6,11 @@
 //!              run <zone> [wayland] [pass=fd], `arg <word>` lines, `end`
 //!                (wayland: through the zone's proxy, which serve starts for the session;
 //!                with pass=fd, one descriptor rides with the first bytes)
-//!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `end`
+//!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `hidden` for a
+//!                network that hides its name, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              wifi-scan, answered once the nic zone has scanned
+//!              check-password, `password <password>`, `end` (the screen lock's)
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
@@ -105,6 +107,16 @@ fn gid_of_group(name: &str) -> Option<u32> {
         None
     } else {
         Some(unsafe { (*g).gr_gid })
+    }
+}
+
+/// The login name of `uid`, as the password database has it.
+fn user_of(uid: u32) -> Option<String> {
+    let pw = unsafe { libc::getpwuid(uid) };
+    if pw.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr((*pw).pw_name) }.to_string_lossy().into_owned())
     }
 }
 
@@ -281,17 +293,18 @@ fn parse_run(text: &str) -> Result<Request, String> {
 }
 
 /// Debug prints the SSID only: the passphrase is never formatted. `open`: a network saved
-/// with no passphrase, which `wifi-add` takes in place of `psk`.
+/// with no passphrase, which `wifi-add` takes in place of `psk`; `hidden`: one asked for by name.
 struct WifiRequest {
     ssid: String,
     psk: Option<String>,
     open: bool,
+    hidden: bool,
 }
 
 impl std::fmt::Debug for WifiRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let psk = if self.psk.is_some() { "<set>" } else { "None" };
-        write!(f, "WifiRequest {{ ssid: {:?}, psk: {psk}, open: {} }}", self.ssid, self.open)
+        write!(f, "WifiRequest {{ ssid: {:?}, psk: {psk}, open: {}, hidden: {} }}", self.ssid, self.open, self.hidden)
     }
 }
 
@@ -303,8 +316,8 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
         let word = verb.split_whitespace().next().unwrap_or("wifi");
         return Err(format!("{word}: the verb stands alone on its line"));
     }
-    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>` or `open`, `end`" } else { "`ssid <SSID>`, `end`" };
-    let (mut ssid, mut psk, mut open, mut ended) = (None, None, false, false);
+    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>` or `open`, maybe `hidden`, `end`" } else { "`ssid <SSID>`, `end`" };
+    let (mut ssid, mut psk, mut open, mut hidden, mut ended) = (None, None, false, false, false);
     for l in lines {
         if l == "end" {
             ended = true;
@@ -322,6 +335,10 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
             if std::mem::replace(&mut open, true) {
                 return Err(format!("{verb}: two open lines"));
             }
+        } else if l == "hidden" && verb == "wifi-add" {
+            if std::mem::replace(&mut hidden, true) {
+                return Err(format!("{verb}: two hidden lines"));
+            }
         } else {
             return Err(format!(
                 "{verb}: unexpected line; the request is {shape}, one per line, and neither value may hold a newline"
@@ -335,7 +352,7 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
     if verb == "wifi-add" && psk.is_some() == open {
         return Err("wifi-add: a psk line or an open line, one of them".into());
     }
-    Ok(WifiRequest { ssid, psk, open })
+    Ok(WifiRequest { ssid, psk, open, hidden })
 }
 
 // --- the proxy socket ----------------------------------------------------------
@@ -869,6 +886,8 @@ pub struct ServeConfig {
     pub wifi_dir: PathBuf,
     /// Unprivileged instance: serves its own uid only.
     pub developer: bool,
+    /// The shadow file the screen lock's password is checked against.
+    pub shadow: PathBuf,
 }
 
 fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String> {
@@ -895,6 +914,7 @@ fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String>
         proxy_exe: PathBuf::from(opt("--proxy-exe").unwrap_or_else(|| PROXY_EXE.to_string())),
         wifi_dir: crate::wifi_dir_from(args),
         developer,
+        shadow: PathBuf::from(opt("--shadow").unwrap_or_else(|| crate::password::SHADOW.to_string())),
     })
 }
 
@@ -982,7 +1002,7 @@ fn zone_running(name: &str) -> bool {
 /// The nic zone's word on the network: the line its program wrote last
 /// (tools/net/netzone-init.sh, `report`) in its own /run. The zone is untrusted, so only
 /// `net_summary`'s words leave here, and zone 0's window shows nothing else of the line.
-fn net_status(name: &str) -> Option<String> {
+pub(crate) fn net_status(name: &str) -> Option<String> {
     let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(name) else {
         return None;
     };
@@ -992,8 +1012,9 @@ fn net_status(name: &str) -> Option<String> {
 }
 
 /// The words for a net zone's status line, or none for a line of another form: whether it is
-/// ready, the Wi-Fi network (an SSID as Rust quotes a string, so nothing unprintable reaches a
-/// terminal), the uplink's address and whether there is DNS.
+/// ready, the Wi-Fi network joined or the one that refused the passphrase (an SSID as iw prints
+/// one, read back to its bytes and shown as `wifi::shown` shows them, so nothing unprintable
+/// reaches a terminal), the uplink's address and whether there is DNS.
 fn net_summary(line: &str) -> Option<String> {
     if line.starts_with("NOT READY") {
         return Some("not ready: forwarding is off".into());
@@ -1024,8 +1045,13 @@ fn net_summary(line: &str) -> Option<String> {
         "off" => Some("Wi-Fi switched off".to_string()),
         "connecting" => Some("Wi-Fi connecting".to_string()),
         "associated" => Some("Wi-Fi joined".to_string()),
-        ssid if !ssid.is_empty() && ssid.len() <= 32 => Some(format!("Wi-Fi {ssid:?}")),
-        _ => return None,
+        printed => {
+            let named = |p: &str| crate::wifi::ssid_from_iw(p).map(|b| crate::wifi::shown(&b));
+            Some(match printed.strip_prefix("refused:") {
+                Some(p) => format!("Wi-Fi {} refused the passphrase", named(p)?),
+                None => format!("Wi-Fi {}", named(printed)?),
+            })
+        }
     };
     Some(match wifi {
         Some(w) => format!("ready: {w}, {uplink}, {dns}"),
@@ -1033,8 +1059,28 @@ fn net_summary(line: &str) -> Option<String> {
     })
 }
 
+/// `check-password`, the screen lock's: the password on a line of its own, checked against the
+/// peer's own login entry. The reply never repeats it.
+fn check_password(cfg: &ServeConfig, uid: u32, text: &str, attempts: &mut crate::password::Attempts) -> String {
+    let mut lines = text.lines();
+    let password = match (lines.next(), lines.next().and_then(|l| l.strip_prefix("password ")), lines.next(), lines.next()) {
+        (Some("check-password"), Some(p), Some("end"), None) => p,
+        _ => return "error: check-password: the request is `password <PASSWORD>` and `end`, one per line\n".into(),
+    };
+    let Some(user) = user_of(uid) else {
+        return format!("error: no account has uid {uid}\n");
+    };
+    match crate::password::check(&cfg.shadow, &user, password.as_bytes(), attempts, Instant::now()) {
+        Ok(()) => "ok\n".into(),
+        Err(e) => {
+            eprintln!("kryptikd serve: uid {uid}: the screen lock's password: {e}");
+            format!("error: {e}\n")
+        }
+    }
+}
+
 /// Serve one connection; a started launch is returned and a slow command pushed to `jobs`.
-fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, proxies: &mut Vec<Proxy>) -> Option<Pending> {
+fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, attempts: &mut crate::password::Attempts, proxies: &mut Vec<Proxy>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let Ok(peer) = peer_cred(fd) else {
         reply(&conn, "error: unidentified peer\n");
@@ -1046,7 +1092,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, proxies: &mu
         eprintln!("kryptikd serve: refused uid {uid} (pid {})", peer.pid);
         return None;
     }
-    let (text, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
+    let (mut raw, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("kryptikd serve: uid {uid}: {e}");
@@ -1054,7 +1100,17 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, proxies: &mu
             return None;
         }
     };
-    let text = String::from_utf8_lossy(&text).into_owned();
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    // The bytes as read are wiped once copied: a request may carry a password or a passphrase.
+    raw.fill(0);
+    if text.lines().next() == Some("check-password") {
+        let said = check_password(cfg, uid, &text, attempts);
+        let mut text = text;
+        // SAFETY: zero bytes are valid UTF-8.
+        unsafe { text.as_bytes_mut() }.fill(0);
+        reply(&conn, &said);
+        return None;
+    }
     let first = text.lines().next().unwrap_or("");
     let verb = first.split_whitespace().next().unwrap_or("");
     match verb {
@@ -1250,7 +1306,8 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, proxies: &mu
                 }
             };
             let done = if verb == "wifi-add" {
-                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref()).map(|a| crate::wifi::said(&req.ssid, a, req.open))
+                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref(), req.hidden)
+                    .map(|(a, hidden)| crate::wifi::said(&req.ssid, a, req.open, hidden))
             } else {
                 crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| format!("forgot network {:?}", req.ssid))
             };
@@ -1377,6 +1434,8 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
+    // Wrong passwords at the screen lock, kept across connections.
+    let mut attempts = crate::password::Attempts::default();
     let mut proxies: Vec<Proxy> = Vec::new();
     if !cfg.developer {
         crate::proxy::kill_leftovers();
@@ -1501,7 +1560,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             match listener.accept() {
                 Ok((conn, _)) => {
                     let _ = conn.set_nonblocking(false);
-                    if let Some(p) = handle(&cfg, conn, &mut jobs, &mut proxies) {
+                    if let Some(p) = handle(&cfg, conn, &mut jobs, &mut attempts, &mut proxies) {
                         pending.push(p);
                     }
                 }
