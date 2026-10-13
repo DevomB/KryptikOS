@@ -304,9 +304,9 @@ PACKAGES=(
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/update-fetch.py" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
+    "stick"       "s_stick ${KRYPTIK_STICK_BIN:-none} $([[ -f "${KRYPTIK_STICK_BIN:-}" ]] && sha256_of "${KRYPTIK_STICK_BIN}" || echo absent)"
     # The binary's path and hash, and a digest of the zone files: kryptikd
     # validates them at install time, so the two must move together.
-    "stick"       "s_stick ${KRYPTIK_STICK_BIN:-none} $([[ -f "${KRYPTIK_STICK_BIN:-}" ]] && sha256_of "${KRYPTIK_STICK_BIN}" || echo absent)"
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(tree_digest "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/*) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
     # After kryptikd and efiboot: its check runs kryptik-update, which refuses to start without either.
     "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
