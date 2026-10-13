@@ -6,8 +6,8 @@
 #
 # Refused: a whiteout or an opaque or redirected directory (a root path removed or hidden), a file the
 # root already has, a directory of the root's under /usr with another mode or owner, a file outside
-# /usr, a device node, a setuid or setgid bit, a file capability. The chroot's own scratch, mount points
-# and marks are let be.
+# /usr, a link that leads out of /usr, a device node, a setuid or setgid bit, a file capability. The
+# chroot's own scratch, mount points and marks are let be.
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 # The verdict is python's exit status; the ERR trap would abort before it is read.
 trap - ERR
@@ -29,6 +29,11 @@ def xattr(path, name):
         return os.getxattr(path, name, follow_symlinks=False)
     except OSError:
         return None
+
+# A link resolves in the zone's view, where outside /usr is the zone's own files, not the image's.
+def in_usr(rel, target):
+    path = os.path.normpath(os.path.join("/" + os.path.dirname(rel), target))
+    return path == "/usr" or path.startswith("/usr/")
 
 bad, files, dirs = [], 0, 0
 for d, subdirs, names in os.walk(upper):
@@ -73,6 +78,8 @@ for d, subdirs, names in os.walk(upper):
             bad.append(f"/{rel} is setuid or setgid")
         elif xattr(p, "security.capability") is not None:
             bad.append(f"/{rel} carries a file capability")
+        elif stat.S_ISLNK(st.st_mode) and not in_usr(rel, os.readlink(p)):
+            bad.append(f"/{rel} links to {os.readlink(p)}, outside /usr")
         else:
             files += 1
 for b in bad:

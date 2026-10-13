@@ -191,7 +191,8 @@ up ADR-001 in the zones where the applications run.
   (`build/lib/recipes.sh`). `tools/check-image-tree.sh` checks the upper
   directory: no whiteout or opaque directory, no file the root has, no
   directory of the root's `/usr` with another mode or owner, nothing outside
-  `/usr`, no device node, setuid or setgid bit, or file capability. The
+  `/usr` and no link that leads out of it, no device node, setuid or setgid
+  bit, or file capability. The
   probe image (`build/images/probe.sh`), one small program that locks its
   memory, proves the stage and the zones suite's checks; it ships to no one.
 - **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it

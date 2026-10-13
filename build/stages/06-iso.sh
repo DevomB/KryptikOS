@@ -384,7 +384,8 @@ pack_image() {
 
 # Each software image the image stage built (build/stages/04-images.sh), in IMAGES with
 # images.manifest naming them for this root: the release, the root's hash as their base, an image line
-# each by name, then each image's policy lines (build/images/NAME.needs). sign-images signs it.
+# each by name, then each image's policy lines (build/images/NAME.needs). sign-images signs it. With no
+# image built there is no list, as kryptikd refuses one that names none.
 s_images() {
     local version="$1" base; base="$(root_json root_hash)"
     local rec name ver line needs=() images=()
@@ -400,9 +401,14 @@ s_images() {
             done < "${KRYPTIK_ROOT}/build/images/${name}.needs"
         fi
     done
+    if [[ "${#images[@]}" -eq 0 ]]; then
+        rmdir "$IMAGES"
+        echo "no software image built (make images): no images.manifest"
+        return 0
+    fi
     {
         printf 'KRYPTIK-IMAGES-1\nrelease: %s\nbase: %s\n' "$version" "$base"
-        if [[ "${#images[@]}" -gt 0 ]]; then printf '%s\n' "${images[@]}" | LC_ALL=C sort; fi
+        printf '%s\n' "${images[@]}" | LC_ALL=C sort
         if [[ "${#needs[@]}" -gt 0 ]]; then printf '%s\n' "${needs[@]}"; fi
     } > "${IMAGES}/images.manifest"
     echo "--- images.manifest ---"
@@ -415,7 +421,7 @@ s_images() {
 s_sign_images() {
     echo "inputs digest: $1"
     local dir="$IMAGES" m="${IMAGES}/images.manifest"
-    [[ -f "$m" ]] || { echo "no images.manifest: the images step packed none"; return 1; }
+    [[ -f "$m" ]] || { echo "no images.manifest: no software image to sign"; return 0; }
     rm -rf "${m}.sig" "${dir}/controls"
     # As s_sums: a security key asks on stderr to be touched, and the terminal, when there is one, gets it.
     local to=/dev/null; { : > /dev/tty; } 2>/dev/null && to=/dev/tty
