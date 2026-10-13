@@ -1024,6 +1024,12 @@ pub fn run_in_zone(
     if sound_dir.is_some() {
         crate::sound::revoke(&zone.name);
     }
+    // So does a USB stick the user gave it.
+    match crate::stick::eject(&zone.name) {
+        Ok(true) => eprintln!("kryptikd: zone {:?}: its USB stick taken back", zone.name),
+        Ok(false) => {}
+        Err(e) => eprintln!("kryptikd[zone {}]: taking its USB stick back: {e}", zone.name),
+    }
     // dm-crypt frees the volume key on close: that is all "keys wiped on stop" means.
     if let Some(o) = opened_volume.take() {
         match o.close() {

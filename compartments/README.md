@@ -31,6 +31,7 @@ mode = "none"          # a namespace with only loopback, not a firewall rule
 [storage]
 mode   = "encrypted"   # opened when the zone starts, closed (key gone) when it stops
 volume = "/var/lib/kryptik/volumes/vault.luks"
+removable = false     # never given a USB stick; every other zone but the net zone may be
 
 [policy]
 seccomp  = "policy/vault.seccomp"

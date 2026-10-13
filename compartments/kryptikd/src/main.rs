@@ -22,6 +22,7 @@ mod seccomp;
 mod serve;
 mod sound;
 mod spawn;
+mod stick;
 mod supplicant;
 mod suspend;
 mod time;
@@ -107,6 +108,12 @@ USAGE:
     kryptikd sound zones              the zones zone 0's mixer serves, a line each,
                                       NAME and UID: the uid the zone's root maps to,
                                       the only peer its socket takes
+    kryptikd stick list               the USB stick partitions a zone may be given
+                                      now, a line each: NAME and how the chrome names it
+    kryptikd stick grant ZONE PART ro|rw
+                                      give ZONE the partition PART, read-only or to
+                                      write (root; the session asks the launch daemon)
+    kryptikd stick eject ZONE         take it back: every read and write on it fails
     kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
                                       checked as nobody on copies: how kryptik-update
                                       apply, which runs as root, has a release checked
@@ -290,6 +297,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        "stick" => cmd_stick(&zone_dir, &args),
         "time" => cmd_time(&args),
         "check-release" => match args.as_slice() {
             [_, dir] => match update::check_release(Path::new(dir)) {
@@ -784,6 +792,44 @@ fn cmd_sound_zones(dir: &Path) -> ExitCode {
         }
         Err(e) => {
             eprintln!("kryptikd: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_stick(dir: &Path, args: &[String]) -> ExitCode {
+    let word = |i: usize| args.get(i).map(String::as_str).filter(|a| !a.starts_with("--"));
+    let done = match (word(1), word(2), word(3), word(4)) {
+        (Some("list"), None, ..) => {
+            for p in stick::eligible() {
+                println!("{} {}", p.name, p.what);
+            }
+            return ExitCode::SUCCESS;
+        }
+        (Some("grant"), Some(name), Some(part), Some(mode @ ("ro" | "rw"))) => match load_zone(dir, name) {
+            Ok(zone) => stick::grant(&zone, part, mode == "rw").map(|g| format!("zone {name:?} given {}, {}", g.what, g.mode())),
+            Err(c) => return c,
+        },
+        (Some("eject"), Some(name), None, _) => match load_zone(dir, name) {
+            Ok(_) => match stick::eject(name) {
+                Ok(true) => Ok(format!("zone {name:?}: its stick taken back")),
+                Ok(false) => Err(format!("zone {name:?} holds no stick")),
+                Err(e) => Err(e),
+            },
+            Err(c) => return c,
+        },
+        _ => {
+            eprintln!("stick: usage: kryptikd stick list | grant ZONE PARTITION ro|rw | eject ZONE");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(said) => {
+            println!("{said}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: stick: {e}");
             ExitCode::FAILURE
         }
     }

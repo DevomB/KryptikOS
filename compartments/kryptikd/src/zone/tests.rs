@@ -375,3 +375,17 @@ fn duplicate_colours_are_rejected() {
     let err = check_invariants(&zones).unwrap_err();
     assert!(format!("{err}").contains("border_color"), "got: {err}");
 }
+
+#[test]
+fn a_zone_takes_usb_sticks_unless_its_file_says_no() {
+    assert!(Zone::from_str(VAULT).unwrap().removable, "a zone may be given a stick unless its file says no");
+    let vol = "volume = \"/dev/kryptik/vault\"";
+    let no = VAULT.replace(vol, &format!("{vol}\nremovable = false"));
+    assert!(!Zone::from_str(&no).unwrap().removable);
+    let odd = VAULT.replace(vol, &format!("{vol}\nremovable = \"yes\""));
+    assert!(Zone::from_str(&odd).is_err(), "removable is true or false");
+    let nic = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"eth0\"");
+    assert!(!Zone::from_str(&nic).unwrap().removable, "the nic zone is never given one");
+    let nic_yes = nic.replace(vol, &format!("{vol}\nremovable = true"));
+    assert!(Zone::from_str(&nic_yes).is_err(), "a nic zone file may not ask for one");
+}

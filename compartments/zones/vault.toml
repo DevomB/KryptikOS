@@ -11,6 +11,9 @@ mode = "none"
 [storage]
 mode   = "encrypted"
 volume = "/var/lib/kryptik/volumes/vault.luks"
+# No USB stick is ever given to this zone: what holds the keys reads no filesystem anyone
+# may have written, and copies nothing out to one.
+removable = false
 
 [policy]
 seccomp  = "policy/vault.seccomp"
