@@ -600,3 +600,33 @@ cameras behind Intel's IPU6 stay unsupported.
 **Rejected:** a camera zone relaying frames, which needs a video pipe of
 Kryptik's and a device Firefox can open in the calling zone; loading the
 driver by alias, which hands every device's descriptors to it at plug-in.
+
+## ADR-027: No Bluetooth for 1.0; then a Bluetooth zone for a headset's audio
+
+Kryptik 1.0 builds no Bluetooth. Calls use a USB or wired headset, or a
+Bluetooth headset whose USB dongle presents itself as a USB sound card,
+all through zone 0's mixer. After 1.0, Bluetooth runs in a zone of its
+own, as ADR-021 has it, with a Kryptik kernel patch that lets that zone's
+network namespace make Bluetooth sockets and has the Bluetooth capability
+checks ask that namespace's user namespace. It carries a headset's audio
+alone, to and from the mixer as fixed-format streams, and its modules load
+only while the user has Bluetooth on in the chrome
+([Bluetooth](design/bluetooth.md)). That is the direction, not yet the
+patch: its code and the cost of rebasing it are weighed again when the work
+starts, and a free host stack on the controller's user channel takes the
+zone's place if one carries a headset's audio by then.
+
+**Why:** the kernel's Bluetooth protocols take input from anyone in radio
+range, and have had remote code execution twice (BlueBorne,
+BleedingTooth); a USB dongle gives calls a headset meanwhile with no radio
+code in the kernel at all.
+
+**Cost:** no Bluetooth headset without a dongle in 1.0. Later: a kernel
+patch rebased at every linux-hardened release, the kernel's Bluetooth code
+in every zone's kernel while Bluetooth is on, three vendors' controller
+firmware, and a device and a few control lines in the mixer.
+
+**Rejected:** bluetoothd in zone 0; a Bluetooth zone in the initial
+network namespace, which needs capabilities of the initial user namespace
+that reach past Bluetooth; a host stack in userspace on the controller's
+user channel, until a free one carries a headset's audio.
