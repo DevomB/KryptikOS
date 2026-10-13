@@ -19,7 +19,11 @@ image_rows=(
 # no sound until sound reaches zones. The first build keeps no wasm sandbox for its libraries. No debug
 # symbols: stage 06 strips them anyway, and linking libxul with them would need more than the runner has.
 s_browser_firefox() {
-    local src llvm="/usr/lib/llvm-${V_LLVM%%.*}"
+    local src llvm="/usr/lib/llvm-${V_LLVM%%.*}" gccdir
+    # bindgen's libclang finds GCC's C++ headers only under triples it knows, and this GCC's is
+    # x86_64-kryptik-linux-gnu: it is named, and a header parsed here first, not an hour into the build.
+    gccdir="$(dirname "$(gcc -print-libgcc-file-name)")"
+    echo '#include <cstdint>' | "${llvm}/bin/clang" -x c++ -fsyntax-only --gcc-install-dir="$gccdir" -
     src="$(unpack "firefox-${V_FIREFOX}esr.source.tar.xz" "firefox-${V_FIREFOX}")"
     cd "$src"
     # Configure requires unzip, which only packaging runs (make_unzip.py: `unzip ARCHIVE`, into the
@@ -61,6 +65,7 @@ ac_add_options --with-clang-path=${llvm}/bin/clang
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj
 export UNZIP=${src}/kryptik-unzip
 export LLVM_OBJDUMP=${llvm}/bin/llvm-objdump
+export BINDGEN_CFLAGS="--gcc-install-dir=${gccdir}"
 EOF
     env CC=gcc CXX=g++ MOZBUILD_STATE_PATH="${src}/.mozbuild" MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=none \
         MOZ_NOSPAM=1 ./mach --no-interactive build
