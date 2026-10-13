@@ -2,12 +2,14 @@
 //! reads nothing on the stick: kryptikd makes a device-mapper linear mapping of the one partition
 //! the user picked, read-only unless the user chose to write, and the zone's broker hands that
 //! mapping to the zone as a descriptor, which the zone's own reader parses (tools/stick). Eject
-//! makes the mapping fail every read and write, so a descriptor the zone kept is worthless after,
-//! and the mapping goes once the last one closes.
+//! writes out what the zone left unsynced, makes the mapping fail every read and write and drops
+//! what was cached of the stick, so a descriptor the zone kept is worthless after; the mapping
+//! goes once the last one closes.
 
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -15,6 +17,8 @@ use std::process::{Command, Stdio};
 pub const RUN_DIR: &str = "/run/kryptik-stick";
 pub const MAPPING_PREFIX: &str = "kryptik-stick-";
 const PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+/// _IO(0x12, 97): write a block device's dirty cache out, then drop the clean pages.
+const BLKFLSBUF: u32 = 0x1261;
 
 pub fn mapping_name(zone: &str) -> String {
     format!("{MAPPING_PREFIX}{zone}")
@@ -193,9 +197,13 @@ pub fn grant(zone: &crate::zone::Zone, name: &str, writable: bool) -> Result<Gra
     if !zone.removable {
         return Err(format!("zone {}'s file refuses USB sticks", zone.name));
     }
+    reap_pulled();
     let map = mapping_name(&zone.name);
-    if grant_of(&zone.name).is_some() || dm_device(Path::new("/sys/block"), &map).is_some() {
+    if grant_of(&zone.name).is_some() {
         return Err(format!("zone {} holds a stick already: eject it first", zone.name));
+    }
+    if dm_device(Path::new("/sys/block"), &map).is_some() {
+        return Err(format!("a program in zone {} still holds the stick taken back from it, until it ends", zone.name));
     }
     let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     let p = partition_in(Path::new("/sys"), &mounts, name)?;
@@ -219,18 +227,50 @@ pub fn grant(zone: &crate::zone::Zone, name: &str, writable: bool) -> Result<Gra
     Ok(g)
 }
 
-/// Take the stick back from `zone`: its mapping made to fail every read and write, a descriptor
-/// the zone kept among them, then removed once the last closes; its record gone. Whether there
-/// was one.
+/// BLKFLSBUF on /dev/DEV.
+fn flush_and_drop(dev: &str) -> std::io::Result<()> {
+    let f = fs::OpenOptions::new().read(true).custom_flags(libc::O_CLOEXEC).open(format!("/dev/{dev}"))?;
+    // SAFETY: BLKFLSBUF takes no argument.
+    if unsafe { libc::ioctl(f.as_raw_fd(), BLKFLSBUF as _, 0) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Take the stick back from `zone`: what it wrote and left unsynced written out first, then its
+/// mapping made to fail every read and write and the stick's cached pages dropped, so a
+/// descriptor the zone kept reads nothing more; the mapping removed once the last closes, and
+/// the record gone. Whether there was one.
 pub fn eject(zone: &str) -> Result<bool, String> {
     let map = mapping_name(zone);
-    let mapped = dm_device(Path::new("/sys/block"), &map).is_some();
-    if mapped {
+    let dev = dm_device(Path::new("/sys/block"), &map);
+    let mapped = dev.is_some();
+    if let Some(dev) = dev {
+        // A stick pulled out has nothing to flush to: the drop is what counts then.
+        let _ = flush_and_drop(&dev);
         dmsetup(&["wipe_table", &map])?;
+        flush_and_drop(&dev).map_err(|e| format!("/dev/{dev}: {e}"))?;
         dmsetup(&["remove", "--deferred", &map])?;
     }
     let recorded = fs::remove_file(Path::new(RUN_DIR).join(zone)).is_ok();
     Ok(mapped || recorded)
+}
+
+/// Take back every grant whose stick was pulled out: its mapping fails every read already, but
+/// holds the gone disk's name until it is removed. The chrome lists sticks whenever a block
+/// device comes or goes, which comes here.
+pub fn reap_pulled() {
+    for e in fs::read_dir(RUN_DIR).into_iter().flatten().flatten() {
+        let zone = e.file_name().to_string_lossy().into_owned();
+        let Some(g) = grant_of(&zone) else { continue };
+        if Path::new("/sys/class/block").join(&g.partition).exists() {
+            continue;
+        }
+        match eject(&zone) {
+            Ok(_) => eprintln!("kryptikd: zone {zone:?}: {} was pulled out, so its grant ended", g.what),
+            Err(e) => eprintln!("kryptikd: zone {zone:?}: {} was pulled out: {e}", g.what),
+        }
+    }
 }
 
 /// The stick given to `zone`, opened for its broker to hand over: read-only unless granted to

@@ -238,8 +238,14 @@ A USB stick or an SD card plugged into a running machine reaches the
 kernel, which reads its partition table as it does any disk's, and no
 program in zone 0: eudev probes none of its filesystems
 (`59-kryptik-removable.rules`), and Kryptik finds its own partitions by
-the names the kernel read from their tables (`devices.sh`). A device that
-also presents a keyboard is taken as one.
+the names the kernel read from their tables (`devices.sh`). Its filesystem
+is parsed only in the zone the user gives one of its partitions to, by
+`kryptik-stick`, a program of that zone, on a descriptor of a device-mapper
+mapping of that partition alone: zone 0 mounts nothing, the kernel's FAT
+driver never sees it, and a stick made to subvert the reader reaches what
+that zone holds. Eject, the zone's stop or pulling the stick out ends the
+grant, and the zone reads nothing of it after. A device that also presents
+a keyboard is taken as one.
 
 ### Microarchitectural side channels
 

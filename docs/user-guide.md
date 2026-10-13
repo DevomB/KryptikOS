@@ -417,6 +417,24 @@ the net zone. The network the machine itself is on, with its router, its
 printers and the page a hotel's or café's Wi-Fi asks you to log in on, is
 open to `untrusted` alone: open that page there (Alt+Shift+u).
 
+**USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
+one in opens a window of the chrome that names each partition by what the
+stick and its partition table say (maker and model, size, the partition's
+number and name), never by what its files say. A letter and a zone's number
+give that partition to that zone to read (`a1`), or to read and write
+(`a1w`); nothing is given until you choose, and the menu's `d` opens the
+same window later. In that zone's terminal, `kryptik-stick` says what the
+zone was given, `kryptik-stick list [DIR]` lists a directory,
+`kryptik-stick get PATH [DEST]` copies a file or a directory off it, and
+`kryptik-stick put FILE [DIR]` copies a file onto it when the zone may
+write; wait for `put` to say it has copied before pulling the stick out.
+The stick goes back with `e` and the zone's number in that window, when the
+zone stops, or when the stick is pulled out, and the zone reads nothing of
+it after. Only FAT is read; exFAT, which larger SD cards come with, is not
+yet. Give a stick you do not know to `untrusted`: whatever its filesystem
+does to the reader stays in that zone. `vault` and the net zone are never
+given one.
+
 **Degraded boot.** If the system cannot find exactly one `kryptik-state`
 partition on its own disk, or cannot unlock or mount it, it boots degraded: it says
 so on the console, creates no account, starts no desktop and refuses

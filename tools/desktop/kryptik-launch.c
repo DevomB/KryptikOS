@@ -3,7 +3,7 @@
  *
  *   kryptik-launch [--ask | --passphrase-fd N] [--no-display] ZONE -- COMMAND [ARG...]
  *   kryptik-launch --stop ZONE
- *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no
+ *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no, the USB stick it holds
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
  *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move what FROM's windows copied
  *                                      to TO's, or FROM's broker payload when they copied nothing
@@ -15,6 +15,9 @@
  *   kryptik-launch --wifi-forget SSID   remove one
  *   kryptik-launch --update status|fetch|forget|apply   show, fetch, drop or install a release
  *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
+ *   kryptik-launch --sticks             the USB stick partitions a zone may be given: NAME WHAT a line
+ *   kryptik-launch --stick-grant ZONE PART ro|rw   give ZONE the partition, to read or to write too
+ *   kryptik-launch --stick-eject ZONE   take ZONE's back
  *   kryptik-launch --check-password    whether the line on stdin is the login password: the
  *                                      screen lock asks, and the daemon pauses after a wrong one
  *
@@ -330,6 +333,7 @@ static void usage(void)
 	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID [--hidden] | --wifi-add-open SSID [--hidden] | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
 	      "       kryptik-launch --update status|fetch|forget|apply | --update auto on|off\n"
+	      "       kryptik-launch --sticks | --stick-grant ZONE PARTITION ro|rw | --stick-eject ZONE\n"
 	      "       kryptik-launch --check-password   (the password on standard input)\n", stderr);
 	exit(2);
 }
@@ -446,6 +450,36 @@ static int update_main(int argc, char **argv)
 	char *r = talk(req, -1);
 	int ok = strncmp(r, "ok\n", 3) == 0;
 	fputs(ok ? r + 3 : r, ok ? stdout : stderr);
+	return ok ? 0 : 1;
+}
+
+/* The chrome's stick window: what may be given, the giving, the taking back. */
+static int stick_main(int argc, char **argv)
+{
+	char req[160] = "";
+	if (argc == 2 && strcmp(argv[1], "--sticks") == 0)
+		snprintf(req, sizeof req, "sticks\n");
+	else if (argc == 5 && strcmp(argv[1], "--stick-grant") == 0 && ident_ok(argv[2]) && ident_ok(argv[3]) &&
+		 (strcmp(argv[4], "ro") == 0 || strcmp(argv[4], "rw") == 0))
+		snprintf(req, sizeof req, "stick-grant %s %s %s\n", argv[2], argv[3], argv[4]);
+	else if (argc == 3 && strcmp(argv[1], "--stick-eject") == 0 && ident_ok(argv[2]))
+		snprintf(req, sizeof req, "stick-eject %s\n", argv[2]);
+	else
+		usage();
+	char *r = talk(req, -1);
+	int ok = strncmp(r, "error", 5) != 0;
+	if (!ok)
+		fputs(r, stderr);
+	else if (strncmp(r, "ok ", 3) == 0)
+		fputs(r + 3, stdout);
+	else if (strcmp(argv[1], "--sticks") == 0) {
+		/* NAME WHAT lines, then end. */
+		size_t n = strlen(r);
+		if (n >= 4 && strcmp(r + n - 4, "end\n") == 0 && (n == 4 || r[n - 5] == '\n'))
+			r[n - 4] = 0;
+		fputs(r, stdout);
+	}
+	free(r);
 	return ok ? 0 : 1;
 }
 
@@ -596,6 +630,8 @@ int main(int argc, char **argv)
 		return update_main(argc, argv);
 	if (argc >= 2 && strcmp(argv[1], "--check-password") == 0)
 		return password_main(argc);
+	if (argc >= 2 && strncmp(argv[1], "--stick", 7) == 0)
+		return stick_main(argc, argv);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();

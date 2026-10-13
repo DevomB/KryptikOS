@@ -1282,7 +1282,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                             if enc { "yes" } else { "no" },
                             if zone_running(name) { "yes" } else { "no" },
                             if crate::suspend::waiting().iter().any(|z| z == name) { "yes" } else { "no" },
-                            crate::stick::grant_of(name).map_or("none", |g| g.mode()),
+                            crate::stick::grant_of(name).map_or("none".to_string(), |g| format!("{} {}", g.mode(), g.what)),
                             z.label.as_deref().unwrap_or(&z.name),
                             net.map_or(String::new(), |n| format!("network {n}\n")),
                         ),
@@ -1376,6 +1376,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
         }
         // The user's gesture in the chrome: which zone gets which stick, and when it goes.
         "sticks" => {
+            crate::stick::reap_pulled();
             let mut out = String::new();
             for p in crate::stick::eligible() {
                 out.push_str(&format!("{} {}\n", p.name, p.what));
