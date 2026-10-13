@@ -250,7 +250,11 @@ to resume can run from the root while the state partition is suspended.
    to sleep, or refuses to: a task it cannot freeze, such as one waiting on
    the suspended partition's device, makes it give up after 20 s, and the
    lock says so. Asked again at the passphrase prompt, as a lid closed on
-   it would, the daemon only sleeps.
+   it would, the daemon only sleeps. Most laptops made since about 2020
+   offer only s2idle, which `mem` then means; there the platform's power
+   controller driver (`amd-pmc`, `intel_pmc_core`, both modules) takes the
+   SoC to its deepest state, without which a sleeping laptop drains its
+   battery far sooner.
 6. **On waking,** the lock asks for the state partition's passphrase. The
    TPM is not used here: an unseal at resume would let whoever holds the
    machine resume it, and the TPM design extends PCR 15 at boot so that
@@ -457,7 +461,8 @@ follows the adapter both ways, the menu's Power line names the source and
 the charge, a window warns at 10% and again at 5%, follows the charge and
 closes on mains, and with the battery at 2% unplugged the service stops the
 zones and powers off; the host then finds on the state partition that it
-said so and that a running zone's volume was closed first. The energy
+said so and that a running zone's volume was closed first. The guest also
+finds the power controllers' drivers among the kernel's modules. The energy
 preference, which QEMU's processors do not offer, is checked against
 stand-in `/sys` trees (`tools/tests/power.sh`). QEMU has no backlight:
 the brightness steps are checked the same way (`tools/tests/brightness.sh`),

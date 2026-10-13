@@ -38,6 +38,21 @@ else
     fail "power-service" "$(uncaught | grep -a 'power' | tail -3 | tr '\n' ' ')"
 fi
 
+# --- the platform's power controllers ------------------------------------------------------
+# A laptop that sleeps only in s2idle reaches its deepest state through its SoC's power
+# controller driver. The kernel ships AMD's and Intel's, with the bus and the telemetry
+# Intel's needs, as modules that bind no device in QEMU.
+kmods="/lib/modules/$(uname -r)"
+missing=""
+for m in amd-pmc intel_pmc_core intel_vsec pmt_telemetry; do
+    [[ -n "$(find "$kmods" -name "${m}.ko*" -print -quit 2>/dev/null)" ]] || missing="${missing} ${m}"
+done
+if [[ -z "$missing" ]]; then
+    pass "sleep-drivers" "amd-pmc and intel_pmc_core, with intel_vsec and pmt_telemetry, are in ${kmods}"
+else
+    fail "sleep-drivers" "not in ${kmods}:${missing}"
+fi
+
 # --- a battery ---------------------------------------------------------------------------
 if modprobe test_power && wait_for 10 test -d /sys/class/power_supply/test_battery; then
     # test_usb counts as a charger: it stays off, so the mains adapter alone decides.

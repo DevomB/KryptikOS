@@ -485,7 +485,7 @@ item integrity media-refused-foreign-keys M vm    5 it_refused need_ms
 item integrity integrity-test             M vm    8 it_integrity need_enrolled
 item zones     zones-test                 M vm   10 it_zones need_vm
 item zones     sound-test                 M vm   23 it_sound need_vm
-item zones     power-test                 M vm   11 it_power need_vm
+item zones     power-test                 M vm   12 it_power need_vm
 item desktop   gui-test                   M vm   25 it_gui need_vm
 item desktop   suspend-test               M vm   20 it_suspend need_vm
 item update    update-test                M vm   10 it_update need_update
