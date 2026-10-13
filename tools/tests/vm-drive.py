@@ -174,6 +174,20 @@ check("plug: adds the file read-only, then a USB stick on the xHCI port", q.aske
 check("unplug: removes the device, then its drive once QEMU lets it go", q.asked[2:], [
     ("device_del", {"id": "stick1"}), ("blockdev-del", {"node-name": "stick1"}), ("blockdev-del", {"node-name": "stick1"})])
 
+print("-- plug-sound: and unplug-sound: add a USB sound card on an audio backend, and pull it out")
+sock6 = os.path.join(T, "serial6"); qmp6 = os.path.join(T, "qmp6")
+Guest(sock6, {}).start()
+q6 = Qmp(qmp6, busy=0); q6.start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock6, "--qmp", qmp6, "--timeout", "5",
+                            "plug-sound:usbsound:snd2", "unplug-sound:usbsound"]
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("plug-sound: and unplug-sound: succeed", rc, 0)
+check("the card goes on the xHCI port with its backend, and comes off with no drive to remove", q6.asked, [
+    ("device_add", {"driver": "usb-audio", "id": "usbsound", "audiodev": "snd2", "bus": "xhci.0"}),
+    ("device_del", {"id": "usbsound"})])
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(0 if FAIL == 0 else 1)

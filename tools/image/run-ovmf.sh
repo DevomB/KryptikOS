@@ -40,7 +40,8 @@
 #                  sleeps until vm-drive.py's wakeup step
 #   --sound WAV    two HD Audio cards: the first only plays, into the file WAV
 #                  at 48 kHz, and the second plays to nothing and records
-#                  silence (QEMU's WAV writer has no input)
+#                  silence (QEMU's WAV writer has no input); and snd2, playing
+#                  to nothing, for a USB card vm-drive.py's plug-sound: adds
 #   --usb-port     an xHCI controller with nothing on it, for sticks that
 #                  vm-drive.py's plug: step plugs in while the guest runs
 #   --mode console interactive serial console (Ctrl-A X quits)
@@ -167,7 +168,7 @@ if [[ -n "$SOUND" ]]; then
     # A comma would end QEMU's path option early.
     [[ "$SOUND" != *,* ]] || die "--sound: no commas in the path: ${SOUND}"
     case "$(readlink -f "$SOUND")" in /dev/*|/sys/*|/proc/*) die "refusing to use ${SOUND}" ;; esac
-    ARGS+=( -audiodev "wav,id=snd0,path=${SOUND},out.frequency=48000" -audiodev none,id=snd1
+    ARGS+=( -audiodev "wav,id=snd0,path=${SOUND},out.frequency=48000" -audiodev none,id=snd1 -audiodev none,id=snd2
             -device ich9-intel-hda,id=hda0 -device hda-output,bus=hda0.0,audiodev=snd0
             -device ich9-intel-hda,id=hda1 -device hda-duplex,bus=hda1.0,audiodev=snd1 )
 fi
