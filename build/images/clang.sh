@@ -15,8 +15,9 @@ image_rows=(
 s_clang_libclang() {
     local top="LLVM-${V_LLVM}-Linux-X64" dir="/usr/lib/llvm-${V_LLVM%%.*}"
     mkdir -p "$dir"
-    # LLVM compresses with a 1 GiB window, past zstd's default limit of 128 MiB.
-    zstd -d --long=31 -c "${KRYPTIK_SOURCES}/LLVM-${V_LLVM}-Linux-X64.tar.zst" \
+    # LLVM compresses with a 1 GiB window, past zstd's default limit of 128 MiB. On standard input,
+    # as zstd skips a file named by a link, and sources/ names an image's sources by links.
+    zstd -d --long=31 -c < "${KRYPTIK_SOURCES}/LLVM-${V_LLVM}-Linux-X64.tar.zst" \
         | tar --no-same-owner -xf - -C "$dir" --strip-components=1 \
             --wildcards "${top}/bin/clang" "${top}/bin/clang-[0-9]*" "${top}/lib/libclang.so*" \
             "${top}/lib/clang/*/include/*"
