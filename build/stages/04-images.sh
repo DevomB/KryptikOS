@@ -49,7 +49,7 @@ image_rows_of() {   # image_rows_of NAME
 # as one before it, so adding or removing one rebuilds every image; the base stamp covers the rest.
 link_surface() {
     ( cd "$SYSROOT" && find usr/include usr/lib usr/share/pkgconfig \( -type f -o -type l \) \
-        \( -path 'usr/include/*' -o -name '*.so' -o -name '*.so.*' -o -name '*.a' -o -name '*.pc' \) 2>/dev/null ) \
+        \( -path 'usr/include/*' -o -name '*.so' -o -name '*.so.*' -o -name '*.a' -o -name '*.pc' \) 2>/dev/null || true ) \
         | LC_ALL=C sort | sha256_of_stdin
 }
 
