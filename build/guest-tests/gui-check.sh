@@ -568,14 +568,15 @@ launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
 echo "GT KEY-FOCUS-PERSONAL"
 wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' '); $(zone_why personal)"
 # A window is the zone's whose socket its client came through, whatever app_id it
-# claims: a client of personal's socket calling itself vault's is personal's, and given
-# the keyboard, the chrome names it personal.
-as_user "WLPROBE_APP_ID=kryptik.vault.forged WAYLAND_DISPLAY=$RT/kryptik-compositor/personal /usr/libexec/kryptik/wlprobe oversize 0 40 socket-named" > "$LOG/socket-named.out" 2>&1 &
+# claims: a client of personal's socket calling itself one of untrusted's is personal's,
+# and given the keyboard, the chrome names it personal. Not vault's: dwl keeps an app_id
+# under kryptik.vault. on the vault's tag (dwl-config.h), out of sight.
+as_user "WLPROBE_APP_ID=kryptik.untrusted.forged WAYLAND_DISPLAY=$RT/kryptik-compositor/personal /usr/libexec/kryptik/wlprobe oversize 0 40 socket-named" > "$LOG/socket-named.out" 2>&1 &
 named_pid=$!
 named_drawn() { grep -q 'committed ' "$LOG/socket-named.out"; }
 wait_for 15 named_drawn
-# A new window does not take the keyboard: Alt+j brings it there, past at most two others,
-# and Alt+k as often hands the keyboard back to personal's window for the rounds after.
+# Alt+j walks the keyboard round the tag's windows, so one press puts it on the probe
+# whether or not the probe took it on map, and Alt+k as often walks it back.
 named=""
 for k in 1 2 3 back-1 back-2 back-3; do
     echo "GT KEY-FOCUS-NAMED $k"
