@@ -8,7 +8,8 @@
 #   step 2  boot the disk alone: first boot, login, reboot, login, poweroff
 #   step 3  cold boot it again (not with --quick), with step 1's signed control
 #           disk attached: an installed system ignores it
-#   step 4  a disk too small, a read-only disk, and an I/O error in the root
+#   step 4  a disk too small, a read-only disk, one with 4096-byte logical
+#           sectors, and an I/O error in the root
 #           image copy (not with --quick): each must fail, installing nothing;
 #           the medium's own disk, even with --replace-kryptik, and a copy of
 #           the installed disk without it: each refused, the copy untouched;
@@ -69,6 +70,16 @@ want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-a=/dev/vda2'  "partition 2 is krypt
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3 type=(none)?$'  "partition 3 is kryptik-b, and empty"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "partition 4 is the state partition, and it is LUKS"
 want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
+want "$P1" 'KRYPTIK_INSTALL: kryptik-install: firmware +Boot[0-9A-F]{4} -> .EFI.kryptik.kryptik-a\.efi on /dev/vda1 ' \
+    "the firmware has an entry for slot a on the new ESP as well"
+# The entry names the partition by PARTUUID: the one the new GPT holds, not one a cache kept.
+fw_uuid="$(sed -n 's/.*kryptik-install: firmware .*(PARTUUID \([0-9A-Fa-f-]*\)).*/\1/p' "$P1" | head -1)"
+gpt_uuid="$(sfdisk -d "$DISK" 2>/dev/null | awk -v p="${DISK}1" '$1 == p && match($0, /uuid=[0-9A-Fa-f-]+/) { print substr($0, RSTART + 5, RLENGTH - 5) }')"
+if [[ -n "$fw_uuid" && "${fw_uuid,,}" == "${gpt_uuid,,}" ]]; then
+    green "the entry names the new ESP by its PARTUUID (${gpt_uuid})"
+else
+    red "the entry names PARTUUID ${fw_uuid:-none}; the new GPT gives the ESP ${gpt_uuid:-none}"
+fi
 want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
 want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
 want "$P1" 'KRYPTIK_INSTALL: .*kryptik-a verifies'       "the root image was read back and verified"
@@ -93,7 +104,7 @@ cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
 [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
 start_vm install-p2; LOG2="$LOG"
 REC="${VMDIR}/install-p2.json"
-python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
+drive --record "$REC" \
     "expect:KRYPTIK_SMOKE: END" \
     "seen:kryptik-firstboot: created user '${TUSER}'" \
     "login:${TUSER}:${TPASS}" \
@@ -101,6 +112,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "grab:mounts:awk '\$2==\"/\"||\$2==\"/var\"||\$2==\"/etc\"||\$2==\"/home\" {print \$2, \$1, \$3, \$4}' /proc/mounts" \
     "grab:secureboot:od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null || echo none" \
     "grab:bootresult:cat /var/lib/kryptik/boot/last-result" \
+    "su:${RPASS}:kryptik-update status" \
     "run:echo KRYPTIK-CLEAR-MARKER-7f3a91 > /home/${TUSER}/persisted-p2 && sync" \
     "$(ROOTSH "grep -rqa state[-]pw /proc/[0-9]*/cmdline /run /etc 2>/dev/null && echo PW-LEAK || echo PW-NOLEAK")" "expect:PW-NOLEAK" \
     "su:${RPASS}:reboot" \
@@ -113,7 +125,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "expect:Power down" \
     "wait-exit"
 drc=$?
-sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+stop_vm
 P2="${VMDIR}/install-p2.txt"; txt_of "$LOG2" > "$P2"
 echo "  transcript: ${LOG2}"
 [[ "$drc" -eq 0 ]] && green "first boot, login, reboot, second login and clean poweroff all happened" || red "the serial drive failed (see above)"
@@ -132,6 +144,7 @@ else green "a file written under /home is not readable from the raw partition"; 
 want "$P2" 'KRYPTIK_SMOKE: etc_source=overlay'               "/etc is an overlay"
 want "$P2" 'KRYPTIK_SMOKE: root_writable=no'                 "the verified root is not writable"
 want "$P2" 'boot-success: slot a up'                         "boot-success recorded slot a"
+want "$P2" 'slot b: +version none, kernel absent'            "the ESP names no release for the empty slot b"
 want "$P2" 'reboot: Restarting system'                       "the guest rebooted itself"
 if [[ "$(grep -c 'Linux version' "$P2")" -ge 2 ]]; then green "two kernel boots in one session (reboot worked)"; else red "expected two kernel boots"; fi
 want "$P2" 'Power down'                                      "the guest powered off from inside"
@@ -143,12 +156,12 @@ if [[ "$QUICK" -eq 0 ]]; then
 step "step 3: cold boot the installed disk again, with a signed control disk attached"
 # Step 1's: it names this disk as the target and asks for a poweroff.
 start_vm install-p3 --testctl "$CTL"; LOG3="$LOG"
-python3 "$DRV" --serial "$SER" --timeout 300 \
+drive \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test -f /home/${TUSER}/persisted-p2" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
 drc=$?
-sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+stop_vm
 [[ "$drc" -eq 0 ]] && green "cold boot: login, persisted file present, clean poweroff" || red "cold boot drive failed"
 P3="${VMDIR}/install-p3.txt"; txt_of "$LOG3" > "$P3"
 deny "$P3" 'kryptik-firstboot: created user'  "first-boot setup did not run again"
@@ -197,6 +210,8 @@ refusal_case() {   # refusal_case NAME DISK-SIZE WHY EXTRA-RUN-ARGS... ; expects
 }
 refusal_case toosmall 1G 'this layout needs at least'
 refusal_case readonly "$SIZE" 'is read-only' --disk-readonly
+# A disk with 4096-byte logical sectors, which the medium's 512-byte FAT cannot boot from.
+refusal_case sector4k "$SIZE" '4096-byte logical sectors' --disk-4k
 # An I/O error in the root image copy, after the partition table is written;
 # the runner must report that failure. A disk of step 1's size is laid out as
 # step 1's was, so the error sits 4 MiB into where kryptik-a will be: past
@@ -308,12 +323,12 @@ if [[ "$QUICK" -eq 0 && -n "$SLOT" ]]; then
     cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
     [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
     start_vm slot-size-boot
-    python3 "$DRV" --serial "$SER" --timeout 300 \
+    drive \
         "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
         "run:test \"\$(cat /sys/class/block/vda2/size)\" = $(( BIG * 2048 ))" \
         "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
     drc=$?
-    sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+    stop_vm
     DISK="$SAVED_DISK"
     [[ "$drc" -eq 0 ]] && green "slot-size: the disk boots alone, and slot a is ${BIG} MiB from inside" || red "slot-size: the boot of the disk with larger slots failed"
 fi

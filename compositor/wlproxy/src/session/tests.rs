@@ -1,6 +1,6 @@
 use super::*;
 use std::os::unix::net::UnixStream;
-use std::os::unix::io::{AsRawFd, IntoRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::io::{Read, Write};
 
 /// A session over two socketpairs, with the test's client and server ends.
@@ -13,11 +13,14 @@ fn make() -> (Session, UnixStream, UnixStream) {
     (s, c_test, s_test)
 }
 fn pump_all(s: &mut Session) -> Result<(), SessionError> {
+    pump_with(s, &mut Clipboard::default())
+}
+fn pump_with(s: &mut Session, clip: &mut Clipboard) -> Result<(), SessionError> {
     loop {
         let a = s.client.read()?;
         let b = s.server.read()?;
-        s.pump(Dir::ClientToServer)?;
-        s.pump(Dir::ServerToClient)?;
+        s.pump(Dir::ClientToServer, clip)?;
+        s.pump(Dir::ServerToClient, clip)?;
         s.server.flush()?;
         s.client.flush()?;
         if (a == usize::MAX || a == 0) && (b == usize::MAX || b == 0) {
@@ -85,8 +88,18 @@ fn hidden_globals_invisible_and_unbindable() {
     let seen = read_all(&mut c);
     let text = String::from_utf8_lossy(&seen).to_string();
     assert!(text.contains("wl_compositor") && text.contains("wl_shm"));
-    assert!(!text.contains("screencopy") && !text.contains("data_device"), "{text}");
+    assert!(!text.contains("screencopy"), "{text}");
+    // The one data device the client hears of is the proxy's, by a name of its own.
+    let named: Vec<u32> = split_messages(&seen).iter().filter(|(k, _)| *k == (2, WL_REGISTRY_GLOBAL)).map(|(_, b)| u32::from_ne_bytes(b[..4].try_into().unwrap())).collect();
+    assert_eq!(named, [policy::OWN_GLOBAL_BASE, 1, 4], "{text}");
     assert_eq!(s.hidden_count, 2);
+    // and the compositor's, bound by its own number, is refused like any hidden global
+    let bind = MessageWriter::new(2, WL_REGISTRY_BIND).u32(3).string("wl_data_device_manager").u32(3).u32(5).finish().unwrap();
+    c.write_all(&bind).unwrap();
+    assert!(matches!(pump_all(&mut s), Err(SessionError::HiddenInterface(_))));
+    let (mut s, mut c, _sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    pump_all(&mut s).unwrap();
     // binding the hidden global by guessing its name is refused
     let bind = MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("zwlr_screencopy_manager_v1").u32(3).u32(5).finish().unwrap();
     c.write_all(&bind).unwrap();
@@ -210,14 +223,26 @@ fn id_slots_bounded() {
 }
 
 #[test]
-fn popup_refused() {
+fn popup_limit_and_reclaim() {
+    // A popup reaches the compositor, which keeps it inside its window; a session holds a few.
     let (mut s, mut c, mut sv) = make();
     s.objects.place(2, (protocol::find("xdg_surface").unwrap(), 1));
     s.objects.place(3, (protocol::find("xdg_positioner").unwrap(), 1));
-    c.write_all(&MessageWriter::new(2, 2).u32(4).u32(0).u32(3).finish().unwrap()).unwrap();
-    assert!(matches!(pump_all(&mut s), Err(SessionError::Forbidden(_))));
-    assert!(!s.has_object(4));
+    for id in 4..4 + policy::MAX_POPUPS_PER_SESSION as u32 {
+        c.write_all(&MessageWriter::new(2, 2).u32(id).u32(0).u32(3).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        assert!(s.has_object(id));
+    }
+    assert_eq!(s.popups, policy::MAX_POPUPS_PER_SESSION);
+    assert!(!read_all(&mut sv).is_empty(), "the popups were forwarded");
+    let denied = 4 + policy::MAX_POPUPS_PER_SESSION as u32;
+    c.write_all(&MessageWriter::new(2, 2).u32(denied).u32(0).u32(3).finish().unwrap()).unwrap();
+    assert!(matches!(pump_all(&mut s), Err(SessionError::ResourceLimit(_))));
+    assert!(!s.has_object(denied));
     assert!(read_all(&mut sv).is_empty());
+    sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(4).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    assert_eq!(s.popups, policy::MAX_POPUPS_PER_SESSION - 1);
 }
 
 #[test]
@@ -739,17 +764,19 @@ fn truncated_ancillary_data_is_refused() {
     assert_eq!(b.read(&mut [0u8; 1]).unwrap(), 0);
 }
 
+/// A keymap a client never reads: the descriptors queued for it stop at the bound. (Of the
+/// requests, only create_pool carries one forward, and the pool bound comes first.)
 #[test]
 fn outgoing_descriptors_are_bounded() {
-    let (mut s, c, _sv) = make();
-    s.objects.place(3, (protocol::find("wl_data_offer").unwrap(), 1));
+    let (mut s, c, sv) = make();
+    s.objects.place(3, (protocol::find("wl_keyboard").unwrap(), 1));
     let (a, mut b) = UnixStream::pair().unwrap();
     b.set_nonblocking(true).unwrap();
     for i in 0..=policy::MAX_PENDING_FDS {
-        let msg = MessageWriter::new(3, 1).string("text/plain").finish().unwrap();
-        send_with_fd(c.as_raw_fd(), &msg, a.as_raw_fd());
-        s.client.read().unwrap();
-        let result = s.pump(Dir::ClientToServer); // the compositor's queue is never flushed
+        let msg = MessageWriter::new(3, 0).u32(1).u32(4096).finish().unwrap(); // wl_keyboard.keymap(format, fd, size)
+        send_with_fd(sv.as_raw_fd(), &msg, a.as_raw_fd());
+        s.server.read().unwrap();
+        let result = s.pump(Dir::ServerToClient, &mut Clipboard::default()); // the client's queue is never flushed
         if i < policy::MAX_PENDING_FDS {
             result.unwrap();
         } else {
@@ -758,6 +785,8 @@ fn outgoing_descriptors_are_bounded() {
     }
     drop(a);
     s.refuse("outgoing descriptor limit");
+    // The refusal sends the client what was queued; the client gone, nothing holds a copy.
+    drop(c);
     assert_eq!(b.read(&mut [0u8; 1]).unwrap(), 0);
 }
 
@@ -815,6 +844,257 @@ fn object_bound_is_enforced() {
         let _ = read_all(&mut sv);
     }
     assert!(matches!(err, Some(SessionError::TooManyObjects)), "{err:?}");
+}
+
+// --- the zone's selection, served by the proxy ---------------------------------------------
+fn bind(reg: u32, name: u32, iface: &str, version: u32, id: u32) -> Vec<u8> {
+    MessageWriter::new(reg, WL_REGISTRY_BIND).u32(name).string(iface).u32(version).u32(id).finish().unwrap()
+}
+
+/// A session numbered `id` with wl_seat 3, its keyboard 4, the data device manager 5 and a data
+/// device 6; the compositor's end drained.
+fn with_data_device(id: u64, clip: &mut Clipboard) -> (Session, UnixStream, UnixStream) {
+    let (mut s, mut c, mut sv) = make();
+    s.id = id;
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 1, "wl_seat", 9)).unwrap();
+    pump_with(&mut s, clip).unwrap();
+    c.write_all(&bind(2, 1, "wl_seat", 9, 3)).unwrap();
+    c.write_all(&MessageWriter::new(3, 1).u32(4).finish().unwrap()).unwrap(); // wl_seat.get_keyboard
+    c.write_all(&bind(2, policy::OWN_GLOBAL_BASE, "wl_data_device_manager", 3, 5)).unwrap();
+    c.write_all(&MessageWriter::new(5, 1).u32(6).u32(3).finish().unwrap()).unwrap(); // get_data_device
+    pump_with(&mut s, clip).unwrap();
+    let _ = read_all(&mut sv);
+    let _ = read_all(&mut c);
+    (s, c, sv)
+}
+
+/// What the main loop does once every session has had its turn.
+fn deliver(clip: &mut Clipboard, sessions: &mut [&mut Session]) {
+    for a in std::mem::take(&mut clip.actions) {
+        if let Some(s) = sessions.iter_mut().find(|s| s.id == a.session()) {
+            s.act(a, clip).unwrap();
+            s.client.flush().unwrap();
+        }
+    }
+}
+
+fn keyboard(sv: &mut UnixStream, enter: bool) {
+    let m = if enter {
+        MessageWriter::new(4, 1).u32(10).u32(20).u32(0).finish() // enter(serial, surface, keys [])
+    } else {
+        MessageWriter::new(4, 2).u32(11).u32(20).finish() // leave(serial, surface)
+    };
+    sv.write_all(&m.unwrap()).unwrap();
+}
+
+/// What the compositor was sent is wl_display.sync alone: the placeholders.
+fn only_placeholders(sv: &mut UnixStream) -> bool {
+    split_messages(&read_all(sv)).iter().all(|(k, _)| *k == (1, 0))
+}
+
+fn names(msgs: &[((u32, u16), Vec<u8>)]) -> Vec<(u32, u16)> {
+    msgs.iter().map(|(k, _)| *k).collect()
+}
+
+const OFFER: u32 = SERVER_ID_BASE;
+
+/// The data device never reaches the compositor: each object the proxy serves is a sync there,
+/// whose answer the client never sees, and the id is the client's to use again.
+#[test]
+fn served_objects_reach_the_compositor_as_placeholders() {
+    let mut clip = Clipboard::default();
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    pump_with(&mut s, &mut clip).unwrap();
+    assert!(String::from_utf8_lossy(&read_all(&mut c)).contains("wl_data_device_manager"), "the proxy's own is advertised");
+    c.write_all(&bind(2, policy::OWN_GLOBAL_BASE, "wl_data_device_manager", 3, 3)).unwrap();
+    c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap(); // create_data_source
+    c.write_all(&MessageWriter::new(4, 0).string("text/plain").finish().unwrap()).unwrap(); // offer
+    pump_with(&mut s, &mut clip).unwrap();
+    let got = split_messages(&read_all(&mut sv));
+    assert_eq!(names(&got), [(1, 1), (1, 0), (1, 0)], "get_registry, then a sync for each served object: {got:?}");
+    assert_eq!((&got[1].1[..], &got[2].1[..]), (&3u32.to_ne_bytes()[..], &4u32.to_ne_bytes()[..]));
+    // The compositor's answers stop at the proxy.
+    for id in [3u32, 4] {
+        sv.write_all(&MessageWriter::new(id, 0).u32(77).finish().unwrap()).unwrap(); // wl_callback.done
+        sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(id).finish().unwrap()).unwrap();
+    }
+    pump_with(&mut s, &mut clip).unwrap();
+    assert!(read_all(&mut c).is_empty(), "the client sees nothing of the placeholders");
+    assert!(s.has_object(3) && s.has_object(4), "the served objects live on");
+    // Destroyed, a source's id comes back to the client from the proxy, and may make a surface.
+    c.write_all(&MessageWriter::new(4, 1).finish().unwrap()).unwrap(); // wl_data_source.destroy
+    pump_with(&mut s, &mut clip).unwrap();
+    assert_eq!(split_messages(&read_all(&mut c)), [((1, WL_DISPLAY_DELETE_ID), 4u32.to_ne_bytes().to_vec())]);
+    assert!(!s.has_object(4));
+    assert!(read_all(&mut sv).is_empty(), "the destroy reached nobody");
+}
+
+/// An id made a served object twice before the compositor answered keeps both answers away from
+/// the object that follows.
+#[test]
+fn placeholders_are_counted() {
+    let mut clip = Clipboard::default();
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    pump_with(&mut s, &mut clip).unwrap();
+    c.write_all(&bind(2, policy::OWN_GLOBAL_BASE, "wl_data_device_manager", 3, 3)).unwrap();
+    for _ in 0..2 {
+        c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap(); // create_data_source 4
+        c.write_all(&MessageWriter::new(4, 1).finish().unwrap()).unwrap(); // and destroy it
+        pump_with(&mut s, &mut clip).unwrap();
+    }
+    // 4 becomes a forwarded object before the compositor's answers to either placeholder arrive.
+    sv.write_all(&global(2, 7, "wl_compositor", 6)).unwrap();
+    pump_with(&mut s, &mut clip).unwrap();
+    c.write_all(&bind(2, 7, "wl_compositor", 6, 4)).unwrap();
+    pump_with(&mut s, &mut clip).unwrap();
+    let _ = read_all(&mut c);
+    for _ in 0..2 {
+        sv.write_all(&MessageWriter::new(4, 0).u32(77).finish().unwrap()).unwrap();
+        sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(4).finish().unwrap()).unwrap();
+    }
+    pump_with(&mut s, &mut clip).unwrap();
+    assert!(read_all(&mut c).is_empty());
+    assert!(s.has_object(4), "the compositor's answers to the placeholders left the new object alone");
+}
+
+/// A copy is offered to a client of the zone just before the keyboard enters it, and a paste is
+/// passed to the copying client, descriptor and all.
+#[test]
+fn a_copy_in_one_client_pastes_in_another() {
+    let mut clip = Clipboard::default();
+    let (mut a, mut ca, mut sa) = with_data_device(1, &mut clip);
+    let (mut b, mut cb, mut sb) = with_data_device(2, &mut clip);
+    keyboard(&mut sa, true);
+    pump_with(&mut a, &mut clip).unwrap();
+    let got = split_messages(&read_all(&mut ca));
+    assert_eq!(names(&got), [(6, WL_DATA_DEVICE_SELECTION), (4, 1)], "no selection yet, said before the enter: {got:?}");
+    assert_eq!(got[0].1, 0u32.to_ne_bytes());
+    // A copies: source 7 offering two types, set as the selection.
+    ca.write_all(&MessageWriter::new(5, 0).u32(7).finish().unwrap()).unwrap();
+    ca.write_all(&MessageWriter::new(7, 0).string("text/plain;charset=utf-8").finish().unwrap()).unwrap();
+    ca.write_all(&MessageWriter::new(7, 0).string("text/plain").finish().unwrap()).unwrap();
+    ca.write_all(&MessageWriter::new(6, 1).u32(7).u32(10).finish().unwrap()).unwrap();
+    pump_with(&mut a, &mut clip).unwrap();
+    deliver(&mut clip, &mut [&mut a, &mut b]);
+    let got = split_messages(&read_all(&mut ca));
+    assert_eq!(names(&got), [(6, WL_DATA_DEVICE_DATA_OFFER), (OFFER, 0), (OFFER, 0), (6, WL_DATA_DEVICE_SELECTION)], "{got:?}");
+    // The keyboard moves to B, which hears of the selection first.
+    keyboard(&mut sa, false);
+    pump_with(&mut a, &mut clip).unwrap();
+    let _ = read_all(&mut ca);
+    keyboard(&mut sb, true);
+    pump_with(&mut b, &mut clip).unwrap();
+    let got = split_messages(&read_all(&mut cb));
+    assert_eq!(names(&got), [(6, WL_DATA_DEVICE_DATA_OFFER), (OFFER, 0), (OFFER, 0), (6, WL_DATA_DEVICE_SELECTION), (4, 1)], "{got:?}");
+    assert!(String::from_utf8_lossy(&got[1].1).contains("text/plain;charset=utf-8"));
+    // B pastes: the descriptor reaches A's source with the type asked for.
+    let (mut r, w) = UnixStream::pair().unwrap();
+    let receive = MessageWriter::new(OFFER, 1).string("text/plain").finish().unwrap();
+    send_with_fd(cb.as_raw_fd(), &receive, w.as_raw_fd());
+    drop(w);
+    pump_with(&mut b, &mut clip).unwrap();
+    deliver(&mut clip, &mut [&mut a, &mut b]);
+    let (bytes, fds) = recv_with_fds(ca.as_raw_fd());
+    let got = split_messages(&bytes);
+    assert_eq!(names(&got), [(7, WL_DATA_SOURCE_SEND)], "{got:?}");
+    assert!(String::from_utf8_lossy(&got[0].1).contains("text/plain"));
+    assert_eq!(fds.len(), 1);
+    let mut writer = unsafe { UnixStream::from_raw_fd(fds[0]) };
+    writer.write_all(b"copied in a").unwrap();
+    drop(writer);
+    let mut pasted = String::new();
+    r.read_to_string(&mut pasted).unwrap();
+    assert_eq!(pasted, "copied in a");
+    assert!(only_placeholders(&mut sa) && only_placeholders(&mut sb), "the compositor heard nothing of it");
+}
+
+/// Without the keyboard a client copies nothing, an older offer reads nothing, and a copy's end
+/// is told to the client with the keyboard.
+#[test]
+fn only_the_keyboards_client_copies() {
+    let mut clip = Clipboard::default();
+    let (mut a, mut ca, mut sa) = with_data_device(1, &mut clip);
+    let (mut b, mut cb, mut sb) = with_data_device(2, &mut clip);
+    keyboard(&mut sb, true);
+    pump_with(&mut b, &mut clip).unwrap();
+    let _ = read_all(&mut cb);
+    // A, without the keyboard, tries to copy: its source is cancelled and nothing changes.
+    ca.write_all(&MessageWriter::new(5, 0).u32(7).finish().unwrap()).unwrap();
+    ca.write_all(&MessageWriter::new(7, 0).string("text/plain").finish().unwrap()).unwrap();
+    ca.write_all(&MessageWriter::new(6, 1).u32(7).u32(10).finish().unwrap()).unwrap();
+    pump_with(&mut a, &mut clip).unwrap();
+    deliver(&mut clip, &mut [&mut a, &mut b]);
+    assert_eq!(names(&split_messages(&read_all(&mut ca))), [(7, WL_DATA_SOURCE_CANCELLED)]);
+    assert!(clip.selection.is_none() && read_all(&mut cb).is_empty());
+    // B copies, twice, its sources 7 and 8 (ids are each client's own): the first offer B was
+    // given then reads nothing.
+    for source in [7u32, 8] {
+        cb.write_all(&MessageWriter::new(5, 0).u32(source).finish().unwrap()).unwrap();
+        cb.write_all(&MessageWriter::new(source, 0).string("text/plain").finish().unwrap()).unwrap();
+        cb.write_all(&MessageWriter::new(6, 1).u32(source).u32(10).finish().unwrap()).unwrap();
+        pump_with(&mut b, &mut clip).unwrap();
+        deliver(&mut clip, &mut [&mut a, &mut b]);
+    }
+    let got = names(&split_messages(&read_all(&mut cb)));
+    assert!(got.contains(&(7, WL_DATA_SOURCE_CANCELLED)), "the first copy's source hears the second replaced it: {got:?}");
+    let (mut r, w) = UnixStream::pair().unwrap();
+    send_with_fd(cb.as_raw_fd(), &MessageWriter::new(OFFER, 1).string("text/plain").finish().unwrap(), w.as_raw_fd());
+    drop(w);
+    pump_with(&mut b, &mut clip).unwrap();
+    assert!(clip.actions.is_empty(), "an offer of the first copy asks nobody");
+    let mut pasted = Vec::new();
+    r.read_to_end(&mut pasted).unwrap();
+    assert!(pasted.is_empty(), "the reader gets end of file");
+    // The copy's source destroyed: B, with the keyboard, hears there is no selection.
+    cb.write_all(&MessageWriter::new(8, 1).finish().unwrap()).unwrap();
+    pump_with(&mut b, &mut clip).unwrap();
+    deliver(&mut clip, &mut [&mut a, &mut b]);
+    let got = split_messages(&read_all(&mut cb));
+    assert!(got.iter().any(|(k, body)| *k == (6, WL_DATA_DEVICE_SELECTION) && body == &0u32.to_ne_bytes()), "{got:?}");
+    assert!(only_placeholders(&mut sa) && only_placeholders(&mut sb));
+}
+
+/// A cursor asked for by name reaches the compositor, which draws it from its own theme.
+#[test]
+fn cursor_shapes_pass_by_name() {
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 1, "wl_seat", 9)).unwrap();
+    sv.write_all(&global(2, 2, "wp_cursor_shape_manager_v1", 1)).unwrap();
+    pump_all(&mut s).unwrap();
+    assert!(String::from_utf8_lossy(&read_all(&mut c)).contains("wp_cursor_shape_manager_v1"));
+    c.write_all(&bind(2, 1, "wl_seat", 9, 3)).unwrap();
+    c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap(); // wl_seat.get_pointer
+    c.write_all(&bind(2, 2, "wp_cursor_shape_manager_v1", 1, 5)).unwrap();
+    c.write_all(&MessageWriter::new(5, 1).u32(6).u32(4).finish().unwrap()).unwrap(); // get_pointer
+    c.write_all(&MessageWriter::new(6, 1).u32(10).u32(9).finish().unwrap()).unwrap(); // set_shape(serial, text)
+    pump_all(&mut s).unwrap();
+    let got = names(&split_messages(&read_all(&mut sv)));
+    assert_eq!(got[got.len() - 3..], [(2, WL_REGISTRY_BIND), (5, 1), (6, 1)], "the bind, the device and the shape reach the compositor: {got:?}");
+}
+
+/// Drag and drop is not served: the drag's source is cancelled at once, and nothing else moves.
+#[test]
+fn a_drag_is_cancelled() {
+    let mut clip = Clipboard::default();
+    let (mut a, mut ca, mut sa) = with_data_device(1, &mut clip);
+    ca.write_all(&MessageWriter::new(5, 0).u32(7).finish().unwrap()).unwrap();
+    ca.write_all(&MessageWriter::new(6, 0).u32(7).u32(20).u32(0).u32(10).finish().unwrap()).unwrap(); // start_drag
+    pump_with(&mut a, &mut clip).unwrap();
+    assert_eq!(names(&split_messages(&read_all(&mut ca))), [(7, WL_DATA_SOURCE_CANCELLED)]);
+    assert_eq!(split_messages(&read_all(&mut sa)).len(), 1, "only the source's placeholder reached the compositor");
+}
+
+/// A set_selection naming anything but one of the client's own sources ends the session.
+#[test]
+fn a_selection_must_be_a_source() {
+    let mut clip = Clipboard::default();
+    let (mut a, mut ca, _sa) = with_data_device(1, &mut clip);
+    ca.write_all(&MessageWriter::new(6, 1).u32(3).u32(10).finish().unwrap()).unwrap(); // the seat
+    assert!(matches!(pump_with(&mut a, &mut clip), Err(SessionError::Forbidden(_))));
 }
 
 // --- helpers --------------------------------------------------------------

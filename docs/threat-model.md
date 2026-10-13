@@ -52,7 +52,11 @@ already assumed hostile.
 
 *Capability: observes and modifies traffic, passively or on-path.*
 
-**Partially defended.** Kryptik segments; it does not anonymize. A compromised
+**Partially defended.** Kryptik segments; it does not anonymize. A Wi-Fi
+network sees the machine by an address of its own and a DHCP client ID made
+from it, never the radio's own, so two networks cannot match the machine by
+those (`wifi-own-address`), and a scan before joining goes out from neither
+(`wifi-scan-address`); what it sends can still identify it. A compromised
 `net` zone gets no zone's files and not `vault`. Confidentiality on the wire
 is the application's job.
 
@@ -81,6 +85,9 @@ It can still:
 - keep the machine offline, or a routed zone without its lookups or its
   bandwidth;
 - read the passphrase of every Wi-Fi network it was given;
+- list networks in range that are not there, or leave out ones that are, in
+  `kryptik wifi scan` and the menu, which show its answer quoted and checked
+  line by line;
 - withhold releases, which zone 0 reports once the newest statement is 30
   days old, or, where the image names a channel and none was accepted, the
   install, in `kryptik update status`, above the login prompt and in the
@@ -119,20 +126,27 @@ What a routed zone cannot do through it, proven the same way:
   DNS, echo requests, neighbour discovery and replies (`bridge-ports-closed`);
 - fill the connection-tracking table: one routed zone holds at most an eighth
   of it (`zone-flows-capped`);
-- learn another zone's lookups: the resolver keeps no cache and no query
-  counts (`dns-cache-off`, `dns-counters-hidden`).
+- learn another zone's lookups: each routed zone asks a resolver of its own,
+  whose cache only it fills, and the one a zone without its own asks keeps
+  none; none answers for its counters (`dns-own-resolver`,
+  `dns-own-port-closed`, `dns-cache-per-zone`, `dns-cache-off`,
+  `dns-counters-hidden`).
 
 Kept by design:
 
 - confidentiality between a zone and the net zone is the application's, as on
   any network;
-- wpa_supplicant runs as the zone's root and reads every passphrase it was
-  given, as it must to join those networks;
+- wpa_supplicant reads every passphrase it was given, as it must to join
+  those networks, and keeps `CAP_NET_ADMIN` and `CAP_NET_RAW` for nl80211
+  and EAPOL, which reach the zone's links and routes, the bridge ports'
+  isolation among them; it runs as its own user, without nf_tables, the
+  broker's socket or the zone root's files (`wifi-supplicant-unprivileged`,
+  `wifi-supplicant-no-nft`);
 - nf_tables, packet sockets and generic netlink stay open to it, as NAT, DHCP
   and Wi-Fi need them;
-- a routed zone that floods can hold the resolver's 150 forwarding slots, each
-  for up to 10 s, and the uplink's bandwidth from the others: its share bounds
-  its connections, not its queries or bytes;
+- a routed zone that floods can take the uplink's bandwidth and the net
+  zone's CPU time from the others: its share bounds its connections, not its
+  queries or bytes, and the forwarding slots it fills are its own resolver's;
 - EEE, offloads, rings, coalescing and a radio's wake triggers (nl80211's
   WoWLAN) are not set back between net zones.
 
@@ -143,7 +157,9 @@ media.*
 
 **Defended at rest against a reader, not against a writer of the state
 partition.** dm-verity and Secure Boot make a modified root or a swapped kernel
-fail to boot. The state partition (`/home`, `/var`, the Wi-Fi passphrases, the
+fail to boot, and the kernel takes no initramfs, so a loader the firmware also
+trusts cannot run code of its own before the verified root. The state
+partition (`/home`, `/var`, the Wi-Fi passphrases, the
 shadow file, the `/etc` overlay, the zone volumes' headers) is LUKS2 with a
 passphrase at every boot, and the zone volumes inside it are encrypted again;
 a stolen disk gives up none of it. It is not authenticated: someone holding
@@ -153,6 +169,15 @@ header back as it was, so what the system honours from `/etc` without asking is
 limited to a list on the verified root
 ([state partition](design/state-encryption.md)). The ESP, the root slots and
 the LUKS header are in the clear, so the disk shows it is Kryptik.
+
+**The passphrase prompt is Kryptik's only if the firmware boots nothing
+else.** Secure Boot keeps a swapped kernel from booting, but a firmware that
+also holds Microsoft's keys boots anything Microsoft signs, and such a system
+can ask for the state passphrase as Kryptik does and keep the answer. Only a
+`db` that holds nothing able to boot another system (Kryptik's key, and at
+most a card's option ROM by its hash), with a firmware password that clearing
+the firmware's settings does not remove, closes that
+([user guide](user-guide.md#1-boot-the-medium)).
 
 **Not defended while running or suspended.** Keys are in RAM; see
 [coercion, and access to a running or suspended machine](#coercion-and-access-to-a-running-or-suspended-machine).
@@ -188,6 +213,8 @@ ship as vendor binaries (ADR-012).
 
 Keys are in RAM while zones run. Cold-boot and DMA attacks on a running or
 suspended machine are out of scope, and no software helps against coercion.
+The screen lock (Alt+Shift+l) keeps whoever is at the keyboard without the
+login password from every window, but takes no key out of RAM.
 
 ### Microarchitectural side channels
 

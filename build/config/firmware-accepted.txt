@@ -1,0 +1,39 @@
+# Firmware a shipped module names (MODULE_FIRMWARE) that linux-firmware has and the image leaves
+# out; tools/check-firmware-requested.sh fails on any other, and on an entry that matches none.
+#   PATTERN   # why (a glob over linux-firmware's names)
+
+# ath10k asks for its newest API file first, and that one ships.
+ath10k/QCA6174/hw3.0/firmware-4.bin   # firmware-6 ships
+ath10k/QCA9377/hw1.0/firmware-5.bin   # firmware-6 ships
+
+# Access point and add-in card chips: the list carries the laptop parts (ADR-012).
+ath10k/QCA988X/*        # QCA9880 and QCA9882
+ath10k/QCA9887/*        # an access point part
+ath11k/QCN9074/*        # an access point part
+
+# A variant directory is read only when a devicetree names it, and an x86 machine has none.
+ath11k/*/nfa765/*       # ath11k_core_create_firmware_path: firmware-name, or three Qualcomm Arm boards
+
+# rtl8xxxu lists the 8192CU's ids only under RTL8XXXU_UNTESTED, which this kernel leaves unset.
+rtlwifi/rtl8192cufw_*   # no 8192CU stick binds
+
+# e100 runs a D101M or D101S without its microcode, which only adds receive bundling (CPUSaver).
+e100/d101[ms]_ucode.bin # optional
+
+# amdgpu binds no CIK part without DRM_AMDGPU_CIK, but code it shares with Topaz and with later
+# parts' power management names Bonaire's and Hawaii's files (gmc_v7_0.c, smumgr.c).
+amdgpu/bonaire_*        # CIK
+amdgpu/hawaii_*         # CIK
+
+# Instinct accelerators compute and have no display; without KFD (HSA_AMD) nothing here uses one.
+amdgpu/aldebaran_*      # Instinct
+amdgpu/arcturus_*       # Instinct
+amdgpu/gc_9_4_[34]_*    # Instinct
+amdgpu/gc_9_5_0_*       # Instinct
+amdgpu/psp_13_0_6_*     # Instinct
+amdgpu/psp_13_0_12_*    # Instinct
+amdgpu/psp_13_0_14_*    # Instinct
+amdgpu/sdma_4_4_[245].bin  # Instinct
+amdgpu/smu_13_0_6.bin   # Instinct
+amdgpu/smu_13_0_14.bin  # Instinct
+amdgpu/vcn_4_0_3.bin    # Instinct

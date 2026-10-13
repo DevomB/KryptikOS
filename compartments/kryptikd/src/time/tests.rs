@@ -67,6 +67,19 @@ fn claim_within_bound_steps_clock() {
 }
 
 #[test]
+fn degraded_boot_leaves_the_rtc_alone() {
+    // The same step as above, on a boot whose clock state is in memory.
+    let dir = scratch("degraded");
+    let mut clock = FakeClock::at(BUILT as f64 + 1e6);
+    let out = consider_with(&mut clock, &dir, Some(BUILT), 3600, &Claim { offset: 42.5, sources: 3 }, &mut nobody, false);
+    assert_eq!(out, Outcome::Stepped);
+    assert_eq!((clock.steps.len(), clock.rtc_syncs), (1, 0));
+    let history = std::fs::read_to_string(dir.join("history")).unwrap();
+    assert!(history.contains("the hardware clock was left alone"), "{history}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn past_bound_needs_consent() {
     let dir = scratch("ask");
     let start = BUILT as f64;

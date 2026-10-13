@@ -69,9 +69,9 @@ done
 
 # --- every external tool, checked before the first write -------------------
 missing=""
-for tool in sfdisk partx blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed \
+for tool in sfdisk partx blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
             grep readlink lsblk head tail wc cmp cp mkdir stat tr cut basename mv mountpoint rmdir chmod rm cat sleep \
-            loadkeys chattr; do
+            loadkeys chattr kryptik-efiboot; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}
@@ -102,6 +102,8 @@ mounted_on() {   # mounted_on DEVS < TABLE: "SOURCE on WHERE" for each source th
 . /usr/libexec/kryptik/keyboard.sh
 # What the medium's root.json may be trusted for, shared with kryptik-recover.
 . /usr/libexec/kryptik/medium-root.sh
+# The ESP's kernels and records, written as every other tool writes them.
+. /usr/libexec/kryptik/esp-records.sh
 [ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
 [ -z "$PRESEED" ] || preseed_ok "$PRESEED"
 
@@ -219,6 +221,12 @@ ESP_BYTES="$(stat -c %s "$ESP_SRC" 2>/dev/null || blockdev --getsize64 "$ESP_SRC
 
 size_bytes="$(blockdev --getsize64 "$TARGET_REAL" 2>/dev/null || echo 0)"
 [ "$size_bytes" -gt 0 ] || die "could not read the size of ${TARGET}"
+# The ESP is the medium's FAT, copied whole, and a FAT's sectors may not be smaller than the
+# disk's: on a disk with 4096-byte logical sectors (4Kn) Linux does not mount it, so neither the
+# install nor any update could write it, and firmware may not read it either.
+esp_ss="$(od -An -tu2 -j11 -N2 "$ESP_SRC" 2>/dev/null | tr -d ' ')"
+disk_ss="$(blockdev --getss "$TARGET_REAL" 2>/dev/null || echo 512)"
+[ "$disk_ss" -le "${esp_ss:-512}" ] || die "${TARGET} has ${disk_ss}-byte logical sectors, and the boot partition this medium copies is a FAT of ${esp_ss:-512}-byte sectors, which Linux does not mount there (and firmware may not read); give the disk a 512-byte sector format (an NVMe drive's LBA format), or pick another disk; nothing was written"
 MIB=1048576
 esp_mib=$(( (ESP_BYTES + MIB - 1) / MIB ))
 # A slot must also hold later, larger images: the image plus half again (at
@@ -241,8 +249,25 @@ have_mib=$(( size_bytes / MIB ))
 [ "$have_mib" -ge "$need_mib" ] || die "${TARGET} is ${have_mib} MiB; this layout needs at least ${need_mib} MiB
 (ESP ${esp_mib} + two root slots of ${slot_mib} + state ${state_min_mib})."
 
+# The disk by its model and what it holds, read before ERASE is typed: on a medium nothing is
+# mounted, so a backup disk passes every refusal above. Each partition is probed afresh, and
+# what a device or a filesystem calls itself reaches the terminal as printable bytes only.
+shown() { printf '%s' "$1" | LC_ALL=C tr -c '[:print:]' '?'; }
+model="$(shown "$(lsblk -dno MODEL "$TARGET_REAL" 2>/dev/null | sed 's/ *$//')")"
+holds=""
+for p in "/sys/class/block/$tname/$tname"*; do
+    [ -e "$p/partition" ] || continue
+    pn="${p##*/}"
+    fs="$(shown "$(blkid -p -o value -s TYPE "/dev/$pn" 2>/dev/null)")"
+    lb="$(shown "$(blkid -p -o value -s LABEL "/dev/$pn" 2>/dev/null)")"
+    sz="$(lsblk -dnro SIZE "/dev/$pn" 2>/dev/null || true)"   # raw: a column's padding left out
+    holds="${holds:+$holds; }${pn} ${fs:-unformatted}${lb:+ \"$lb\"} ${sz}"
+done
+pt="$(blkid -p -o value -s PTTYPE "$TARGET_REAL" 2>/dev/null || true)"
+
 say "medium       ${media} (version ${VERSION})"
-say "target       ${TARGET} -> ${TARGET_REAL}, ${have_mib} MiB"
+say "target       ${TARGET} -> ${TARGET_REAL}, ${have_mib} MiB${model:+, ${model}}"
+say "holds        ${pt:+${pt}: }${holds:-no partition}"
 say "running root ${root_src} on ${root_disks:-unknown}"
 say "layout       esp ${esp_mib} MiB, kryptik-a ${slot_mib} MiB, kryptik-b ${slot_mib} MiB, kryptik-state $(( have_mib - need_mib + state_min_mib )) MiB"
 say "root image   ${ROOT_BYTES} bytes, sha256 ${ROOT_SHA}"
@@ -281,6 +306,10 @@ else
     IFS= read -r STATE_PASS || STATE_PASS=""
 fi
 [ -n "$STATE_PASS" ] || die "no state passphrase given; nothing was written"
+# A stolen disk is guessed at offline, slowed only by argon2id: a short passphrase is no lock.
+# Counted in characters, as the medium's shell runs in the C locale, where ${#} counts bytes.
+plen="$(LC_ALL=C.UTF-8; echo "${#STATE_PASS}")"
+[ "$plen" -ge 8 ] || die "the state passphrase is ${plen} characters; it needs at least 8, as a stolen disk can be guessed at offline; nothing was written"
 # Named in the firmware once nothing is left to refuse, and before anything
 # is written to the disk: an install refused above has changed nothing.
 kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOUT}; nothing was written"
@@ -335,14 +364,23 @@ mkfs.ext4 -q -F -L kryptik-state "/dev/mapper/$MAPPING" || die "mkfs.ext4 inside
 # --- the target ESP: slot A is the committed boot file ----------------------
 mount -t vfat -o rw "$P1" "$MNT_BASE/tesp" || die "could not mount the new ESP"
 [ -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" ] || die "the copied ESP has no slot A kernel"
-cp "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" || die "could not stage BOOTX64.EFI"
-sync -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new"
-mv -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" || die "could not install BOOTX64.EFI"
-cmp -s "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" || die "BOOTX64.EFI is not the slot A kernel"
-printf 'a\n' > "$MNT_BASE/tesp/kryptik/committed-slot"
+esp_place "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" \
+    || die "BOOTX64.EFI could not be made the slot A kernel"
+esp_put "$MNT_BASE/tesp/kryptik/committed-slot" a || die "slot A could not be recorded as committed"
 rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
+# Slot b was cleared above: the medium's kernel and version for it would name a release it does not hold.
+rm -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-b.efi" "$MNT_BASE/tesp/kryptik/version-b"
 sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
+# A firmware entry for slot a as well, last in BootOrder, as kryptik-recover and boot-success
+# leave one: some firmware boots an internal disk only from an entry, not by BOOTX64.EFI.
+# Entries of an earlier Kryptik go first, as they name a partition this install replaced.
+kryptik-efiboot forget > /dev/null 2>&1 || true
+if entry="$(kryptik-efiboot ensure a "$P1" 2>&1)"; then
+    say "firmware     $(printf '%s\n' "$entry" | tail -1)"
+else
+    say "firmware     no entry for slot a ($(printf '%s\n' "$entry" | tail -1)): the disk boots by BOOTX64.EFI alone"
+fi
 
 # --- the state partition: what installed this, and the first-boot preseed --
 mount -t ext4 -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"

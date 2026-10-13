@@ -35,6 +35,8 @@ procps-ng	api	https://gitlab.com/api/v4/projects/procps-ng%2Fprocps/releases?per
 # Tags: the release list misses a release.
 psmisc	api	https://gitlab.com/api/v4/projects/psmisc%2Fpsmisc/repository/tags?per_page=100	name	-
 wayland	api	https://gitlab.freedesktop.org/api/v4/projects/wayland%2Fwayland/releases?per_page=50	tag_name	drop90
+# www.freedesktop.org answers a script with a challenge page; the project's GitLab lists its tags.
+libevdev	listing	https://gitlab.freedesktop.org/api/v4/projects/libevdev%2Flibevdev/repository/tags?per_page=100	libevdev-([0-9]+(\.[0-9]+)+)	-
 libinput	api	https://gitlab.freedesktop.org/api/v4/projects/libinput%2Flibinput/releases?per_page=50	tag_name	drop90
 wayland-protocols	api	https://gitlab.freedesktop.org/api/v4/projects/wayland%2Fwayland-protocols/releases?per_page=50	tag_name	-
 libdisplay-info	api	https://gitlab.freedesktop.org/api/v4/projects/emersion%2Flibdisplay-info/releases?per_page=50	tag_name	-

@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn net_summary_passes_on_known_fields_only() {
+    let line = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=Cafe Wifi time=+0.5 bridge=kryptik0 uplinks=eth0 wlan0";
+    assert_eq!(net_summary(line).as_deref(), Some("ready: Wi-Fi \"Cafe Wifi\", uplink 10.0.2.15/24, DNS"));
+    let wired = "READY uplink=none nat=yes dns=no wifi=none time=no-uplink bridge=kryptik0 uplinks=eth0";
+    assert_eq!(net_summary(wired).as_deref(), Some("ready: no uplink address, no DNS"));
+    let joining = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=connecting time=-2";
+    assert_eq!(net_summary(joining).as_deref(), Some("ready: Wi-Fi connecting, uplink 10.0.2.15/24, DNS"));
+    let off = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=off time=-2";
+    assert_eq!(net_summary(off).as_deref(), Some("ready: Wi-Fi switched off, uplink 10.0.2.15/24, DNS"));
+    let down = "NOT READY firewall policy not loaded; forwarding off; uplink=none dns=no wifi=none time=x";
+    assert_eq!(net_summary(down).as_deref(), Some("not ready: forwarding is off"));
+    // An SSID is any access point's: what a terminal would act on comes out escaped, and words
+    // in it that look like fields do not stand for the line's own.
+    let hostile = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=\\x1b[2J x time=0 dns=no time=+1 bridge=k";
+    let s = net_summary(hostile).unwrap();
+    assert!(!s.contains('\u{1b}') && s.contains("\\u{1b}[2J x time=0 dns=no"), "{s}");
+    assert!(s.ends_with(", uplink 10.0.2.15/24, DNS"), "{s}");
+    for bad in [
+        "",
+        "READY",
+        "anything else",
+        "READY uplink=10.0.2.300/24 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=10.0.2.15/33 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=10.0.2.15 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=none nat=yes dns=maybe wifi=none time=0",
+        "READY uplink=none nat=yes dns=yes wifi= time=0",
+        "READY uplink=none nat=yes dns=yes wifi=an SSID of thirty-three bytes!!!! time=0",
+        "READY uplink=none nat=yes dns=yes time=0 wifi=late",
+        // iw prints no control character as itself.
+        "READY uplink=none nat=yes dns=yes wifi=\u{1b}[2J time=0",
+    ] {
+        assert_eq!(net_summary(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn net_summary_reads_an_ssid_back_from_iw() {
+    let line = |printed: &str| format!("READY uplink=none nat=yes dns=yes wifi={printed} time=0");
+    // iw prints each byte past ASCII as \xHH, four characters for one byte: a name of sixteen
+    // bytes is sixty-four characters long, and comes back whole.
+    let cyrillic = line("\\xd0\\xa0\\xd0\\xb5\\xd1\\x81\\xd1\\x82\\xd0\\xbe\\xd1\\x80\\xd0\\xb0\\xd0\\xbd");
+    assert_eq!(net_summary(&cyrillic).as_deref(), Some("ready: Wi-Fi \"Ресторан\", no uplink address, DNS"));
+    let full = line(&"\\xc3\\xa9".repeat(16));
+    assert_eq!(net_summary(&full), Some(format!("ready: Wi-Fi \"{}\", no uplink address, DNS", "é".repeat(16))));
+    assert_eq!(net_summary(&line(&format!("{}x", "\\xc3\\xa9".repeat(16)))), None, "33 bytes");
+    // A name that is not UTF-8 keeps its escapes; one that turns text around is escaped.
+    assert_eq!(net_summary(&line("Caf\\xe9")).as_deref(), Some("ready: Wi-Fi \"Caf\\xe9\", no uplink address, DNS"));
+    let s = net_summary(&line("\\xe2\\x80\\xaegnp.exe")).unwrap();
+    assert!(!s.contains('\u{202e}') && s.contains("\\u{202e}gnp.exe"), "{s}");
+    for bad in ["\\x", "\\xd", "\\xzz", "\\q", "tail\\", "\\x00\\x00"] {
+        assert_eq!(net_summary(&line(bad)), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn net_summary_names_the_network_that_refused_the_passphrase() {
+    let line = |wifi: &str| format!("READY uplink=none nat=yes dns=no wifi={wifi} time=no-uplink");
+    let refused = line("refused:Home net");
+    assert_eq!(net_summary(&refused).as_deref(), Some("ready: Wi-Fi \"Home net\" refused the passphrase, no uplink address, no DNS"));
+    let cafe = line("refused:Caf\\xc3\\xa9");
+    assert_eq!(net_summary(&cafe).as_deref(), Some("ready: Wi-Fi \"Café\" refused the passphrase, no uplink address, no DNS"));
+    for bad in ["refused:", "refused:\\q", "refused:an SSID of thirty-three bytes!!!!"] {
+        assert_eq!(net_summary(&line(bad)), None, "{bad:?}");
+    }
+}
+
+#[test]
 fn parse_run_refuses_bad_requests() {
     let r = parse_run("run work wayland=/run/user/1000/kryptik/work/wayland-0 pass=fd\narg havoc\narg -e\narg sh\nend\n").unwrap();
     assert_eq!(r.zone, "work");
@@ -46,8 +113,17 @@ fn parse_wifi_hides_psk() {
     assert_eq!(r.psk.as_deref(), Some("pass word"));
     let r = parse_wifi("wifi-forget\nssid Home\nend\n").unwrap();
     assert_eq!((r.ssid.as_str(), r.psk), ("Home", None));
+    let r = parse_wifi("wifi-add\nssid Cafe\nopen\nend\n").unwrap();
+    assert_eq!((r.ssid.as_str(), r.psk, r.open, r.hidden), ("Cafe", None, true, false));
+    let r = parse_wifi("wifi-add\nssid Attic\npsk pass word\nhidden\nend\n").unwrap();
+    assert_eq!((r.ssid.as_str(), r.open, r.hidden), ("Attic", false, true));
     for bad in [
         "wifi-add\nssid a\nend\n",                    // no psk
+        "wifi-add\nssid a\npsk secret\nopen\nend\n",  // a psk and open
+        "wifi-add\nssid a\nopen\nopen\nend\n",        // one open
+        "wifi-forget\nssid a\nopen\nend\n",           // forget takes no open
+        "wifi-add\nssid a\nopen\nhidden\nhidden\nend\n", // one hidden
+        "wifi-forget\nssid a\nhidden\nend\n",         // forget takes no hidden
         "wifi-add\npsk secret\nend\n",                // no ssid
         "wifi-add\nssid a\npsk se\ncret\nend\n",      // a newline in the psk
         "wifi-add\nssid a\npsk secret\n",             // no end
@@ -182,6 +258,43 @@ fn zone_log_starts_again_past_its_bound() {
     assert!(open_zone_log(&log).is_err(), "a log was opened through a link");
     assert!(!target.exists(), "a file was made through a link at the log's name");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_password_takes_the_peers_own_entry_alone() {
+    // "Hello world!" under SHA-512 crypt, the specification's example (password/tests.rs).
+    const HELLO: &str = "$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1";
+    let uid = unsafe { libc::geteuid() };
+    let user = user_of(uid).expect("the test's uid has a name");
+    let shadow = std::env::temp_dir().join(format!("kryptikd-serve-shadow-{}", std::process::id()));
+    std::fs::write(&shadow, format!("other:{HELLO}:20000:0:99999:7:::\n{user}:{HELLO}:20000:0:99999:7:::\n")).unwrap();
+    let cfg = ServeConfig {
+        socket: PathBuf::new(),
+        group: String::new(),
+        zones_dir: PathBuf::new(),
+        rootfs: String::new(),
+        log_dir: PathBuf::new(),
+        proxy_exe: PathBuf::new(),
+        wifi_dir: PathBuf::new(),
+        developer: true,
+        shadow: shadow.clone(),
+    };
+    let ask = |p: &str, a: &mut crate::password::Attempts| check_password(&cfg, uid, &format!("check-password\npassword {p}\nend\n"), a);
+    let mut a = crate::password::Attempts::default();
+    assert_eq!(ask("Hello world!", &mut a), "ok\n");
+    assert_eq!(ask("hello world!", &mut a), "error: wrong password\n");
+    // Within the pause even the right one is turned away unchecked.
+    assert_eq!(ask("Hello world!", &mut a), "error: wait 2 s\n");
+    for bad in ["check-password\npassword x\n", "check-password\npassword x\nend\nmore\n", "check-password\npass x\nend\n", "check-password\n"] {
+        assert!(check_password(&cfg, uid, bad, &mut a).starts_with("error: check-password: "), "{bad:?}");
+    }
+    std::fs::write(&shadow, format!("{user}:!:20000:0:99999:7:::\nother:{HELLO}:20000:0:99999:7:::\n")).unwrap();
+    assert_eq!(
+        ask("Hello world!", &mut crate::password::Attempts::default()),
+        format!("error: {user} has no SHA-512 or SHA-256 crypt password to check\n"),
+        "another account's hash is never tried"
+    );
+    let _ = std::fs::remove_file(&shadow);
 }
 
 #[test]

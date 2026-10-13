@@ -1,0 +1,49 @@
+nl80211: a scan result's boot-clock age only where the kernel's own agrees
+
+Carried by Kryptik against wpa_supplicant 2.12; not upstream at the time of
+writing, and hostap's main branch has the same code. The kernel gives each
+BSS two ages: NL80211_BSS_SEEN_MS_AGO, which it counts itself, and
+NL80211_BSS_LAST_SEEN_BOOTTIME, a stamp on the machine's boot clock that
+wpa_supplicant subtracts from its own CLOCK_BOOTTIME. In a time namespace
+that clock is offset from the machine's and the kernel does not translate the
+stamp, so every scan result reads as old as the offset, hours or days. The
+BSS table then drops each entry at its next expiry pass (bss_expiration_age,
+180 s), within ten seconds of the scan that found it.
+
+The stamp's age is now taken only when it agrees with SEEN_MS_AGO within a
+second, or when the kernel sends no SEEN_MS_AGO. Outside a time namespace the
+two agree, and nothing changes.
+
+--- a/src/drivers/driver_nl80211_scan.c
++++ b/src/drivers/driver_nl80211_scan.c
+@@ -857,7 +857,7 @@
+ 	if (bss[NL80211_BSS_SEEN_MS_AGO])
+ 		r->age = nla_get_u32(bss[NL80211_BSS_SEEN_MS_AGO]);
+ 	if (bss[NL80211_BSS_LAST_SEEN_BOOTTIME]) {
+-		u64 boottime;
++		u64 boottime, now, age;
+ 		struct timespec ts;
+ 
+ #ifndef CLOCK_BOOTTIME
+@@ -866,11 +866,18 @@
+ 		if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
+ 			/* Use more accurate boottime information to update the
+ 			 * scan result age since the driver reports this and
+-			 * CLOCK_BOOTTIME is available. */
++			 * CLOCK_BOOTTIME is available. The kernel stamps the
++			 * machine's boot clock, which a time namespace offsets
++			 * from ours, so the kernel's own age stands whenever
++			 * the two disagree by more than a second. */
+ 			boottime = nla_get_u64(
+ 				bss[NL80211_BSS_LAST_SEEN_BOOTTIME]);
+-			r->age = ((u64) ts.tv_sec * 1000000000 +
+-				  ts.tv_nsec - boottime) / 1000000;
++			now = (u64) ts.tv_sec * 1000000000 + ts.tv_nsec;
++			age = (now - boottime) / 1000000;
++			if (now >= boottime &&
++			    (!bss[NL80211_BSS_SEEN_MS_AGO] ||
++			     (age + 1000 >= r->age && age <= r->age + 1000ULL)))
++				r->age = age;
+ 		}
+ 	}
+ 	r->ie_len = ie_len;

@@ -100,7 +100,8 @@ if [[ -n "$SINCE" ]]; then
                | sed 's/^Merge [^:]*: //' | grep -v '^Merge ' | sed 's/^./\U&/; s/^/- /' || true)"
 fi
 
-# The ELF audit: nothing refused, reported or stale; each accepted kind with its list's reasons.
+# The ELF audit: nothing refused, reported or stale; each accepted kind with its list's reasons,
+# one line per reason, naming every object it covers.
 audit="$(python3 - "${RUN}/artifact-hardening.json" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" <<'PY'
 import json, sys, collections
 def many(n, one, other=None):
@@ -132,8 +133,13 @@ print(f"- ELF objects: {a.get('objects', 0)} audited ({many(a.get('executables',
       + (" (`build/config/artifact-accepted.txt`):" if kinds else "."))
 for kind in sorted(kinds):
     print(f"  - {kind}, {many(kinds[kind], 'object')}:")
+    shared = {}
     for what, why in reasons.get(kind, []):
-        print(f"    - {what}: {why}")
+        shared.setdefault(why, []).append(what)
+    for why, whats in shared.items():
+        # An RPATH entry has a comma of its own.
+        sep = "; " if any(", rpath" in w for w in whats) else ", "
+        print(f"    - {sep.join(whats)}: {why}")
 print(f"- Stack protector in {f.get('HAS-SSP', 0)} objects, FORTIFY_SOURCE in {f.get('HAS-FORTIFY', 0)}.")
 PY
 )" || die "the hardening audit does not allow notes"

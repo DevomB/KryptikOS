@@ -162,13 +162,16 @@ under the 5 s deadline, so supervision is never more than a piece away.
 
 ## What the user sees
 
-`kryptik update status | fetch | apply | auto on|off` go through the launch
-service. `status` shows the running version, the newest pointer's version and
-age, whether fetching is automatic, and what has arrived. `fetch` asks for the
-release the newest pointer names. `apply` runs `kryptik-update apply` on the
-complete stage, with the usual trial boot and fallback; the stage goes once
-the machine runs that release and no trial is pending or failed, so after a
-failed trial the `--retry` the refusal prints names a stage that is still
+`kryptik update status | fetch | forget | apply | auto on|off` go through the
+launch service. `status` shows the running version, the newest pointer's
+version and age, whether fetching is automatic, and what has arrived. `fetch`
+asks for the release the newest pointer names. `forget` drops the release
+asked for and what has arrived of it, and automatic fetching then passes that
+version over until a newer statement names another or `fetch` asks for it
+again; it is refused while an apply runs. `apply` runs `kryptik-update apply`
+on the complete stage, with the usual trial boot and fallback; the stage goes
+once the machine runs that release and no trial is pending or failed, so after
+a failed trial the `--retry` the refusal prints names a stage that is still
 there.
 Nothing is installed unless the user asks, and nothing is fetched unless the
 user asks or has turned automatic fetching on.
@@ -211,7 +214,9 @@ already asked for keeps arriving, as one asked for by hand does.
 - **How the user learns.** `kryptik update status` says
   `staged <version>: ... complete; kryptik update apply installs it` once a
   release has arrived whole, and while it waits the chrome's launcher names
-  it and where to apply it. Once the newest accepted statement is more than
+  it; the launcher's `u` shows the status and fetches, forgets, installs
+  (after a `y`) or turns automatic fetching on and off, through the same
+  verbs as `kryptik update`. Once the newest accepted statement is more than
   30 days old, or, on a machine that names a channel and has accepted none,
   once its install is, `status` says so and the launcher shows one line with
   that age: statements are re-signed on a schedule, so either nothing has
@@ -259,7 +264,7 @@ The channel Kryptik ships lives on GitHub, in two parts a statement's `base`
 joins: the payload's files are among the release's files on the Releases
 page (`tools/release-publish.sh` uploads them under the manifest's names, so
 `https://github.com/<owner>/<repo>/releases/download/v<version>/` serves
-`manifest`, `kryptik-root.img` and the rest), and the statement is served by
+`manifest`, `kryptik-root.img.zst` and the rest), and the statement is served by
 the repository's Pages site at `https://<owner>.github.io/<repo>/stable/`,
 which is the address an image is built with. The statement key is the
 `github-pages` environment's `KRYPTIK_LATEST_KEY` secret, an environment that
@@ -306,16 +311,16 @@ channel's directory.
   refused, and each leaves the old pair.
 - The desktop suite runs the launcher with a stored statement from today and
   with one 45 days old, and with none and the install 45 days old: only the
-  last two name the age.
+  last two name the age. It turns automatic fetching on and off from the
+  launcher's `u` and reads kryptikd's record each time
+  (`menu-update-auto`); `tools/tests/chrome-update.sh` drives every choice
+  against a stand-in launch daemon.
 - `tools/tests/channel-setting.sh`: the addresses stage 06 takes and refuses
   for `KRYPTIK_CHANNEL` for each role, and, for every address it takes, the
   fetcher reading the written `update.conf` into requests it can send.
 
 ## Open points
 
-- A way to stop a release that is arriving: once asked for, by hand or
-  automatically, it is fetched until it is whole or a newer statement names
-  another.
 - Delta updates: dm-verity's block structure would allow fetching only
   changed blocks instead of the whole image.
 
@@ -325,7 +330,7 @@ channel's directory.
 `rootfs.rs` (`update.conf`), `tools/kryptik` and
 `tools/desktop/kryptik-launch.c` (`kryptik update`),
 `tools/desktop/kryptik-chrome` (the launcher's lines for a release that waits
-and for a stale statement),
+and for a stale statement, and its `u`),
 `tools/update/kryptik-update` (`check-manifest`, `check-pointer`),
 `tools/net/update-fetch.py`, `tools/net/netzone-init.sh`,
 `tools/release-manifest.sh` (`pointer`), `tools/release-channel.sh`,

@@ -9,7 +9,7 @@ whether it is worth doing at today's release sizes.
 
 ## Where things stand
 
-- **A payload** is `kryptik-root.img`, `kryptik-a.efi`, `kryptik-b.efi`,
+- **A payload** is `kryptik-root.img.zst`, `kryptik-a.efi`, `kryptik-b.efi`,
   `root.json`, `manifest` and `manifest.sig`. The manifest lists every
   file's SHA-256 and size and is signed by the release key
   ([boot and updates](boot-and-updates.md#updates)).
@@ -19,12 +19,13 @@ whether it is worth doing at today's release sizes.
   (`may_put` and `put` in `compartments/kryptikd/src/update.rs`). Zone 0
   stores no more than the release's signed size, and `apply` checks every
   hash before it writes the inactive slot.
-- **The image is sent raw.** `kryptik-root.img` is an ext4 filesystem
+- **The image is sent compressed.** `kryptik-root.img` is an ext4 filesystem
   followed by its hash tree, about 1,560 MiB today. Stage 06 sizes the
   filesystem at its contents plus an eighth plus 96 MiB, so a large part of
-  what crosses the network is free blocks: zeros. The v0.1.0 USB medium, ESP
-  and root together, compresses with zstd to 390,968,131 bytes; a medium is
-  about 2.2 GB raw. The kernels are about 22 MB each and do not compress,
+  it is free blocks: zeros. The payload carries it as `kryptik-root.img.zst`
+  (zstd -19), the first step of the recommendation below; the v0.1.0 USB
+  medium, ESP and root together, compressed so to 390,968,131 bytes from
+  about 2.2 GB. The kernels are about 22 MB each and do not compress,
   since they are zstd inside already.
 - **The hash tree is an authenticated index.** `root.json`, which the
   manifest lists, names the root hash, the salt, the number of data blocks
@@ -152,8 +153,13 @@ for every release from now on.
 ## Recommendation
 
 1. Compress the payload's image for transport, verified before it is
-   decompressed.
+   decompressed. Built: stage 06 writes `kryptik-root.img.zst`, and `apply`
+   checks its hash, then what it decompresses to against `root.json`,
+   before it writes the inactive slot.
 2. Add the delta count to the acceptance report.
+   Built: the update suite's `delta-count` (`tools/delta-count.py`) counts
+   B's data blocks that no data block of A holds, adds B's hash tree, and
+   the report shows the sum as "a delta update, A to B".
 3. Build delta fetching once builds are reproducible and the reported deltas
    stay well under a fifth of the image: the plan from the committed slot,
    blocks checked against the authenticated tree, assembly in the stage, and

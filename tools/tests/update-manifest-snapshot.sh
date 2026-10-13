@@ -2,8 +2,9 @@
 # Test kryptik-update's verify_payload with the real ssh-keygen: the manifest is
 # read once, before the signature check, so files swapped in after the check
 # cannot change the version or hashes, and a kernel made for another root is
-# refused. Also tests check-manifest, check-pointer and check-release. Needs
-# ssh-keygen with -Y (OpenSSH 8.2+).
+# refused, as is a compressed image that is not the one root.json names. Also
+# tests check-manifest, check-pointer and check-release. Needs ssh-keygen with
+# -Y (OpenSSH 8.2+) and zstd.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TOOL="$ROOT/tools/update/kryptik-update"
@@ -11,6 +12,7 @@ command -v ssh-keygen >/dev/null 2>&1 || { echo "ssh-keygen not found; cannot ru
 # With -Y, this incomplete call complains about find-principals; without, about -Y.
 probe="$(ssh-keygen -Y find-principals 2>&1 || true)"
 grep -q "find-principals" <<<"$probe" || { echo "this ssh-keygen has no -Y; cannot run"; exit 77; }
+command -v zstd >/dev/null 2>&1 || { echo "zstd not found; cannot run"; exit 77; }
 
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
@@ -21,21 +23,25 @@ trap 'rm -rf "$T"' EXIT
 cd "$T" || exit 1
 
 # The signed payload (version 2) and an unsigned replacement (version 3).
-mkpayload() {   # mkpayload DIR VERSION [ROOT-HASH-IN-KERNEL-B]
-    local d="$1" v="$2" hash
+mkpayload() {   # mkpayload DIR VERSION [ROOT-HASH-IN-KERNEL-B [OTHER-IMAGE-IN-THE-ZST]]
+    local d="$1" v="$2" hash img
     mkdir -p "$d"
     hash="$(printf '%*s' 64 '' | tr ' ' "$v")"
-    printf 'harmless fixture root %s\n' "$v" > "$d/kryptik-root.img"
+    img="$T/image-$(basename "$d")"
+    printf 'harmless fixture root %s\n' "$v" > "$img"
     printf '%s\n' "$hash" > "$d/kryptik-a.efi"
     printf '%s\n' "${3:-$hash}" > "$d/kryptik-b.efi"
     # The layout stage 06 writes and the tool reads: one key per line, two spaces in.
     {
         echo "{"
         printf '  "root_hash": "%s",\n' "$hash"
-        printf '  "total_bytes": %s,\n' "$(stat -c %s "$d/kryptik-root.img")"
-        printf '  "sha256": "%s"\n' "$(sha256sum "$d/kryptik-root.img" | cut -c1-64)"
+        printf '  "total_bytes": %s,\n' "$(stat -c %s "$img")"
+        printf '  "sha256": "%s"\n' "$(sha256sum "$img" | cut -c1-64)"
         echo "}"
     } > "$d/root.json"
+    # The payload carries the image compressed, as stage 06 writes it.
+    if [[ -n "${4:-}" ]]; then printf '%s\n' "$4" | zstd -q -c > "$d/kryptik-root.img.zst"
+    else zstd -q -c "$img" > "$d/kryptik-root.img.zst"; fi
     {
         echo "KRYPTIK-MANIFEST-1"
         echo "role: development"
@@ -43,7 +49,7 @@ mkpayload() {   # mkpayload DIR VERSION [ROOT-HASH-IN-KERNEL-B]
         echo "created: 2027-03-02T12:00:00Z"
         echo "files: 4"
         echo "--"
-        for f in kryptik-a.efi kryptik-b.efi kryptik-root.img root.json; do
+        for f in kryptik-a.efi kryptik-b.efi kryptik-root.img.zst root.json; do
             printf '%s  %s  %s\n' "$(sha256sum "$d/$f" | cut -c1-64)" "$(stat -c %s "$d/$f")" "$f"
         done
     } > "$d/manifest"
@@ -100,9 +106,9 @@ ssh-keygen() {
     # Before anything is judged: what a payload directory may simply contain.
     if [ "\${2:-}" = verify ]; then
         case "$what" in
-            link)     mv $T/payload/kryptik-root.img $T/payload-root.img; ln -s $T/payload-root.img $T/payload/kryptik-root.img ;;
+            link)     mv $T/payload/kryptik-root.img.zst $T/payload-root.img.zst; ln -s $T/payload-root.img.zst $T/payload/kryptik-root.img.zst ;;
             dotfile)  echo "ride along" > $T/payload/.hidden ;;
-            lookalike) echo "ride along" > $T/payload/kryptik-rootXimg ;;
+            lookalike) echo "ride along" > $T/payload/kryptik-rootXimg.zst ;;
         esac
     fi
     return "\$rc"
@@ -148,7 +154,7 @@ if [[ "$out" == *"REFUSED:"*"not a regular file"* ]]; then ok "a root image that
 out="$(run_case dotfile dotfile)"
 if [[ "$out" == *"REFUSED:"*"unlisted file in the payload: .hidden"* ]]; then ok "an unlisted file whose name begins with a dot is seen and refused"; else bad "a dotfile stowaway: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
 out="$(run_case lookalike lookalike)"
-if [[ "$out" == *"REFUSED:"*"unlisted file in the payload: kryptik-rootXimg"* ]]; then ok "a name that only matches a listed one as a pattern is refused"; else bad "a look-alike name: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
+if [[ "$out" == *"REFUSED:"*"unlisted file in the payload: kryptik-rootXimg.zst"* ]]; then ok "a name that only matches a listed one as a pattern is refused"; else bad "a look-alike name: $(tail -2 <<<"$out" | tr '\n' ' ')"; fi
 
 if command ssh-keygen -Y verify -f signers -I kryptik-release -n kryptik-release -s "$T/payload/manifest.sig" < "$T/replacement/manifest" >/dev/null 2>&1; then
     bad "control: the replacement manifest has a valid signature, which it must not"
@@ -173,11 +179,19 @@ out="$(check verify_payload "$T/mixed" 0)"
     && ok "a signed release whose kernel embeds another root hash is refused, though every file matches the manifest" \
     || bad "a kernel made for another root: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
+# Signed, every file as listed, and the compressed image not the one root.json names.
+mkpayload swapped 2 "" "an image root.json does not name"
+ssh-keygen -Y sign -f key -n kryptik-release swapped/manifest >/dev/null 2>&1
+out="$(check verify_payload "$T/swapped" 0)"
+[[ "$out" == *"match the manifest"* && "$out" == *"REFUSED: kryptik-root.img.zst does not decompress to the image root.json names"* ]] \
+    && ok "a signed release whose compressed image is not the one root.json names is refused before anything is written" \
+    || bad "a compressed image root.json does not name: $(tail -2 <<<"$out" | tr '\n' ' ')"
+
 staged stage
 out="$(check cmd_check_manifest "$T/stage")"
 want_sha="$(sha256sum "$T/signed/manifest" | cut -c1-64)"
 if [[ "$out" == *"version: 2"* && "$out" == *"sha256: $want_sha"* && "$(grep -c '^file [0-9]* ' <<<"$out")" = 4 ]] \
-   && grep -qx "file $(stat -c %s "$T/signed/kryptik-root.img") kryptik-root.img" <<<"$out"; then
+   && grep -qx "file $(stat -c %s "$T/signed/kryptik-root.img.zst") kryptik-root.img.zst" <<<"$out"; then
     ok "check-manifest: a signed manifest with no payload beside it verifies, and prints its version, its hash and the four files with their sizes"
 else
     bad "check-manifest on a signed manifest: $(tail -3 <<<"$out" | tr '\n' ' ')"

@@ -5,8 +5,8 @@ Builds are not reproducible, so "built from source" still means trusting the
 machine that built it. And the first compiler comes from the host, so
 Thompson's "Reflections on Trusting Trust" applies in full. The
 [roadmap](../roadmap.md) asks for reproducible builds checked by CI, then a
-bootstrappable toolchain. This document lists what differs between two
-builds today, how each difference goes, what CI compares, what happens to
+bootstrappable toolchain. This document lists what differed between two
+builds, what is fixed and how the rest goes, what CI compares, what happens to
 the module signing key, and how live-bootstrap fits in front of stage 01.
 The proposed decision is ADR-018 in [decisions](../decisions.md).
 
@@ -23,52 +23,41 @@ the media checksums' `.sig`.
 Inside the chroot, paths are fixed whatever the host's work directory:
 sources at `/kryptik-sources`, work at `/kryptik-work`, the tree at
 `/kryptik` (`build/stages/03-chroot-prep.sh`). Stages 04 and 05 therefore
-never see the host's paths. Stage 06 and the Rust binaries do.
+never see the host's paths. Stage 06 does; the Rust binaries are built at
+them but name none (below).
 
-## What differs between two builds today
+## What differs between two builds
+
+`SOURCE_DATE_EPOCH` is the commit's time (`git log -1 --format=%ct`): the
+Makefile exports it to every stage and the chroot passes it in. No stamp
+fingerprints it, or every commit would rebuild everything, so a step taken
+from the cache keeps the time it was built with; the comparison below builds
+without a cache.
 
 ### Stage 06's root image
 
-`s_rootfs` in `build/stages/06-iso.sh`:
+`s_rootfs` in `build/stages/06-iso.sh`, fixed:
 
-- **The verity salt** is `openssl rand -hex 32`, so the root hash, and with
-  it every kernel's command line, differs in every build. The salt can be
-  the SHA-256 of the ext4 image before the tree is appended: still unique to
-  that content, and the same in every build of it.
-- **The filesystem is made by the host's `mkfs.ext4 -d`.** The Ubuntu 24.04
-  runners have e2fsprogs 1.47.0, which copies each file's ctime from the
-  staging tree (when rsync wrote it, not when the package was built) and
-  takes the current time for the superblock. Support for
-  `SOURCE_DATE_EPOCH`, with every time mke2fs writes clamped to it, and a
-  tarball as `-d`'s input both arrived in 1.47.1
-  ([release notes](https://e2fsprogs.sourceforge.net/e2fsprogs-release.html)).
-  Three ways out:
-  - run the sysroot's own `mkfs.ext4`, which stage 04 builds at 1.47.1, in
-    the chroot, from the step that already enters it to bind the kernels;
-  - build a host e2fsprogs at 1.47.1 or later from the pinned tarball before
-    stage 06;
-  - feed mke2fs a normalised tarball (sorted names, fixed owner, clamped
-    times). That needs libarchive in whichever e2fsprogs runs, which the
-    sysroot's does not have.
-
-  The first adds no tool and no recipe.
-- **The UUID and the directory hash seed** are random unless given:
-  `-U <uuid>` and `-E hash_seed=<uuid>`, both derived from the version and
-  the commit.
+- **The verity salt** is the SHA-256 of the ext4 image before the tree is
+  appended: unique to that content, and the same in every build of it.
+- **The filesystem is made by the sysroot's mke2fs** (e2fsprogs 1.47.1, from
+  stage 04) in the chroot, not the host's (the Ubuntu 24.04 runners have
+  1.47.0). With `SOURCE_DATE_EPOCH`, 1.47.1 writes the commit's time into the
+  superblock and clamps every time it copies from the tree to it
+  (`lib/ext2fs/openfs.c`, `misc/create_inode.c`).
+- **The UUID and the directory hash seed** are derived from the version and
+  the commit (`-U`, `-E hash_seed=`).
 - **Directory order.** mke2fs walks each directory with `scandir` and
-  `alphasort` (in 1.47.0 and 1.47.1 alike), so the order follows the
-  collation of the locale it runs in. `LC_ALL=C` makes it bytewise.
-- **What stage 06 writes into the tree**: `os-release`, `kryptik-image.json`,
-  `ld.so.preload`, the trust anchor and role, `update.conf`, `fstab`, and
-  the directories it creates. Their contents are fixed by the inputs except
-  `built_at`, which is `date -Iseconds`, and the default version,
-  `0.1.<date>.<commit>`. Their times are now; mke2fs 1.47.1 clamps them.
+  `alphasort`; the chroot's environment sets no locale, so the order is
+  bytewise.
+- **`built_at`** in `kryptik-image.json` is `SOURCE_DATE_EPOCH` in UTC.
+- **The check:** stage 06 makes the image twice from one tree and fails if
+  the two differ.
 
-The fix is one `SOURCE_DATE_EPOCH`, the commit's time, exported for the
-whole build, with `built_at` written from it in UTC, and the same
-`KRYPTIK_VERSION` passed to both builds being compared.
+What remains is the version: the default is `0.1.<date>.<commit>`, so the
+two builds being compared take the same `KRYPTIK_VERSION`.
 
-**The clock floor moves with it.** `built_at` is the floor kryptikd keeps the
+**The clock floor moved with `built_at`.** It is the floor kryptikd keeps the
 clock above (`floor_from_image_json` in `time.rs`), and the `time-floor`
 service raises a dead RTC to it ([clock](time.md)). With the commit's time
 there, the floor becomes the time of the commit rather than of the build:
@@ -79,10 +68,12 @@ time design still holds. The parser takes the `+00:00` offset that
 
 ### Stage 05's kernel
 
-- `/proc/version` carries the build's time, user and host, and a runner's
-  host name changes with every run. `KBUILD_BUILD_TIMESTAMP`,
-  `KBUILD_BUILD_USER` and `KBUILD_BUILD_HOST` fix them, as the kernel's
-  documentation describes (`Documentation/kbuild/reproducible-builds.rst`).
+- `/proc/version` carried the build's time, user, host and build number,
+  and the number grew with every relink in stage 06's bind step. Stage 05
+  and the bind step set `KBUILD_BUILD_TIMESTAMP` (from `SOURCE_DATE_EPOCH`),
+  `KBUILD_BUILD_USER`, `KBUILD_BUILD_HOST` and `KBUILD_BUILD_VERSION=1`, as
+  the kernel's documentation describes
+  (`Documentation/kbuild/reproducible-builds.rst`).
 - `RANDSTRUCT_FULL` lays out structures from a seed generated for each
   tree (`scripts/basic/randstruct.seed`). Reproducing the kernel needs that
   seed fixed. For a published kernel this costs nothing: anyone holding the
@@ -99,17 +90,26 @@ Paths are fixed in the chroot, so what remains are the usual suspects:
 compressed man and info pages (gzip stores a time and a name unless `-n`),
 static archives (member times, unless binutils is in deterministic mode),
 Python's bytecode (a timestamp in each `.pyc`, unless `SOURCE_DATE_EPOCH`
-is set, when `py_compile` writes hash-checked files), and perl's
-`Config.pm`, which records when and by whom perl was built.
-Exporting `SOURCE_DATE_EPOCH` from `build/lib/common.sh` for every step,
-which nothing does today, would take most of them. The comparison finds the rest package by package.
+is set, when `py_compile` writes hash-checked files), and perl's Config files
+(`Config.pm`, `Config_heavy.pl`, `CORE/config.h`, `Errno.pm`), which record
+when perl was built and the build host's name and kernel; perl's Configure
+ignores `SOURCE_DATE_EPOCH`, so the recipe gives it fixed values in a
+`config.over`. `SOURCE_DATE_EPOCH` in every step takes most
+of the rest. The comparison finds what is left package by package.
 
 ### The Rust binaries
 
 kryptikd and kryptik-wlproxy are built on the runner by cargo, at the
-checkout's path and with the runner's `CARGO_HOME`, and both paths end up in
-panic locations. `--remap-path-prefix` for each removes them. The toolchain
-is already pinned by hash (`build/config/rust.lock`).
+checkout's path, with the runner's `CARGO_HOME` and into `/mnt/kryptik/cargo`,
+and each of those paths would end up in panic locations. The Distro workflow
+passes `--remap-path-prefix` for all three, and refuses a binary that still
+names one. The toolchain is already pinned by hash (`build/config/rust.lock`).
+
+### The update manifest
+
+`tools/release-manifest.sh` writes a `created:` line from the clock into
+every manifest, so the manifest's text differs in every build until it takes
+`SOURCE_DATE_EPOCH`.
 
 ### The media
 
@@ -214,11 +214,10 @@ diverse-double-compiling test.
 
 ## Recommendation
 
-1. **Reproducible root and kernels:** `SOURCE_DATE_EPOCH` from the commit;
-   stage 06's mke2fs run in the chroot from the sysroot's e2fsprogs 1.47.1,
-   under `LC_ALL=C`, with a fixed UUID and hash seed; the salt from the
-   image; `KBUILD_BUILD_*` and a fixed randstruct seed; `--remap-path-prefix`
-   for the Rust binaries; fixed IDs and times on the media.
+1. **Reproducible root and kernels:** done for stage 06's root image and the
+   kernel's banner; left are a fixed randstruct seed, `--remap-path-prefix`
+   for the Rust binaries, the manifest's `created:` line, deterministic
+   static archives, and fixed IDs and times on the media.
 2. **CI compares** two builds weekly and for every tag, with one throwaway
    key medium, on two runner images.
 3. **Releases sign modules in two passes** and publish the module

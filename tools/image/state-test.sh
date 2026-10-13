@@ -13,8 +13,9 @@
 #   step 5  no kryptik-state partition: degraded
 #   step 6  the watchdog feeder stopped: the machine resets and comes back
 #   step 7  three wrong passphrases: degraded; then the right one
-#   step 8  root changes the passphrase with `kryptik state passphrase`: the
-#           old one no longer unlocks, the new one does
+#   step 8  root changes the passphrase with `kryptik state passphrase`, which
+#           first refuses a wrong current one and a new one under 8
+#           characters: the old one no longer unlocks, the new one does
 #
 # After each repair a login must find the user's file, and no degraded boot
 # writes the ESP or the state partition's header. Every disk is a file made here.
@@ -197,21 +198,28 @@ KRYPTIK_STATE_PASSPHRASE=not-the-passphrase degraded_boot state-p7 '/dev/vda4 wa
 normal_boot state-p7b
 
 # ----------------------------------------------------------------- step 8 --
-# Last: the disk keeps the new passphrase. cryptsetup asks on the terminal,
-# so the answers are typed there, not passed to it. It prints each prompt and
-# then discards what the terminal already holds, so an answer waits a moment.
+# Last: the disk keeps the new passphrase. The answers are typed at the
+# terminal, each a moment after its prompt, once echo is off. A wrong current
+# passphrase and a new one under the installer's floor change nothing.
 step "step 8: root changes the state passphrase; the old one no longer unlocks"
 NEWPASS=state-pw-changed
 start_vm state-p8
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
-    "send:su - root -c 'kryptik state passphrase; echo CHANGED=\$?'" "expect:Password: ?" "send:${RPASS}" \
-    "expect:Enter passphrase to be changed: ?" "sleep:2" "send:${KRYPTIK_STATE_PASSPHRASE}" \
-    "expect:Enter new passphrase: ?" "sleep:2" "send:${NEWPASS}" \
-    "expect:Verify passphrase: ?" "sleep:2" "send:${NEWPASS}" \
-    "expect:CHANGED=0" \
+    "send:su - root -c 'kryptik state passphrase; echo WRONG=\$?; kryptik state passphrase; echo SHORT=\$?; kryptik state passphrase; echo CHANGED=\$?'" \
+    "expect:Password: ?" "send:${RPASS}" \
+    "expect:the state passphrase now: ?" "sleep:1" "send:not-the-passphrase" \
+    "expect:that is not the state passphrase; nothing was changed" "expect:WRONG=1" \
+    "expect:the state passphrase now: ?" "sleep:1" "send:${KRYPTIK_STATE_PASSPHRASE}" \
+    "expect:a new one, asked at every boot: ?" "sleep:1" "send:short" \
+    "expect:again: ?" "sleep:1" "send:short" \
+    "expect:the new passphrase is 5 characters; it needs at least 8" "expect:SHORT=1" \
+    "expect:the state passphrase now: ?" "sleep:1" "send:${KRYPTIK_STATE_PASSPHRASE}" \
+    "expect:a new one, asked at every boot: ?" "sleep:1" "send:${NEWPASS}" \
+    "expect:again: ?" "sleep:1" "send:${NEWPASS}" \
+    "expect:the state passphrase is changed; the next boot asks for the new one" "expect:CHANGED=0" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
-[[ "$rc" -eq 0 ]] && green "state-p8: kryptik state passphrase took the old passphrase and the new one twice" || red "state-p8: changing the passphrase failed"
+[[ "$rc" -eq 0 ]] && green "state-p8: kryptik state passphrase refused a wrong current passphrase and a 5-character new one, then took the old one and the new one twice" || red "state-p8: changing the passphrase, or its refusals, failed"
 degraded_boot state-p8b '/dev/vda4 was not unlocked in three tries'
 KRYPTIK_STATE_PASSPHRASE="$NEWPASS" normal_boot state-p8c
 

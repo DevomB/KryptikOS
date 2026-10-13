@@ -140,6 +140,12 @@ CONFIG_SECURITYFS=y
 # network.mode = "none" would have more than the loopback it promises.
 # CONFIG_IPV6_SIT is not set
 
+# What any zone could ask of the kernel and nothing here uses: MSG_OOB on unix
+# sockets, TCP's MD5 signature option (for BGP sessions), and HugeTLB pages.
+# CONFIG_AF_UNIX_OOB is not set
+# CONFIG_TCP_MD5SIG is not set
+# CONFIG_HUGETLBFS is not set
+
 # aes-xts-plain64, the cipher of standard LUKS2 volumes, for dm-crypt.
 CONFIG_CRYPTO_XTS=y
 
@@ -254,3 +260,28 @@ CONFIG_LSM="landlock,lockdown,yama"
 # CONFIG_NF_CONNTRACK_IRC is not set
 # CONFIG_NF_CONNTRACK_SIP is not set
 # CONFIG_NETCONSOLE is not set
+# Kernel IP autoconfiguration (ip=, for an NFS root), policy and multipath
+# routing (nothing adds a rule, and kryptikd's routes are a gateway and a
+# device), multicast routing, the packet labels of SELinux and Smack (neither
+# is built), NFLOG (left on by xtables' NFLOG target; the net zone's rules log
+# nothing), tc's classifier, ematch and action frameworks (no filter is ever
+# added), and the network filesystems' DNS upcall. The net zone's
+# capabilities reach most of them.
+# CONFIG_IP_PNP is not set
+# CONFIG_IP_ADVANCED_ROUTER is not set
+# CONFIG_IP_MROUTE is not set
+# CONFIG_NETLABEL is not set
+# CONFIG_NETWORK_SECMARK is not set
+# CONFIG_NETFILTER_NETLINK_LOG is not set
+# CONFIG_NET_CLS_CGROUP is not set
+# CONFIG_NET_EMATCH is not set
+# CONFIG_NET_CLS_ACT is not set
+# CONFIG_DNS_RESOLVER is not set
+# rmmod -f, the power-management debug hooks (pm_trace keeps its trace in the
+# RTC), the cgroup debug controller, and /dev/nvram and /dev/hpet, which
+# nothing opens.
+# CONFIG_MODULE_FORCE_UNLOAD is not set
+# CONFIG_PM_DEBUG is not set
+# CONFIG_CGROUP_DEBUG is not set
+# CONFIG_NVRAM is not set
+# CONFIG_HPET is not set

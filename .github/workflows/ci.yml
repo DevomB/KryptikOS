@@ -344,8 +344,11 @@ jobs:
           ./tools/fetch-sources.sh --list \
             | awk '$1 == "linux" || $1 == "linux-hardened" || $1 == "kernel-hardening-checker" {print $3}' \
             | while read -r u; do
-                echo "fetching $(basename "$u")"
-                curl -fL --no-progress-meter -o "sources/$(basename "$u")" "$u"
+                f="$(basename "$u")"
+                echo "fetching $f"
+                curl -fL --no-progress-meter -o "sources/$f" "$u"
+                # Before anything unpacks it: resolving the config runs the kernel tree's own make and scripts.
+                awk -v f="$f" '$2 == f' sources.lock | (cd sources && sha256sum --check --strict -)
               done
           ./tools/validate-kernel-config.sh
           ./tools/validate-kernel-config.sh --hardened

@@ -20,6 +20,7 @@ temporary tools (stages 01 and 02) are built without them.
 | `-Wl,-z,noexecstack` | executable stack payloads | none |
 | `-ftrivial-auto-var-init=zero` | uninitialized-memory disclosure | ~0.5% |
 | `-fno-delete-null-pointer-checks` | NULL checks removed as dead code | none |
+| `-D_GLIBCXX_ASSERTIONS` (C++) | an index past a libstdc++ container's end, front or back of an empty one, or a null smart pointer dereferenced: the program aborts | small |
 
 It also passes `-fno-strict-aliasing`, `-Wl,-z,separate-code` and
 `-Wl,--as-needed`.
@@ -34,28 +35,38 @@ references `main()`, so every shared library fails to link.
 A package that cannot build with a flag goes in
 `build/config/hardening-exceptions.txt` as `<package> <flag> # reason`;
 `build/lib/common.sh` fails the build on an entry without a reason. The only
-one is glibc's `-D_FORTIFY_SOURCE=3`, since glibc defines the fortify
-machinery.
+one is glibc's `-D_FORTIFY_SOURCE=3`: glibc implements FORTIFY, and its own
+`--enable-fortify-source=3` applies it to everything but the loader, startup
+and checking code (its `elf`, `dlfcn`, `csu` and `debug` directories), whose
+programs `pldd`, `sprof`, `pcprofiledump` and `sotruss-lib.so` the audit
+accepts by name.
 
 ### What the audit finds
 
 `make audit-artifacts` (`tools/check-artifact-hardening.sh`) reads the ELF
-headers of every object. Stage 06 runs it strict on the root tree as it packs
-it into the image, so a finding fails the build, and `make acceptance` runs it
-strict again on the root image of the release it tests, mounted read-only, for
-the record. A writable and executable segment, an executable stack, text
-relocations or an RPATH into the build tree always fail it. In strict mode so
-do a missing CET note, `BIND_NOW` or RELRO, a non-PIE executable and any other
-RPATH, unless [`artifact-accepted.txt`](../build/config/artifact-accepted.txt)
-lists the object with its reason: `kryptikd` and `kryptik-wlproxy`, which
-stable rustc does not mark for CET, GMP's assembly, and the rpaths that
-man-db, perl and glibc's converters need or that repeat the loader's own
-directory. An entry that matches nothing fails too, so the list holds only
-what the image has. A new finding is fixed in its package's recipe, not by
-weakening the check. The stack protector and FORTIFY are counted, not required
-of each object: a function without a local array gets no canary and a call
-with no known size no `_chk` variant, so an object with neither shows nothing
-about its flags. The record lists the objects without either.
+headers, dynamic symbols and code of every object. Stage 06 strips every
+x86-64 program and library, and the debug sections of every static archive,
+as it stages the root (the sysroot keeps its symbols for the build), then
+runs the audit strict on that tree, so a finding
+fails the build, and `make acceptance` runs it strict again on the root image
+of the release it tests, mounted read-only, for the record. A writable and
+executable segment, an executable stack or no `GNU_STACK` header at all (the
+loader then makes the stack executable), text relocations or an RPATH into the
+build tree always fail it. In strict mode so do a missing CET note, `BIND_NOW`
+or RELRO, a non-PIE executable, a symbol table or debug section, any other
+RPATH, an object whose code never reads the stack canary, and an object that
+imports `printf`, `fprintf`, `vfprintf`, `dprintf`, `syslog`, `longjmp` or
+another call that `_FORTIFY_SOURCE=2` or `3` always turns into its `_chk`
+variant, which shows a unit built without FORTIFY. Each of these passes only
+where [`artifact-accepted.txt`](../build/config/artifact-accepted.txt) lists
+the object with its reason. `-fstack-protector-strong` guards only functions
+with a local array or an address-taken local, so an object with none of
+those has no canary whatever its flags; such objects are listed by name, and a
+package that loses the flag shows up as a new name. An entry that matches
+nothing fails too, so the list holds only what the image has. A new finding is
+fixed in its package's recipe, not by weakening the check. A call whose size
+is unknown keeps its plain name under FORTIFY, so those prove nothing either
+way: the record counts and lists the objects that call no `_chk` function.
 
 Packages stage 04 builds before its glibc (the first built with
 `--enable-cet`) link stage 01's crt files, which carry no CET note, so each is
@@ -69,9 +80,11 @@ left in the image.
 
 ADR-005 makes hardened_malloc the system allocator. Stage 04 builds it without
 `-march=native` and installs `/usr/lib/libhardened_malloc.so`. Stage 06 writes
-`/etc/ld.so.preload` into the image's root, so every process of the running
-system uses it, and kryptikd writes each zone its own preload naming only that
-library (a zone never sees the host's). The build chroot never has the file.
+`/etc/ld.so.preload` into the image's root, so every dynamically linked
+process of the running system uses it (kryptikd and kryptik-wlproxy are
+static musl binaries, which no preload reaches), and kryptikd writes each
+zone its own preload naming only that library (a zone never sees the
+host's). The build chroot never has the file.
 hardened_malloc's guard pages are separate mappings, so `vm.max_map_count` is
 1048576. The booted medium and the zones suite check that a process has the
 library mapped. No benchmark numbers are claimed.
@@ -108,6 +121,14 @@ ADR-009) and `boot.fragment` (ADR-013).
   `/proc/kcore`, MSR and CPUID devices, legacy PTYs, `binfmt_misc`, kexec,
   hibernation, IA-32 emulation, debugfs, ftrace, kprobes, io_uring, sysrq,
   ACPI table overrides, core dumps, `/proc/pid/pagemap`.
+- Off as well: initramfs support and the EFI stub's handover entry, so
+  nothing that starts the kernel can give it code to run before the verified
+  root; `MSG_OOB` on unix sockets, TCP MD5 signatures and HugeTLB pages,
+  which any zone could reach; and what defconfig left on that nothing here
+  uses: IP autoconfiguration, policy, multipath and multicast routing,
+  NetLabel and SECMARK, NFLOG, tc's classifiers and actions, the network
+  filesystems' DNS upcall, forced module unloading, the power-management and
+  cgroup debug hooks, `/dev/nvram` and `/dev/hpet`.
 
 Stage 05 refuses a `.config` that lost any fragment line
 (`build/lib/kconfig-check.sh`, shared with `tools/resolve-kernel-config.sh`
@@ -146,20 +167,22 @@ filters do not need it), kexec, userfaultfd, 32-bit mappings or core dumps.
 
 Privilege transitions go through kryptikd, where they can be audited, not
 through setuid binaries or file capabilities. A setuid binary needs a
-justified entry in `build/config/setuid-allowlist.txt`, which lists `su`, the
-only way from a login to root, and `passwd`, which nothing brokers yet. A file
+justified entry in `build/config/setuid-allowlist.txt`, which lists only
+`su`, the only way from a login to root; passwords change through it
+(`su -c 'passwd NAME'`), so `passwd` runs as root only for root. A file
 carrying capabilities (`security.capability`) needs one in
 `build/config/capability-allowlist.txt`, which is empty. The recipes install
-no other bit: shadow's eight other tools lose theirs after its install,
+no other bit: shadow's nine other tools lose theirs after its install,
 util-linux is built with `--disable-makeinstall-setuid` and
 `--disable-makeinstall-chown` (wall's setgid tty is under that hook), and
 inetutils without traceroute. Stage 06 runs `tools/audit-setuid.sh` over the
-image's root and fails the build on any unlisted bit or capability; on a root
-staged by hand, `--strip` takes them off instead. Either way the audit fails
-when it cannot read a directory, on a list entry without a justification, and
-on a strip that would take the bit or the capabilities off a listed file
-through a hard link. `make zones-test` audits the installed root again: the
-bits are on the listed binaries alone, no file carries capabilities, and
+image's root and fails the build on any unlisted bit or capability, on a list
+entry without a justification, on an entry whose file carries no bit or
+capability (it would let the next file of that name in unread), and when it
+cannot read a directory. It never takes a bit off: a bit the image should not
+have is removed in its recipe. `make acceptance` runs the same audit on the
+root image it tests, and `make zones-test` audits the installed root again:
+the bits are on the listed binaries alone, no file carries capabilities, and
 every sysctl reads back as `build/config/sysctl.d` says.
 
 ## Zone syscall filter

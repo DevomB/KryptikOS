@@ -26,9 +26,11 @@ header_roundtrip() {   # header_roundtrip DISK
     dd if=/dev/zero of="$st" bs=1M iflag=count_bytes count="$n" conv=fsync status=none || return 1
     if cryptsetup isLuks "$st" 2>/dev/null; then echo "header: ${st} is still LUKS after the wipe"; return 1; fi
     echo "header: wiped ${n} bytes, and ${st} is no longer LUKS"
+    /usr/sbin/kryptik-recover --disk "$1" --status 2>/dev/null | grep '^state ' || true
     /usr/sbin/kryptik-recover --disk "$1" --restore-state-header "$h" || return 1
     [ "$(head -c "$n" "$st" | sha256sum)" = "$(sha256sum < "$h")" ] || { echo "header: ${st} does not read back as the backup"; return 1; }
     echo "header: restored, and ${st} reads back as the backup"
+    /usr/sbin/kryptik-recover --disk "$1" --status 2>/dev/null | grep '^state ' || true
 }
 
 # Recovery of an installed disk (kryptik-recover), armed the same way.
@@ -38,6 +40,9 @@ if [ -n "$rdisk" ]; then
     echo
     echo "KRYPTIK_RECOVER: BEGIN disk=${rdisk} slot=${rslot} mode=${rmode}"
     logr=/run/kryptik-recover.log
+    # The disk as --status shows it, which a user reads before a repair and again after it.
+    status_as() { /usr/sbin/kryptik-recover --disk "$rdisk" --status 2>&1 | sed "s/^/KRYPTIK_RECOVER: $1: /"; }   # status_as LABEL
+    case "$rmode" in restore|commit) status_as before ;; esac
     case "$rmode" in
         restore) /usr/sbin/kryptik-recover --disk "$rdisk" --restore-slot "$rslot" > "$logr" 2>&1 ;;
         commit)  /usr/sbin/kryptik-recover --disk "$rdisk" --commit-slot "$rslot" > "$logr" 2>&1 ;;
@@ -47,10 +52,7 @@ if [ -n "$rdisk" ]; then
     rrc=$?
     sed 's/^/KRYPTIK_RECOVER: /' "$logr"
     echo "KRYPTIK_RECOVER: rc=${rrc}"
-    # Then the disk as --status shows it, which a user reads next.
-    case "$rmode" in
-        restore|commit) /usr/sbin/kryptik-recover --disk "$rdisk" --status 2>&1 | sed 's/^/KRYPTIK_RECOVER: status: /' ;;
-    esac
+    case "$rmode" in restore|commit) status_as status ;; esac
     echo "KRYPTIK_RECOVER: END"
 fi
 

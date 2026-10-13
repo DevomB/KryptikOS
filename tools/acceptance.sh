@@ -154,7 +154,9 @@ REV_DESC="$(g describe --always --dirty --long 2>/dev/null || echo unknown)"
 DIRTY="$(g status --porcelain 2>/dev/null)"
 
 # A merge takes only parts that tested this revision and media, all on one firmware and QEMU.
-tested() { printf 'revision %s (%s)\nusb %s\niso %s\n' "$REV" "$REV_DESC" "$H_USB" "$H_ISO"; }
+# The revision by its full name and whether the tree was dirty: describe's short name is as long
+# as the clone's object count calls for, and the verdict's full clone holds more than a part's.
+tested() { printf 'revision %s%s\nusb %s\niso %s\n' "$REV" "${DIRTY:+ (dirty)}" "$H_USB" "$H_ISO"; }
 ran_on() { printf 'firmware-sha256 %s\nfirmware-package %s\nqemu %s\nkvm %s\n' "$H_FW" "$FW_PKG" "$QEMU_VER" "$KVM"; }
 parts_disagree() {   # the first part that tested or ran on something else, and what
     local f d id first="" k
@@ -260,7 +262,8 @@ need_host()    { if [[ "$NOHOST" -eq 1 ]]; then echo "not run (--no-host)"; else
 need_root()    { [[ "$EUID" -eq 0 ]] || echo "needs root (the chroot and the VM disks)"; }
 need_sysroot() { [[ -x "${SYSROOT}/usr/bin/gcc" ]] || echo "no built sysroot at ${SYSROOT} (make system)"; }
 need_root_image() {
-    [[ -f "${PAYLOAD_B}/kryptik-root.img" ]] || { echo "no root image for the release under test (make media writes images/payload-VERSION)"; return; }
+    [[ -f "${PAYLOAD_B}/kryptik-root.img.zst" ]] || { echo "no root image for the release under test (make media writes images/payload-VERSION)"; return; }
+    have zstd || { echo "no zstd, which decompresses the release's root image from its payload"; return; }
     [[ "$EUID" -eq 0 ]] || echo "needs root to mount the release's root image read-only"
 }
 need_usb()     { [[ -f "$MEDIA_USB" ]] || echo "no USB image (make media)"; }
@@ -291,6 +294,10 @@ need_update() {
     [[ "$VER_A" != "$VER_B" ]] || { echo "release A and B carry the same version (${VER_A})"; return; }
     [[ "$(printf '%s\n' "$VER_A" "$VER_B" | sort -V | tail -1)" == "$VER_B" ]] \
         || echo "release A (${VER_A}) is not older than B (${VER_B}); the update test applies a newer release over an older one"
+}
+need_payloads() {
+    [[ -n "$PAYLOAD_B" && -f "${PAYLOAD_B}/root.json" ]] || { echo "no payload for the release under test (${VER:-unknown})"; return; }
+    [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/root.json" ]] || echo "no payload of a release below ${VER_B} to count from"
 }
 need_production() {
     local r; r="$(need_update)"; [[ -n "$r" ]] && { echo "$r"; return; }
@@ -353,13 +360,24 @@ it_media_hashes() {
 it_host_suites()   { "${SELF}/run-tests.sh" --strict; }
 it_libc_unwind()   { env KRYPTIK_ROOT="$ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" "${ROOT}/build/stages/03-chroot-prep.sh" run /kryptik/tools/tests/libc-unwind.sh; }
 it_userspace()     { "${SELF}/tests/userspace-smoke.sh"; }
+# B's root image, decompressed from its payload once, outside what a part uploads.
+ROOT_IMAGE="${TMPDIR:-/tmp}/kryptik-release-root.$$.img"
+trap 'rm -f "$ROOT_IMAGE" "$ROOT_IMAGE.part"' EXIT
+release_root() {   # release_root: the image's path, decompressed if it is not there yet
+    if [[ ! -s "$ROOT_IMAGE" ]]; then
+        zstd -q -d -f "${PAYLOAD_B}/kryptik-root.img.zst" -o "$ROOT_IMAGE.part" && mv -f "$ROOT_IMAGE.part" "$ROOT_IMAGE" \
+            || { echo "could not decompress ${PAYLOAD_B}/kryptik-root.img.zst"; rm -f "$ROOT_IMAGE.part"; return 1; }
+    fi
+    printf '%s\n' "$ROOT_IMAGE"
+}
 # What the release ships, read from its own root image: the media under test,
 # wherever they were built, not this machine's sysroot.
 on_root_image() {   # on_root_image CMD...: CMD, given the image mounted read-only as its last argument
-    local mnt rc
+    local mnt rc img
+    img="$(release_root)" || { echo "$img"; return 1; }
     mnt="$(mktemp -d "${TMPDIR:-/tmp}/kryptik-root.XXXXXX")" || return 1
-    if ! mount -o ro,loop,noexec,nosuid,nodev "${PAYLOAD_B}/kryptik-root.img" "$mnt"; then
-        echo "could not mount ${PAYLOAD_B}/kryptik-root.img read-only"; rmdir "$mnt"; return 1
+    if ! mount -o ro,loop,noexec,nosuid,nodev "$img" "$mnt"; then
+        echo "could not mount ${PAYLOAD_B}'s root image read-only"; rmdir "$mnt"; return 1
     fi
     "$@" "$mnt"; rc=$?
     umount "$mnt" && rmdir "$mnt"
@@ -367,9 +385,15 @@ on_root_image() {   # on_root_image CMD...: CMD, given the image mounted read-on
 }
 audit_root()       { "${SELF}/check-artifact-hardening.sh" "$1" --strict --json "${OUT}/artifact-hardening.json"; }
 it_artifacts()     { on_root_image audit_root; }
+it_setuid()        { on_root_image "${SELF}/audit-setuid.sh"; }
 it_licences()      { on_root_image "${SELF}/check-image-licences.sh"; }
+# Every entry of the image under test, hashed: what a release ships, and what the next one changes.
+record_root()      { "${SELF}/artifact-manifest.sh" --root "$1" --out "${OUT}/image-manifest.txt"; }
+it_manifest()      { on_root_image record_root; }
 it_kernel_config() { "${SELF}/validate-kernel-config.sh" --boot && "${SELF}/validate-kernel-config.sh" --hardened; }
+it_firmware()      { on_root_image "${SELF}/check-firmware-requested.sh"; }
 it_support_status() { "${SELF}/check-support-status.sh" --strict; }
+it_programs()      { on_root_image "${SELF}/check-image-programs.sh"; }
 it_ovmf_vars() {
     [[ -n "$MEDIUM_CERT" ]] || { echo "no certificate could be read out of ${MEDIA_USB:-(no medium)}: /kryptik/kryptik-sb.crt on its ESP"; return 1; }
     echo "the certificate the medium carries: ${CERT_NAME} ($(openssl x509 -in "$MEDIUM_CERT" -noout -fingerprint -sha256 | cut -d= -f2))"
@@ -394,6 +418,8 @@ it_update() {
     local foreign=(); [[ -n "$PROD_B" ]] && foreign=(--foreign "$PROD_B")
     "${IMG}/update-test.sh" --usb-a "$MEDIA_USB_A" --payload-a "$PAYLOAD_A" --payload-b "$PAYLOAD_B" --vars clean "${foreign[@]}"
 }
+# What a delta update from A would have fetched of B (docs/design/delta-updates.md): reported, not judged.
+it_delta()         { "${SELF}/delta-count.py" "$PAYLOAD_A" "$PAYLOAD_B"; }
 it_production() {
     echo "production pair:"
     sha256sum "$PROD_USB_A" "${PROD_A}/manifest" "${PROD_B}/manifest" "${PRODDIR}/kryptik-sb.crt" | sed 's/^/  /'
@@ -437,9 +463,13 @@ item build     host-suites                M host  0 it_host_suites need_host
 item build     libc-unwind                M host  0 it_libc_unwind need_sysroot
 item build     userspace-smoke            M host  0 it_userspace need_sysroot
 item build     artifact-hardening         M host  0 it_artifacts need_root_image
+item build     setuid-bits                M host  0 it_setuid need_root_image
 item build     licences                   M host  0 it_licences need_root_image
+item build     image-manifest             M host  0 it_manifest need_root_image
 item build     kernel-config              M host  0 it_kernel_config need_sources
+item build     firmware-requested         M host  0 it_firmware need_root_image
 item build     support-status             M host  0 it_support_status
+item build     image-programs             M host  0 it_programs need_root_image
 item boot      media-smoke-usb            M vm   25 it_smoke_usb need_vm
 item boot      medium-shell               M vm    3 it_medium_shell need_vm
 item boot      media-smoke-iso            M vm   25 it_smoke_iso need_vm_iso
@@ -453,6 +483,7 @@ item integrity integrity-test             M vm    8 it_integrity need_enrolled
 item zones     zones-test                 M vm   10 it_zones need_vm
 item desktop   gui-test                   M vm   25 it_gui need_vm
 item update    update-test                M vm   10 it_update need_update
+item update    delta-count                O host  0 it_delta need_payloads
 item production update-test-production    M vm   10 it_production need_production
 item boot      firmware-only-boot         M post  0 it_firmware_only
 # A part of a split run leaves its boot records beside its report, for --merge.
@@ -460,6 +491,7 @@ item boot      firmware-only-boot         M post  0 it_firmware_only
 
 # ------------------------------------------------------------- report --
 KERNEL_LINE="$(grep -h -o 'KRYPTIK_SMOKE: kernel=[^ ]*' "${OUT}"/boot-media-smoke-usb.log 2>/dev/null | head -1 | sed 's/KRYPTIK_SMOKE: kernel=//')"
+DELTA_LINE="$(sed -n 's/^delta: //p' "${OUT}/update-delta-count.log" 2>/dev/null | tail -1)"
 verdict_of() {
     local i fail=0 inc=0
     for i in "${!R_SUITE[@]}"; do
@@ -483,6 +515,7 @@ write_report() {
         echo "| ISO | ${MEDIA_ISO:-none}${H_ISO:+ (sha256 \`$H_ISO\`)} |"
         echo "| release under test | ${VER:-none} (payload B: ${PAYLOAD_B:-none}) |"
         echo "| update test, A to B | ${VER_A:-none} (medium ${MEDIA_USB_A:-none}; ${PAYLOAD_A:-no payload}) to ${VER_B:-none} |"
+        echo "| a delta update, A to B | ${DELTA_LINE:-not measured} |"
         echo "| kernel (as the medium reported it) | ${KERNEL_LINE:-not observed} |"
         echo "| firmware | ${FW}${H_FW:+ (sha256 \`$H_FW\`)}; ${FW_PKG} |"
         echo "| QEMU | ${QEMU_VER}; kvm=${KVM} |"
@@ -544,9 +577,10 @@ it_export() {
     else
         echo "  no signed media checksums: ${IMGDIR}/${sums}"; ok=1
     fi
-    if ! debugfs -R 'cat /usr/share/kryptik/trust/release-signers' "${PAYLOAD_B}/kryptik-root.img" > "${d}/release-signers" 2>/dev/null \
+    local root; root="$(release_root)" || root=""
+    if [[ -z "$root" ]] || ! debugfs -R 'cat /usr/share/kryptik/trust/release-signers' "$root" > "${d}/release-signers" 2>/dev/null \
        || [[ ! -s "${d}/release-signers" ]]; then
-        echo "  could not read the anchor out of ${PAYLOAD_B:-(no payload B)}/kryptik-root.img"; rm -f "${d}/release-signers"; ok=1
+        echo "  could not read the anchor out of ${PAYLOAD_B:-(no payload B)}'s root image"; rm -f "${d}/release-signers"; ok=1
     fi
     if [[ -n "$PAYLOAD_A" && -f "${PAYLOAD_A}/manifest" ]]; then
         cp "${PAYLOAD_A}/manifest" "${d}/manifest-${VER_A}"

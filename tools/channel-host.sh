@@ -17,7 +17,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 usage() { sed -n '2,13p' "${BASH_SOURCE[0]}"; }
 CHANNEL_TOOL="${KRYPTIK_ROOT}/tools/release-channel.sh"
 MANIFEST_TOOL="${KRYPTIK_ROOT}/tools/release-manifest.sh"
-PAYLOAD_FILES=(kryptik-root.img kryptik-a.efi kryptik-b.efi root.json manifest manifest.sig)
+PAYLOAD_FILES=(kryptik-root.img.zst kryptik-a.efi kryptik-b.efi root.json manifest manifest.sig)
 CHANNELS=(stable test)
 
 MODE="${1:-}"; shift || true
@@ -126,12 +126,12 @@ case "$MODE" in
         } > "${w}/release-signers"
         KEY="${w}/latest"
         p="${w}/payload"; mkdir -p "$p"
-        printf 'a stand-in root image\n' > "${p}/kryptik-root.img"
+        printf 'a stand-in root image\n' > "${p}/kryptik-root.img.zst"
         printf 'a stand-in kernel, slot a\n' > "${p}/kryptik-a.efi"
         printf 'a stand-in kernel, slot b\n' > "${p}/kryptik-b.efi"
         printf '{"root_hash": "00"}\n' > "${p}/root.json"
         "$MANIFEST_TOOL" create --out "${p}/manifest" --name kryptik --version 0.0.1 --role production \
-            --root "$p" kryptik-root.img kryptik-a.efi kryptik-b.efi root.json > /dev/null
+            --root "$p" kryptik-root.img.zst kryptik-a.efi kryptik-b.efi root.json > /dev/null
         "$MANIFEST_TOOL" sign --key "${w}/release" "${p}/manifest" > /dev/null
         base="https://example.invalid/releases/download/v0.0.1/"
         publish v0.0.1 "$p" "${w}/release-signers" "$base"

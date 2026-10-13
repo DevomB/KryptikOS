@@ -49,11 +49,13 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
         # As above, each answer is made by the shell or said by the installer.
         typed=(
             'send:echo mem-$(stat -f -c %T /root)-$(stat -f -c %T /var)-$(stat -f -c %T /tmp)' "expect:mem-tmpfs-tmpfs-tmpfs"
-            "send:kryptik-install --target /dev/vda --dry-run" "expect:layout +esp [0-9]+ MiB, kryptik-a [0-9]+ MiB"
+            "send:kryptik-install --target /dev/vda --dry-run" "expect:holds +no partition" "expect:layout +esp [0-9]+ MiB, kryptik-a [0-9]+ MiB"
             "expect:dry run: every check passed; nothing was written"
             "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: ?" "send:no" "expect:not confirmed; nothing was written"
             "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: ?" "send:ERASE"
             "expect:asked at every boot: ?" "send:one" "expect:again: ?" "send:two" "expect:the two passphrases differ; nothing was written"
+            "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: ?" "send:ERASE"
+            "expect:asked at every boot: ?" "send:short" "expect:again: ?" "send:short" "expect:is 5 characters; it needs at least 8, as a stolen disk can be guessed at offline; nothing was written"
             'send:echo written-$(head -c 4194304 /dev/vda | tr -d "\000" | wc -c)-table-$(sfdisk -d /dev/vda >/dev/null 2>&1 && echo yes || echo no)'
             "expect:written-0-table-no"
             'send:echo size=64M | sfdisk -q -X gpt /dev/vda; sleep 1; echo part-$(test -b /dev/vda1 && echo made)' "expect:part-made"
@@ -65,7 +67,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
             "send:printf x | cryptsetup -q luksFormat --type luks2 --pbkdf pbkdf2 --pbkdf-force-iterations 1000 --key-file=- /dev/vda1 && printf x | cryptsetup open --key-file=- /dev/vda1 held; kryptik-install --target /dev/vda --dry-run; cryptsetup close held"
             "expect:is in use: held open by"
             "send:kryptik keyboard" 'expect:\* us\r?\n +uk'
-            "send:kryptik-install --target /dev/vda" "expect:Type ERASE to continue: " "send:ERASE"
+            "send:kryptik-install --target /dev/vda" "expect:holds +gpt: vda1 crypto_LUKS 64M" "expect:Type ERASE to continue: " "send:ERASE"
             "expect:asked at every boot: " "send:${KRYPTIK_STATE_PASSPHRASE}" "expect:again: " "send:${KRYPTIK_STATE_PASSPHRASE}"
             "expect:installed [^ ]+ to /dev/vda: boot it from firmware with the medium removed"
             'send:echo ,,L | sfdisk -q -X gpt /dev/vdb; sleep 1; mkfs.ext4 -q -F /dev/vdb1; echo second-$(test -b /dev/vdb1 && echo disk)' "expect:second-disk"
@@ -73,6 +75,8 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
             "send:kryptik-recover --disk /dev/vda --backup-state-header /mnt/kryptik-state-header" "expect:is in /mnt/kryptik-state-header"
             "send:umount /mnt"
             "send:kryptik-recover --disk /dev/vda --status" "expect:committed slot a" "expect:slot a +version [0-9]"
+            "expect:BOOTX64.EFI +slot a's kernel" "expect:firmware +(Boot[0-9A-F]{4} for slot a|no Kryptik entry)"
+            "expect:this medium +version [0-9][^ ]*, which --restore-slot writes"
             "send:kryptik-recover --disk /dev/vda --commit-slot a" "expect:committed: BOOTX64.EFI is now slot a"
             "send:kryptik-recover --disk /dev/vda --restore-slot a" "expect:done: boot /dev/vda without the medium"
         )
@@ -83,7 +87,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
     # The shell's own arithmetic and substitutions answer, never the echo of
     # what was typed; a getty drops its first second's input, so the first
     # line goes twice.
-    python3 "$DRV" --serial "$SER" --timeout "$TIMEOUT" \
+    DRIVE_TIMEOUT="$TIMEOUT" drive \
         "expect:KRYPTIK_SMOKE: END" "sleep:3" \
         'send:echo shell-$((6 * 7))' "sleep:2" 'send:echo shell-$((6 * 7))' "expect:shell-42" \
         'send:echo uid-$(id -u)' "expect:uid-0" \
@@ -99,6 +103,11 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
     [[ "$drc" -eq 0 ]] && green "${kind}: commands typed at the console ran as root, the installer is on its path, and poweroff took" \
         || red "${kind}: the console did not take commands (see above)"
     if txt | grep -q 'kryptik login:'; then red "${kind}: the medium's console asked for a login"; else green "${kind}: no login prompt on the medium"; fi
+    if txt | grep -qE 'install medium: a root shell\. Secure Boot is (on|off)' && txt | grep -q 'kryptik-install --target /dev/sdY --dry-run'; then
+        green "${kind}: the console says what the medium's shell is for, whether Secure Boot is on, and the installer's first command"
+    else
+        red "${kind}: nothing on the console says what the medium's shell is for"
+    fi
     t="$(txt)"
     if grep -q 'net-zone: install medium; no network' <<<"$t" && grep -qE 'nic-[a-z0-9]+-down-in-zone-0' <<<"$t" \
         && grep -qE 'netzones-0([^0-9]|$)' <<<"$t"; then
@@ -123,6 +132,8 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
         said 'installed [^ ]* to /dev/vda: boot it from firmware' "an install typed at the console, ERASE and the passphrase twice, completed"
         said 'is in /mnt/kryptik-state-header' "kryptik-recover kept the state header on a second disk mounted at /mnt"
         said 'committed slot a' "kryptik-recover --status read the installed disk"
+        said "BOOTX64.EFI  *slot a's kernel" "--status names the slot whose kernel the firmware boots by default"
+        said 'this medium  *version [0-9][^ ]*, which --restore-slot writes' "--status names the version the medium would write"
         said 'committed: BOOTX64.EFI is now slot a' "kryptik-recover --commit-slot a, typed, made slot a the boot file"
         said 'done: boot /dev/vda without the medium' "kryptik-recover --restore-slot a, typed, rewrote slot a from the medium"
         if LC_ALL=C grep -aq $'LUKS\xba\xbe' "$BACKUP"; then green "usb: the second disk holds the LUKS2 header"; else red "usb: no LUKS2 header on the second disk"; fi
@@ -130,7 +141,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
         out="$("${SELF}/run-ovmf.sh" --no-media --disk "$TARGET" --mode serve --name medium-shell-installed)"
         SER="$(sed -n 's/^serial=//p' <<<"$out")"; PIDF="$(sed -n 's/^pid=//p' <<<"$out")"; LOG="$(sed -n 's/^log=//p' <<<"$out")"
         [[ -S "$SER" ]] || die "no serial socket: ${out}"
-        python3 "$DRV" --serial "$SER" --timeout "$TIMEOUT" "expect:User name: "
+        DRIVE_TIMEOUT="$TIMEOUT" drive "expect:User name: "
         irc=$?
         stop_vm
         [[ "$irc" -eq 0 ]] && green "usb: that disk boots alone, unlocks with the passphrase typed at the console, and asks for its first user" \

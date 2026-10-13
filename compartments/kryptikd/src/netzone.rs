@@ -193,7 +193,8 @@ pub fn uplink_config(nic: &str) -> io::Result<Uplink> {
 }
 
 /// Move `nic` into `zone_ns`, re-applying the IPv4 configuration it loses (DHCP is the zone's job).
-fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
+/// A radio switched `off` moves down and stays so.
+fn carry_nic(nic: &str, zone_ns: i32, off: bool) -> Result<Uplink, NetError> {
     let cfg = uplink_config(nic).map_err(|e| io(&format!("read the configuration of {nic:?}"), e))?;
     // A wireless netdev is namespace-local; move its wiphy instead.
     match netlink::wiphy_index_of(nic).map_err(|e| io(&format!("read the wiphy of {nic:?}"), e))? {
@@ -205,7 +206,9 @@ fn carry_nic(nic: &str, zone_ns: i32) -> Result<Uplink, NetError> {
         for (a, p) in &cfg.addrs {
             netlink::add_addr4(nic, *a, *p)?;
         }
-        netlink::set_up(nic)?;
+        if !off {
+            netlink::set_up(nic)?;
+        }
         if let Some(gw) = cfg.gateway {
             // The first uplink's default route stands; the zone's DHCP client sorts them out later.
             match netlink::add_default_route4(gw, nic) {
@@ -281,12 +284,19 @@ pub fn physical_interfaces() -> io::Result<Vec<String>> {
 
 /// What a NIC keeps from the net zone that held it, set back as its hardware gives it: an
 /// address that zone chose would follow the machine from network to network, and Wake-on-LAN
-/// would let anyone on the network wake it. The MTU goes back to Ethernet's. Its altnames go,
-/// as one named `BRIDGE` would stop the next start making the bridge, and so does its alias,
-/// free text that `ip link` prints.
+/// would let anyone on the network wake it. A radio gets a new random address instead of its
+/// own, which would go out in every scan before it joins a network; each network it joins sees
+/// an address of its own (wifi.rs). The MTU goes back to Ethernet's. Its altnames go, as one
+/// named `BRIDGE` would stop the next start making the bridge, and so does its alias, free text
+/// that `ip link` prints.
 fn reset_nic(nic: &str) {
     let sys = Path::new("/sys/class/net").join(nic);
-    let own = netlink::perm_mac_of(nic).ok().flatten().filter(|p| netlink::mac_of(nic).ok() != Some(*p));
+    let radio = sys.join("phy80211").exists();
+    let addr = if radio {
+        crate::wifi::random_mac().map_err(|e| eprintln!("kryptikd: {nic:?}: no random address: {e}")).ok()
+    } else {
+        netlink::perm_mac_of(nic).ok().flatten().filter(|p| netlink::mac_of(nic).ok() != Some(*p))
+    };
     let mtu = (sysfs_u32(&sys.join("type")) == Some(1) && sysfs_u32(&sys.join("mtu")) != Some(1500)).then_some(1500);
     let (alt, alias) = netlink::names_left(nic).unwrap_or_else(|e| {
         eprintln!("kryptikd: {nic:?}: its altnames could not be read: {e}");
@@ -304,10 +314,11 @@ fn reset_nic(nic: &str) {
             Err(e) => eprintln!("kryptikd: {nic:?}: its altnames could not be removed: {e}"),
         }
     }
-    if own.is_some() || mtu.is_some() || alias {
-        match netlink::set_link(nic, own, mtu, alias) {
-            Ok(()) => eprintln!("kryptikd: {nic:?}: set back as its hardware gives it"),
-            Err(e) => eprintln!("kryptikd: {nic:?}: could not be set back as its hardware gives it: {e}"),
+    if addr.is_some() || mtu.is_some() || alias {
+        let how = if radio { "set back, under a new random address" } else { "set back as its hardware gives it" };
+        match netlink::set_link(nic, addr, mtu, alias) {
+            Ok(()) => eprintln!("kryptikd: {nic:?}: {how}"),
+            Err(e) => eprintln!("kryptikd: {nic:?}: could not be {how}: {e}"),
         }
     }
     match netlink::wol_off(nic) {
@@ -354,6 +365,17 @@ fn bare_radios(class: &Path) -> Vec<u32> {
         entries("ieee80211").filter_map(|e| sysfs_u32(&e.path().join("index"))).filter(|p| !held.contains(p)).collect();
     bare.sort();
     bare
+}
+
+/// Whether `nic`'s radio is switched off by rfkill, by software or by a switch, as a sysfs
+/// `class/net` directory says. Read in zone 0 before the radio moves, as its sysfs moves with it.
+fn switched_off(class_net: &Path, nic: &str) -> bool {
+    std::fs::read_dir(class_net.join(nic).join("phy80211"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().as_bytes().starts_with(b"rfkill"))
+        .any(|e| ["soft", "hard"].iter().any(|k| sysfs_u32(&e.path().join(k)).is_some_and(|v| v != 0)))
 }
 
 fn sysfs_u32(path: &Path) -> Option<u32> {
@@ -431,9 +453,15 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         ),
         _ => {}
     }
+    /* A radio switched off stays down: brought up, its link is refused (ERFKILL), and with it the
+     * whole zone, wire and all. Bringing it up once it is switched on is the zone's. */
+    let off: Vec<&String> = nics.iter().filter(|n| switched_off(Path::new("/sys/class/net"), n)).collect();
     for n in &nics {
-        let carried = carry_nic(n, zone_ns)?;
+        let carried = carry_nic(n, zone_ns, off.contains(&n))?;
         eprintln!("kryptikd: zone {:?}: {n:?} moved in with {carried}", zone.name);
+        if off.contains(&n) {
+            eprintln!("kryptikd: zone {:?}: {n:?} is switched off (rfkill), so it is left down", zone.name);
+        }
     }
     netlink::with_netns(zone_ns, || {
         up_lo()?;
@@ -450,7 +478,7 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
         if Path::new("/proc/sys/net/ipv6").exists() {
             sysctl("/proc/sys/net/ipv6/conf/all/forwarding", "0")?;
         }
-        for n in &nics {
+        for n in nics.iter().filter(|n| !off.contains(n)) {
             netlink::set_up(n)?;
         }
         Ok(())

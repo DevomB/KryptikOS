@@ -132,7 +132,7 @@ changed() {   # changed NAME FILE
 }
 mk_variant wrongkey; ssh-keygen -q -t ed25519 -N "" -f "$BAD/otherkey" >/dev/null; rm -f "$BAD/wrongkey/manifest.sig"
 ssh-keygen -Y sign -f "$BAD/otherkey" -n kryptik-release "$BAD/wrongkey/manifest" >/dev/null 2>&1
-mk_variant modified kryptik-root.img; flip "$BAD/modified/kryptik-root.img" $((4096*200+3)); changed modified kryptik-root.img
+mk_variant modified kryptik-root.img.zst; flip "$BAD/modified/kryptik-root.img.zst" $((4096*200+3)); changed modified kryptik-root.img.zst
 mk_variant truncated kryptik-a.efi; truncate -s -1 "$BAD/truncated/kryptik-a.efi"; changed truncated kryptik-a.efi
 mk_variant extra; echo "ride along" > "$BAD/extra/extra.bin"
 # An empty lost+found (an ext4 payload disk's own) is allowed; a full one is not.
@@ -169,7 +169,7 @@ start_vm update-p1 --disk "$PA"
 drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:v1:grep ^VERSION_ID= /etc/os-release; cat /run/kryptik/boot-identity" \
     "run:echo before-update > /home/${TUSER}/marker && sync" \
-    "$(ROOTSH 'printf zone-pw > /root/zp && chmod 600 /root/zp && kryptikd volume init work --size 64M --passphrase-file /root/zp && sha256sum /var/lib/kryptik/volumes/work.luks > /root/work.sha && echo VOL-OK')" \
+    "$(ROOTSH 'printf zone-pass > /root/zp && chmod 600 /root/zp && kryptikd volume init work --size 64M --passphrase-file /root/zp && sha256sum /var/lib/kryptik/volumes/work.luks > /root/work.sha && echo VOL-OK')" \
     "expect:VOL-OK" \
     "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
@@ -187,6 +187,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p && kryptik-update apply /run/upd/p && echo APPLY-OK')" \
     "expect:signature verifies, checked as nobody" "expect:armed: the next boot tries slot b" "expect:APPLY-OK" \
     "$(ROOTSH 'kryptik-update status')" "expect:trial pending:    b" \
+    "run:kryptik update status" "expect:trial +slot b is armed: the next boot tries it" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p; echo RC=$?')" "expect:a trial of slot b is already armed; reboot first" "expect:RC=1\r?\n" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
@@ -342,9 +343,10 @@ drive "expect:BdsDxe: starting Boot" \
     "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity | head -1; cat /var/lib/kryptik/boot/last-result; kryptik-update status; echo P7B-OK')" \
-    "expect:slot=a" "expect:trial-failed b" "expect:failed trial: +b\r?\ncommitted slot:" "expect:P7B-OK" \
+    "expect:slot=a" "expect:trial-failed b" "expect:failed trial: +b: did not come up to be judged\r?\ncommitted slot:" "expect:P7B-OK" \
+    "run:kryptik update status" "expect:trial +the trial of slot b did not come up to be judged; this machine runs [^ ]+ again" \
     "$(ROOTSH 'mkdir -p /run/upd/p && mount -o ro /dev/vdb /run/upd/p; kryptik-update apply /run/upd/p; echo RC=$?')" \
-    "expect:the last trial of slot b failed: it did not boot, or came up unhealthy" "expect:RC=1\r?\n" \
+    "expect:the last trial of slot b did not come up to be judged\. To try it again" "expect:RC=1\r?\n" \
     "$(ROOTSH 'kryptik-update apply /run/upd/p --retry && echo RETRY-OK')" "expect:slot b verifies after write" "expect:RETRY-OK" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
@@ -435,7 +437,7 @@ else
         "run:kryptik update fetch" "expect:${VB} will be fetched" \
         "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" \
         "run:kryptik update status | grep -q 'bytes, complete'" \
-        "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img manifest manifest.sig root.json LISTED" \
+        "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img.zst manifest manifest.sig root.json LISTED" \
         "run:kryptik update apply" "expect:armed: the next boot tries slot b" \
         "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
         "login:${TUSER}:${TPASS}" \

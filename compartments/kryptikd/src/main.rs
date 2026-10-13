@@ -14,12 +14,14 @@ mod isolate;
 mod landlock;
 mod netlink;
 mod netzone;
+mod password;
 mod policy;
 mod registry;
 mod rootfs;
 mod seccomp;
 mod serve;
 mod spawn;
+mod supplicant;
 mod time;
 mod update;
 mod volume;
@@ -52,9 +54,18 @@ USAGE:
     kryptikd seccomp-trace -- CMD     run CMD under the base seccomp filter; every
                    [--zone NAME]      call it refuses is named and fails with ENOSYS
                                       (--zone: NAME's filter, with its policy file)
+    kryptikd supplicant -- CMD [ARGS] in the net zone, as its root: run CMD (its
+                                      wpa_supplicant) as user 101 with CAP_NET_ADMIN
+                                      and CAP_NET_RAW alone, no nf_tables socket, and
+                                      writes only under /run/wpa_supplicant
+    kryptikd supplicant --watch RADIO as that user, so confined, with no capability:
+                                      listen to RADIO's wpa_supplicant and keep
+                                      /run/wpa_supplicant/RADIO.refused naming the
+                                      network that refused its passphrase
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
-    kryptikd status NAME              running, stale or absent
+    kryptikd status NAME              running, stale or absent; for the nic zone, as
+                                      root, the menu's Network line as well
     kryptikd list --running           the zones the registry knows about
     kryptikd gc [--rootfs DIR]        reclaim stale entries and empty cgroups, and
                                       close volumes no running zone holds
@@ -64,9 +75,16 @@ USAGE:
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
                    [--proxy-exe P] [--wifi-dir DIR]
+                   [--shadow FILE]    the screen lock's password is checked
+                                      against FILE (default: /etc/shadow)
     kryptikd wifi list                the net zone's Wi-Fi networks, SSIDs only
-    kryptikd wifi add SSID            add one, or replace its passphrase; the
-                                      passphrase is read from stdin, never argv
+    kryptikd wifi scan                the networks in range, as the net zone hears
+                                      them, with their security and signal
+    kryptikd wifi add SSID [--open] [--hidden]
+                                      add one, or replace its passphrase; the
+                                      passphrase is read from stdin, never argv;
+                                      --open saves it with none, an open network;
+                                      --hidden asks for one that hides its name
     kryptikd wifi forget SSID         remove one
                    [--wifi-dir DIR]   (the session does this through `kryptik
                                       wifi` and the launch daemon; this is root's
@@ -125,7 +143,7 @@ fn main() -> ExitCode {
 
     match args[0].as_str() {
         "check" => cmd_check(&zone_dir, args.iter().any(|a| a == "--target")),
-        "list" if args.iter().any(|a| a == "--running") => cmd_list_running(),
+        "list" if args.iter().any(|a| a == "--running") => cmd_list_running(&zone_dir),
         "list" => cmd_list(&zone_dir),
         "show" => match args.get(1) {
             Some(name) if !name.starts_with("--") => cmd_show(&zone_dir, name),
@@ -194,6 +212,23 @@ fn main() -> ExitCode {
             }
         },
         "run" => cmd_run(&zone_dir, &args),
+        "supplicant" => match args.get(1).map(String::as_str) {
+            Some("--") if args.len() > 2 => {
+                eprintln!("kryptikd supplicant: {}", supplicant::exec(&args[2..]));
+                ExitCode::FAILURE
+            }
+            Some("--watch") if args.len() == 3 => match supplicant::watch(&args[2]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("kryptikd supplicant --watch: {e}");
+                    ExitCode::FAILURE
+                }
+            },
+            _ => {
+                eprintln!("supplicant: expected `-- COMMAND` or `--watch RADIO`");
+                ExitCode::from(2)
+            }
+        },
         "seccomp-trace" => {
             let Some(sep) = args.iter().position(|a| a == "--") else {
                 eprintln!("seccomp-trace: expected `-- COMMAND`");
@@ -226,7 +261,7 @@ fn main() -> ExitCode {
             }
         },
         "status" => match args.get(1) {
-            Some(name) if !name.starts_with("--") => cmd_status(name),
+            Some(name) if !name.starts_with("--") => cmd_status(&zone_dir, name),
             _ => {
                 eprintln!("status: expected a zone name");
                 ExitCode::from(2)
@@ -401,7 +436,7 @@ fn cmd_clipboard(args: &[String]) -> ExitCode {
     }
 }
 
-fn cmd_status(name: &str) -> ExitCode {
+fn cmd_status(dir: &Path, name: &str) -> ExitCode {
     match registry::state(name) {
         Ok(registry::State::Absent) => {
             println!("{name}  absent");
@@ -426,6 +461,12 @@ fn cmd_status(name: &str) -> ExitCode {
                 cgroup.map(|c| format!("  cgroup {c}")).unwrap_or_default(),
                 init.map(|i| format!("  core-sched {}", isolate::core_cookie_word(i.pid))).unwrap_or_default()
             );
+            // The nic zone's word on the network, as the menu's Network line has it. Only root
+            // reads it; a file of that name in another zone says nothing.
+            let nic = zone::load_all(dir).is_ok_and(|zs| zs.iter().any(|z| z.name == name && z.network == zone::NetworkMode::Nic));
+            if let Some(n) = nic.then(|| serve::net_status(name)).flatten() {
+                println!("network  {n}");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -435,14 +476,14 @@ fn cmd_status(name: &str) -> ExitCode {
     }
 }
 
-fn cmd_list_running() -> ExitCode {
+fn cmd_list_running(dir: &Path) -> ExitCode {
     let names = registry::names();
     if names.is_empty() {
         println!("no zones are running");
         return ExitCode::SUCCESS;
     }
     for n in names {
-        let _ = cmd_status(&n);
+        let _ = cmd_status(dir, &n);
     }
     ExitCode::SUCCESS
 }
@@ -1064,7 +1105,7 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let ssid = args.get(2).filter(|a| !a.starts_with("--"));
     let usage = || {
-        eprintln!("usage: kryptikd wifi list | add SSID | forget SSID   [--wifi-dir DIR]");
+        eprintln!("usage: kryptikd wifi list | scan | add SSID [--open] [--hidden] | forget SSID   [--wifi-dir DIR]");
         ExitCode::from(2)
     };
     let refused = |e: String| {
@@ -1081,24 +1122,35 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
             }
             Err(e) => refused(e),
         },
+        // Run as root, as `kryptikd serve` runs it for the desktop: it signals the nic zone.
+        ("scan", None) => match wifi::scan(zones_dir) {
+            Ok(s) => {
+                print!("{}", wifi::scan_said(&s, &wifi::list(&dir).unwrap_or_default()));
+                ExitCode::SUCCESS
+            }
+            Err(e) => refused(e),
+        },
         ("add", Some(ssid)) => {
             // Refuse a bad SSID before asking for its passphrase.
             if let Err(e) = wifi::check_ssid(ssid) {
                 return refused(e);
             }
-            let pass = match wifi::read_passphrase(&format!("passphrase for {ssid}: ")) {
-                Ok(p) => p,
-                Err(e) => return refused(e),
+            let open = args.iter().any(|a| a == "--open");
+            let hidden = args.iter().any(|a| a == "--hidden");
+            let pass = if open {
+                None
+            } else {
+                match wifi::read_passphrase(&format!("passphrase for {ssid}: ")) {
+                    Ok(p) => Some(p),
+                    Err(e) => return refused(e),
+                }
             };
             let owner = match wifi::owner_for(zones_dir) {
                 Ok(o) => o,
                 Err(e) => return refused(e),
             };
-            match wifi::add(&dir, owner, ssid, &pass) {
-                Ok(wifi::Added::New) => println!("added network {ssid:?}; {}", wifi::restart_net_zone(&dir)),
-                Ok(wifi::Added::Replaced) => {
-                    println!("replaced the passphrase of network {ssid:?}; {}", wifi::restart_net_zone(&dir))
-                }
+            match wifi::add(&dir, owner, ssid, pass.as_deref(), hidden) {
+                Ok((a, hidden)) => println!("{}; {}", wifi::said(ssid, a, open, hidden), wifi::restart_net_zone(&dir)),
                 Err(e) => return refused(e),
             }
             ExitCode::SUCCESS

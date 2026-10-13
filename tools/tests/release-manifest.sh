@@ -304,6 +304,24 @@ else
     red "create did not warn that the manifest is unsigned"; show
 fi
 
+# Two builds of one commit write the same text: the date is SOURCE_DATE_EPOCH's, not the run's.
+for n in 1 2; do
+    SOURCE_DATE_EPOCH=1700000000 bash "$TOOL" create --out "${W}/epoch${n}.manifest" --root "$REL" \
+        --version 6.0 boot usr > /dev/null 2>&1
+done
+if cmp -s "${W}/epoch1.manifest" "${W}/epoch2.manifest" && grep -qx 'created: 2023-11-14T22:13:20Z' "${W}/epoch1.manifest"; then
+    green "with SOURCE_DATE_EPOCH, create dates the manifest by it, and two runs write the same bytes"
+else
+    red "SOURCE_DATE_EPOCH did not date the manifest"; grep '^created' "${W}"/epoch*.manifest | sed 's/^/        /'
+fi
+NO_COLOR=1 SOURCE_DATE_EPOCH=yesterday bash "$TOOL" create --out "${W}/epoch3.manifest" --root "$REL" boot \
+    > "$OUT" 2>&1
+if [[ "$?" -ne 0 ]] && grep -qF "whole seconds since 1970" "$OUT" && [[ ! -e "${W}/epoch3.manifest" ]]; then
+    green "create refuses a SOURCE_DATE_EPOCH that is not a count of seconds"
+else
+    red "create accepted SOURCE_DATE_EPOCH=yesterday"; show
+fi
+
 # An unlisted file at the root is refused, whatever its name.
 build_release; make_signed
 printf 'x\n' > "${REL}/.kryptik-update"

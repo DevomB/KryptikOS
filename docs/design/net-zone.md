@@ -89,7 +89,8 @@ query and the [update](update-channel.md) fetcher. Builds on
   plus `policy/net.seccomp`: `AF_PACKET`, `NETLINK_NETFILTER`,
   `NETLINK_GENERIC` (dhcpcd opens one for nl80211 and exits if refused),
   `CAP_NET_ADMIN` / `CAP_NET_RAW` over its own interfaces, and `CAP_SETUID`,
-  `CAP_SETGID` and `CAP_SYS_CHROOT` for dhcpcd's privilege separation.
+  `CAP_SETGID` and `CAP_SYS_CHROOT` for dhcpcd's privilege separation and
+  the supplicant's own user, and Landlock's three calls for its ruleset.
   `chown`, which dhcpcd calls on its control socket, is in the base list.
   The net zone alone gets private tmpfs mounts at `/run` and `/var/lib`
   (writable under Landlock, no exec), where dhcpcd keeps its pid file,
@@ -112,8 +113,9 @@ query and the [update](update-channel.md) fetcher. Builds on
   from the bridge to an uplink, what a gateway carries accepted and the
   uplink's own network refused but to the zones whose definition opens it
   ([below](#the-uplinks-own-networks)); bridge to bridge dropped;
-  `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new DNS
-  connections arriving on an uplink dropped. Each routed zone may hold an
+  `10.19.0.0/24` and `fd19::/64` masqueraded out of every uplink; new
+  connections arriving on an uplink for DNS, or for a zone's own resolver,
+  dropped. Each routed zone may hold an
   eighth of the zone's conntrack table, which every zone's flows fill
   together: nft's `ct count` on the MAC both its addresses are pinned to,
   for flows through the net zone and flows to it. Past its share, a zone's
@@ -134,17 +136,29 @@ query and the [update](update-channel.md) fetcher. Builds on
   next query (at most once a second). A lease that lapsed leaves the last
   servers in place. It answers the test TLD `.test` itself, so resolving
   `kryptik.test` tests the path to the resolver, not the internet.
-- **The resolver keeps nothing for the next zone.** Every routed zone asks
-  the same dnsmasq, so it keeps no cache (`--cache-size=0`) and no CHAOS
-  records (`--no-ident`). A cached answer comes back sooner, and with less of
-  its TTL left, to the next zone that asks, and `hits.bind` and `misses.bind`
-  count every zone's lookups: either would tell one zone what another looked
-  up. Each lookup costs a round trip to the uplink's servers; what a program
-  caches itself stays in its zone. Two things remain. A zone that asks for a
-  name while another zone's lookup of it is in flight gets that lookup's
-  answer, as dnsmasq forwards identical queries once, so it can tell the name
-  was asked within the last round trip. And the uplink's servers keep caches
-  of their own, shared with every machine on that network.
+- **Each routed zone has a resolver of its own.** One dnsmasq for every
+  zone would tell one zone what another looked up: a cached answer comes
+  back sooner, and with less of its TTL left, to the next zone that asks;
+  `hits.bind` and `misses.bind` count every zone's lookups; and a zone that
+  asks for a name while another's lookup of it is in flight gets that
+  lookup's answer, as dnsmasq forwards identical queries once. A zone that
+  floods it would also hold its 150 forwarding slots, each for up to 10 s,
+  from the others. So the net zone starts one more dnsmasq for each routed
+  zone defined when it starts, as the shared one runs but with a cache, on
+  port 5300 + K of the bridge's addresses, and its `dns` chain sends
+  10.19.0.K's and fd19::K's queries for port 53 there (`dnat`, from the NAT
+  the masquerade already needs: no kernel option is added). The addresses are
+  pinned to the zone's MAC, so no zone is sent to another's resolver, and a
+  resolver's port takes only what the chain sent it, so none is asked there
+  directly, and none is asked from an uplink: Linux takes a packet for the
+  bridge's addresses on any interface, so the uplinks' drop names the
+  resolvers' ports beside 53. Every dnsmasq sends its own queries from ports
+  above them (`--min-port`). A zone defined after the net zone started, or
+  whose resolver could not start, asks the shared one, which keeps no cache
+  (`--cache-size=0`) and no CHAOS records (`--no-ident`); one that dies is
+  started once more, and its zone is on the shared one until it answers.
+  The uplink's servers keep caches of their own, shared with every machine
+  on that network.
 - **dhcpcd separates its privileges.** What parses a lease, a DHCPv6 reply
   or a router advertisement runs as the zone's `dhcpcd` user, chrooted to an
   empty `/var/empty`, with no capability and dhcpcd's own seccomp filter over
@@ -172,7 +186,7 @@ query and the [update](update-channel.md) fetcher. Builds on
 - **Readiness**, printed again on any change:
 
 ```text
-netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none> time=<offset|no-answer|...> bridge=kryptik0 uplinks=<list>
+netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|refused:ssid|connecting|unconfigured|off|none> time=<offset|no-answer|...> bridge=kryptik0 uplinks=<list>
 netzone: NOT READY <reason>        (forwarding off)
 ```
 
@@ -265,27 +279,63 @@ configured the zone keeps its IPv4 path and the launcher says so.
   netdev failed the start once its radio had moved with the first, and a
   radio with none stayed in zone 0 until a reboot. A driver that cannot add
   an interface (some FullMAC ones) leaves such a radio in zone 0, and the
-  log says why.
+  log says why. A radio switched off by rfkill (an airplane-mode key, a
+  switch) as the net zone starts moves in down, as kryptikd reads its rfkill
+  state in zone 0 first: brought up, its link is refused (`ERFKILL`), and that
+  once failed the whole start, wire and all, until the radio was switched on.
 - **It associates before it leases.** The script finds radios by their
   `phy80211` link, not by name, and runs one `wpa_supplicant` per radio on
   `/etc/wpa_supplicant.conf`, restarting one that dies; dhcpcd takes the
-  lease once there is a carrier. `wifi=` is `none`, `unconfigured` (no
-  credentials), `connecting`, or the associated SSID; `READY` does not wait
-  for association.
+  lease once there is a carrier. `wifi=` is `none`, `off` (every radio
+  switched off by rfkill, its switch or an airplane-mode key), `unconfigured`
+  (no credentials), `connecting`, or the associated SSID; `READY` does not
+  wait for association. Switching a radio off takes its link down
+  (`cfg80211_rfkill_set_block`), and a supplicant brings it up again only on
+  rfkill's events, which `/dev/rfkill` would give and the zone's `/dev` does
+  not hold: the script's loop brings a supplicant's radio up once it is
+  switched on again, within ten seconds. A radio switched off as the net
+  zone starts gets no supplicant at first, as one cannot bring its link up
+  and ends; the loop starts it once the radio is switched on.
+- **It scans when zone 0 asks.** `kryptik wifi scan`, and `s` in the menu's
+  Wi-Fi window, have kryptikd send the net zone's pid 1 a SIGUSR1, which
+  carries nothing. The zone scans each radio with `iw` and writes a line per
+  network heard to its own `/run/netzone-scan`. kryptikd reads that file
+  inside the zone's root with no link followed, as it reads the status line,
+  and takes it as an untrusted zone's word: each line is checked, an SSID is
+  shown quoted with nothing unprintable, and at most 40 networks are listed.
+  A scan goes out from a random address while no network is joined; once one
+  is, and on a driver without random scan addresses, it only listens, so
+  nothing goes out from an address a network knows. A radio rfkill holds off
+  is named. Nothing else scans but the supplicant, to join what is saved.
 - **It takes no provisioning frames.** `wpa_supplicant` is built without
   DPP: with it a station registers for DPP's and GAS's public action frames
   (`nl80211_mgmt_subscribe_non_ap` in hostap's `driver_nl80211.c`), which any
   radio in range can send it unassociated, for a way of joining networks
   Kryptik does not offer.
+- **The supplicant is not the zone's root.** `kryptikd supplicant` starts
+  each one as `wpa`, the zone's id 101 beside dhcpcd's 100, with
+  `CAP_NET_ADMIN` and `CAP_NET_RAW` alone, raised as ambient capabilities so
+  they outlive the exec: nl80211 and interface flags take the first, EAPOL's
+  packet socket the second. A filter of its own on top of the zone's opens
+  unix, packet and datagram inet sockets and route and generic netlink, so
+  not nf_tables, and Landlock lets it read `/usr`, `/etc`, `/proc` and
+  `/sys`, use `/dev`, and write only in `/run/wpa_supplicant`, where its
+  control sockets and pid files are. The zone's root reads the status line's
+  `wifi=` from the kernel (`iw dev NIC link`), as the control socket is the
+  supplicant's. hostap's own privilege separation was the other way, and
+  [cannot protect management frames](net-zone-surface.md#wpa_supplicants-privilege-separation).
 - **The net zone knows the passphrases.** They live in zone 0 at
   `/var/lib/kryptik/wifi/wpa_supplicant.conf`, written only by `kryptikd serve`
   for `kryptik wifi add|forget <SSID>`. The passphrase is read on the
   terminal and never appears on a command line or in a log, and `kryptik wifi
   list` shows SSIDs only. The file is in wpa_supplicant's own format, so
-  kryptikd derives no keys. It is rewritten by temp-and-rename, 0400, owned by
-  the net zone's identity in a root-owned 0711 directory: the zone's root is
-  host uid N, so a root-owned 0600 file would be unreadable to it, and nothing
-  else runs as N. Only the net zone gets it, bound read-only at
+  kryptikd derives no keys. It is rewritten by temp-and-rename, 0440, owned by
+  the supplicant's user and the zone root's group, in a root-owned 0711
+  directory: the zone's root is host uid N and the supplicant N+101, so a
+  root-owned 0600 file would be unreadable to both, and nothing else runs as
+  either; dhcpcd and nobody in the zone cannot read it. A file an older
+  kryptikd wrote, 0400 and the root's alone, is rewritten so as the net zone
+  starts. Only the net zone gets it, bound read-only at
   `/etc/wpa_supplicant.conf`, and a change restarts the `net-zone` service
   (`s6-svc -r`).
 - **A saved network names how it may be joined.** A passphrase by WPA2's
@@ -294,8 +344,73 @@ configured the zone keeps its IPv4 path and the launcher says so.
   802.1X, so no access point's beacon chooses EAP for a saved SSID. Unnamed,
   wpa_supplicant would take `WPA-PSK WPA-EAP` and never SAE. Management frames
   are protected wherever the access point offers it (`ieee80211w=1`), and SAE
-  always has them. A file an older kryptikd wrote is rewritten so as the net
-  zone starts.
+  always has them. SAE derives its password element by hash-to-element
+  wherever the access point offers it, and by the older loop only where it
+  does not (`sae_pwe=2` in the file's header): the loop alone,
+  wpa_supplicant's default, passes over an access point that takes
+  hash-to-element only, and it is the method side channels have leaked
+  passwords from. A file an older kryptikd wrote is rewritten so. A network
+  saved as open (`kryptik wifi add SSID --open`, an `open` line in place of
+  `psk` in the request) is joined by no key at all (`key_mgmt=NONE`), so a
+  beacon offering one changes nothing, and has no management frames to
+  protect. Anyone in range reads what crosses it, as on any open network,
+  and any access point may take its name: what a zone sends there is private
+  only where the zone encrypts it. A network saved with `--hidden` (a
+  `hidden` line in the request) gets `scan_ssid=1`: its access point beacons
+  with no name and answers only a probe request that names it, so the
+  station names it in its scans wherever it is until it joins, from a random
+  address where the radio allows one, and anyone listening learns that it
+  knows that network. A new passphrase keeps it so, as without it the
+  network would not be found again; forgetting it starts over.
+- **A failed join is followed by a scan.** The file's header sets
+  `scan_res_valid_for_connect=0`, so the supplicant never joins from an
+  earlier scan without a new one. With two networks saved, wpa_supplicant
+  2.12 answers a first failed join by picking again from its last scan; when
+  it picks the access point that just failed (one switched off, whose entry
+  the kernel's scan cache keeps for 30 s), it counts itself still joining it,
+  asks for no scan, and waits until something else scans. A file an older
+  kryptikd wrote is rewritten so.
+- **A refused passphrase is said.** wpa_supplicant says why a join failed
+  only to a listener on its control socket, and the action mode of its
+  `wpa_cli` passes on neither event that means a refused passphrase. Beside
+  each supplicant the net zone starts `kryptikd supplicant --watch RADIO`, as
+  the supplicant's user, under its confinement and with no capability. The
+  listener keeps `/run/wpa_supplicant/RADIO.refused` naming the network after
+  WPA2's 4-way handshake fails (`CTRL-EVENT-SSID-TEMP-DISABLED ...
+  reason=WRONG_KEY`), or
+  after the access point being joined refuses the station's SAE confirm
+  (`CTRL-EVENT-AUTH-REJECT ... auth_type=3 auth_transaction=2
+  status_code=15`, which wpa_supplicant itself takes for a passphrase
+  mismatch). The file goes when a network is joined. While none is, the
+  status line says `wifi=refused:SSID`, and the menu's Network line names the
+  network and says it refused the passphrase. An access point that drops a
+  wrong SAE confirm without answering looks like any other failed join, and
+  the line stays `connecting`. The listener ends with its supplicant, and a
+  supplicant started again gets a listener of its own.
+- **Each saved network sees an address of its own.** kryptikd gives every
+  network a random, locally administered unicast address when it is first
+  saved, or when a file an older kryptikd wrote is rewritten, and keeps it
+  through a new passphrase (`mac_addr=3`, `mac_value=`: wpa_supplicant sets
+  it before it associates). A network sees the same station each time, and
+  no other network, nor the radio's own address, is seen there. dhcpcd runs
+  RFC 7844's anonymity profile (`anonymous` in the image's
+  `/etc/dhcpcd.conf`): no hostname, no vendor class, and a client ID made
+  from the address the interface has when it asks, not a DUID made from a
+  hardware address, which the stock configuration would send to every
+  network. Where its driver takes a new address, the radio's own never goes
+  on the air: kryptikd gives its station a new random address each time the
+  net zone starts, and a scan while no network is joined goes out from a new
+  random address each time (wpa_supplicant's `MAC_RAND_SCAN`, which the net
+  zone turns on as its supplicant starts; the interface's address stays as
+  it is). A driver without random scan addresses scans from the address the
+  station has then: the start's, or after a network the last network's, and
+  the net zone says which it got. The kernel refuses random addresses to a
+  station that has joined, so a scan then goes out from that network's
+  address. A wired uplink keeps its own address. A driver that refuses to
+  change the interface's address keeps the radio's own, scans from it unless
+  it offers random scan addresses, and never joins: wpa_supplicant gives up
+  the association rather than use the radio's own, and the status line stays
+  at `wifi=connecting`.
 - On disk the file is plaintext inside the [encrypted](state-encryption.md)
   state partition, like NetworkManager's connection files. A compromised net
   zone learns the passphrases of the networks it was given, and nothing more.
@@ -305,7 +420,8 @@ kernel's simulated radio, from the signed module the image carries: one goes
 into a namespace of its own as the access point (the image's `wpa_supplicant`
 in AP mode, `dnsmasq` for the lease), the other is left for the net zone,
 which joins the network `kryptik wifi add` gave it, leases an address over
-the radio and carries a routed zone's traffic to the access point. Real
+the radio and carries a routed zone's traffic to the access point. Once that
+access point is gone, a second saved network is joined when it appears. Real
 hardware is untested: a seccomp refusal of `wpa_supplicant` there would show
 as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
 
@@ -375,7 +491,15 @@ as `SIGSYS` in the zone's log and a `wifi=connecting` that never changes.
   radio refusing to move as a netdev and moving by its wiphy
   (`netlink::tests::wireless_moves_by_wiphy`).
 - `wifi.rs` unit tests and the serve and cli suites cover the credentials
-  file and `kryptik wifi`.
+  file and `kryptik wifi`. `tools/tests/netzone-scan.sh` turns iw's listing
+  into the zone's answer and follows the scan from a random address to a
+  listening one to the kernel's last results; `wifi.rs` tests read an answer
+  that holds everything a zone might write. The zones suite asks for a scan
+  before the net zone holds a radio and after it has joined the simulated
+  access point (`wifi-scan-no-radio`, `wifi-scan`), and the desktop suite asks
+  through the launcher (`chrome-wifi-scan`). The zones suite switches the
+  station's radio off through rfkill and on again: the status says `off`, the
+  scan names the radio, and the radio joins again (`wifi-radio-off`).
 - The zones suite has the net zone rename its NIC `-x"y` and restarts it: the
   NIC is back in zone 0 under that name, and the next start comes up `READY`
   with it as `nic<N>`, with its own address and an MTU of 1500 again after

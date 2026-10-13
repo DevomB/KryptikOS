@@ -6,7 +6,9 @@ line compiled in. The command line names the root slot and carries its
 dm-verity root hash, and the kernel's `dm-mod.create=` (`CONFIG_DM_INIT`)
 builds the verity device before mounting root: no initramfs, bootloader or
 editable file lies between the firmware's signature check and the read-only
-verified root. Mutable state is on a separate
+verified root. The kernel has no initramfs support and no handover entry, so
+a loader that starts it anyway, even one the firmware trusts, cannot give it
+an initramfs or boot parameters of its own. Mutable state is on a separate
 [encrypted partition](state-encryption.md). Two root slots and a firmware
 `BootNext` trial give A/B updates with a bounded fallback.
 
@@ -88,14 +90,16 @@ from `/etc`. There is no swap.
 `kryptik-install --target DISK [--yes] [--dry-run] [--replace-kryptik]`
 checks everything first: a whole, writable disk that is not the running
 root's (through any dm or loop layer, so from a medium never the medium),
-with nothing mounted, swapped on or held open by device-mapper or md, and
-enough room. A disk that carries any `kryptik-` partition (an old
+with nothing mounted, swapped on or held open by device-mapper or md,
+enough room, and logical sectors no larger than the medium's FAT's (512
+bytes: Linux does not mount that ESP on a 4Kn disk). A disk that carries any `kryptik-` partition (an old
 installation, a medium, a test-control disk) is refused unless
 `--replace-kryptik` asks for it; nothing overrides the other refusals. Then it
-asks for the state passphrase, partitions,
+asks for the state passphrase (8 characters at least), partitions,
 copies the ESP and root image from the medium, reads slot A back against the
 medium's `root.json`, creates the LUKS2 state partition and makes
-`BOOTX64.EFI` the slot A kernel. Every failure names its step.
+`BOOTX64.EFI` the slot A kernel. Slot B is cleared, and the ESP names no
+kernel or version for it until an update writes one. Every failure names its step.
 
 `root.json` is the medium's own record and is not signed, so the installer
 and `kryptik-recover --restore-slot` take it through the same checks
@@ -106,7 +110,13 @@ and the slot written must verify against it (`veritysetup verify`) before
 anything names it. A kernel's signature is the firmware's to check, at boot.
 
 The installed disk boots `BOOTX64.EFI` through the removable-media path with
-no firmware variables. `kryptik-efiboot` adds a `Kryptik slot <x>` Boot####
+no firmware variables. Some firmware boots an internal disk only from a
+Boot#### entry, so the installer also gives slot a its own, last in
+`BootOrder`, after `forget` has removed an earlier install's; a firmware that
+refuses it leaves the disk to `BOOTX64.EFI`, and the installer says so.
+Entries are kept by slot, not by disk, so a machine holds one Kryptik's: a
+second Kryptik disk in it boots by its own `BOOTX64.EFI`.
+`kryptik-efiboot` adds a `Kryptik slot <x>` Boot####
 entry for a trial. When the trial ends, committed or not, `forget` removes
 Kryptik's entries and `BootNext`, and the committed slot gets its own entry
 back. Firmware re-adds its own disk entry at the end of `BootOrder`, so an
@@ -119,10 +129,15 @@ entry left alone.
 
 ## Updates
 
-A payload directory holds exactly `kryptik-root.img`, `kryptik-a.efi`,
+A payload directory holds exactly `kryptik-root.img.zst`, `kryptik-a.efi`,
 `kryptik-b.efi`, `root.json`, `manifest` and `manifest.sig`. The manifest
 lists each file's sha256 and size, the version and the role, and is signed by
-the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`).
+the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`). The
+root image travels compressed, at about a quarter of its size; `root.json`,
+which the manifest lists, names the image's own sha256 and size. `apply`
+decompresses only a file whose hash matched the manifest, and checks what it
+decompresses to against `root.json` before it writes the inactive slot, then
+writes it decompressing again and reads the slot back.
 Versions are ordered as `sort -V` orders them. A production release is
 numbered MAJOR.MINOR.PATCH, which that order reads as a person does
 ([release keys](../release-keys.md)). The trust anchor and required role are on the verified root in
@@ -160,7 +175,14 @@ payloads come from [the update channel](update-channel.md) or by hand.
    committed slot, `BootNext` being spent. On a degraded state the trial
    record is out of reach, so `committed-slot` says whether the boot is a
    trial. A trial that never comes up also lands on the committed slot; the
-   fallback records `trial.failed` and forgets the entries, and the updater
+   fallback records `trial.failed` and forgets the entries. A boot manager
+   deletes `BootNext` before it boots that entry, so one still naming the
+   trial's entry then was never used: the record says the trial was never
+   started, which a firmware that ignores `BootNext` would repeat. Either way
+   `trial.failed` keeps a `why=` line (the failures, or that it never came up
+   to be judged), since the next boot's own result replaces `last-result`;
+   `kryptik update status`, `kryptik-update status` and the launcher repeat
+   it, so the release reads as tried, not as waiting. The updater
    will not re-arm that payload without `--retry`, which root gives (`su` from
    the administration login on tty2; the refusal prints the command). Only a
    trial reboots; an unhealthy committed slot is reported and left running,
@@ -187,7 +209,11 @@ payloads come from [the update channel](update-channel.md) or by hand.
 Zone data is never written. On the FAT ESP the renames are the only
 non-atomic steps; each follows a complete, fsynced copy and leaves a system
 that boots either way. From the medium, `kryptik-recover` commits or rewrites
-a slot and restores the state header ([user guide](../user-guide.md)).
+a slot and restores the state header ([user guide](../user-guide.md)). The
+ESP is the one place both slots' kernels live, so a FAT that no longer
+mounts is rewritten from the medium's before a slot is restored; its kernel
+for the other slot is the medium's, which need not boot what that slot
+holds, so that slot is left unlisted.
 
 ## Tests
 

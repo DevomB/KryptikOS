@@ -5,11 +5,14 @@
 //!   request  one per connection, NUL-free text lines:
 //!              run <zone> [wayland=<path>] [pass=fd], `arg <word>` lines, `end`
 //!                (with pass=fd, one descriptor rides with the first bytes)
-//!              wifi-add, `ssid <ssid>`, `psk <passphrase>`, `end`
+//!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `hidden` for a
+//!                network that hides its name, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
+//!              wifi-scan, answered once the nic zone has scanned
+//!              check-password, `password <password>`, `end` (the screen lock's)
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
-//!              runtime | wifi-list | update-status | update-fetch | update-apply |
-//!              update-auto on|off
+//!              runtime | wifi-list | update-status | update-fetch | update-forget |
+//!              update-apply | update-auto on|off
 //!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
 //!
 //! `run` replies `ok <launcher pid>` once the zone's pid 1 exists and the
@@ -101,6 +104,16 @@ fn gid_of_group(name: &str) -> Option<u32> {
         None
     } else {
         Some(unsafe { (*g).gr_gid })
+    }
+}
+
+/// The login name of `uid`, as the password database has it.
+fn user_of(uid: u32) -> Option<String> {
+    let pw = unsafe { libc::getpwuid(uid) };
+    if pw.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr((*pw).pw_name) }.to_string_lossy().into_owned())
     }
 }
 
@@ -276,15 +289,19 @@ fn parse_run(text: &str) -> Result<Request, String> {
     Ok(req)
 }
 
-/// Debug prints the SSID only: the passphrase is never formatted.
+/// Debug prints the SSID only: the passphrase is never formatted. `open`: a network saved
+/// with no passphrase, which `wifi-add` takes in place of `psk`; `hidden`: one asked for by name.
 struct WifiRequest {
     ssid: String,
     psk: Option<String>,
+    open: bool,
+    hidden: bool,
 }
 
 impl std::fmt::Debug for WifiRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WifiRequest {{ ssid: {:?}, psk: {} }}", self.ssid, if self.psk.is_some() { "<set>" } else { "None" })
+        let psk = if self.psk.is_some() { "<set>" } else { "None" };
+        write!(f, "WifiRequest {{ ssid: {:?}, psk: {psk}, open: {}, hidden: {} }}", self.ssid, self.open, self.hidden)
     }
 }
 
@@ -296,8 +313,8 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
         let word = verb.split_whitespace().next().unwrap_or("wifi");
         return Err(format!("{word}: the verb stands alone on its line"));
     }
-    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>`, `end`" } else { "`ssid <SSID>`, `end`" };
-    let (mut ssid, mut psk, mut ended) = (None, None, false);
+    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>` or `open`, maybe `hidden`, `end`" } else { "`ssid <SSID>`, `end`" };
+    let (mut ssid, mut psk, mut open, mut hidden, mut ended) = (None, None, false, false, false);
     for l in lines {
         if l == "end" {
             ended = true;
@@ -311,6 +328,14 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
             if psk.replace(v.to_string()).is_some() {
                 return Err(format!("{verb}: two psk lines"));
             }
+        } else if l == "open" && verb == "wifi-add" {
+            if std::mem::replace(&mut open, true) {
+                return Err(format!("{verb}: two open lines"));
+            }
+        } else if l == "hidden" && verb == "wifi-add" {
+            if std::mem::replace(&mut hidden, true) {
+                return Err(format!("{verb}: two hidden lines"));
+            }
         } else {
             return Err(format!(
                 "{verb}: unexpected line; the request is {shape}, one per line, and neither value may hold a newline"
@@ -321,10 +346,10 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
         return Err(format!("{verb}: request not terminated by `end`"));
     }
     let ssid = ssid.ok_or_else(|| format!("{verb}: no ssid line"))?;
-    if verb == "wifi-add" && psk.is_none() {
-        return Err("wifi-add: no psk line".into());
+    if verb == "wifi-add" && psk.is_some() == open {
+        return Err("wifi-add: a psk line or an open line, one of them".into());
     }
-    Ok(WifiRequest { ssid, psk })
+    Ok(WifiRequest { ssid, psk, open, hidden })
 }
 
 // --- the proxy socket ----------------------------------------------------------
@@ -688,6 +713,7 @@ struct Job {
 enum JobKind {
     Stop { uid: u32, zone: String },
     UpdateApply,
+    WifiScan,
 }
 
 fn memfile(name: &str) -> Result<std::fs::File, String> {
@@ -759,6 +785,12 @@ fn finish_job(j: &mut Job, st: i32) {
             };
             eprintln!("kryptikd serve: update-apply failed: {why}{again}");
             reply(&j.conn, &format!("error: {why}{again}\n"));
+        }
+        // `kryptikd wifi scan` printed its lines from what it made of the zone's answer.
+        JobKind::WifiScan if ok => reply(&j.conn, &format!("ok\n{}", read_back(&mut j.out))),
+        JobKind::WifiScan => {
+            let why = why(j, "the scan failed");
+            reply(&j.conn, &format!("error: {why}\n"));
         }
     }
 }
@@ -852,6 +884,8 @@ pub struct ServeConfig {
     pub wifi_dir: PathBuf,
     /// Unprivileged instance: serves its own uid only.
     pub developer: bool,
+    /// The shadow file the screen lock's password is checked against.
+    pub shadow: PathBuf,
 }
 
 fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String> {
@@ -878,6 +912,7 @@ fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String>
         proxy_exe: PathBuf::from(opt("--proxy-exe").unwrap_or_else(|| PROXY_EXE.to_string())),
         wifi_dir: crate::wifi_dir_from(args),
         developer,
+        shadow: PathBuf::from(opt("--shadow").unwrap_or_else(|| crate::password::SHADOW.to_string())),
     })
 }
 
@@ -962,8 +997,88 @@ fn zone_running(name: &str) -> bool {
     matches!(crate::registry::state(name), Ok(crate::registry::State::Running { .. }))
 }
 
+/// The nic zone's word on the network: the line its program wrote last
+/// (tools/net/netzone-init.sh, `report`) in its own /run. The zone is untrusted, so only
+/// `net_summary`'s words leave here, and zone 0's window shows nothing else of the line.
+pub(crate) fn net_status(name: &str) -> Option<String> {
+    let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(name) else {
+        return None;
+    };
+    let mut text = String::new();
+    init.file_in_root("run/netzone-status")?.take(1024).read_to_string(&mut text).ok()?;
+    net_summary(text.lines().next()?)
+}
+
+/// The words for a net zone's status line, or none for a line of another form: whether it is
+/// ready, the Wi-Fi network joined or the one that refused the passphrase (an SSID as iw prints
+/// one, read back to its bytes and shown as `wifi::shown` shows them, so nothing unprintable
+/// reaches a terminal), the uplink's address and whether there is DNS.
+fn net_summary(line: &str) -> Option<String> {
+    if line.starts_with("NOT READY") {
+        return Some("not ready: forwarding is off".into());
+    }
+    let rest = line.strip_prefix("READY ")?;
+    // The fields before wifi= come first under their names; an SSID may hold spaces and words
+    // that look like fields, so it runs from wifi= to the last time=.
+    let field = |key: &str| rest.split(' ').find_map(|w| w.strip_prefix(key));
+    let uplink = match field("uplink=")? {
+        "none" => "no uplink address".to_string(),
+        a => {
+            let (ip, len) = a.split_once('/')?;
+            let ip: std::net::Ipv4Addr = ip.parse().ok()?;
+            let len: u8 = len.parse().ok().filter(|l| *l <= 32)?;
+            format!("uplink {ip}/{len}")
+        }
+    };
+    let dns = match field("dns=")? {
+        "yes" => "DNS",
+        "no" => "no DNS",
+        _ => return None,
+    };
+    let from = rest.find(" wifi=")? + " wifi=".len();
+    let to = rest.rfind(" time=").filter(|t| *t >= from)?;
+    let wifi = match &rest[from..to] {
+        "none" => None,
+        "unconfigured" => Some("Wi-Fi with no network saved".to_string()),
+        "off" => Some("Wi-Fi switched off".to_string()),
+        "connecting" => Some("Wi-Fi connecting".to_string()),
+        "associated" => Some("Wi-Fi joined".to_string()),
+        printed => {
+            let named = |p: &str| crate::wifi::ssid_from_iw(p).map(|b| crate::wifi::shown(&b));
+            Some(match printed.strip_prefix("refused:") {
+                Some(p) => format!("Wi-Fi {} refused the passphrase", named(p)?),
+                None => format!("Wi-Fi {}", named(printed)?),
+            })
+        }
+    };
+    Some(match wifi {
+        Some(w) => format!("ready: {w}, {uplink}, {dns}"),
+        None => format!("ready: {uplink}, {dns}"),
+    })
+}
+
+/// `check-password`, the screen lock's: the password on a line of its own, checked against the
+/// peer's own login entry. The reply never repeats it.
+fn check_password(cfg: &ServeConfig, uid: u32, text: &str, attempts: &mut crate::password::Attempts) -> String {
+    let mut lines = text.lines();
+    let password = match (lines.next(), lines.next().and_then(|l| l.strip_prefix("password ")), lines.next(), lines.next()) {
+        (Some("check-password"), Some(p), Some("end"), None) => p,
+        _ => return "error: check-password: the request is `password <PASSWORD>` and `end`, one per line\n".into(),
+    };
+    let Some(user) = user_of(uid) else {
+        return format!("error: no account has uid {uid}\n");
+    };
+    match crate::password::check(&cfg.shadow, &user, password.as_bytes(), attempts, Instant::now()) {
+        Ok(()) => "ok\n".into(),
+        Err(e) => {
+            eprintln!("kryptikd serve: uid {uid}: the screen lock's password: {e}");
+            format!("error: {e}\n")
+        }
+    }
+}
+
 /// Serve one connection; a started launch is returned and a slow command pushed to `jobs`.
-fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
+fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, attempts: &mut crate::password::Attempts) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let Ok(peer) = peer_cred(fd) else {
         reply(&conn, "error: unidentified peer\n");
@@ -975,7 +1090,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
         eprintln!("kryptikd serve: refused uid {uid} (pid {})", peer.pid);
         return None;
     }
-    let (text, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
+    let (mut raw, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("kryptikd serve: uid {uid}: {e}");
@@ -983,7 +1098,17 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             return None;
         }
     };
-    let text = String::from_utf8_lossy(&text).into_owned();
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    // The bytes as read are wiped once copied: a request may carry a password or a passphrase.
+    raw.fill(0);
+    if text.lines().next() == Some("check-password") {
+        let said = check_password(cfg, uid, &text, attempts);
+        let mut text = text;
+        // SAFETY: zero bytes are valid UTF-8.
+        unsafe { text.as_bytes_mut() }.fill(0);
+        reply(&conn, &said);
+        return None;
+    }
     let first = text.lines().next().unwrap_or("");
     let verb = first.split_whitespace().next().unwrap_or("");
     match verb {
@@ -1006,13 +1131,16 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             match zone_named(cfg, name) {
                 Ok(z) => {
                     let enc = z.storage == crate::zone::StorageMode::Encrypted;
+                    // The nic zone's own status, for the chrome's network line.
+                    let net = (z.network == crate::zone::NetworkMode::Nic).then(|| net_status(name)).flatten();
                     reply(
                         &conn,
                         &format!(
-                            "encrypted {}\nrunning {}\nlabel {}\nend\n",
+                            "encrypted {}\nrunning {}\nlabel {}\n{}end\n",
                             if enc { "yes" } else { "no" },
                             if zone_running(name) { "yes" } else { "no" },
                             z.label.as_deref().unwrap_or(&z.name),
+                            net.map_or(String::new(), |n| format!("network {n}\n")),
                         ),
                     );
                 }
@@ -1051,11 +1179,24 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
             }
         }
+        // The networks in range: the nic zone scans for seconds, so a job answers, one at a time.
+        "wifi-scan" => {
+            if jobs.iter().any(|j| j.what == JobKind::WifiScan) {
+                reply(&conn, "error: a scan is already running\n");
+                return None;
+            }
+            let mut cmd = std::process::Command::new("/proc/self/exe");
+            cmd.args(["wifi", "scan", "--zones"]).arg(&cfg.zones_dir).arg("--wifi-dir").arg(&cfg.wifi_dir);
+            match start_job(conn, JobKind::WifiScan, &mut cmd) {
+                Ok(j) => jobs.push(j),
+                Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
+            }
+        }
         /* The user's side of the update channel (update.rs). Until `fetch`, or
          * with `auto on` a newer statement, the net zone is told `idle`;
          * `apply` hands the stage to kryptik-update, which verifies it all
          * again before writing a slot. */
-        "update-status" | "update-fetch" | "update-apply" | "update-auto" => {
+        "update-status" | "update-fetch" | "update-forget" | "update-apply" | "update-auto" => {
             use crate::update as up;
             let dir = std::path::Path::new(up::STATE_DIR);
             let running = up::running_version();
@@ -1063,13 +1204,25 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             let done = match verb {
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                    Ok(up::status(dir, now, &running, up::expecting_since()))
+                    let mut out = up::status(dir, now, &running, up::expecting_since());
+                    out.extend(up::trial_line(Path::new(up::TRIAL), &running, up::running_slot().as_deref()));
+                    Ok(out)
                 }
                 "update-fetch" => {
                     let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
                     up::required_role()
                         .and_then(|role| up::want(dir, up::channel_from(&conf).as_deref(), &role, &running))
                         .map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n"))
+                }
+                "update-forget" => {
+                    // kryptik-update reads the stage while it applies it.
+                    if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
+                        reply(&conn, "error: an update is being applied\n");
+                        return None;
+                    }
+                    up::forget(dir).map(|v| {
+                        format!("{v} is no longer fetched, and what had arrived of it is deleted; automatic fetching passes it over, and `kryptik update fetch` asks for it again\n")
+                    })
                 }
                 "update-auto" => {
                     let on = match first.split_whitespace().collect::<Vec<_>>().as_slice() {
@@ -1146,20 +1299,18 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 }
             };
             let done = if verb == "wifi-add" {
-                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref().unwrap_or("")).map(|a| match a {
-                    crate::wifi::Added::New => "added network",
-                    crate::wifi::Added::Replaced => "replaced the passphrase of network",
-                })
+                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref(), req.hidden)
+                    .map(|(a, hidden)| crate::wifi::said(&req.ssid, a, req.open, hidden))
             } else {
-                crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| "forgot network")
+                crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| format!("forgot network {:?}", req.ssid))
             };
             match done {
                 Ok(what) => {
                     /* The file is bound in at zone start, so a restart applies it. A
                      * restart that cannot happen is reported, not a failure. */
                     let restart = crate::wifi::restart_net_zone(&cfg.wifi_dir);
-                    eprintln!("kryptikd serve: uid {uid} {what} {:?}; {restart}", req.ssid);
-                    reply(&conn, &format!("ok {what} {:?}; {restart}\n", req.ssid));
+                    eprintln!("kryptikd serve: uid {uid} {what}; {restart}");
+                    reply(&conn, &format!("ok {what}; {restart}\n"));
                 }
                 Err(e) => {
                     eprintln!("kryptikd serve: uid {uid} {verb} {:?} refused: {e}", req.ssid);
@@ -1272,6 +1423,8 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
+    // Wrong passwords at the screen lock, kept across connections.
+    let mut attempts = crate::password::Attempts::default();
     // The login prompt carries what `kryptik update status` says of a stale statement, on the
     // installed system's instance: checked as it starts, then hourly, as days are what count.
     let mut notice_due = (!cfg.developer).then(Instant::now);
@@ -1392,7 +1545,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             match listener.accept() {
                 Ok((conn, _)) => {
                     let _ = conn.set_nonblocking(false);
-                    if let Some(p) = handle(&cfg, conn, &mut jobs) {
+                    if let Some(p) = handle(&cfg, conn, &mut jobs, &mut attempts) {
                         pending.push(p);
                     }
                 }

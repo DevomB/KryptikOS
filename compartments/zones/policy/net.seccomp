@@ -10,3 +10,8 @@ allow-netlink NETLINK_GENERIC
 keep-capability CAP_SETUID
 keep-capability CAP_SETGID
 keep-capability CAP_SYS_CHROOT
+# `kryptikd supplicant` stacks a Landlock ruleset on wpa_supplicant before it leaves root:
+# these only narrow what their caller may reach.
+allow-syscall landlock_create_ruleset
+allow-syscall landlock_add_rule
+allow-syscall landlock_restrict_self

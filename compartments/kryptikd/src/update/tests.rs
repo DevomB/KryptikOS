@@ -377,6 +377,101 @@ fn auto_follows_newest_release() {
 }
 
 #[test]
+fn forget_drops_a_release_that_auto_then_passes_over() {
+    let d = scratch("forget");
+    assert!(forget(&d).unwrap_err().contains("no release has been asked for"));
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    set_auto(&d, true, Some(CH)).unwrap();
+    assert!(poll(&d, CH, "production", "1.0.2", T0).starts_with("fetch 1.0.3 "));
+    put(&d, &yes(), T0, "manifest", 0, b"m").unwrap();
+    // Forgotten: nothing of it is kept, and automatic fetching does not ask for it again.
+    assert_eq!(forget(&d).unwrap(), "1.0.3");
+    assert!(wanted(&d).is_none() && !d.join("incoming").exists() && !d.join("files").exists());
+    assert_eq!(poll(&d, CH, "production", "1.0.2", T0), "idle");
+    assert!(status(&d, T0, "1.0.2", None).contains("staged     nothing asked for; 1.0.3 was forgotten"));
+    assert!(status(&d, T0, "1.0.3", None).contains("staged     nothing asked for\n"), "a forgotten release the machine now runs is not named");
+    // A newer statement's release is fetched as before.
+    let t1 = T0 + POINTER_INTERVAL_SECS as i64;
+    latest(&d, &yes(), t1, "production", "1.0.2", pointer_text("1.0.4", "2027-03-02T15:30:00Z").as_bytes(), b"sig").unwrap();
+    assert!(poll(&d, CH, "production", "1.0.2", t1).starts_with("fetch 1.0.4 "));
+    // And `fetch` asks for a forgotten one again.
+    forget(&d).unwrap();
+    assert_eq!(poll(&d, CH, "production", "1.0.2", t1), "idle");
+    assert_eq!(want(&d, Some(CH), "production", "1.0.2").unwrap(), "1.0.4");
+    assert!(poll(&d, CH, "production", "1.0.2", t1).starts_with("fetch 1.0.4 "));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn forget_waits_for_a_put_in_flight() {
+    let d = scratch("forget-waits");
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    want(&d, Some(CH), "production", "1.0.2").unwrap();
+    // Held as `put` holds it, from its first look at the stage to its last write there.
+    let held = stage_lock(&d).unwrap();
+    let dir = d.clone();
+    let forgetting = std::thread::spawn(move || forget(&dir));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!forgetting.is_finished() && wanted(&d).is_some(), "forget went ahead while a put held the stage");
+    drop(held);
+    assert_eq!(forgetting.join().unwrap().unwrap(), "1.0.3");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_manifest_checked_while_its_stage_was_cleared_is_not_kept() {
+    let d = scratch("cleared-mid-check");
+    latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
+    want(&d, Some(CH), "production", "1.0.2").unwrap();
+    // `forget` and `fetch` run while the pair is checked, which they do not wait for.
+    let meanwhile = |stage: &Path| {
+        forget(&d).unwrap();
+        want(&d, Some(CH), "production", "1.0.2").unwrap();
+        (yes().manifest)(stage)
+    };
+    let checks = Checks { pointer: &|_, _| Ok(()), manifest: &meanwhile };
+    put(&d, &checks, T0, "manifest", 0, b"m").unwrap();
+    assert!(put(&d, &checks, T0, "manifest.sig", 0, b"s").unwrap_err().contains("cleared while its manifest was checked"));
+    // The new request starts from nothing, and no refusal holds its pair back.
+    assert!(verified_files(&d, "1.0.3").is_none() && !d.join("refused").exists());
+    assert!(poll(&d, CH, "production", "1.0.2", T0).ends_with(" need manifest 0 manifest.sig 0"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_failed_trial_is_said_with_its_reason() {
+    let d = scratch("trial-line");
+    std::fs::create_dir_all(&d).unwrap();
+    let trial = d.join("trial");
+    assert_eq!(trial_line(&trial, "1.0.2", Some("a")), None, "no record, no line");
+    let failed = d.join("trial.failed");
+    std::fs::write(&failed, "b\narmed=1\nwhy=came up unhealthy: service net-zone is not up; service seatd is not up\n").unwrap();
+    assert_eq!(
+        trial_line(&trial, "1.0.2", Some("a")).as_deref(),
+        Some("trial      the trial of slot b came up unhealthy: service net-zone is not up; service seatd is not up; this machine runs 1.0.2 again, and `kryptik update apply` says how to try once more\n")
+    );
+    // An older record has no reason; one naming no slot, or carrying control characters, is not repeated as it is.
+    std::fs::write(&failed, "a\narmed=1\n").unwrap();
+    assert!(trial_line(&trial, "1.0.2", Some("a")).unwrap().starts_with("trial      the trial of slot a failed; "));
+    std::fs::write(&failed, "c\nwhy=x\n").unwrap();
+    assert_eq!(trial_line(&trial, "1.0.2", Some("a")), None);
+    std::fs::write(&failed, "b\nwhy=did not \u{1b}[2Jcome up\n").unwrap();
+    assert!(!trial_line(&trial, "1.0.2", Some("a")).unwrap().contains('\u{1b}'));
+    // A trial armed again, as apply --retry arms it, is said as armed, not as the old failure.
+    std::fs::write(&trial, "b\narmed=1\n").unwrap();
+    assert_eq!(
+        trial_line(&trial, "1.0.2", Some("a")).as_deref(),
+        Some("trial      slot b is armed: the next boot tries it, and it stays once it comes up healthy\n")
+    );
+    // Booted into it, the trial is running, not to come.
+    assert_eq!(
+        trial_line(&trial, "1.0.3", Some("b")).as_deref(),
+        Some("trial      slot b is on trial: it stays once it comes up healthy\n")
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn auto_refuses_what_fetch_refuses() {
     let d = scratch("auto-refused");
     latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
@@ -467,6 +562,8 @@ fn channel_read_from_config() {
 #[test]
 fn stage_kept_through_trial() {
     let d = scratch("trial");
+    // As zone 0 makes it: the stage lock is refused in a directory others can reach.
+    private_dir(&d).unwrap();
     std::fs::create_dir_all(staging(&d, "1.0.3")).unwrap();
     std::fs::write(d.join("wanted"), "1.0.3").unwrap();
     std::fs::write(d.join("files"), LISTING).unwrap();

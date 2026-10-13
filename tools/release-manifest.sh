@@ -49,6 +49,9 @@ do_create() {
         *) die "create: --role must be development or production, not '${role}'" ;;
     esac
     [[ -d "$root" ]] || die "create: --root ${root} is not a directory"
+    # The commit's time where SOURCE_DATE_EPOCH gives it, so every build of a commit writes the same text.
+    local epoch="${SOURCE_DATE_EPOCH:-$(date +%s)}"
+    [[ "$epoch" =~ ^[0-9]+$ ]] || die "create: SOURCE_DATE_EPOCH must be whole seconds since 1970, not '${epoch}'"
 
     local tmp; tmp="$(mktemp)"
     {
@@ -56,7 +59,7 @@ do_create() {
         printf 'name: %s\n' "$name"
         printf 'version: %s\n' "$version"
         printf 'role: %s\n' "$role"
-        printf 'created: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'created: %s\n' "$(date -u -d "@${epoch}" +%Y-%m-%dT%H:%M:%SZ)"
     } > "$tmp"
 
     # Relative to --root, or verify would check files other than the ones being installed.

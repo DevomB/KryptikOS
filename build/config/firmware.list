@@ -1,21 +1,42 @@
 # The only firmware shipped under /lib/firmware on the verified root (ADR-012).
 #   PATTERN            a `find -path` pattern in copy-firmware.sh's layout; a link brings its target
 #   newest N PATTERN   only the N highest trailing -NUMBERs (API versions) per device
+#   except PATTERN     not what PATTERN matches, whichever line chose it
 # A pattern that matches nothing fails the build.
 
-# Intel Wi-Fi: three API versions per device, as which one loads depends on MAC and RF (iwl-drv.c).
-# The glob also keeps about 2 MB of DVM firmware this kernel cannot load.
-newest 3 iwlwifi-*.ucode
+# Intel Wi-Fi (iwlmvm and iwlmld; iwldvm is not built). iwlwifi asks for a device's highest API
+# version first and loads the first file it finds (iwl-drv.c), which for every device here is its
+# newest numbered file. 6.18 asks for core 99 at most, so the -cNNN files (c101 up) never load.
+iwlwifi-3160-17.ucode
+iwlwifi-3168-29.ucode
+iwlwifi-7260-17.ucode
+iwlwifi-7265-17.ucode
+iwlwifi-7265D-29.ucode
+iwlwifi-8000C-36.ucode
+iwlwifi-8265-36.ucode
+iwlwifi-9000-pu-b0-jf-b0-46.ucode
+iwlwifi-9260-th-b0-jf-b0-46.ucode
+newest 1 iwlwifi-[[:alpha:]]*-[0-9]*.ucode
 iwlwifi-*.pnvm
 
-# Qualcomm Atheros: the laptop parts, by board revision.
-ath10k/QCA6174/hw3.0/*
-ath10k/QCA9377/hw1.0/*
+# Qualcomm Atheros: the laptop parts, by board revision. ath10k asks for API 6 first, and the
+# -sdio- files are for SDIO parts, which are not built. A WCN6855 at SoC revision 2.1 is read
+# from WCN6855/hw2.1, QCA2066/hw2.1 or QCA6698AQ/hw2.1 (ath11k pci.c). ath11k and ath12k read a
+# variant directory (nfa765, ncm865) only when a devicetree names one, so [!n]* leaves it out.
+ath10k/QCA6174/hw2.1/*
+ath10k/QCA6174/hw3.0/board*.bin
+ath10k/QCA6174/hw3.0/*firmware-6.*
+ath10k/QCA9377/hw1.0/board*.bin
+ath10k/QCA9377/hw1.0/*firmware-6.*
+ath11k/QCA2066/hw2.1/*
 ath11k/QCA6390/hw2.0/*
-ath11k/WCN6855/hw2.0/*
-ath12k/WCN7850/hw2.0/*
+ath11k/QCA6698AQ/hw2.1/*
+ath11k/WCN6855/hw2.0/[!n]*
+ath11k/WCN6855/hw2.1/[!n]*
+ath12k/WCN7850/hw2.0/[!n]*
 
-# MediaTek MT7921 (7961 firmware), MT7922 and MT7925, without their Bluetooth.
+# MediaTek MT7920 and MT7921 (the 7961 firmware, 1a for the MT7920), MT7922 and MT7925, without
+# their Bluetooth.
 mediatek/WIFI_MT7961_patch_mcu_1_2_hdr.bin
 mediatek/WIFI_MT7961_patch_mcu_1a_2_hdr.bin
 mediatek/WIFI_RAM_CODE_MT7961_1.bin
@@ -24,18 +45,175 @@ mediatek/WIFI_MT7922_patch_mcu_1_1_hdr.bin
 mediatek/WIFI_RAM_CODE_MT7922_1.bin
 mediatek/mt7925/WIFI_*
 
-# Realtek: the rtw88 and rtw89 families, and the USB sticks rtl8xxxu drives.
-rtw88/*
-rtw89/*
-rtlwifi/rtl8192cufw*.bin
-rtlwifi/rtl8192eu_*.bin
-rtlwifi/rtl8723bu_*.bin
+# Realtek: the PCIe chips rtw88 and rtw89 drive here, and the USB sticks rtl8xxxu drives (its
+# MODULE_FIRMWARE names; linux-firmware has no rtl8723bu_bt, and the 8192CU ids are behind
+# RTL8XXXU_UNTESTED, which this kernel leaves unset). rtw89 asks for the newest format it reads
+# first (fw_format_max); linux-firmware also has formats only later kernels read, and chips not
+# built here (8852BT, 8922D).
+rtw88/rtw8723d_fw.bin
+rtw88/rtw8821c_fw.bin
+rtw88/rtw8822b_fw.bin
+rtw88/rtw8822c_fw.bin
+rtw88/rtw8822c_wow_fw.bin
+rtw89/rtw8851b_fw.bin
+rtw89/rtw8852a_fw.bin
+rtw89/rtw8852b_fw-1.bin
+rtw89/rtw8852c_fw-2.bin
+rtw89/rtw8922a_fw-4.bin
 rtlwifi/rtl8188eufw.bin
+rtlwifi/rtl8188fufw.bin
+rtlwifi/rtl8192eu_nic.bin
+rtlwifi/rtl8192fufw.bin
+rtlwifi/rtl8710bufw_SMIC.bin
+rtlwifi/rtl8710bufw_UMC.bin
+rtlwifi/rtl8723aufw_A.bin
+rtlwifi/rtl8723aufw_B.bin
+rtlwifi/rtl8723aufw_B_NoBT.bin
+rtlwifi/rtl8723bu_nic.bin
 
 # Broadcom over PCIe (Dell and Apple machines); the SDIO parts are not.
 brcm/brcmfmac*-pcie*
 
+# Intel PRO/100 (e100): an 82551 does not come up without d102e_ucode.bin, which fixes its receive
+# path; the D101M and D101S microcode is optional (firmware-accepted.txt).
+e100/d102e_ucode.bin
+
+# Broadcom Tigon3 (tg3): a 5701 A0 does not come up without tg3.bin, the 5703 to 5705 lose TSO
+# without theirs, and the 57766 loads its own.
+tigon/tg3.bin
+tigon/tg3_tso.bin
+tigon/tg3_tso5.bin
+tigon/tg357766.bin
+
+# Realtek Ethernet: the PHY and MAC patches r8169 and r8152 ask for by chip revision (rtl_fw.c).
+# Without one the NIC still runs, unpatched.
+rtl_nic/rtl8105e-1.fw
+rtl_nic/rtl8106e-1.fw
+rtl_nic/rtl8106e-2.fw
+rtl_nic/rtl8107e-2.fw
+rtl_nic/rtl8125a-3.fw
+rtl_nic/rtl8125b-2.fw
+rtl_nic/rtl8125bp-2.fw
+rtl_nic/rtl8125d-1.fw
+rtl_nic/rtl8125d-2.fw
+rtl_nic/rtl8126a-2.fw
+rtl_nic/rtl8126a-3.fw
+rtl_nic/rtl8127a-1.fw
+rtl_nic/rtl8153a-2.fw
+rtl_nic/rtl8153a-3.fw
+rtl_nic/rtl8153a-4.fw
+rtl_nic/rtl8153b-2.fw
+rtl_nic/rtl8153c-1.fw
+rtl_nic/rtl8156a-2.fw
+rtl_nic/rtl8156b-2.fw
+rtl_nic/rtl8168d-1.fw
+rtl_nic/rtl8168d-2.fw
+rtl_nic/rtl8168e-1.fw
+rtl_nic/rtl8168e-2.fw
+rtl_nic/rtl8168e-3.fw
+rtl_nic/rtl8168f-1.fw
+rtl_nic/rtl8168f-2.fw
+rtl_nic/rtl8168fp-3.fw
+rtl_nic/rtl8168g-2.fw
+rtl_nic/rtl8168g-3.fw
+rtl_nic/rtl8168h-2.fw
+rtl_nic/rtl8402-1.fw
+rtl_nic/rtl8411-1.fw
+rtl_nic/rtl8411-2.fw
+
 # Graphics: Intel and AMD, not NVIDIA (GSP firmware is tens of MB; the framebuffer still works).
-i915/*
-xe/*
+# Intel: the files 6.18's i915 and xe name (intel_uc_fw.c, xe_uc_fw.c, intel_dmc.c), not the
+# older versions linux-firmware keeps for older kernels, and xe's fan control, which it asks
+# for by the card's ids (xe_late_bind_fw.c).
+i915/*_guc_70.bin
+i915/adlp_guc_69.0.3.bin
+i915/adlp_guc_70.1.1.bin
+i915/bxt_guc_70.1.1.bin
+i915/cml_guc_70.1.1.bin
+i915/ehl_guc_70.1.1.bin
+i915/glk_guc_70.1.1.bin
+i915/icl_guc_70.1.1.bin
+i915/kbl_guc_70.1.1.bin
+i915/skl_guc_70.1.1.bin
+i915/tgl_guc_69.0.3.bin
+i915/tgl_guc_70.1.1.bin
+i915/*_huc_gsc.bin
+i915/dg1_huc.bin
+i915/tgl_huc.bin
+i915/bxt_huc_2.0.0.bin
+i915/cml_huc_4.0.0.bin
+i915/ehl_huc_9.0.0.bin
+i915/glk_huc_4.0.0.bin
+i915/icl_huc_9.0.0.bin
+i915/kbl_huc_4.0.0.bin
+i915/skl_huc_2.0.0.bin
+i915/tgl_huc_7.9.3.bin
+i915/mtl_gsc_1.bin
+i915/adlp_dmc.bin
+i915/bmg_dmc.bin
+i915/mtl_dmc.bin
+i915/xe2lpd_dmc.bin
+i915/xe3lpd_dmc.bin
+i915/xe3lpd_3002_dmc.bin
+i915/adlp_dmc_ver2_16.bin
+i915/adls_dmc_ver2_01.bin
+i915/bxt_dmc_ver1_07.bin
+i915/dg1_dmc_ver2_02.bin
+i915/dg2_dmc_ver2_08.bin
+i915/glk_dmc_ver1_04.bin
+i915/icl_dmc_ver1_09.bin
+i915/kbl_dmc_ver1_04.bin
+i915/rkl_dmc_ver2_03.bin
+i915/skl_dmc_ver1_27.bin
+i915/tgl_dmc_ver2_12.bin
+xe/bmg_guc_70.bin
+xe/lnl_guc_70.bin
+xe/ptl_guc_70.bin
+xe/*_huc.bin
+xe/lnl_gsc_1.bin
+xe/fan_control_*.bin
+# AMD: amdgpu/, less what 6.18's amdgpu never loads here. SI and CIK parts: DRM_AMDGPU_SI and
+# DRM_AMDGPU_CIK are off and radeon is not built, so they keep the firmware framebuffer.
 amdgpu/*
+except amdgpu/tahiti_*
+except amdgpu/pitcairn_*
+except amdgpu/verde_*
+except amdgpu/oland_*
+except amdgpu/hainan_*
+except amdgpu/si58_*
+except amdgpu/banks_*
+except amdgpu/vce_1_0_0.bin
+except amdgpu/bonaire_*
+except amdgpu/hawaii_*
+except amdgpu/kaveri_*
+except amdgpu/kabini_*
+except amdgpu/mullins_*
+# The camera's ISP (DRM_AMD_ISP is off).
+except amdgpu/isp_*
+# Instinct accelerators, which have no display and no use without KFD (HSA_AMD is off).
+except amdgpu/aldebaran_*
+except amdgpu/arcturus_*
+except amdgpu/gc_9_4_[34]_*
+except amdgpu/gc_9_5_0_*
+except amdgpu/psp_13_0_6_*
+except amdgpu/psp_13_0_12_*
+except amdgpu/psp_13_0_14_*
+except amdgpu/sdma_4_4_[245].bin
+except amdgpu/smu_13_0_6.bin
+except amdgpu/smu_13_0_14.bin
+except amdgpu/vcn_4_0_3.bin
+# IP versions amdgpu_discovery.c does not know yet.
+except amdgpu/gc_11_7_*
+except amdgpu/psp_15_0_*
+except amdgpu/psp_13_0_15_*
+except amdgpu/vcn_5_3_0.bin
+except amdgpu/sdma_6_1_4.bin
+except amdgpu/dcn_4_2_dmcub.bin
+except amdgpu/vpe_2_0_0.bin
+# Never asked for: MEC2 on GC 9.3 and Topaz (gfx_v9_0.c, gfx_v8_0.c), and ASD where the PSP
+# loads only its TOC and TA (psp_v13_0.c).
+except amdgpu/renoir_mec2.bin
+except amdgpu/topaz_mec2.bin
+except amdgpu/psp_13_0_5_asd.bin
+except amdgpu/psp_13_0_8_asd.bin
+except amdgpu/yellow_carp_asd.bin

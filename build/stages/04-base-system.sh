@@ -65,7 +65,7 @@ exception_flags_for() {
 set_flags_for() {
     local pkg="$1" drop
     export CFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
-    export CXXFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
+    export CXXFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING} ${KRYPTIK_CXXFLAGS_HARDENING}"
     export LDFLAGS="${KRYPTIK_LDFLAGS_HARDENING}"
 
     while read -r drop; do
@@ -229,6 +229,8 @@ PACKAGES=(
     "procps-ng"   "native_build procps-ng-${V_PROCPS}.tar.xz procps-ng-${V_PROCPS} --docdir=/usr/share/doc/procps-ng-${V_PROCPS} --disable-static --disable-kill"
     "e2fsprogs"   "s_e2fsprogs"
     "elfutils"    "s_elfutils"
+    # Before iproute2, which otherwise builds with it only when a cached tree already holds it.
+    "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
     "iproute2"    "s_iproute2"
     "kbd"         "s_kbd"
     "eudev"       "s_eudev"
@@ -247,13 +249,12 @@ PACKAGES=(
     # --- updates: the installed system verifies update manifests itself.
     "openssh"     "s_openssh"
     # --- the net zone: NAT, a resolver and a DHCP client.
-    "libmnl"      "native_build libmnl-${V_LIBMNL}.tar.bz2 libmnl-${V_LIBMNL} --disable-static"
     "libnftnl"    "native_build libnftnl-${V_LIBNFTNL}.tar.xz libnftnl-${V_LIBNFTNL} --disable-static"
     "nftables"    "native_build nftables-${V_NFTABLES}.tar.xz nftables-${V_NFTABLES} --without-cli --disable-man-doc --disable-python --with-json=no --disable-static"
     "dnsmasq"     "s_dnsmasq"
     "dhcpcd"      "s_dhcpcd"
     # --- the net zone's Wi-Fi (docs/design/net-zone.md).
-    "libnl"       "native_build libnl-${V_LIBNL}.tar.gz libnl-${V_LIBNL} --sysconfdir=/etc --disable-static"
+    "libnl"       "s_libnl"
     "wpa-supplicant" "s_wpa_supplicant"
     "iw"          "s_iw"
     # --- what the net zone verifies a release server by.
@@ -285,7 +286,7 @@ PACKAGES=(
     "lynx"        "s_lynx"
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
     # The desktop's own pieces; the proxy's path and hash are arguments, as for kryptikd.
-    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none)"
+    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-lock.c" 2>/dev/null || echo none) ${V_DWL}"
 
     # From here the steps configure the system rather than build packages.
     "etc"         "s_etc"
@@ -297,12 +298,13 @@ PACKAGES=(
     "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf "${KRYPTIK_ROOT}"/build/config/keyboard-layouts)"
     # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
-    "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/update-fetch.py" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
     # The binary's path and hash, and a digest of the zone files: kryptikd
     # validates them at install time, so the two must move together.
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(tree_digest "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/*) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"
+    # After kryptikd and efiboot: its check runs kryptik-update, which refuses to start without either.
+    "updater"     "s_updater $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-update" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/update/kryptik-recover" 2>/dev/null || echo none)"
     # The suites and guest checks the VM drivers run; every file is an input.
     "tests"       "s_tests $(tree_digest "${KRYPTIK_ROOT}"/compartments/tests/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/probes/*.sh "${KRYPTIK_ROOT}"/compartments/kryptikd/src/isolate.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/rootfs.rs "${KRYPTIK_ROOT}"/compartments/kryptikd/src/seccomp.rs "${KRYPTIK_ROOT}"/build/guest-tests/*.sh "${KRYPTIK_ROOT}"/build/guest-tests/*.py)"
     # The tarballs it reads are pinned by sources.lock and named by fetch-sources.

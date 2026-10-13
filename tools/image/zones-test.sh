@@ -40,7 +40,6 @@ DISK="${DISK:-${VMDIR}/zones.img}"
 # shellcheck source=tools/image/suite-lib.sh
 source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/zones-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
-drive() { python3 "$DRV" --serial "$SER" --timeout "$1" "${@:2}"; }
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install and boot alone with a NIC"
@@ -51,7 +50,7 @@ install_disk zones-install "$USB" --vars clean && green "installed" || { red "in
 step "step 2: the guest-side zone, network and storage checks (as root)"
 # 3 GB, not 2: ephemeral-size-bound fills untrusted's 2G tmpfs, which is RAM, until ENOSPC.
 start_vm zones-p2 --net user --mem 3072
-drive 900 "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
+DRIVE_TIMEOUT=900 drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/zones-check.sh 2>&1 | tee /var/log/kryptik/zones-check.log; echo ZCHECK-DONE')" \
     "expect:ZT END" "expect:ZCHECK-DONE"
 rc=$?
@@ -67,14 +66,22 @@ grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-unprivileged zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns net-lease-names-resolver dns-follows-lease dns-after-reload routed-ipv6-noglobal zone-separation volume-hidden home-hidden fail-closed net-restart-ready reattach-after-restart uplink-returned uplink-retaken reattach-egress uplink-refused wifi-beyond routed-restart-path uplink-address-refused zone-flows-capped net-cpu-max-set \
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
             wifi-no-dpp \
+            status-network-line \
+            wifi-second-network \
+            wifi-bss-age \
+            wifi-hidden \
             uplink-renamed-plain uplink-state-reset \
+            radio-off-at-start \
             radio-recarried \
-            wifi-wpa2-plain wifi-sae \
+            wifi-wpa2-plain wifi-sae wifi-open wifi-own-address wifi-address-per-network wifi-supplicant-unprivileged wifi-supplicant-no-nft \
+            wifi-refused-wpa2 wifi-refused-cleared wifi-refused-sae \
             zone-clocks-own \
-            time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden net-zone-sysfs-nics-only \
+            wifi-sae-h2e \
+            time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden dns-own-resolver dns-own-port-closed dns-cache-per-zone dns-uplink-closed net-zone-sysfs-nics-only \
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
-            setuid-only-allowed no-file-capabilities sysctls-applied host-activity-hidden fetch-and-sntp-no-caps; do
+            setuid-only-allowed no-file-capabilities sysctls-applied host-activity-hidden fetch-and-sntp-no-caps \
+            microcode-notice; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
@@ -86,7 +93,7 @@ suite_cmd() {   # suite_cmd TAG TAIL_LINES COMMAND -> the guest command line
     printf '%s > /var/log/kryptik/%s-suite.log 2>&1; echo %s-RC=$?; tail -%s /var/log/kryptik/%s-suite.log; grep -n -A3 "^ *FAIL" /var/log/kryptik/%s-suite.log | sed "s/^/%s-FAIL: /" | head -80' \
         "$3" "${1,,}" "$1" "$2" "${1,,}" "${1,,}" "$1"
 }
-drive 1800 \
+DRIVE_TIMEOUT=1800 drive \
     "$(ROOTSH "$(suite_cmd LAUNCHER 12 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd KRYPTIK_SKIP_STALE_CHECK=1 NO_COLOR=1 bash ./launcher.sh')")" "expect:LAUNCHER-RC=[0-9]+" \
     "$(ROOTSH "$(suite_cmd ADVERSARIAL 6 'cd /usr/lib/kryptik/compartments/tests && KRYPTIKD=/usr/bin/kryptikd NO_COLOR=1 bash ./adversarial.sh')")" "expect:ADVERSARIAL-RC=[0-9]+" \
     "$(ROOTSH "$(suite_cmd BOUNDARY 6 'cd /usr/lib/kryptik/compartments/kryptikd/probes && NO_COLOR=1 bash ./boundary-checks.sh /usr/bin/kryptikd')")" "expect:BOUNDARY-RC=[0-9]+" \
@@ -121,7 +128,7 @@ fi
 
 # ----------------------------------------------------------------- step 4 --
 step "step 4: reboot; the encrypted zone's data is still there"
-drive 300 "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+drive "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'kryptikd run personal --zones /usr/lib/kryptik/zones --rootfs /var/lib/kryptik/zones --passphrase-file /root/zt/personal.pass -- cat /home/personal/keep; echo REOPEN-RC=$?')" "expect:secret-data-1" "expect:REOPEN-RC=0" \
     "$(ROOTSH 'ls /dev/mapper | sed s/^/MAPPER:/; echo MAPPER-DONE')" "expect:MAPPER-DONE" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"

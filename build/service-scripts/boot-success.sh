@@ -11,14 +11,14 @@ ZONES="${KRYPTIK_ZONES:-/usr/lib/kryptik/zones}"
 ESP_MNT="${RUN}/esp"
 # shellcheck source=/dev/null
 . "${KRYPTIK_DEVICES:-/usr/libexec/kryptik/devices.sh}"
+# shellcheck source=/dev/null
+. "${KRYPTIK_ESP_RECORDS:-/usr/libexec/kryptik/esp-records.sh}"
 mkdir -p "$B"
 
 ident() { sed -n "s/^$1=//p" "$RUN/boot-identity" 2>/dev/null | head -1; }
 other_slot() { case "$1" in a) echo b ;; b) echo a ;; esac; }
 slot="$(ident slot)"; media="$(ident media)"; state="$(ident state)"
 now() { date -Iseconds 2>/dev/null || date; }
-# Drop FILE's clean pages, so the next read is what the device holds; best effort.
-uncache() { dd if="$1" iflag=nocache count=0 status=none 2>/dev/null || :; }   # uncache FILE
 result() { printf '%s %s\n' "$*" "$(now)" > "$B/last-result.new" && mv -f "$B/last-result.new" "$B/last-result"; }
 
 if [ -n "$media" ]; then
@@ -74,16 +74,14 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
         if cmp -s "$src" "$dst"; then
             say "BOOTX64.EFI already is slot $1"; rc=0
         else
-            # Copy, fsync, compare as the device holds it, then rename: on FAT only the
-            # rename is not atomic, and a copy that landed wrong never becomes the boot file.
-            cp "$src" "$dst.new" && sync -f "$dst.new" && uncache "$dst.new" && cmp -s "$src" "$dst.new" && mv -f "$dst.new" "$dst" && sync -f "$dst" && rc=0
+            # On FAT only the rename is not atomic, and a copy that landed wrong never becomes the boot file.
+            esp_place "$src" "$dst" && sync -f "$dst" && rc=0
             [ "$rc" -eq 0 ] && say "committed: BOOTX64.EFI is now slot $1"
         fi
         # The record is part of the commit, and follows the boot file: kryptik-update
         # applies only from the slot it names, so it must not name one that does not boot.
         if [ "$rc" -eq 0 ]; then
-            { printf '%s\n' "$1" > "$ESP_MNT/kryptik/committed-slot.new" && sync -f "$ESP_MNT/kryptik/committed-slot.new" && \
-                mv -f "$ESP_MNT/kryptik/committed-slot.new" "$ESP_MNT/kryptik/committed-slot"; } \
+            esp_put "$ESP_MNT/kryptik/committed-slot" "$1" \
                 || { say "the committed-slot record could not be written; the trial stays, and the next boot commits again"; rc=1; }
         fi
     else
@@ -106,6 +104,14 @@ forget_entries() {   # forget_entries COMMITTED-SLOT
     kryptik-efiboot ensure "$1" >/dev/null 2>&1 \
         || say "slot $1 has no firmware entry of its own; BOOTX64.EFI is the only way to it"
     return 0
+}
+
+# The trial slot's entry, if BootNext still names it: a firmware's boot manager deletes
+# BootNext before it boots that entry, so one left standing was never used.
+bootnext_left() {   # bootnext_left SLOT
+    fw="$(kryptik-efiboot list 2>/dev/null)" || return 1
+    nx="$(printf '%s\n' "$fw" | sed -n 's/^BootNext: *\(Boot[0-9A-F]\{4\}\)$/\1/p')"
+    [ -n "$nx" ] && printf '%s\n' "$fw" | grep -q "^  $nx: Kryptik slot $1 " && echo "$nx"
 }
 
 # The committed slot as the ESP names it, read whenever no trial is on record.
@@ -155,7 +161,11 @@ if [ -n "$trial" ]; then
             printf 'trial-unhealthy %s: %s\n' "$slot" "$(printf '%s' "$failures" | tr '\n' ';')" > "$B/last-result.new" \
                 && mv -f "$B/last-result.new" "$B/last-result"
             forgot=1; forget_entries "$(other_slot "$slot")" || forgot=0
-            [ ! -f "$B/trial" ] || mv -f "$B/trial" "$B/trial.failed"
+            if [ -f "$B/trial" ]; then
+                mv -f "$B/trial" "$B/trial.failed"
+                # Why, kept with the record: the next boot's own result replaces last-result.
+                printf 'why=came up unhealthy: %s\n' "$(printf '%s' "$failures" | tr '\n' ';' | sed 's/;$//; s/;/; /g')" >> "$B/trial.failed"
+            fi
             sync
             if [ "$forgot" = 0 ] && [ -n "$unrecorded" ]; then
                 # No trial record: only removing its entries stops the next boot repeating it.
@@ -172,10 +182,17 @@ if [ -n "$trial" ]; then
     else
         if [ "$armed" = 1 ]; then
             # trial.failed stops kryptik-update re-arming this payload without --retry.
-            say "trial slot $trial did NOT boot; running slot $slot again"
+            if nx="$(bootnext_left "$trial")"; then
+                say "trial slot $trial was never started: BootNext still names $nx, so the firmware did not use it; running slot $slot again"
+                why="was never started: the firmware left BootNext set, so it may ignore a one-time boot request (after --retry, pick \"Kryptik slot $trial\" in its boot menu)"
+            else
+                say "trial slot $trial did NOT boot; running slot $slot again"
+                why="did not come up to be judged"
+            fi
             result "trial-failed $trial"
             forget_entries "$slot"
             mv -f "$B/trial" "$B/trial.failed"
+            echo "why=$why" >> "$B/trial.failed"
         else
             say "the arming of slot $trial was interrupted before BootNext was set; nothing was tried"
             result "arming-interrupted $trial"

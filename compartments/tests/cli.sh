@@ -242,7 +242,7 @@ fi
 # A passphrase never goes on a command line, where any process could read it: `kryptik wifi add`
 # takes it from the terminal or a pipe and passes it on stdin.
 out="$(K wifi 2>&1)"; rc=$?
-if (( rc != 0 )) && [[ "$out" == *"list, add SSID or forget SSID"* ]]; then
+if (( rc != 0 )) && [[ "$out" == *"list, scan, add SSID or forget SSID"* ]]; then
     pass "wifi without a subcommand fails and names the subcommands"
 else
     fail "wifi without a subcommand: exit $rc"
@@ -264,8 +264,8 @@ else
     fail "wifi add: exit $rc"
     info "output: $(printf '%s' "$out" | tr '\n' '|' | cut -c1-240)"
 fi
-if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 400 ]] && grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
-    pass "the file is 0400 and holds the ssid= and psk= lines kryptikd writes"
+if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 440 ]] && grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
+    pass "the file is 0440 and holds the ssid= and psk= lines kryptikd writes"
 else
     fail "the file is not as kryptikd writes it (mode $(stat -c %a "$WCONF" 2>&1))"
 fi
@@ -289,7 +289,7 @@ fi
 
 # --- update: refused here before the launch service is asked -----------------
 out="$(K update 2>&1)"; rc=$?
-if (( rc == 2 )) && [[ "$out" == *"status, fetch, apply, or auto on|off"* ]]; then
+if (( rc == 2 )) && [[ "$out" == *"status, fetch, forget, apply, or auto on|off"* ]]; then
     pass "update without a subcommand fails and names the subcommands"
 else
     fail "update without a subcommand: exit $rc"
@@ -334,9 +334,13 @@ case "\${1:-}" in
     --runtime-dir) exit 0 ;;
     --wifi-list)   printf 'wifi-list\n' | client | sed -n 's/^network //p' ;;
     --wifi-add)    IFS= read -r pass
-                   r="\$(printf 'wifi-add\nssid %s\npsk %s\nend\n' "\$2" "\$pass" | client)"
+                   r="\$( { printf 'wifi-add\nssid %s\npsk %s\n' "\$2" "\$pass"; [[ "\${3:-}" == --hidden ]] && printf 'hidden\n'; printf 'end\n'; } | client)"
+                   printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
+    --wifi-add-open) r="\$( { printf 'wifi-add\nssid %s\nopen\n' "\$2"; [[ "\${3:-}" == --hidden ]] && printf 'hidden\n'; printf 'end\n'; } | client)"
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
     --wifi-forget) r="\$(printf 'wifi-forget\nssid %s\nend\n' "\$2" | client)"
+                   printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
+    --wifi-scan)   r="\$(printf 'wifi-scan\n' | client)"
                    printf '%s\n' "\$r"; [[ "\$r" == ok* ]] ;;
     *) exit 2 ;;
 esac
@@ -364,6 +368,27 @@ SHIM
             pass "a refusal comes back as the daemon's error line and a failing exit"
         else
             fail "a too-short passphrase through the launch service: exit $rc, output '$out'"
+        fi
+        out="$(KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi add Airport --open < /dev/null 2>&1)"; rc=$?
+        if (( rc == 0 )) && [[ "$out" == "ok added open network \"Airport\";"* ]] && grep -qxF $'\tkey_mgmt=NONE' "$WDAEMON/wpa_supplicant.conf"; then
+            pass "wifi add --open asks for no passphrase and saves an open network through the launch service"
+        else
+            fail "wifi add --open through the launch service: exit $rc, output '$out'"
+        fi
+        out="$(printf 'attic passphrase\n' | KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi add Attic --hidden 2>&1)"; rc=$?
+        if (( rc == 0 )) && [[ "$out" == "ok added hidden network \"Attic\";"* ]] \
+           && grep -A1 -xF $'\tssid="Attic"' "$WDAEMON/wpa_supplicant.conf" | grep -qxF $'\tscan_ssid=1'; then
+            pass "wifi add --hidden saves a network asked for by name through the launch service"
+        else
+            fail "wifi add --hidden through the launch service: exit $rc, output '$out'"
+        fi
+        # No zone runs here: the daemon's scan job asks the registry and says the nic zone is down.
+        out="$(KRYPTIK_LAUNCH="$WORK/launch-shim" K wifi scan 2>&1)"; rc=$?
+        if (( rc != 0 )) && [[ "$out" == "error: kryptikd: wifi: the carrier zone is not running" ]]; then
+            pass "through the launch service, wifi scan runs as the daemon's job and says when the nic zone is not running"
+        else
+            fail "wifi scan through the launch service: exit $rc, output '$out'"
+            sed 's/^/        /' "$WORK/serve.log"
         fi
     else
         fail "the launch daemon did not start for the launch-service checks"

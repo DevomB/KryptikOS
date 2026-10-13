@@ -100,6 +100,24 @@ fn mount_paths_escaped() {
     assert_eq!(mount_escaped("/z/a\\040b"), "/z/a\\134040b");
 }
 
+#[test]
+fn new_passphrase_needs_eight_characters() {
+    let check = |s: &str| Passphrase(s.as_bytes().to_vec()).check_new();
+    assert!(matches!(check("hunter2"), Err(VolumeError::Passphrase(_))), "7 characters refused");
+    assert!(check("dev-pass").is_ok(), "8 characters taken");
+    // Characters, not bytes: seven two-byte letters are seven.
+    assert!(check("\u{e4}\u{f6}\u{fc}\u{e4}\u{f6}\u{fc}\u{e4}").is_err());
+    assert!(check("p\u{e4}ssw\u{f6}rd").is_ok());
+    // Refused before the container or cryptsetup is touched.
+    let dir = std::env::temp_dir().join(format!("kryptik-vol-floor-{}", std::process::id()));
+    let vol = dir.join("v.luks").display().to_string();
+    let short = Passphrase(b"short".to_vec());
+    assert!(matches!(init("floor", &vol, 64 * 1024 * 1024, &short, 0, 0), Err(VolumeError::Passphrase(_))));
+    assert!(!dir.exists(), "nothing is made for a refused passphrase");
+    let old = Passphrase(b"long enough".to_vec());
+    assert!(matches!(change_key("floor", &vol, &old, &short), Err(VolumeError::Passphrase(_))));
+}
+
 /// Needs root, cryptsetup and dm-crypt; returns early without them.
 #[test]
 fn luks2_lifecycle_when_root() {

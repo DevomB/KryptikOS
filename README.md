@@ -105,24 +105,29 @@ the firmware from the pinned linux-firmware release
 
 - **Storage:** NVMe (including Intel VMD), AHCI and PIIX SATA, eMMC and SD on
   SDHCI, LSI MegaRAID and MPT3 SAS, HPE Smart Array, USB mass storage and UAS,
-  virtio, VMware PVSCSI, Hyper-V.
+  virtio, VMware PVSCSI, Hyper-V. The disk Kryptik installs to needs 512-byte
+  logical sectors: 512e is fine, and a 4Kn disk is refused.
 - **Wired network:** Intel e1000/e1000e, igb, igc, ixgbe, i40e; Broadcom tg3
   and bnxt; Realtek r8169; Aquantia AQtion; Mellanox ConnectX-4 and later;
   USB adapters (AX88179, RTL8152); virtio, VMware vmxnet3, Hyper-V.
 - **Wi-Fi:** Intel from the 7260 on; Qualcomm QCA6174, QCA9377, QCA6390,
-  WCN6855, WCN7850; MediaTek MT7921, MT7922, MT7925; Realtek rtw88, rtw89 and
-  rtl8xxxu; Broadcom over PCIe. The net zone owns the radio
+  WCN6855, QCA2066, QCA6698AQ, WCN7850; MediaTek MT7920, MT7921, MT7922,
+  MT7925; Realtek rtw88, rtw89 and rtl8xxxu (not its RTL8188CU and RTL8192CU
+  sticks); Broadcom over PCIe. The net zone owns the radio
   ([net zone design](docs/design/net-zone.md)). No Bluetooth.
 - **Display:** the firmware framebuffer (simpledrm) everywhere; Intel (i915,
-  xe) and AMD (amdgpu) with their firmware; ASPEED and Matrox server BMCs;
-  virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines use the firmware
-  framebuffer. The compositor renders with pixman, so no GPU acceleration is
-  needed.
+  xe) and AMD from GCN 3 on (amdgpu) with their firmware; ASPEED and Matrox
+  server BMCs; virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines, and AMD's
+  GCN 1 and 2 parts, use the firmware framebuffer. The compositor renders
+  with pixman, so no GPU acceleration is needed.
 - **Input:** USB HID, PS/2, I2C touchpads and touchscreens on Intel and AMD
   laptops, VMware and Hyper-V input.
 
-CPU microcode for Intel and AMD is built into the signed kernel. Hyper-V
-trusts only Microsoft's keys, so run Kryptik there with Secure Boot off.
+CPU microcode for Intel and AMD is built into the signed kernel. On a Zen 5
+processor, and a few EPYC models, the kernel loads it only once the machine's
+firmware has AMD's 2025 microcode-signature fix
+([user guide](docs/user-guide.md#1-boot-the-medium)). Hyper-V trusts only
+Microsoft's keys, so run Kryptik there with Secure Boot off.
 
 A machine outside that list boots a kernel that cannot find its disk or its
 network. Adding a driver is one line in the fragment, a firmware file one line

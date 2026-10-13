@@ -396,7 +396,7 @@ if [[ "$r" == "ok added network \"Home\"; the net zone was not restarted"* && -f
 else
     fail "S9b wifi-add: $r"
 fi
-if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 400 ]]; then pass "S9c the file is mode 0400"; else fail "S9c mode $(stat -c %a "$WCONF" 2>&1)"; fi
+if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 440 ]]; then pass "S9c the file is mode 0440"; else fail "S9c mode $(stat -c %a "$WCONF" 2>&1)"; fi
 if grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
     pass "S9d ... holding the ssid= and psk= lines, quoted and tab-indented"
 else
@@ -404,8 +404,8 @@ else
 fi
 if [[ "$(stat -c %a "$WIFI")" == 711 ]]; then pass "S9e the directory is 0711: traversable, not listable"; else fail "S9e directory mode $(stat -c %a "$WIFI")"; fi
 if (( PRIVILEGED == 1 )); then
-    # carrier is the nic zone, the only reader of the file.
-    if [[ "$(stat -c %u:%g "$WCONF")" == "262144:262144" ]]; then pass "S9f the file is owned by the nic zone's identity (carrier, uid_base 262144)"; else fail "S9f owned by $(stat -c %u:%g "$WCONF"), not 262144:262144"; fi
+    # carrier is the nic zone, the only reader of the file: its supplicant's user (101) and root's group.
+    if [[ "$(stat -c %u:%g "$WCONF")" == "262245:262144" ]]; then pass "S9f the file is owned by the nic zone's supplicant user and its root's group (carrier, uid_base 262144)"; else fail "S9f owned by $(stat -c %u:%g "$WCONF"), not 262245:262144"; fi
 else
     if [[ "$(stat -c %u "$WCONF")" == "$EUID" ]]; then pass "S9f an unprivileged daemon leaves the file owned by its writer"; else fail "S9f owned by $(stat -c %u "$WCONF")"; fi
 fi
@@ -430,13 +430,35 @@ else
 fi
 r="$(ask 'wifi-forget\nssid Home\nend\n')"
 if [[ "$r" == "ok forgot network \"Home\";"* ]] && ! grep -qF Home "$WCONF" && grep -qxF $'\tssid="Cafe Wifi"' "$WCONF" \
-   && grep -qxF 'ctrl_interface=/run/wpa_supplicant' "$WCONF" && grep -qxF 'update_config=0' "$WCONF"; then
+   && grep -qxF 'ctrl_interface=/run/wpa_supplicant' "$WCONF" && grep -qxF 'update_config=0' "$WCONF" \
+   && grep -qxF 'scan_res_valid_for_connect=0' "$WCONF" && grep -qxF 'sae_pwe=2' "$WCONF"; then
     pass "S9m wifi-forget removes only its block; the header and the other network stay"
 else
     fail "S9m: $r"; sed 's/^/        /' "$WCONF"
 fi
 r="$(ask 'wifi-forget\nssid Home\nend\n')"
 if [[ "$r" == "error: no network named \"Home\""* ]]; then pass "S9n forgetting a network that is not there is an error"; else fail "S9n: $r"; fi
+# A network with no passphrase, a cafe's: `open` in place of the psk line, joined only without a key.
+r="$(ask 'wifi-add\nssid Airport\nopen\nend\n')"
+if [[ "$r" == "ok added open network \"Airport\";"* && "$(sed -n '/^\tssid="Airport"$/,/^}$/p' "$WCONF" | grep -v $'^\tmac_')" == $'\tssid="Airport"\n\tkey_mgmt=NONE\n}' ]]; then
+    pass "S9v an open network is saved as key_mgmt=NONE, with no psk and no ieee80211w"
+else
+    fail "S9v: $r"; sed 's/^/        /' "$WCONF"
+fi
+r="$(ask 'wifi-add\nssid Airport\npsk now has one\nopen\nend\n')"
+if [[ "$r" == "error: wifi-add: a psk line or an open line, one of them"* ]] && ! grep -qF 'now has one' "$WCONF"; then
+    pass "S9w a request with both a psk and open is refused, and writes nothing"
+else
+    fail "S9w: $r"
+fi
+# Each saved network carries an address of its own, which wpa_supplicant joins it from.
+macs="$(sed -n 's/^\tmac_value=//p' "$WCONF")"
+if [[ "$(grep -c $'^\tmac_addr=3$' "$WCONF")" == "$(grep -c '^network={' "$WCONF")" && "$(wc -l <<<"$macs")" == "$(sort -u <<<"$macs" | wc -l)" ]] \
+   && ! grep -vqE '^[0-9a-f][26ae](:[0-9a-f]{2}){5}$' <<<"$macs"; then
+    pass "S9x each saved network has an address of its own, locally administered and unicast"
+else
+    fail "S9x addresses: $(tr '\n' ' ' <<<"$macs")"
+fi
 
 # Refusals: each names its rule, and the file is byte-identical afterwards.
 cp "$WCONF" "$WORK/wifi-before"

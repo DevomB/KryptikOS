@@ -617,3 +617,37 @@ fn each_call_named_once() {
     }
     assert_eq!(name_of(libc::SYS_futex), Some("futex"));
 }
+
+#[test]
+fn supplicant_sockets_only_as_it_opens_them() {
+    let p = supplicant_program();
+    let socket = |family: u64, kind: u64, protocol: u64| {
+        evaluate_args(&p, AUDIT_ARCH_X86_64, libc::SYS_socket as u32, [family, kind, protocol, 0, 0, 0])
+    };
+    let refused = SECCOMP_RET_ERRNO | EPERM;
+    for (family, kind, protocol, why) in [
+        (1, 1 | 0x8_0000, 0, "its control socket"),
+        (17, 3, 0x888e, "EAPOL"),
+        (16, 3 | 0x8_0000, 16, "nl80211"),
+        (16, 3, 0, "link events"),
+        (2, 2, 0, "the driver's ioctl socket"),
+        (2, 2 | 0x8_0000 | 0x800, 0, "the same, close-on-exec and non-blocking"),
+    ] {
+        assert_eq!(socket(family, kind, protocol), SECCOMP_RET_ALLOW, "{why}");
+    }
+    for (family, kind, protocol, why) in [
+        (16, 3, 12, "nf_tables"),
+        (16, 3, 9, "audit"),
+        (2, 1, 0, "TCP"),
+        (2, 3, 0, "raw IP"),
+        (2, 2 | 0x10, 0, "a datagram type with an unknown flag"),
+        (10, 2, 0, "IPv6"),
+        (40, 1, 0, "vsock"),
+    ] {
+        assert_eq!(socket(family, kind, protocol), refused, "{why}");
+    }
+    // Every other call is its zone filter's to decide.
+    assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_read as u32), SECCOMP_RET_ALLOW);
+    assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, X32_SYSCALL_BIT | 41), SECCOMP_RET_KILL_PROCESS, "x32");
+    assert_eq!(evaluate(&p, 0x4000_0003, libc::SYS_read as u32), SECCOMP_RET_KILL_PROCESS, "another arch");
+}

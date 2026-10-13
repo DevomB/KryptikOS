@@ -5,6 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
+use crate::clipboard::{Action, Clipboard, Selection};
 use crate::policy;
 use crate::protocol::{self, Message};
 use crate::wire::{ArgReader, Header, MessageWriter, WireError, HEADER_LEN, MAX_MESSAGE_LEN, SERVER_ID_BASE};
@@ -306,6 +307,12 @@ impl Objects {
         }
     }
 
+    /// The lowest free server id, for an object the proxy creates itself.
+    fn free_server_id(&self) -> Option<u32> {
+        let i = self.server.iter().position(Option::is_none).unwrap_or(self.server.len());
+        (i < policy::MAX_ID_SLOTS).then(|| SERVER_ID_BASE + i as u32)
+    }
+
     /// A client-range object where a test wants it, gaps and all.
     #[cfg(test)]
     fn place(&mut self, id: u32, o: Obj) {
@@ -349,6 +356,8 @@ struct Surface {
 /// The proxied connection.
 pub struct Session {
     pub zone: String,
+    /// The main loop's number for this connection, by which the clipboard names it.
+    pub id: u64,
     pub client: Endpoint,
     pub server: Endpoint,
     objects: Objects,
@@ -362,10 +371,20 @@ pub struct Session {
     pub shm_pool_bytes: usize,
     pub shm_pool_count: usize,
     pub toplevels: usize,
+    pub popups: usize,
     /// Globals let through to the client: name -> (interface, version cap).
     globals: HashMap<u32, (&'static str, u32)>,
     /// wl_output object -> the global it was bound from, which names the output to the zone.
     outputs: HashMap<u32, u32>,
+    /// The data device objects the proxy serves (clipboard.rs): each source's types, the
+    /// devices, and the selection each offer describes, by its number.
+    sources: HashMap<u32, Vec<String>>,
+    devices: Vec<u32>,
+    offers: HashMap<u32, u64>,
+    /// Client ids the compositor holds a wl_display.sync callback for, sent in place of a served
+    /// object's creation so the ids it sees stay dense; its answer is not the client's to see.
+    /// Counted, as the client can make an id a served object again before the answer comes.
+    placeholders: HashMap<u32, u32>,
     pub hidden_count: usize,
     pub forwarded_c2s: u64,
     pub forwarded_s2c: u64,
@@ -373,8 +392,14 @@ pub struct Session {
 }
 
 const WL_DISPLAY: u32 = 1;
+const WL_DISPLAY_SYNC: u16 = 0; // request
 const WL_DISPLAY_ERROR: u16 = 0; // event
 const WL_DISPLAY_DELETE_ID: u16 = 1; // event
+const WL_DATA_OFFER_OFFER: u16 = 0; // event
+const WL_DATA_SOURCE_SEND: u16 = 1; // event
+const WL_DATA_SOURCE_CANCELLED: u16 = 2; // event
+const WL_DATA_DEVICE_DATA_OFFER: u16 = 0; // event
+const WL_DATA_DEVICE_SELECTION: u16 = 5; // event
 const WL_REGISTRY_BIND: u16 = 0; // request
 const WL_REGISTRY_GLOBAL: u16 = 0; // event
 const WL_REGISTRY_GLOBAL_REMOVE: u16 = 1; // event
@@ -383,6 +408,7 @@ impl Session {
     pub fn new(zone: &str, client_fd: RawFd, server_fd: RawFd) -> Session {
         Session {
             zone: zone.to_string(),
+            id: 0,
             client: Endpoint::new(client_fd),
             server: Endpoint::new(server_fd),
             objects: Objects::new((protocol::find("wl_display").expect("wl_display in tables"), 1)),
@@ -395,8 +421,13 @@ impl Session {
             shm_pool_bytes: 0,
             shm_pool_count: 0,
             toplevels: 0,
+            popups: 0,
             globals: HashMap::new(),
             outputs: HashMap::new(),
+            sources: HashMap::new(),
+            devices: Vec::new(),
+            offers: HashMap::new(),
+            placeholders: HashMap::new(),
             hidden_count: 0,
             forwarded_c2s: 0,
             forwarded_s2c: 0,
@@ -434,9 +465,14 @@ impl Session {
         if iface.name == "xdg_toplevel" && self.toplevels >= policy::MAX_TOPLEVELS_PER_SESSION {
             return Err(SessionError::ResourceLimit("too many toplevels in one session"));
         }
+        if iface.name == "xdg_popup" && self.popups >= policy::MAX_POPUPS_PER_SESSION {
+            return Err(SessionError::ResourceLimit("too many popups in one session"));
+        }
         self.objects.insert(id, (iface, version))?;
-        if iface.name == "xdg_toplevel" {
-            self.toplevels += 1;
+        match iface.name {
+            "xdg_toplevel" => self.toplevels += 1,
+            "xdg_popup" => self.popups += 1,
+            _ => {}
         }
         Ok(())
     }
@@ -526,8 +562,162 @@ impl Session {
         Ok(())
     }
 
+    /// A message of the proxy's own to the client, within the client's bounds.
+    fn emit(&mut self, msg: Option<Vec<u8>>, fds: Vec<OwnedFd>) -> Result<(), SessionError> {
+        let msg = msg.ok_or(SessionError::ResourceLimit("a message of the proxy's own does not fit"))?;
+        if self.client.pending_out + msg.len() > policy::MAX_PENDING_BYTES {
+            return Err(SessionError::TooMuchPending(Dir::ServerToClient));
+        }
+        if self.client.pending_fds + fds.len() > policy::MAX_PENDING_FDS {
+            return Err(SessionError::TooManyFds);
+        }
+        self.client.queue(&msg, fds.into_iter().map(IntoRawFd::into_raw_fd).collect());
+        Ok(())
+    }
+
+    /// The compositor is sent a wl_display.sync on the id of an object the proxy serves, so the
+    /// ids it sees stay dense; the callback's answer and its delete_id stop here (pump).
+    fn placeholder(&mut self, id: u32) -> Result<(), SessionError> {
+        let m = MessageWriter::new(WL_DISPLAY, WL_DISPLAY_SYNC).u32(id).finish();
+        let m = m.ok_or(SessionError::ResourceLimit("a placeholder does not fit"))?;
+        if self.server.pending_out + m.len() > policy::MAX_PENDING_BYTES {
+            return Err(SessionError::TooMuchPending(Dir::ClientToServer));
+        }
+        self.server.queue(&m, Vec::new());
+        *self.placeholders.entry(id).or_insert(0) += 1;
+        Ok(())
+    }
+
+    /// A delete_id for a placeholder, counted off: the id is free at the compositor, while the
+    /// client's object, the proxy's, is freed when the client destroys it.
+    fn end_placeholder(&mut self, id: u32) -> bool {
+        let Some(n) = self.placeholders.get_mut(&id) else { return false };
+        *n -= 1;
+        if *n == 0 {
+            self.placeholders.remove(&id);
+        }
+        true
+    }
+
+    /// A served object the client destroyed: the proxy, its server, frees the id.
+    fn served_gone(&mut self, id: u32) -> Result<(), SessionError> {
+        self.objects.remove(id);
+        self.emit(MessageWriter::new(WL_DISPLAY, WL_DISPLAY_DELETE_ID).u32(id).finish(), Vec::new())
+    }
+
+    fn cancel(&mut self, source: u32) -> Result<(), SessionError> {
+        self.emit(MessageWriter::new(source, WL_DATA_SOURCE_CANCELLED).finish(), Vec::new())
+    }
+
+    /// The zone's selection offered to these data devices of the client's: a new wl_data_offer
+    /// with each type, then the selection event naming it, or naming none.
+    fn offer_selection(&mut self, clip: &Clipboard, devices: &[u32]) -> Result<(), SessionError> {
+        for &dev in devices {
+            let Some((_, version)) = self.objects.get(dev) else { continue };
+            let mut offer = 0;
+            if let Some(sel) = &clip.selection {
+                offer = self.objects.free_server_id().ok_or(SessionError::TooManyObjects)?;
+                self.register(offer, "wl_data_offer", version, Dir::ServerToClient)?;
+                self.offers.insert(offer, clip.generation);
+                self.emit(MessageWriter::new(dev, WL_DATA_DEVICE_DATA_OFFER).u32(offer).finish(), Vec::new())?;
+                for t in &sel.mimes {
+                    self.emit(MessageWriter::new(offer, WL_DATA_OFFER_OFFER).string(t).finish(), Vec::new())?;
+                }
+            }
+            self.emit(MessageWriter::new(dev, WL_DATA_DEVICE_SELECTION).u32(offer).finish(), Vec::new())?;
+        }
+        Ok(())
+    }
+
+    /// A request on a data device object, answered by the proxy: a copy is taken only from the
+    /// client with the keyboard, and a paste is passed to the copy's client as wl_data_source.send.
+    fn serve(&mut self, iface: &str, request: &str, object: u32, body: &[u8], fds: &mut Vec<OwnedFd>, clip: &mut Clipboard) -> Result<(), SessionError> {
+        let mut r = ArgReader::new(body);
+        match (iface, request) {
+            ("wl_data_device_manager", "create_data_source") => {
+                if self.sources.len() >= policy::MAX_DATA_SOURCES_PER_SESSION {
+                    return Err(SessionError::ResourceLimit("too many data sources in one session"));
+                }
+                self.sources.insert(r.u32()?, Vec::new());
+            }
+            ("wl_data_device_manager", "get_data_device") => self.devices.push(r.u32()?),
+            ("wl_data_source", "offer") => {
+                let mime = r.string()?.unwrap_or("");
+                let types = self.sources.get_mut(&object).ok_or(SessionError::UnknownObject(object))?;
+                if types.len() >= policy::MAX_MIME_TYPES || mime.len() > policy::MAX_MIME_BYTES {
+                    return Err(SessionError::ResourceLimit("a data source's types"));
+                }
+                if !types.iter().any(|t| t == mime) {
+                    types.push(mime.to_string());
+                }
+            }
+            ("wl_data_source", "destroy") => {
+                self.sources.remove(&object);
+                clip.source_gone(self.id, object);
+                self.served_gone(object)?;
+            }
+            ("wl_data_device", "set_selection") => {
+                let source = r.u32()?;
+                if source != 0 && !self.sources.contains_key(&source) {
+                    return Err(SessionError::Forbidden("set_selection names no data source of this client's"));
+                }
+                if clip.focus == Some(self.id) {
+                    clip.set((source != 0).then(|| Selection { owner: self.id, source, mimes: self.sources[&source].clone(), data: None }));
+                } else if source != 0 && !clip.selection.as_ref().is_some_and(|s| s.owner == self.id && s.source == source) {
+                    // Without the keyboard there is no copy: this source never held the selection.
+                    self.cancel(source)?;
+                }
+            }
+            ("wl_data_device", "start_drag") => {
+                // Drag and drop is not served: its source hears at once that nothing took it.
+                let source = r.u32()?;
+                if self.sources.contains_key(&source) {
+                    self.cancel(source)?;
+                }
+            }
+            ("wl_data_device", "release") => {
+                self.devices.retain(|&d| d != object);
+                self.served_gone(object)?;
+            }
+            ("wl_data_offer", "receive") => {
+                let mime = r.string()?.unwrap_or("");
+                let fd = fds.pop();
+                // An older selection's offer, or a type not offered: the reader just gets end of file.
+                if let (Some(sel), Some(fd)) = (&clip.selection, fd) {
+                    if self.offers.get(&object) == Some(&clip.generation) && sel.mimes.iter().any(|t| t == mime) {
+                        let send = Action::Send(sel.owner, sel.source, mime.to_string(), fd);
+                        clip.actions.push(send);
+                    }
+                }
+            }
+            ("wl_data_offer", "destroy") => {
+                // A server id, which the proxy may give out again: no delete_id.
+                self.offers.remove(&object);
+                self.objects.remove(object);
+            }
+            // Drag and drop's own, and the actions it negotiates.
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// What another session's messages asked of this one (clipboard.rs).
+    pub fn act(&mut self, a: Action, clip: &Clipboard) -> Result<(), SessionError> {
+        match a {
+            Action::Offer(_) if clip.focus == Some(self.id) => {
+                let devices = self.devices.clone();
+                self.offer_selection(clip, &devices)
+            }
+            Action::Cancel(_, source) if self.sources.contains_key(&source) => self.cancel(source),
+            Action::Send(_, source, mime, fd) if self.sources.contains_key(&source) => {
+                self.emit(MessageWriter::new(source, WL_DATA_SOURCE_SEND).string(&mime).finish(), vec![fd])
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Process every complete message in one direction; Ok(()) when more input is needed.
-    pub fn pump(&mut self, dir: Dir) -> Result<(), SessionError> {
+    pub fn pump(&mut self, dir: Dir, clip: &mut Clipboard) -> Result<(), SessionError> {
         // Reused for every message of this pass.
         let mut msg: Vec<u8> = Vec::new();
         loop {
@@ -544,6 +734,11 @@ impl Session {
             if src.pending_in().len() < size {
                 return Ok(());
             }
+            // A placeholder's wl_callback.done: the client made no callback.
+            if dir == Dir::ServerToClient && self.placeholders.contains_key(&h.object) {
+                src.take(size, &mut msg);
+                continue;
+            }
             let (iface, m, version) = self.lookup(h.object, dir, h.opcode)?;
             let needed = m.fd_count();
             let src = match dir {
@@ -555,7 +750,7 @@ impl Session {
             }
             src.take(size, &mut msg);
             // Owned, so a rejection before queueing closes them.
-            let fds: Vec<OwnedFd> = src.in_fds.drain(..needed).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }).collect();
+            let mut fds: Vec<OwnedFd> = src.in_fds.drain(..needed).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }).collect();
             let decoded = protocol::decode(m, &msg[HEADER_LEN..])?;
 
             // --- policy, per message ---------------------------------------
@@ -572,7 +767,9 @@ impl Session {
                             (Some((_, n)), Some(v)) => (n, v),
                             _ => return Err(SessionError::Wire(WireError::ArgOverrun)),
                         };
-                        let max = policy::allowed_version(name).ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
+                        let max = policy::allowed_version(name)
+                            .or_else(|| policy::own_version(name))
+                            .ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
                         // The global's number pins one advertised interface and version cap.
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
@@ -590,6 +787,11 @@ impl Session {
                                 self.outputs.insert(id, gname);
                             }
                         }
+                        forward = !policy::served(name);
+                    }
+                    if policy::served(iface.name) {
+                        forward = false;
+                        self.serve(iface.name, m.name, h.object, &msg[HEADER_LEN..], &mut fds, clip)?;
                     }
                     if iface.name == "xdg_toplevel" && (m.name == "set_title" || m.name == "set_app_id") {
                         if let Some((_, s)) = decoded.strings.first() {
@@ -602,9 +804,6 @@ impl Session {
                                 None => return Err(SessionError::Wire(WireError::BadSize(h.size))),
                             }
                         }
-                    }
-                    if iface.name == "xdg_surface" && m.name == "get_popup" {
-                        return Err(SessionError::Forbidden("xdg_surface.get_popup"));
                     }
                     if iface.name == "wl_shm" && m.name == "create_pool" {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
@@ -753,11 +952,27 @@ impl Session {
                         };
                         rewritten = Some(w.finish().ok_or(SessionError::Wire(WireError::BadSize(h.size)))?);
                     }
-                    if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
+                    /* The zone's selection reaches a client just before the keyboard does, as a
+                     * compositor's would; while the keyboard is there, that client alone copies. */
+                    if iface.name == "wl_keyboard" && m.name == "enter" {
+                        clip.focus = Some(self.id);
+                        let devices = self.devices.clone();
+                        self.offer_selection(clip, &devices)?;
+                    }
+                    if iface.name == "wl_keyboard" && m.name == "leave" && clip.focus == Some(self.id) {
+                        clip.focus = None;
+                    }
+                    let placeholder_end = h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID
+                        && self.end_placeholder(ArgReader::new(&msg[HEADER_LEN..]).u32()?);
+                    if placeholder_end {
+                        forward = false;
+                    } else if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
-                        if self.objects.get(id).is_some_and(|(i, _)| i.name == "xdg_toplevel") {
-                            self.toplevels -= 1;
+                        match self.objects.get(id).map(|(i, _)| i.name) {
+                            Some("xdg_toplevel") => self.toplevels -= 1,
+                            Some("xdg_popup") => self.popups -= 1,
+                            _ => {}
                         }
                         self.outputs.remove(&id);
                         if let Some(generation) = self.pool_ids.remove(&id) {
@@ -787,6 +1002,21 @@ impl Session {
             // A bind picks the new object's version; any other new object inherits its parent's.
             if let Some((id, name)) = decoded.new_object {
                 self.register(id, name, decoded.bind_version.unwrap_or(version), dir)?;
+                // A new registry hears of the proxy's own globals first, then the compositor's.
+                if name == "wl_registry" {
+                    for (i, &(iface, v)) in policy::OWN_GLOBALS.iter().enumerate() {
+                        let gname = policy::OWN_GLOBAL_BASE + i as u32;
+                        self.globals.insert(gname, (iface, v));
+                        self.emit(MessageWriter::new(id, WL_REGISTRY_GLOBAL).u32(gname).string(iface).u32(v).finish(), Vec::new())?;
+                    }
+                }
+                // A served object's creation reaches the compositor as a placeholder only.
+                if dir == Dir::ClientToServer && !forward {
+                    self.placeholder(id)?;
+                    if name == "wl_data_device" && clip.focus == Some(self.id) {
+                        self.offer_selection(clip, &[id])?;
+                    }
+                }
             }
             let msg: &[u8] = rewritten.as_deref().unwrap_or(&msg);
             let dst = match dir {
