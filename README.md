@@ -378,6 +378,7 @@ Designs of the individual parts:
 - [Update channel](docs/design/update-channel.md): fetching releases through the net zone
 - [State encryption](docs/design/state-encryption.md): the encrypted state partition
 - [Keyboard layout](docs/design/keyboard-layout.md): one layout for the passphrase prompt, the console and the desktop
+- [Removable storage](docs/design/removable-storage.md): a USB stick read in the zone the user gives it to
 
 ## License
 
