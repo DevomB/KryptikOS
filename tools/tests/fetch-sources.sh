@@ -360,6 +360,10 @@ crate_with 0000000000000000000000000000000000000000000000000000000000000000; cra
 run_crates
 expect_fail "a crate whose bytes are not what the Cargo.lock says is refused" "CHECKSUM MISMATCH for crate dep 0.1.0"
 
+KRYPTIK_ROOT="$FAKE" NO_COLOR=1 bash "$TOOL" --crates "${UPSTREAM}/tool-1.0.crate" > "$OUT" 2>&1
+[[ "$(cat "$OUT")" == "dep 0.1.0 0000000000000000000000000000000000000000000000000000000000000000" ]] \
+    && green "--crates prints what a crate's lock names" || { red "--crates printed something else"; show; }
+
 if KRYPTIK_ROOT="$FAKE" KRYPTIK_CRATES="file://${CR}" NO_COLOR=1 bash "$TOOL" --list > "$OUT" 2>&1; then
     red "a crates mirror was taken without the test's manifest"
 else
@@ -408,6 +412,15 @@ if [[ -z "${stale// /}" ]]; then
     green "every lock entry corresponds to a manifest row of its own set"
 else
     red "lock entries with no manifest row: ${stale}"
+fi
+
+# Mozilla's key is taken from the KEY file beside the pinned release; a Firefox bump that left the row
+# behind would keep importing a file that never learns a later revocation.
+vf="$(sed -n 's/^V_FIREFOX=//p' "${ROOT}/build/images/versions.env")"
+if [[ -n "$vf" ]] && grep -Eq "^14F26682D0916CDD81E37B6D61B7B526D98F0353[[:space:]]+origin[[:space:]]+https://archive[.]mozilla[.]org/pub/firefox/releases/${vf//./[.]}esr/KEY[[:space:]]" "${ROOT}/tools/key-provenance.tsv"; then
+    green "Mozilla's key row names the KEY file beside the pinned Firefox, ${vf}esr"
+else
+    red "tools/key-provenance.tsv's Mozilla row does not name releases/${vf:-?}esr/KEY: a Firefox bump moves it too"
 fi
 
 # The browser's Rust layer and kryptikd's compiler are one release: both locks hold the same three.
