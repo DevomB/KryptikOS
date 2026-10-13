@@ -360,6 +360,10 @@ crate_with 0000000000000000000000000000000000000000000000000000000000000000; cra
 run_crates
 expect_fail "a crate whose bytes are not what the Cargo.lock says is refused" "CHECKSUM MISMATCH for crate dep 0.1.0"
 
+KRYPTIK_ROOT="$FAKE" NO_COLOR=1 bash "$TOOL" --crates "${UPSTREAM}/tool-1.0.crate" > "$OUT" 2>&1
+[[ "$(cat "$OUT")" == "dep 0.1.0 0000000000000000000000000000000000000000000000000000000000000000" ]] \
+    && green "--crates prints what a crate's lock names" || { red "--crates printed something else"; show; }
+
 if KRYPTIK_ROOT="$FAKE" KRYPTIK_CRATES="file://${CR}" NO_COLOR=1 bash "$TOOL" --list > "$OUT" 2>&1; then
     red "a crates mirror was taken without the test's manifest"
 else
