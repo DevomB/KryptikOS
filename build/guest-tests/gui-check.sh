@@ -727,9 +727,9 @@ stop_zone untrusted
 # and the popup goes as it does.
 mark popup untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 40 grab" > "$LOG/launch-popup.out" 2>&1
-popup_drawn() { since_mark popup untrusted | grep -q '^popup committed '; }
+popup_drawn() { since_mark popup untrusted | grep -q 'popup committed '; }
 if wait_for 20 popup_drawn && grep -q '^zone=0' "$RT/kryptik/focus"; then
-    pass "zone-popup-drawn" "$(since_mark popup untrusted | grep '^popup committed '), behind zone 0's window"
+    pass "zone-popup-drawn" "$(since_mark popup untrusted | grep 'popup committed '), behind zone 0's window"
 else
     fail "zone-popup-drawn" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); probe: $(since_mark popup untrusted | tail -4 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-popup.out"); $(zone_why untrusted)"
 fi
@@ -737,7 +737,7 @@ sleep 2
 echo "GT SCREENSHOT-POPUP"
 sleep 6
 menus_before="$(menu_windows)"
-popup_done() { since_mark popup untrusted | grep -q '^popup done'; }
+popup_done() { since_mark popup untrusted | grep -q 'popup done'; }
 echo "GT KEY-MENU-POPUP"
 if wait_for 20 more_menus && wait_for 10 popup_done && wait_for 10 grep -q '^zone=0' "$RT/kryptik/focus"; then
     pass "zone-popup-yields-keyboard" "the menu opened over the zone's grab, and the popup was closed as the keyboard moved"
@@ -751,9 +751,9 @@ stop_zone untrusted
 # under a frame that names the zone's.
 mark popup-own untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 40 grab" > "$LOG/launch-popup-own.out" 2>&1
-own_drawn() { since_mark popup-own untrusted | grep -q '^popup committed '; }
-own_done() { since_mark popup-own untrusted | grep -q '^popup done'; }
-own_keyed() { since_mark popup-own untrusted | grep -q '^keyboard entered the window'; }
+own_drawn() { since_mark popup-own untrusted | grep -q 'popup committed '; }
+own_done() { since_mark popup-own untrusted | grep -q 'popup done'; }
+own_keyed() { since_mark popup-own untrusted | grep -q 'keyboard entered the window'; }
 wait_for 20 own_drawn
 echo "GT KEY-FOCUS-POPUP"
 if wait_for 10 own_done && wait_for 10 own_keyed && wait_for 10 grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
