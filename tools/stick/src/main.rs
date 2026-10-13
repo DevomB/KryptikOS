@@ -104,18 +104,27 @@ fn civil(secs: u64) -> (u16, u16, u16, u16, u16, u16) {
     (year as u16, month as u16, day as u16, (rem / 3600) as u16, (rem / 60 % 60) as u16, (rem % 60) as u16)
 }
 
-/// A name the stick holds, for a terminal: control characters, which could act on it, as `?`.
+/// A name the stick holds, for a terminal: control characters, which could act on it, and the
+/// marks that turn text around, which could show a name backwards, as `?`.
 fn shown(name: &str) -> String {
-    name.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
+    name.chars().map(|c| if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { '?' } else { c }).collect()
 }
 
-/// A name the stick holds, as one component of a path here, or why it cannot be one.
+/// A name the stick holds, as one component of a path here, or why it cannot be one. FAT allows
+/// no control character in a name, so a name holding one was made to be one.
 fn local_name(name: &str) -> Result<&str, String> {
     match name {
         "" | "." | ".." => Err(format!("the stick holds an entry named {:?}, which is no file name here", shown(name))),
-        n if n.contains(['/', '\0']) => Err(format!("the stick holds an entry named {:?}, which is no file name here", shown(n))),
+        n if n.contains(['/', '\0']) || n.chars().any(char::is_control) => {
+            Err(format!("the stick holds an entry named {:?}, which is no file name here", shown(n)))
+        }
         n => Ok(n),
     }
+}
+
+/// A path here, in an error, as `shown` has a name.
+fn here(p: &Path) -> String {
+    shown(&p.display().to_string())
 }
 
 /// A path on the stick without its leading and trailing slashes; / is "".
@@ -123,18 +132,86 @@ fn on_stick(path: &str) -> &str {
     path.trim_matches('/')
 }
 
-fn open_dir<'a, T: ReadWriteSeek>(fs: &'a FileSystem<T>, dir: &str) -> Result<fatfs::Dir<'a, T>, String> {
-    match on_stick(dir) {
-        "" => Ok(fs.root_dir()),
-        d => fs.root_dir().open_dir(d).map_err(|e| format!("{}: {e}", shown(dir))),
+/// FAT's own limit on one directory's entries.
+const DIR_ENTRIES_MAX: u64 = 65_536;
+const MALFORMED: &str = "the stick's filesystem is malformed: it holds more than it has room for";
+
+/// What one command may read off the stick: no more directory entries than the volume has room
+/// for, nor more bytes. fatfs follows a cluster chain that loops, which would make a directory
+/// endless, and directories that alias an ancestor would multiply under `get` until the zone's
+/// disk was full.
+struct Budget {
+    entries: u64,
+    bytes: u64,
+}
+
+impl Budget {
+    fn of<T: ReadWriteSeek>(fs: &FileSystem<T>) -> Result<Budget, String> {
+        let s = fs.stats().map_err(|e| e.to_string())?;
+        let data = u64::from(s.total_clusters()) * u64::from(s.cluster_size());
+        // A FAT12 or FAT16 root directory lies outside the data area, with up to as many again.
+        Ok(Budget { entries: data / 32 + DIR_ENTRIES_MAX, bytes: data })
+    }
+
+    /// One more entry of a directory that has shown `n` before it.
+    fn entry(&mut self, n: &mut u64) -> Result<(), String> {
+        *n += 1;
+        if *n > DIR_ENTRIES_MAX {
+            return Err(MALFORMED.into());
+        }
+        self.entries = self.entries.checked_sub(1).ok_or(MALFORMED)?;
+        Ok(())
+    }
+
+    fn take(&mut self, bytes: u64) -> Result<(), String> {
+        self.bytes = self.bytes.checked_sub(bytes).ok_or(MALFORMED)?;
+        Ok(())
+    }
+}
+
+/// The entry PATH names on the stick, its directories walked within the budget; None for the
+/// root. Names compare as FAT compares them, without regard to case.
+fn find<'a, T: ReadWriteSeek>(fs: &'a FileSystem<T>, path: &str, budget: &mut Budget) -> Result<Option<fatfs::DirEntry<'a, T>>, String> {
+    let mut found: Option<fatfs::DirEntry<'a, T>> = None;
+    for part in on_stick(path).split('/').filter(|p| !p.is_empty()) {
+        let dir = match found.take() {
+            None => fs.root_dir(),
+            Some(e) if e.is_dir() => e.to_dir(),
+            Some(_) => return Err(format!("{}: not a directory", shown(path))),
+        };
+        let mut n = 0;
+        for e in dir.iter() {
+            let e = e.map_err(|e| format!("{}: {e}", shown(path)))?;
+            budget.entry(&mut n)?;
+            if e.file_name().eq_ignore_ascii_case(part) || e.short_file_name().eq_ignore_ascii_case(part) {
+                found = Some(e);
+                break;
+            }
+        }
+        if found.is_none() {
+            return Err(format!("{}: not on the stick", shown(path)));
+        }
+    }
+    Ok(found)
+}
+
+/// The directory PATH names on the stick.
+fn dir_at<'a, T: ReadWriteSeek>(fs: &'a FileSystem<T>, path: &str, budget: &mut Budget) -> Result<fatfs::Dir<'a, T>, String> {
+    match find(fs, path, budget)? {
+        None => Ok(fs.root_dir()),
+        Some(e) if e.is_dir() => Ok(e.to_dir()),
+        Some(_) => Err(format!("{}: not a directory", shown(path))),
     }
 }
 
 /// A directory's entries, `.` and `..` left out: name, whether a directory, length.
 fn entries<T: ReadWriteSeek>(fs: &FileSystem<T>, dir: &str) -> Result<Vec<(String, bool, u64)>, String> {
+    let mut budget = Budget::of(fs)?;
     let mut out = Vec::new();
-    for e in open_dir(fs, dir)?.iter() {
+    let mut n = 0;
+    for e in dir_at(fs, dir, &mut budget)?.iter() {
         let e = e.map_err(|e| format!("{}: {e}", shown(dir)))?;
+        budget.entry(&mut n)?;
         let name = e.file_name();
         if name != "." && name != ".." {
             out.push((name, e.is_dir(), e.len()));
@@ -144,61 +221,66 @@ fn entries<T: ReadWriteSeek>(fs: &FileSystem<T>, dir: &str) -> Result<Vec<(Strin
 }
 
 /// A file of the stick copied to `to`, which must not exist yet.
-fn copy_file_out<T: ReadWriteSeek>(mut from: fatfs::File<'_, T>, to: &Path) -> Result<u64, String> {
-    let mut out = fs::OpenOptions::new().write(true).create_new(true).open(to).map_err(|e| format!("{}: {e}", to.display()))?;
-    io::copy(&mut from, &mut out).map_err(|e| format!("{}: {e}", to.display()))
+fn copy_file_out<T: ReadWriteSeek>(e: &fatfs::DirEntry<'_, T>, to: &Path, budget: &mut Budget) -> Result<u64, String> {
+    budget.take(e.len())?;
+    let mut out = fs::OpenOptions::new().write(true).create_new(true).open(to).map_err(|e| format!("{}: {e}", here(to)))?;
+    io::copy(&mut e.to_file(), &mut out).map_err(|e| format!("{}: {e}", here(to)))
 }
 
 /// A directory of the stick copied to `to`, made new; the bytes copied.
-fn copy_dir_out<T: ReadWriteSeek>(from: &fatfs::Dir<'_, T>, to: &Path, depth: usize) -> Result<u64, String> {
+fn copy_dir_out<T: ReadWriteSeek>(from: &fatfs::Dir<'_, T>, to: &Path, depth: usize, budget: &mut Budget) -> Result<u64, String> {
     if depth > MAX_DEPTH {
-        return Err(format!("{}: directories nested more than {MAX_DEPTH} deep", to.display()));
+        return Err(format!("{}: directories nested more than {MAX_DEPTH} deep", here(to)));
     }
-    fs::create_dir(to).map_err(|e| format!("{}: {e}", to.display()))?;
-    let mut copied = 0;
+    fs::create_dir(to).map_err(|e| format!("{}: {e}", here(to)))?;
+    let (mut copied, mut n) = (0, 0);
     for e in from.iter() {
-        let e = e.map_err(|e| format!("{}: {e}", to.display()))?;
+        let e = e.map_err(|e| format!("{}: {e}", here(to)))?;
+        budget.entry(&mut n)?;
         let name = e.file_name();
         if name == "." || name == ".." {
             continue;
         }
         let target = to.join(local_name(&name)?);
-        copied += if e.is_dir() { copy_dir_out(&e.to_dir(), &target, depth + 1)? } else { copy_file_out(e.to_file(), &target)? };
+        copied += if e.is_dir() { copy_dir_out(&e.to_dir(), &target, depth + 1, budget)? } else { copy_file_out(&e, &target, budget)? };
     }
     Ok(copied)
 }
 
 /// PATH copied off the stick: into DEST when it is a directory, else as DEST; the bytes copied.
 fn get<T: ReadWriteSeek>(fs: &FileSystem<T>, path: &str, dest: &Path) -> Result<u64, String> {
+    let mut budget = Budget::of(fs)?;
     let p = on_stick(path);
     let name = p.rsplit('/').next().unwrap_or(p);
     let target = if dest.is_dir() && !p.is_empty() { dest.join(local_name(name)?) } else { dest.to_path_buf() };
-    if p.is_empty() {
-        return copy_dir_out(&fs.root_dir(), &target, 0);
-    }
-    match fs.root_dir().open_dir(p) {
-        Ok(d) => copy_dir_out(&d, &target, 0),
-        Err(_) => {
-            let f = fs.root_dir().open_file(p).map_err(|e| format!("{}: {e}", shown(path)))?;
-            copy_file_out(f, &target)
-        }
+    match find(fs, path, &mut budget)? {
+        None => copy_dir_out(&fs.root_dir(), &target, 0, &mut budget),
+        Some(e) if e.is_dir() => copy_dir_out(&e.to_dir(), &target, 0, &mut budget),
+        Some(e) => copy_file_out(&e, &target, &mut budget),
     }
 }
 
 /// A regular file here copied onto the stick into DIR, under its own name, which must be free.
 fn put<T: ReadWriteSeek>(fs: &FileSystem<T>, file: &Path, dir: &str) -> Result<u64, String> {
-    let mut from = fs::File::open(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    if !from.metadata().map_err(|e| format!("{}: {e}", file.display()))?.is_file() {
-        return Err(format!("{} is not a file", file.display()));
+    let mut from = fs::File::open(file).map_err(|e| format!("{}: {e}", here(file)))?;
+    if !from.metadata().map_err(|e| format!("{}: {e}", here(file)))?.is_file() {
+        return Err(format!("{} is not a file", here(file)));
     }
-    let name = file.file_name().and_then(|n| n.to_str()).ok_or_else(|| format!("{}: a name the stick cannot hold", file.display()))?;
-    let d = open_dir(fs, dir)?;
-    if d.open_file(name).is_ok() || d.open_dir(name).is_ok() {
-        return Err(format!("{}/{name} is on the stick already", on_stick(dir)));
+    let name = file.file_name().and_then(|n| n.to_str()).ok_or_else(|| format!("{}: a name the stick cannot hold", here(file)))?;
+    let mut budget = Budget::of(fs)?;
+    let d = dir_at(fs, dir, &mut budget)?;
+    // Looked for here, within the budget, before fatfs walks the same directory to add to it.
+    let mut n = 0;
+    for e in d.iter() {
+        let e = e.map_err(|e| format!("{}: {e}", shown(dir)))?;
+        budget.entry(&mut n)?;
+        if e.file_name().eq_ignore_ascii_case(name) || e.short_file_name().eq_ignore_ascii_case(name) {
+            return Err(format!("{}/{} is on the stick already", shown(on_stick(dir)), shown(name)));
+        }
     }
-    let mut to = d.create_file(name).map_err(|e| format!("{name}: {e}"))?;
-    let n = io::copy(&mut from, &mut to).map_err(|e| format!("{name}: {e}"))?;
-    to.flush().map_err(|e| format!("{name}: {e}"))?;
+    let mut to = d.create_file(name).map_err(|e| format!("{}: {e}", shown(name)))?;
+    let n = io::copy(&mut from, &mut to).map_err(|e| format!("{}: {e}", shown(name)))?;
+    to.flush().map_err(|e| format!("{}: {e}", shown(name)))?;
     Ok(n)
 }
 

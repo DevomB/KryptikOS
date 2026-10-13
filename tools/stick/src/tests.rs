@@ -106,6 +106,21 @@ fn a_name_from_the_stick_steers_neither_the_terminal_nor_the_path() {
 }
 
 #[test]
+fn a_name_with_a_control_character_is_no_name_here_and_is_never_shown() {
+    for bad in ["\u{1b}]0;x\u{7}", "x\u{9b}2Jy", "a\u{7f}"] {
+        assert!(local_name(bad).is_err(), "{bad:?} was taken as a file name");
+    }
+    assert_eq!(shown("a\u{202e}fdp.exe"), "a?fdp.exe");
+    // fatfs refuses C0 controls in a name it writes but takes C1 ones, as a stick made by hand has.
+    let out = scratch("control");
+    let fs = volume();
+    fs.root_dir().create_dir("d").unwrap().create_file("x\u{9b}2Jy").unwrap();
+    let err = get(&fs, "d", &out).unwrap_err();
+    assert!(err.contains("no file name here") && !err.chars().any(char::is_control), "{err:?}");
+    let _ = fs::remove_dir_all(&out);
+}
+
+#[test]
 fn a_volume_that_is_not_fat_is_refused() {
     assert!(FileSystem::new(Cursor::new(vec![0xffu8; 65_536]), FsOptions::new()).is_err());
     assert!(FileSystem::new(Cursor::new(vec![0u8; 512]), FsOptions::new()).is_err());
