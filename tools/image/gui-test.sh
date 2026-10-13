@@ -167,6 +167,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
+            second-head-scale-chosen zone-sees-heads-unnamed \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \

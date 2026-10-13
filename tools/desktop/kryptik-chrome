@@ -132,6 +132,9 @@ waiting_zones() {
 
 run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
+    # The monitors as the user chose them (`kryptik display`), or as they come: now, and again
+    # whenever a monitor is plugged in, for as long as the session lasts.
+    /usr/bin/kryptik-display --watch &
     # The menu window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
     # The screen locks after ten minutes without input, or the minutes the user's

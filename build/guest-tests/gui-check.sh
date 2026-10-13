@@ -1320,11 +1320,22 @@ outputs() { as_user "/usr/libexec/kryptik/wlprobe list" 2>/dev/null | grep -c ' 
 heads() { [[ "$(outputs)" -eq "$1" ]]; }
 focus_output() { sed -n 's/^output=//p' "$RT/kryptik/focus" 2>/dev/null; }
 first_head="$(focus_output)"
+# The user's choices for the monitors, which the watcher the chrome runs makes whenever one
+# comes: the first as it is, and any other at scale 2.
+displays() { as_user "/usr/bin/kryptik-display" 2>&1; }
+first_name="$(displays | awk 'NR == 1 { print $1 }')"
+as_user "mkdir -p \$HOME/.config/kryptik && printf '%s 1\n* 2\n' '$first_name' > \$HOME/.config/kryptik/display"
 echo "GT HEAD-ON"
 if wait_for 30 heads 2; then
     pass "second-head-appears" "the compositor offers two outputs once the second is plugged in"
 else
     fail "second-head-appears" "$(outputs) output(s); connectors: $(for s in /sys/class/drm/card*-*/status; do printf '%s=%s ' "${s%/status}" "$(cat "$s" 2>/dev/null)"; done)"
+fi
+second_scaled() { displays | grep -v "^${first_name} " | grep -q '  scale 2  '; }
+if [[ -n "$first_name" ]] && wait_for 15 second_scaled && displays | grep -q "^${first_name}  scale 1  "; then
+    pass "second-head-scale-chosen" "the new monitor came at the scale the user's * line asks, the first as its own line asks: $(displays | tr '\n' '|')"
+else
+    fail "second-head-scale-chosen" "$(displays | tr '\n' '|'); session.log: $(grep 'kryptik-display' "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"
 fi
 echo "GT KEY-FOCUS-HEAD"
 on_second_head() { local o; o="$(focus_output)"; [[ -n "$o" && "$o" != "$first_head" ]]; }
@@ -1348,6 +1359,22 @@ if grep -q '^title=\[untrusted\]' "$RT/kryptik/focus" 2>/dev/null && grep -q '^l
 else
     fail "second-head-names-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
+# What a zone is told of the monitors: both, each named by its number with no make or model,
+# as the zone's proxy rewrites them, and the second at the scale chosen for it.
+mark outs untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe outputs" > "$LOG/launch-outputs.out" 2>&1
+told_outputs() { since_mark outs untrusted | grep -q 'outputs [0-9]'; }
+wait_for 20 told_outputs
+zone_outs="$(since_mark outs untrusted)"
+named="$(grep -c ' name "output-[0-9]*"' <<<"$zone_outs")"
+described="$(grep -c ' description "output-[0-9]*"' <<<"$zone_outs")"
+blank="$(grep -c ' geometry .* make "" model ""' <<<"$zone_outs")"
+if [[ "$named" -eq 2 && "$described" -eq 2 && "$blank" -eq 2 ]] && grep -q ' scale 2$' <<<"$zone_outs" \
+   && grep -q ' scale 1$' <<<"$zone_outs"; then
+    pass "zone-sees-heads-unnamed" "two outputs named by number, with no make or model, one at scale 2"
+else
+    fail "zone-sees-heads-unnamed" "$(tr '\n' '|' <<<"$zone_outs" | cut -c1-400); launch: $(tr '\n' ' ' < "$LOG/launch-outputs.out")"
+fi
 sleep 2
 echo "GT SCREENSHOT-HEAD"
 sleep 6
@@ -1356,6 +1383,7 @@ if wait_for 30 heads 1; then pass "second-head-gone" "one output again"; else fa
 pgrep -u "$USER_NAME" -x dwl > /dev/null && pass "compositor-survives-unplug" "dwl still runs" \
     || fail "compositor-survives-unplug" "session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
 test -e /run/kryptik/zones/untrusted/init.pid && pass "zone-survives-unplug" "untrusted still runs" || fail "zone-survives-unplug" "$(zone_why untrusted)"
+as_user "rm -f \$HOME/.config/kryptik/display"
 back_on_first_head() { [[ "$(focus_output)" == "$first_head" ]]; }
 wait_for 20 back_on_first_head && pass "chrome-back-on-first-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")" \
     || fail "chrome-back-on-first-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"

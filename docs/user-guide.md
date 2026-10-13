@@ -433,6 +433,17 @@ the net zone. The network the machine itself is on, with its router, its
 printers and the page a hotel's or café's Wi-Fi asks you to log in on, is
 open to `untrusted` alone: open that page there (Alt+Shift+u).
 
+**Monitors.** `kryptik display`, in a terminal of zone 0's, lists the
+monitors by name with their scale, mode and place. `kryptik display NAME
+SCALE` draws everything on that monitor SCALE times as large, from 0.5 to 4,
+1.5 say on a laptop's high-resolution panel, and `kryptik display NAME SCALE
+X Y` also puts its top left corner at X,Y. The choice is kept for every
+login and made again whenever the monitor is plugged in; NAME `*` stands for
+every monitor no other line names, and `kryptik display NAME auto` gives the
+monitor back its own: 2 for a built-in panel of 192 dpi or more, 1 for the
+rest. Zones are told the scale rounded up to a whole number, and draw that
+much larger.
+
 **USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
 one in opens a window of the chrome that names each partition by what the
 stick and its partition table say (maker and model, size, the partition's
@@ -595,8 +606,8 @@ shows each timer, its timeout and whether it is running.
 - No independent security review has been made.
 - Tested under QEMU with OVMF firmware. Testing on physical hardware is
   planned for October 2026. QEMU has no lid, no microphone or brightness
-  keys, no backlight and no camera of the USB Video Class, so those parts
-  wait for it.
+  keys, no backlight, no built-in panel and no camera of the USB Video
+  Class, so those parts wait for it.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
