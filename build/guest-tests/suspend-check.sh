@@ -4,6 +4,7 @@
 #   GT KEY-LOCK 1|2                  press Alt+Shift+l (the screen lock)
 #   GT LOCK-TYPE-STATE-WRONG         type a wrong passphrase and Enter
 #   GT LOCK-TYPE-STATE 1|2|3         type the second state passphrase and Enter
+#   GT ZONE-PASS-TYPE 1              type the work zone's passphrase and Enter
 #   GT SLEEPING 1                    wait for the guest to sleep, dump its memory, wait past
 #                                    the watchdog's timeout, then wake it; or for
 #                                    GT DID-NOT-SLEEP 1, the kernel's refusal
@@ -220,11 +221,21 @@ if ! "$KD" volume resume work --passphrase-file "$OUT/wrong-pass" > "$OUT/resume
 else
     fail "zone-refuses-wrong-passphrase" "$(tr '\n' ' ' < "$OUT/resume-wrong.out")"
 fi
-if "$KD" volume resume work --passphrase-file "$PP" > "$OUT/resume-work.out" 2>&1 \
-   && [[ "$(dm_flag kryptik-zone-work)" == 0 ]] && wait_for 10 thawed work; then
-    pass "zone-passphrase-resumes" "$(tr '\n' ' ' < "$OUT/resume-work.out")"
+# With the state partition back, the chrome opens a window that asks for each waiting zone's
+# passphrase on a terminal of zone 0's; the host types work's there.
+asking() { pgrep -u "$USER_NAME" -f 'kryptik-launch --resume work' > /dev/null; }
+if wait_for 20 asking; then
+    pass "chrome-asks-waiting-zone" "a window of the chrome's asks for work's passphrase"
 else
-    fail "zone-passphrase-resumes" "flag $(dm_flag kryptik-zone-work), frozen $(zone_frozen work): $(tr '\n' ' ' < "$OUT/resume-work.out")"
+    fail "chrome-asks-waiting-zone" "$(pgrep -u "$USER_NAME" -af 'kryptik-chrome|kryptik-launch' | tr '\n' ';')"
+fi
+# The prompt is up a moment after the process.
+sleep 1
+echo "GT ZONE-PASS-TYPE 1"
+if wait_for 30 thawed work && [[ "$(dm_flag kryptik-zone-work)" == 0 ]]; then
+    pass "zone-passphrase-resumes" "typed in the chrome's window, work's passphrase gave its volume its key, and work thawed"
+else
+    fail "zone-passphrase-resumes" "flag $(dm_flag kryptik-zone-work), frozen $(zone_frozen work)"
 fi
 wait_for 15 none_frozen && pass "zones-thawed" "$(zones_frozen)" || fail "zones-thawed" "$(zones_frozen)"
 # Its file is read only now: in the window, reading it would have waited too.

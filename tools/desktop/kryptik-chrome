@@ -33,6 +33,8 @@
 #                                  say, for as long as ZONE holds the microphone,
 #                                  that it does and whether it is recording
 #   kryptik-chrome --battery       warn that the battery is low, until on mains
+#   kryptik-chrome --waiting       after a sleep, ask in turn for the passphrase of
+#                                  each zone whose volume lost its key with it
 #
 # Passphrases are read by kryptik-launch on the chrome's own terminal and go
 # to the daemon as a descriptor, never in argv or the environment.
@@ -104,6 +106,24 @@ status_to_focus() {
     done
 }
 
+# Whether the device-mapper device NAME is suspended, from sysfs alone.
+dm_suspended() {
+    for d in /sys/block/dm-*; do
+        [ "$(cat "$d/dm/name" 2>/dev/null)" = "$1" ] || continue
+        [ "$(cat "$d/dm/suspended" 2>/dev/null)" = 1 ]
+        return
+    done
+    return 1
+}
+# The zones whose volume lost its key with a sleep and waits, frozen, for its passphrase.
+waiting_zones() {
+    for d in /sys/block/dm-*; do
+        [ "$(cat "$d/dm/suspended" 2>/dev/null)" = 1 ] || continue
+        n="$(cat "$d/dm/name" 2>/dev/null)"
+        case "$n" in kryptik-zone-*) printf '%s\n' "${n#kryptik-zone-}" ;; esac
+    done
+}
+
 run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
     # The menu window, so a fresh session shows something usable.
@@ -150,9 +170,10 @@ run_status() {
         done
     ) &
     # While a zone holds the microphone, a window of the chrome's says so, and when it records;
-    # and as the battery reaches 10% and again 5%, a window warns of the power-off at 3%.
+    # as the battery reaches 10% and again 5%, a window warns of the power-off at 3%; and once
+    # the state partition is back after a sleep, a window asks for each waiting zone's passphrase.
     (
-        shown="" warned=""
+        shown="" warned="" waited=""
         while :; do
             mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
             if [ -n "$mic" ] && [ "$mic" != "$shown" ]; then
@@ -164,6 +185,13 @@ run_status() {
                 "$TERMINAL" /usr/bin/kryptik-chrome --battery &
             fi
             warned="$w"
+            if ! dm_suspended kryptik-state; then
+                wz="$(waiting_zones | tr '\n' ' ')"
+                if [ -n "$wz" ] && [ "$wz" != "$waited" ]; then
+                    "$TERMINAL" /usr/bin/kryptik-chrome --waiting &
+                fi
+                waited="$wz"
+            fi
             sleep 1
         done
     ) &
@@ -186,6 +214,24 @@ run_battery() {
         sleep 5
     done
     [ "$(power_field source)" = battery ] || { echo "On mains now."; sleep 2; }
+}
+
+# After a sleep, each zone whose volume lost its key with it, its passphrase asked for in turn on
+# this zone 0 terminal; Enter alone leaves the zone waiting for the menu's p<N>.
+run_waiting() {
+    clear 2>/dev/null
+    echo "================ KRYPTIK - after the sleep (zone 0) ================"
+    echo "These zones lost their volume's key with the sleep and stay frozen until it is"
+    echo "given: their windows show, but do not answer. Enter alone leaves a zone waiting;"
+    echo "the menu (Alt+p) gives its passphrase later with p and its number, or stops it."
+    for z in $(waiting_zones); do
+        # Given meanwhile from the menu, it waits no more.
+        dm_suspended "kryptik-zone-$z" || continue
+        echo
+        printf 'Zone %s %s %s\n' "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)"
+        "$LAUNCH" --resume "$z" || sleep 2
+    done
+    sleep 1
 }
 
 # The microphone's window: open from the grant to its end, with each change of state on a line.
@@ -223,9 +269,11 @@ menu_zones() {
         info="$("$LAUNCH" --info "$z" 2>/dev/null)"
         enc="$(printf '%s\n' "$info" | sed -n 's/^encrypted //p')"
         run="$(printf '%s\n' "$info" | sed -n 's/^running //p')"
+        waits="$(printf '%s\n' "$info" | sed -n 's/^waiting //p')"
         state=""
         [ "$enc" = yes ] && state="encrypted "
         [ "$run" = yes ] && state="${state}RUNNING" || state="${state}stopped"
+        [ "$waits" = yes ] && state="${state}, WAITING for its passphrase (p$n)"
         [ -z "$info" ] && state="(daemon not answering)"
         printf '  %d) %-10s %-3s %-10s %s\n' "$n" "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)" "$state"
     done
@@ -346,6 +394,7 @@ run_menu() {
         echo "Admin: u updates: what the channel names, fetch, forget, install"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
         echo "       w Wi-Fi networks   f the last zone window's zone   r refresh   q close this window"
+        echo "       p<N> after a sleep, give zone N the passphrase its volume waits for"
         echo "Sound: c<N> let zone N use the microphone until it stops (c alone takes it back)"
         echo "       v<D> the volume, 0 to 9   v<N><D> zone N's own   x mute or unmute everything"
         echo
@@ -386,6 +435,9 @@ run_menu() {
                       echo "moving the clipboard of $za to $zb (this is the only way a payload crosses zones)"
                       "$LAUNCH" --clipboard-move "$za" "$zb" || sleep 2
                       sleep 1; continue ;;
+            p[1-9]*) idx="${choice#p}"; eval "z=\"\${Z$idx:-}\""
+                      [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                      "$LAUNCH" --resume "$z" || sleep 2; sleep 1; continue ;;
             s[1-9]*) idx="${choice#s}"; eval "z=\"\${Z$idx:-}\""
                       [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
                       "$LAUNCH" --stop "$z"; sleep 1; continue ;;
@@ -584,7 +636,8 @@ case "${1:-}" in
     --menu) run_menu ;;
     --microphone) [ -n "${2:-}" ] || die "--microphone needs a zone"; run_microphone "$2" ;;
     --battery) run_battery ;;
+    --waiting) run_waiting ;;
     --prompt) shift; run_prompt "$@" ;;
     --focus) cat "$FOCUS" 2>/dev/null || { echo "zone=-"; exit 1; } ;;
-    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus | --microphone ZONE | --battery]" ;;
+    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus | --microphone ZONE | --battery | --waiting]" ;;
 esac

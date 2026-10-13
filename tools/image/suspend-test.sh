@@ -52,6 +52,8 @@ DUMP="${VMDIR}/suspend-memory.elf"
 # its way from the keyboard to cryptsetup.
 SEED="$(od -An -N6 -tx1 /dev/urandom | tr -dc 0-9a-f)"
 SPASS="$(rev <<<"$SEED")"
+# The work zone's passphrase (suspend-check.sh), typed in the chrome's window after a sleep.
+ZPASS_KEYS=(key:z key:o key:n key:e key:minus key:p key:a key:s key:s)
 SPASS_KEYS=()
 for ((i = 0; i < ${#SPASS}; i++)); do SPASS_KEYS+=("key:${SPASS:i:1}"); done
 
@@ -71,6 +73,7 @@ DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
     "expect:GT KEY-LOCK 1" "key:alt+shift+l" \
     "expect:GT LOCK-TYPE-STATE-WRONG" "key:n" "key:o" "key:p" "key:e" "key:ret" \
     "expect:GT LOCK-TYPE-STATE 1" "${SPASS_KEYS[@]}" "key:ret" \
+    "expect:GT ZONE-PASS-TYPE 1" "${ZPASS_KEYS[@]}" "key:ret" \
     "expect:GT SLEEPING 1" "asleep-or:120:GT DID-NOT-SLEEP 1" "if-asleep:dump:${DUMP}" "if-asleep:sleep:75" "if-asleep:wakeup" \
     "expect:GT LOCK-TYPE-STATE 2" "${SPASS_KEYS[@]}" "key:ret" \
     "expect:GT KEY-LOCK 2" "key:alt+shift+l" \
@@ -104,7 +107,7 @@ for name in second-passphrase session-up zones-ticking state-suspended zones-fro
             nothing-else-waits lock-refuses-wrong-passphrase passphrase-resumes zones-thawed writer-resumes zones-tick-again \
             slept-and-woke woke-to-state-prompt prompt-outlasts-watchdog resumed-after-sleep zones-thawed-after-sleep \
             sleep-refusal-told resumed-after-refusal \
-            zone-waits-for-its-passphrase info-says-waiting launch-told-waiting zone-refuses-wrong-passphrase \
+            zone-waits-for-its-passphrase info-says-waiting launch-told-waiting zone-refuses-wrong-passphrase chrome-asks-waiting-zone \
             zone-passphrase-resumes zone-waits-after-sleep waiting-zone-stops volume-opens-after-giving-up \
             power-key-sleeps power-key-held-off-after-wake power-key-heeded-after-holdoff power-key-resumes \
             power-key-sleeps-locked power-key-locked-resumes \
