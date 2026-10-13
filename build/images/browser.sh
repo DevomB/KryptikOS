@@ -24,6 +24,7 @@ s_browser_firefox() {
     cd "$src"
     # Configure requires unzip, which only packaging runs (make_unzip.py: `unzip ARCHIVE`, into the
     # current directory) and the base system does not have: Python's zipfile does that, here alone.
+    # And llvm-objdump, which it finds by asking the compiler when that is clang: GCC's, it is named.
     cat > kryptik-unzip <<'EOF'
 #!/usr/bin/env python3
 import sys, zipfile
@@ -59,6 +60,7 @@ ac_add_options --with-libclang-path=${llvm}/lib
 ac_add_options --with-clang-path=${llvm}/bin/clang
 mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj
 export UNZIP=${src}/kryptik-unzip
+export LLVM_OBJDUMP=${llvm}/bin/llvm-objdump
 EOF
     env CC=gcc CXX=g++ MOZBUILD_STATE_PATH="${src}/.mozbuild" MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=none \
         MOZ_NOSPAM=1 ./mach --no-interactive build
