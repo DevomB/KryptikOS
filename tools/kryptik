@@ -65,6 +65,11 @@ USAGE:
     $PROG keyboard NAME             use that layout (root): the console now, the
                                     desktop at its next login, the passphrase's
                                     prompt from the next boot
+    $PROG keyboard desktop [NAME...]
+                                    your desktop's layouts, from the next login: up
+                                    to four, the first in force, Super+Space to
+                                    switch; none named prints them, and
+                                    `desktop machine` goes back to the machine's
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
@@ -419,11 +424,12 @@ cmd_suspend() {
 # The layout's name is kept in the firmware and its keymaps on the verified
 # root (docs/design/keyboard-layout.md).
 cmd_keyboard() {
-    [[ $# -le 1 ]] || die "$PROG keyboard takes one layout's name, or none to list them" 2
     local lib=/usr/libexec/kryptik/keyboard.sh now n
     [[ -r "$lib" ]] || die "keyboard layouts are an installed Kryptik's: no ${lib} here"
     # shellcheck source=/dev/null
     . "$lib"
+    [[ "${1:-}" == desktop ]] && { shift; desktop_layouts "$@"; return; }
+    [[ $# -le 1 ]] || die "$PROG keyboard takes one layout's name, or none to list them" 2
     now="$(kb_current)"
     if [[ $# -eq 0 ]]; then
         while read -r n; do
@@ -442,6 +448,32 @@ cmd_keyboard() {
     kb_store "$1" || die "the console has $1 now, but the firmware did not take the name: the next boot asks under $(kb_stored | grep . || echo us)"
     echo "keyboard layout $1: the console now, the desktop at its next login, the state passphrase's prompt from the next boot."
     echo "Keys that $1 puts elsewhere are pressed where $1 has them, the passphrase's too."
+}
+
+# The user's own list, which kryptik-session reads at login (keyboard.sh's kb_export_desktop).
+desktop_layouts() {
+    local file="${XDG_CONFIG_HOME:-$HOME/.config}/kryptik/keyboard" n
+    if [[ $# -eq 0 ]]; then
+        if n="$(kb_desktop "$file")"; then
+            echo "your desktop's layouts: ${n} (Super+Space switches)"
+        else
+            echo "your desktop has the machine's layout: $(kb_current)"
+        fi
+        return 0
+    fi
+    [[ $EUID -ne 0 ]] || die "the desktop's layouts are the user's: run this as the user who logs in"
+    if [[ $# -eq 1 && "$1" == machine ]]; then
+        rm -f "$file"
+        echo "your desktop has the machine's layout, $(kb_current), from the next login"
+        return 0
+    fi
+    [[ $# -le 4 ]] || die "at most four layouts: an xkb keymap holds no more" 2
+    for n in "$@"; do
+        kb_row "$n" > /dev/null || die "no keyboard layout named ${n}: \`$PROG keyboard\` lists them" 2
+    done
+    mkdir -p "${file%/*}" && printf '%s\n' "$*" > "$file" || die "could not write ${file}"
+    echo "your desktop's layouts from the next login: $*$([[ $# -gt 1 ]] && echo ', Super+Space to switch')"
+    echo "The state passphrase at boot is still asked under the machine's: $(kb_current)."
 }
 
 # --- argument parsing -------------------------------------------------------

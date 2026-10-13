@@ -37,8 +37,9 @@ code that looks past the zone's own clocks: the offsets in
 checkpoint and restore, the scheduler's clock in `/proc/<pid>/sched`, the
 vDSO's data page, which a time namespace maps beside its own, and the CPU's
 timestamp counter, one instruction away, each give it; the free memory in
-`/proc/meminfo`, coarse, which programs need; and the idle counts of a CPU
-brought online after the zone started.
+`/proc/meminfo`, coarse, which programs need; the user's keyboard layouts,
+up to four, in the keymap every window is given, as Wayland gives it; and
+the idle counts of a CPU brought online after the zone started.
 Sound leaves the zone as one stream of samples to zone 0's mixer, which
 reads one word before them and runs as a user of its own in the cards' group
 alone; the zone records only while the user has granted it the microphone,

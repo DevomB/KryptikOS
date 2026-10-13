@@ -24,6 +24,10 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT KEY-LOCK-LAYOUT                              press Alt+Shift+l
+#   GT KEY-LAYOUT-NEXT, GT KEY-LAYOUT-BACK          press Super+Space (the next layout)
+#   GT LOCK-TYPE-OTHER-LAYOUT, GT LOCK-TYPE-FIRST-LAYOUT
+#                                                   type the user's password and Enter
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
@@ -90,9 +94,19 @@ done
 [[ "$(s6-svstat -o up /run/service/kryptikd-serve 2>/dev/null)" = true ]] && pass "launch-daemon-up" || fail "launch-daemon-up"
 
 # --- the session ------------------------------------------------------------
+# The user's two layouts, us then de, for the lock's round with both; us is in force first, so
+# every other round types as it would with one.
+su -s /bin/sh "$USER_NAME" -c 'mkdir -p "$HOME/.config/kryptik" && printf "us de\n" > "$HOME/.config/kryptik/keyboard"'
 su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/dev/null 2>&1 &'
 if wait_for 30 test -S "$RT/wayland-0"; then pass "session-socket" "dwl listening at $RT/wayland-0"; else fail "session-socket" "$(cat "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"; fi
 pgrep -u "$USER_NAME" -x dwl >/dev/null && pass "compositor-running" || fail "compositor-running" "$(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
+           | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"
+if [[ "$dwl_env" == "KRYPTIK_LAYOUTS=us de XKB_DEFAULT_LAYOUT=us,de XKB_DEFAULT_OPTIONS=grp:win_space_toggle XKB_DEFAULT_VARIANT=, " ]]; then
+    pass "desktop-layouts" "the user's list became dwl's keymap: ${dwl_env}"
+else
+    fail "desktop-layouts" "dwl's environment: ${dwl_env:-none}"
+fi
 wait_for 20 test -f "$RT/kryptik/focus" && pass "chrome-focus-record" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "chrome-focus-record" "no $RT/kryptik/focus after 20 s"
 # The record exists before the chrome's own window has mapped: wait for the window.
 wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus" && pass "chrome-window-is-zone0" "the launcher window is recorded as zone 0 (trusted)" || fail "chrome-window-is-zone0" "$(cat "$RT/kryptik/focus" 2>/dev/null | tr '\n' ' '); terminals: $(pgrep -u "$USER_NAME" -a havoc 2>/dev/null | tr '\n' ';'); session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
@@ -962,6 +976,39 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+# With two layouts the lock names the one in force, as Super+Space switches: the password typed
+# in de, where this keyboard's - key types another character, is refused, and typed again once
+# Super+Space is back on us, it opens the lock.
+layout_said() { grep -c "^kryptik-lock: layout $1\$" "$slog" 2>/dev/null; }
+layout_more() { [[ "$(layout_said "$1")" -gt "$2" ]]; }
+us0="$(layout_said US)"; de0="$(layout_said DE)"
+locked2="$(said locked)"; refused2="$(said refused)"; unlocked2="$(said unlocked)"
+echo "GT KEY-LOCK-LAYOUT"
+wait_for 20 more locked "$locked2" && wait_for 10 layout_more US "$us0"; named_us=$?
+echo "GT KEY-LAYOUT-NEXT"
+wait_for 10 layout_more DE "$de0"; named_de=$?
+if [[ "$named_us/$named_de" == 0/0 ]]; then
+    pass "lock-names-layout" "the lock named US, then DE after Super+Space"
+else
+    fail "lock-names-layout" "$(grep 'kryptik-lock' "$slog" | tail -4 | tr '\n' ' ')"
+fi
+echo "GT LOCK-TYPE-OTHER-LAYOUT"
+if wait_for 15 more refused "$refused2"; then
+    pass "lock-refuses-other-layout" "the password typed in de was refused: $(grep '^kryptik-lock: refused' "$slog" | tail -1)"
+else
+    fail "lock-refuses-other-layout" "$(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
+us1="$(layout_said US)"
+echo "GT KEY-LAYOUT-BACK"
+wait_for 10 layout_more US "$us1"
+# The refusal's pause, which the next try waits out.
+sleep 3
+echo "GT LOCK-TYPE-FIRST-LAYOUT"
+if wait_for 20 more unlocked "$unlocked2"; then
+    pass "lock-opens-in-first-layout" "back on us, the same keys opened the lock"
+else
+    fail "lock-opens-in-first-layout" "$(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
 # chrome's record follows the monitor in use, and pulling the monitor out
