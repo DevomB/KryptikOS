@@ -1,4 +1,4 @@
-# The toolkit image's executable files, as build/config/image-programs.txt names the root's.
+# The toolkit image's executable files as it ships, its .strip list's left out, as build/config/image-programs.txt names the root's.
 usr/bin/fc-cache
 usr/bin/fc-cat
 usr/bin/fc-conflist
@@ -11,27 +11,12 @@ usr/bin/fc-scan
 usr/bin/fc-validate
 usr/bin/gapplication
 usr/bin/gdbus
-usr/bin/gdbus-codegen
-usr/bin/gdk-pixbuf-csource
-usr/bin/gdk-pixbuf-pixdata
-usr/bin/gdk-pixbuf-query-loaders
-usr/bin/gi-compile-repository
-usr/bin/gi-decompile-typelib
-usr/bin/gi-inspect-typelib
 usr/bin/gio
 usr/bin/gio-querymodules
-usr/bin/glib-compile-resources
 usr/bin/glib-compile-schemas
-usr/bin/glib-genmarshal
-usr/bin/glib-gettextize
-usr/bin/glib-mkenums
 usr/bin/gobject-query
 usr/bin/gresource
 usr/bin/gsettings
-usr/bin/gtester
-usr/bin/gtester-report
-usr/bin/gtk-builder-tool
-usr/bin/gtk-encode-symbolic-svg
 usr/bin/gtk-launch
 usr/bin/gtk-query-immodules-3.0
 usr/bin/gtk-query-settings

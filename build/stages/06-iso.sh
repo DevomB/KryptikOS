@@ -349,6 +349,18 @@ pack_image() {
     local stage; stage="$(mktemp -d "${IMG}/image-stage.XXXXXX")"
     chmod 0755 "$stage"
     rsync -aH --numeric-ids "${tree}/" "${stage}/"
+    # What the image keeps for those built over it and never ships (build/images/NAME.strip, a glob
+    # a line under its root): an entry that matches nothing is stale, as in its program list.
+    local strip_list="${KRYPTIK_ROOT}/build/images/${name}.strip" glob gone=()
+    if [[ -f "$strip_list" ]]; then
+        while IFS= read -r glob || [[ -n "$glob" ]]; do
+            [[ -n "$glob" && "$glob" != \#* ]] || continue
+            [[ "$glob" != /* && "$glob" != *..* ]] || { echo "FAIL: image ${name}: ${glob} is not a path under its root" >&2; return 1; }
+            mapfile -t gone < <(compgen -G "${stage}/${glob}")
+            [[ "${#gone[@]}" -gt 0 ]] || { echo "FAIL: image ${name}: ${glob} in ${name}.strip names nothing" >&2; return 1; }
+            rm -rf -- "${gone[@]}"
+        done < "$strip_list"
+    fi
     strip_root "$stage" >&2
     if find "$stage" -perm /6000 -print | grep . >&2; then echo "FAIL: a setuid or setgid file in image ${name}" >&2; return 1; fi
     # Against the image's own accepted findings, each with its reason, or none: the root's list
