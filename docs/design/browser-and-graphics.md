@@ -191,10 +191,17 @@ floors are given with each layer.
   - The first build is `--without-wasm-sandboxed-libraries`. The next adds
     a WASI sysroot to the `clang` layer, since a font or spelling parser
     bug should stay inside that sandbox.
+  - The build's Glean step caches what it parses in SQLite, through
+    Python's `sqlite3`, which the base system's Python lacks, as zone 0 has
+    no SQLite. The recipe compiles that module from the base system's own
+    Python source and the SQLite Firefox carries, into the build's root
+    alone, and `browser.strip` keeps it out of the image.
 - **Time.**
-  - On four cores with GCC, without LTO or PGO, ESR takes about two and a
-    half hours. That fits the system job's six hours after a warm stage 04,
-    but not every run should pay it.
+  - On four cores with GCC, without LTO or PGO, ESR takes some hours. The
+    images build in a job of their own, between stages 04-05 and stage 06,
+    since a runner gives a job six hours and a stage 04 built from nothing
+    (a tag's, or a run after a new pin) beside the browser and stage 06
+    would not fit one job. Not every run should pay it.
   - The trees of the shipped images go into a cache of their own, keyed by
     their fingerprints, which include the base system's stamp up to
     `wlroots`, the last step an image builds against. A run restores a tree
