@@ -35,9 +35,9 @@ target over `/dev/sr0`, verity on top). The root image is byte-identical on
 the medium, in slot A and in a payload, so the installer copies bytes and
 signs nothing. A release with
 [software images](software-delivery.md) also carries them: the USB image in
-a third partition, `kryptik-images`, an ext4 made as the root's is, and the
-ISO as files under `/images` in its own filesystem. Either holds the signed
-list, its signature and each image.
+a third partition, `kryptik-images`, a FAT32 like the ESP, and the ISO as
+files under `/images` in its own filesystem. Either holds the signed list,
+its signature and each image.
 
 ## The command line
 

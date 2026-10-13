@@ -550,19 +550,22 @@ medium_images() {   # medium_images DIR
     install -m 0644 "${IMAGES}"/images.manifest* "${IMAGES}"/*.img "$1/"
 }
 
-# make_images_fs DIR OUT: DIR as the ext4 of the USB's kryptik-images partition, made as the root's is.
+# make_images_fs DIR OUT: DIR as the FAT32 of the USB's kryptik-images partition, as the ESP is made.
+# Whoever can write the stick can craft this filesystem, and the installer mounts it: FAT is the
+# parser the ESP already needs, where ext4's is far larger.
 make_images_fs() {
+    local f
+    for f in "$1"/*; do
+        (( $(stat -c %s "$f") < 4 * 1024 * 1024 * 1024 )) || { echo "$(basename "$f") is 4 GiB or more, past what FAT32 holds"; return 1; }
+    done
     local bytes; bytes="$(du -sb "$1" | cut -f1)"
-    local fs_bytes=$(( bytes + bytes / 8 + 16 * 1024 * 1024 ))
-    fs_bytes=$(( (fs_bytes + 4095) / 4096 * 4096 ))
+    local mib=$(( (bytes + bytes / 16) / 1048576 + 16 ))
+    (( mib >= 64 )) || mib=64
     local id; id="$(printf 'kryptik-images %s %s' "$KRYPTIK_VERSION" "$(root_json root_hash)" | sha256_of_stdin)"
-    id="${id:0:8}-${id:8:4}-${id:12:4}-${id:16:4}-${id:20:12}"
-    make_ext4 "$1" "$2" "$fs_bytes" "$id" kryptik-images
-    if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
-        make_ext4 "$1" "${2}.again" "$fs_bytes" "$id" kryptik-images
-        cmp -s "$2" "${2}.again" || { echo "FAIL: two mke2fs runs over the medium's images wrote different filesystems"; return 1; }
-        rm -f "${2}.again"
-    fi
+    rm -f "$2"
+    truncate -s $(( mib * 1048576 )) "$2"
+    mkfs.vfat -F 32 -n KRYPTIKIMG -i "${id:0:8}" "$2" >/dev/null
+    mcopy -i "$2" "$1"/* ::/
 }
 
 make_gpt_image() {   # make_gpt_image OUT ESP-IMG ROOT-IMG ROOT-LABEL [IMAGES-FS]
