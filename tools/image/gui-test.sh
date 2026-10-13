@@ -143,6 +143,7 @@ if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 25 ]]; then green "eve
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in session-socket compositor-running chrome-focus-record chrome-window-is-zone0 zone0-sees-capture zone-proxy-path zone-sees-needed zone-hidden-globals zone-bind-refused proxy-logged-refusal \
             proxy-upstream-zone-socket zone-socket-allowlist zone-socket-bind-refused zone-socket-names-window \
+            proxy-own-user proxy-cgroup proxy-uid-reaches-nothing zone-socket-refuses-other-proxy proxy-uid-socket-sweep oneshot-runner-serves-root-alone \
             map-keeps-zone0-focus close-keeps-zone0-focus alone-keeps-no-keyboard alone-reached-by-key focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone menu-names-stale-statement menu-names-install-age menu-update-auto menu-names-failed-trial menu-names-armed-trial zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved zone-copy-pastes-in-zone zone-copy-stays-in-zone zone-copy-not-in-zone0 \
             move-door-unreached move-crosses-zones move-leaves-nothing-behind move-in-no-log move-door-refuses-others \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
@@ -172,7 +173,7 @@ from collections import Counter
 shot, colours_h, config_h, borders_py, *want = sys.argv[1:]
 h = open(colours_h).read()
 c = open(config_h).read()
-named = {z: bytes.fromhex(v) for z, v in re.findall(r'X\("(\w+)",\s*0x([0-9a-f]{6})ff\)', h)}
+named = {z: bytes.fromhex(v) for z, v in re.findall(r'X\("(\w+)",\s*0x([0-9a-f]{6})ff,', h)}
 named["unzoned"] = bytes.fromhex(re.search(r'KRYPTIK_UNZONED_BORDER\s+0x([0-9a-f]{6})ff', h).group(1))
 root = bytes.fromhex(re.search(r'rootcolor\[\]\s*=\s*COLOR\(0x([0-9a-f]{6})ff\)', c).group(1))
 bw = int(re.search(r'\bborderpx\s*=\s*(\d+)', c).group(1))

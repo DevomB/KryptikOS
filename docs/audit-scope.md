@@ -161,9 +161,9 @@ From [status](status.md#known-gaps) and the designs' own lists:
   ([supply chain](supply-chain.md#open-problems)).
 - dhcpcd runs without its own privilege separation; the net zone is its
   sandbox.
-- Every `kryptik-wlproxy` runs as the login user, who can reach the
-  compositor's own socket, which offers capture and input injection, so a
-  bug in a proxy would reach the whole desktop.
+- dwl runs as the login user, so a bug in it reaches the whole desktop, and
+  each `kryptik-wlproxy` runs under the zones' seccomp filter, not yet one
+  cut to its own calls ([compositor separation](design/compositor-separation.md)).
 - The artifact audit's soft findings, each with its reason in
   `build/config/artifact-accepted.txt`.
 - The net zone's "not built" list: no MAC or IP pinning on bridge ports, and

@@ -20,8 +20,8 @@ static const float rootcolor[]             = COLOR(0x101418ff);
 static const float urgentcolor[]           = COLOR(KRYPTIK_URGENT_BORDER);
 static const float fullscreen_bg[]         = {0.0f, 0.0f, 0.0f, 1.0f};
 
-/* zone -> border colour, and a socket each; see zone-colours.h */
-#define ZONE_ENTRY(name, border) { name, COLOR(border) },
+/* zone -> border colour and proxy uid, and a socket each; see zone-colours.h */
+#define ZONE_ENTRY(name, border, proxy) { name, COLOR(border), proxy },
 static const ZoneColor zonecolors_table[] = {
 	KRYPTIK_ZONE_COLOURS(ZONE_ENTRY)
 };
