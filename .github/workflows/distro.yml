@@ -330,10 +330,66 @@ jobs:
         if: always()
         run: rm -f /mnt/kryptik/work-after-05.tar.zst
 
-      # After the cache is packed, so no image tree or overlay reaches it; stage 06 packs what this builds.
+      # The images built over this very base system, from an earlier run: make images keeps each whose
+      # fingerprint still matches its inputs and builds the rest. Not for a tag, which builds from nothing.
+      - name: Which base system the images are built over
+        id: images_key
+        if: github.ref_type != 'tag'
+        run: |
+          base="$(sudo sed -n 's/^fingerprint: //p' "$KRYPTIK_WORK/.stamps/bs-licences" | cut -c1-16)"
+          if [ -n "$base" ]; then echo "prefix=images-v1-${{ needs.toolchain.outputs.ttfp }}-${base}-" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Software images from an earlier run (cached)
+        id: images_cache
+        if: steps.images_key.outputs.prefix != ''
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: /mnt/kryptik/images-cache.tar.zst
+          key: ${{ steps.images_key.outputs.prefix }}
+          restore-keys: |
+            ${{ steps.images_key.outputs.prefix }}
+
+      - name: Unpack the cached images
+        if: steps.images_cache.outputs.cache-matched-key != ''
+        run: |
+          cd /mnt/kryptik
+          sudo tar --zstd -xf images-cache.tar.zst -C work
+          rm -f images-cache.tar.zst
+          sudo sed -n 's/^\(name\|fingerprint\): //p' work/image-build/*/record | paste - - || true
+
+      # After the stage 04-05 cache is packed, so no image tree or overlay reaches it; stage 06 packs what this builds.
       - name: Software images (over the base system, in the chroot)
+        id: images
         timeout-minutes: 90
         run: make -o system images
+
+      # Each image's tree and record, never an overlay's upper or work directory; saved when they changed.
+      - name: Pack the images for their cache
+        id: images_pack
+        if: ${{ !cancelled() && steps.images.outcome == 'success' && steps.images_key.outputs.prefix != '' }}
+        run: |
+          d="$(cd "$KRYPTIK_WORK" && sudo cat image-build/*/record 2>/dev/null | sha256sum | cut -c1-16)"
+          key="${{ steps.images_key.outputs.prefix }}${d}-"
+          case "${{ steps.images_cache.outputs.cache-matched-key }}" in "$key"*) echo "the images are the cached ones"; exit 0 ;; esac
+          cd /mnt/kryptik
+          sudo tar -I 'zstd -T0' -cf images-cache.tar.zst -C work --exclude='image-build/*/upper' \
+            --exclude='image-build/*/overlay-work' --exclude='image-build/*/sysroot' image-build
+          sudo chown "$(id -u):$(id -g)" images-cache.tar.zst
+          ls -la images-cache.tar.zst
+          echo "key=${key}${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+      # A cache that cannot be saved costs the next run time, not this one its verdict.
+      - name: Save the images
+        if: ${{ !cancelled() && steps.images_pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: /mnt/kryptik/images-cache.tar.zst
+          key: ${{ steps.images_pack.outputs.key }}
+
+      - name: Drop the images' tarball before the media are built
+        if: always()
+        run: rm -f /mnt/kryptik/images-cache.tar.zst
 
       # The throwaway production pair, then A and B; a production release is only bound here, where upstream build scripts ran as root.
       - name: Stage 06, the media (production 1.0.0 and 1.0.1, release A and the update B)
