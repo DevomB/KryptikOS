@@ -270,9 +270,23 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   zone 0 tool to blank the screen, then lock, then suspend. The lock and
   blanking are built (`kryptik-lock --idle`, above), in the other order: a
   screen turned off while unlocked would come back on to an open session at
-  the first touch. Suspend is not built. Zones may hold the screen awake through the
-  proxy's idle inhibition (the browser design), and the chrome shows which
-  zone does.
+  the first touch. Suspend is not built.
+- **Holding the screen awake.** A zone playing a video may hold off both the
+  lock and the blanking, through the proxy's idle inhibition (the browser
+  design), under these conditions. They come with the browser image, the
+  first thing that needs them; until then no zone can, and both count input
+  alone.
+  - The zone's file on the verified root opts in (`[desktop] hold_awake =
+    true`). It is off by default, and never set for `untrusted`, where
+    unknown links open.
+  - A hold counts only while the inhibiting surface is mapped and visible on
+    a lit output and its zone's window has the keyboard; losing either ends
+    it.
+  - It is capped at four hours, after which the lock comes as usual, and any
+    zone 0 action, a lid close or a suspend ends it. The chrome shows which
+    zone holds the screen awake for as long as it does.
+  - The moment no hold qualifies, the lock and the blanking count input
+    alone again.
 - The chrome shows the battery and AC state.
 
 ### Check
