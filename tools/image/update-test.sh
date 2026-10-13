@@ -437,6 +437,10 @@ else
     # the user, automatic fetching brings the release whole without a fetch
     # (one asked for as well changes nothing), then apply, trial boot and
     # commit, and the setting outlasts the update.
+    # The staged release: the root's files and the image list with its signature, listed, and each
+    # image the list names, left out of the listing and held to the list instead. No single quote:
+    # vm-drive's su wraps the command in them.
+    staged="cd /var/lib/kryptik/update/incoming/${VB} && "'sed -n "s/^image: \([a-z0-9-]*\) .*/\1.img.zst/p" images.manifest > /tmp/staged-images; ls | grep -vxF -f /tmp/staged-images | sort | tr "\n" " "; echo LISTED; w=0; while read -r f; do [ -s "$f" ] || w=1; done < /tmp/staged-images; echo IMAGES-WHOLE=$w'
     drive "${UP_TO_STATEMENT[@]}" \
         "$(ROOTSH 'sleep 70; echo STAGED-UNASKED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED-UNASKED=0" \
         "run:kryptik update status | grep -q 'fetching *only when asked'" \
@@ -445,7 +449,7 @@ else
         "run:kryptik update fetch" "expect:${VB} will be fetched" \
         "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" \
         "run:kryptik update status | grep -q 'bytes, complete'" \
-        "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img.zst manifest manifest.sig root.json LISTED" \
+        "$(ROOTSH "$staged")" "expect:images.manifest images.manifest.sig kryptik-a.efi kryptik-b.efi kryptik-root.img.zst manifest manifest.sig root.json LISTED" "expect:IMAGES-WHOLE=0" \
         "run:kryptik update apply" "expect:armed: the next boot tries slot b" \
         "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
         "login:${TUSER}:${TPASS}" \
