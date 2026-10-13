@@ -138,6 +138,15 @@ separate is a recipe and a pin review of its own. H.264 needs FFmpeg's
 decoder, which Firefox loads if it is present; whether to ship it is a
 licensing question as much as a size one, and is left open.
 
+## The document viewer
+
+PDFs open in the browser's own viewer, pdf.js, which runs as page script
+inside the content process's sandbox. No image of its own is needed until a
+workflow needs a format pdf.js does not read. zathura, the light viewer that
+was the alternative, moved to GTK 4 in 2026 and now also needs json-glib,
+libmagic, sqlite and xxhash. Building it would mean a second toolkit image,
+or pinning a GTK 3 branch nobody maintains any more.
+
 ## How the browser image is built
 
 Firefox ESR 153 is the `browser` software image, built over the toolkit
@@ -184,29 +193,27 @@ floors are given with each layer.
 - **Updates.** ESR has a security release every four weeks. Its pins are the
   images' (`build/images/versions.env`), so a bump rebuilds the browser and
   leaves stage 04 and its cache alone.
-- **Choices still open.**
-  - **Getting the Rust tarballs into the chroot.** The `rust` layer needs
-    the tarballs `build/config/rust.lock` pins. Today the Distro workflow
-    fetches them outside the chroot for kryptikd and nothing else sees
-    them. Listed as image sources instead, they come under the signature
-    and currency gates, which then cover kryptikd's compiler too. That is
-    a bump every six weeks, and a test must hold both locks to one hash.
-  - **cbindgen built the way kryptikd is.** The option is static for
-    musl, outside the chroot, by the pinned compiler, its crates checked
-    by its own lock. That needs stage 03's runner to bind one more binary
-    into the chroot, and the runner is in stage 04's cache key. The
-    alternative is an offline build inside the chroot from crates fetched
-    beforehand.
-  - **Two gigabytes of sources.** Firefox's source is 0.8 GB and LLVM's
-    build 1.2 GB even as `.tar.zst`. In the one sources cache, every image
-    pin's bump would copy the root's set beside them, against the
-    repository's 10 GB. The images' sources need a cache of their own,
-    keyed by `build/images/sources.lock`.
-  - **Mozilla's key from Mozilla.** Its signing subkey was replaced in
-    August 2026 after a copy leaked, and the keyserver's copy carries
-    neither the new subkey nor the old one's revocation. The key must come
-    from the `KEY` file beside each release, which needs a provenance kind
-    for a project's own key file.
+- **Choices taken.**
+  - **The Rust tarballs are image sources.** The `rust` layer lists the
+    rustc, cargo and rust-std tarballs `build/config/rust.lock` pins, so the
+    signature and currency gates cover them, and kryptikd's compiler with
+    them. A CI check holds both locks to the same hashes, so the shipped
+    daemon and the browser are built by one release, bumped every six weeks.
+  - **cbindgen is built inside the chroot, offline.** Its crate and the
+    crates its own lock file names are fetched beforehand and checked
+    against that lock. In the chroot each is unpacked into a vendored source
+    directory, and `cargo build --offline --locked` uses the `rust` layer.
+    Stage 03's runner and stage 04's cache key stay as they are.
+  - **The images' sources have a cache of their own.** They go under
+    `sources/images/`, keyed by `build/images/sources.lock`. The root's set
+    stays keyed by `sources.lock` alone, so a browser bump copies neither set
+    into the other's entry.
+  - **Mozilla's key comes from Mozilla.** The fingerprint is pinned like
+    every other, confirmed by Mozilla's security blog post of August 2026.
+    The key material is taken from the `KEY` file beside the release rather
+    than from the keyserver, whose copy lacks the new subkey and the old
+    one's revocation. It is imported again on every run, so a later
+    revocation lands.
 
 ## GPU rendering, zone by zone
 
