@@ -15,7 +15,7 @@ pub enum NetworkMode {
     None,
     /// veth into the bridge owned by the `nic` zone.
     Routed,
-    /// Holds the physical interface. Exactly one zone may have this.
+    /// Holds the physical interface. At most one zone has this, and one must where a zone is routed.
     Nic,
 }
 
@@ -664,15 +664,18 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
             }
         }
     }
-    // Exactly one zone holds the NIC: the single path to the network.
+    /* At most one zone holds the NIC, the single path to the network, and one must wherever a
+     * routed zone needs that path. A set of zones without network, as a test's, needs none. */
     let nic: Vec<&str> = zones
         .iter()
         .filter(|z| z.network == NetworkMode::Nic)
         .map(|z| z.name.as_str())
         .collect();
+    let routed = zones.iter().any(|z| z.network == NetworkMode::Routed);
 
     match nic.len() {
         1 => {}
+        0 if !routed => {}
         0 => {
             return Err(ZoneError::Invalid(
                 "no zone holds the physical NIC; routed zones would have no path out"
