@@ -50,6 +50,20 @@ out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"changes the root's directory /usr/bin"* ]] \
     && ok "a root directory with another mode fails" || bad "directory mode: rc=$rc: $out"
 
+fresh; ln -s /etc/passwd "$U/usr/bin/passwd-link"
+out="$(check)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"/usr/bin/passwd-link links to /etc/passwd, outside /usr"* ]] \
+    && ok "a link to a path outside /usr fails" || bad "absolute link out: rc=$rc: $out"
+
+fresh; ln -s ../../tmp/probe "$U/usr/bin/climb"
+out="$(check)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"/usr/bin/climb links to ../../tmp/probe, outside /usr"* ]] \
+    && ok "a relative link that climbs out of /usr fails" || bad "relative link out: rc=$rc: $out"
+
+fresh; ln -s /usr/share/probe/README "$U/usr/bin/probe-readme"
+out="$(check)"; rc=$?
+[[ "$rc" -eq 0 ]] && ok "an absolute link that stays in /usr passes" || bad "absolute link in: rc=$rc: $out"
+
 fresh; rm -rf "$U/usr"
 out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"installed nothing under /usr"* ]] \
