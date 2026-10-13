@@ -600,7 +600,7 @@ cameras behind Intel's IPU6 stay unsupported.
 Kryptik's and a device Firefox can open in the calling zone; loading the
 driver by alias, which hands every device's descriptors to it at plug-in.
 
-## ADR-027 (proposed): No Bluetooth for 1.0; then a Bluetooth zone for a headset's audio
+## ADR-027: No Bluetooth for 1.0; then a Bluetooth zone for a headset's audio
 
 Kryptik 1.0 builds no Bluetooth. Calls use a USB or wired headset, or a
 Bluetooth headset whose USB dongle presents itself as a USB sound card,
@@ -610,7 +610,10 @@ network namespace make Bluetooth sockets and has the Bluetooth capability
 checks ask that namespace's user namespace. It carries a headset's audio
 alone, to and from the mixer as fixed-format streams, and its modules load
 only while the user has Bluetooth on in the chrome
-([Bluetooth](design/bluetooth.md)).
+([Bluetooth](design/bluetooth.md)). That is the direction, not yet the
+patch: its code and the cost of rebasing it are weighed again when the work
+starts, and a free host stack on the controller's user channel takes the
+zone's place if one carries a headset's audio by then.
 
 **Why:** the kernel's Bluetooth protocols take input from anyone in radio
 range, and have had remote code execution twice (BlueBorne,

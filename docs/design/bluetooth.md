@@ -6,7 +6,7 @@ controller's firmware ships, and nothing pairs. [ADR-021](../decisions.md)
 put Bluetooth, when it comes, in a zone of its own, carrying audio only.
 This design weighs that against shipping without it, and against what the
 hand-off to zone 0's mixer would add there.
-[ADR-027](../decisions.md) proposes the outcome.
+[ADR-027](../decisions.md) decides it: none for 1.0, then a zone of its own.
 
 ## What a Bluetooth stack is
 
@@ -95,16 +95,19 @@ A Bluetooth zone adds to zone 0 what the mixer must do with a headset:
 That is one more device and a parser of a few fixed lines in the mixer.
 The radio, the codecs and pairing stay out of zone 0.
 
-## Recommendation
+## The decision
 
-For 1.0, no Bluetooth, and the guide says so: USB headsets, and Bluetooth
-headsets with a USB dongle. After 1.0, the Bluetooth zone with the kernel
-patch, for a headset's audio alone. Its modules are kept from loading by
-alias, as `uvcvideo` is (ADR-026), so the controller is up and the
-kernel's Bluetooth code reachable only while the user has turned Bluetooth
-on in the chrome, which says so for as long as it is. A free host stack on
-the user channel would take the zone's place once one carries a headset's
-audio.
+ADR-027 decides: for 1.0, no Bluetooth. No `btusb`, no controller's
+firmware, nothing pairs, and the guide says so: USB and wired headsets, and
+Bluetooth headsets with a USB dongle that is a USB sound card. After 1.0,
+the Bluetooth zone with the kernel patch, for a headset's audio alone. Its
+modules are kept from loading by alias, as `uvcvideo` is (ADR-026), so the
+controller is up and the kernel's Bluetooth code reachable only while the
+user has turned Bluetooth on in the chrome, which says so for as long as it
+is. That is the direction, not yet the patch: its code and the cost of
+rebasing it are weighed again when the work starts, and a free host stack on
+the user channel takes the zone's place if one carries a headset's audio by
+then.
 
 ## Check, when it comes
 
