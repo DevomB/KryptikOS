@@ -63,6 +63,19 @@ fn a_directory_comes_off_with_what_it_holds() {
 }
 
 #[test]
+fn a_tree_nested_past_the_limit_stops_the_copy() {
+    let out = scratch("deep");
+    let fs = volume();
+    let mut d = fs.root_dir().create_dir("deep").unwrap();
+    for _ in 0..=MAX_DEPTH {
+        d = d.create_dir("d").unwrap();
+    }
+    let err = get(&fs, "deep", &out).unwrap_err();
+    assert!(err.contains(&format!("nested more than {MAX_DEPTH} deep")), "{err}");
+    let _ = fs::remove_dir_all(&out);
+}
+
+#[test]
 fn a_stick_given_read_only_takes_no_write() {
     let dir = scratch("ro");
     let image = dir.join("stick.img");
