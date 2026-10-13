@@ -771,6 +771,18 @@ else
     fail "chrome-wifi-scan" "kryptik-launch --wifi-scan: $(tr '\n' ' ' <<<"$scan_said" | cut -c1-200)"
 fi
 
+# --- the browser, in a zone that carries it ---------------------------------------------
+# untrusted names the browser image, which the installer kept from the medium: Firefox opens a
+# page of the zone's own, and its window is drawn as untrusted's.
+mark firefox untrusted
+launch_plain untrusted "sh -c 'printf \"<title>kryptik-page</title><p>kryptik</p>\" > /tmp/page.html && exec firefox --new-instance file:///tmp/page.html'" > "$LOG/launch-firefox.out" 2>&1 &
+if wait_for 120 grep -q '^title=.*kryptik-page' "$RT/kryptik/focus" && grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
+    pass "browser-window" "Firefox from the browser image opened a page in untrusted: $(grep '^title=' "$RT/kryptik/focus")"
+else
+    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' ')"
+fi
+stop_zone untrusted
+
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
 # last focus record to the state partition (p4, log/kryptik/) for a post-mortem.

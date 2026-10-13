@@ -89,7 +89,7 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
  * chrome's menu, a text program in a zone 0 terminal of its own */
 static const char *termcmd[]      = { "kryptik-launch", "--ask", "work",      "--", "havoc", NULL };
 static const char *personalcmd[]  = { "kryptik-launch", "--ask", "personal",  "--", "havoc", NULL };
-static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "havoc", "lynx", NULL };
+static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "firefox", NULL };
 static const char *menucmd[]      = { "havoc", "/usr/bin/kryptik-chrome", "--menu", NULL };
 
 static const Key keys[] = {

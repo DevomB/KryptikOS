@@ -48,6 +48,8 @@ zone_field() { # zone key
     sed -n "s/^$2[[:space:]]*=[[:space:]]*\"\\(.*\\)\"[[:space:]]*$/\\1/p" "$ZONES/$1.toml" 2>/dev/null | head -1
 }
 zone_is_nic() { grep -q '^mode[[:space:]]*=[[:space:]]*"nic"' "$ZONES/$1.toml" 2>/dev/null; }
+# Whether the zone's file names the browser image among its images.
+zone_has_browser() { grep -Eq '^images[[:space:]]*=[[:space:]]*"([^"]* )?browser( [^"]*)?"' "$ZONES/$1.toml" 2>/dev/null; }
 
 # --- the status stream ---------------------------------------------------------
 
@@ -233,7 +235,7 @@ run_menu() {
         menu_network
         menu_update
         echo
-        echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
+        echo "Apps:  t terminal   e editor (nano)   b browser (Firefox where the zone has it, else lynx)"
         echo "Admin: u updates: what the channel names, fetch, forget, install"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
         echo "       w Wi-Fi networks   f the last zone window's zone   r refresh   q close this window"
@@ -267,7 +269,8 @@ run_menu() {
                       case "$app" in
                           t) set -- "$TERMINAL" ;;
                           e) set -- "$TERMINAL" /usr/bin/nano ;;
-                          b) set -- "$TERMINAL" /usr/bin/lynx ;;
+                          # Firefox where the zone's file names the browser image, lynx elsewhere.
+                          b) if zone_has_browser "$z"; then set -- firefox; else set -- "$TERMINAL" /usr/bin/lynx; fi ;;
                       esac
                       echo "launching in zone $z: $*"
                       # --ask: a passphrase is read on this zone 0 terminal, never a zone's.

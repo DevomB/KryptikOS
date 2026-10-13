@@ -283,7 +283,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+p | the chrome menu: zones, their applications, stop a zone, move a clipboard between zones, the Wi-Fi networks with w, and with f the zone of the window you last had |
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
-| Alt+Shift+u | the browser (lynx) in the untrusted zone |
+| Alt+Shift+u | the browser (Firefox) in the untrusted zone |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |
@@ -294,7 +294,9 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 
 Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
-Enter. A zone with encrypted storage asks for its passphrase when it starts,
+Enter. The browser is Firefox in `untrusted`, `personal` and `work`, which
+carry its software image, and lynx in a terminal elsewhere; Firefox opens
+PDFs too. A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. Under the zones, a Network line says what
 the net zone reports: whether it is ready, the Wi-Fi network it joined (or

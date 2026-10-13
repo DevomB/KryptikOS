@@ -29,3 +29,8 @@ border_color   = "#2d60d1"
 border_pattern = "solid"
 glyph          = "■"
 label          = "WORK"
+
+[software]
+# The browser, and the toolkit it is built over (docs/design/software-delivery.md); the call its
+# content sandbox needs is granted in the zone's policy.
+images = "browser toolkit"
