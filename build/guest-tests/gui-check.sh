@@ -43,6 +43,8 @@
 #   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT KEY-MENU-OPEN                                press Alt+p (a menu window for an open network)
 #   GT OPEN-TYPE N TEXT                             type TEXT and Enter (letters and digits)
+#   GT KEY-VT-ADMIN, GT KEY-VT-DESKTOP              press Ctrl+Alt+F2, then Ctrl+Alt+F1
+#   GT KEY-MENU-AFTER-VT                            press Alt+p
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -1444,6 +1446,33 @@ if wait_for 60 scan_answered; then
 else
     fail "chrome-wifi-scan" "kryptik-launch --wifi-scan: $(tr '\n' ' ' <<<"$scan_said" | cut -c1-200)"
 fi
+
+# --- the administration login, a console away ---------------------------------------------
+# Ctrl+Alt+F2 puts tty2's login in front, and Ctrl+Alt+F1 brings the desktop back, which answers
+# its clients and takes keys as before. Last, so a desktop that did not come back ends no round.
+vt_is() { [[ "$(fgconsole 2>/dev/null)" == "$1" ]]; }
+answers() { timeout 10 su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -q 'sync done'; }
+menus_vt="$(menu_windows)"
+echo "GT KEY-VT-ADMIN"
+if wait_for 15 vt_is 2; then
+    pass "vt-admin-login" "Ctrl+Alt+F2 put tty2's login in front"
+else
+    fail "vt-admin-login" "the console in front is $(fgconsole 2>&1)"
+fi
+echo "GT KEY-VT-DESKTOP"
+if wait_for 15 vt_is 1 && wait_for 15 answers; then
+    pass "vt-desktop-back" "Ctrl+Alt+F1 brought the desktop back, and the compositor answers a client"
+else
+    fail "vt-desktop-back" "console $(fgconsole 2>&1); dwl $(pgrep -u "$USER_NAME" -x dwl > /dev/null && echo running || echo gone); session.log: $(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+fi
+echo "GT KEY-MENU-AFTER-VT"
+more_menus() { [[ "$(menu_windows)" -gt "$menus_vt" ]]; }
+if wait_for 15 more_menus; then
+    pass "vt-desktop-takes-keys" "Alt+p opened the menu after the switch back"
+else
+    fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after"
+fi
+pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
