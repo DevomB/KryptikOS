@@ -630,3 +630,34 @@ firmware, and a device and a few control lines in the mixer.
 network namespace, which needs capabilities of the initial user namespace
 that reach past Bluetooth; a host stack in userspace on the controller's
 user channel, until a free one carries a headset's audio.
+
+## ADR-028: No input method for 1.0; then one per zone, its virtual keyboard bound to the zone
+
+Kryptik 1.0 has no input method: layouts switch and compose works, and the
+guide says CJK input is not there yet. After 1.0, each zone whose file asks
+runs its own input method, fcitx5 delivered as a software image, and is
+offered text input, the input-method protocol and a virtual keyboard by its
+proxy. dwl binds that virtual keyboard to its zone: its keys reach only a
+focused window of that zone, never the compositor's bindings, and its
+keymap only that zone's windows, and the input method's keyboard grab
+holds only while that zone has focus. The compositor's own keys come before
+any grab, so no input method sees or swallows them, and a candidate list
+is held inside its zone's window, as a zone's popups are
+([input methods](design/input-methods.md)). That is the direction, not yet
+the code: dwl's relay is weighed again when the work starts.
+
+This amends ADR-021, whose input methods were never to be offered the
+virtual keyboard.
+
+**Why:** fcitx5 sends every key it lets pass back through the virtual
+keyboard and starts without one only to do nothing, and IBus does not speak
+the input-method protocol wlroots has; a virtual keyboard bound to its zone
+can do no more than that zone's own windows can.
+
+**Cost:** a text-input and input-method relay in dwl, keyed by zone, and the
+virtual keyboard's routing; three more globals in the proxy for the zones
+that ask; fcitx5 and its engines as software images; no CJK input in 1.0.
+
+**Rejected:** one input method in zone 0 for every zone; a virtual keyboard
+as dwl has it; an input method of Kryptik's own that needs no virtual
+keyboard.
