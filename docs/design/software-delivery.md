@@ -220,6 +220,10 @@ up ADR-001 in the zones where the applications run.
   signs the two lists the guest must refuse, under
   `images-<release>/controls/`: the same list in `kryptik-release`, and
   one for another root.
+- **On the medium.** The USB image carries the list, its signature and each
+  image in a third partition, `kryptik-images`, an ext4 made as the root's
+  is; the ISO carries the same files under `/images` in its filesystem. A
+  release without images has neither. The controls stay with the build.
 - **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
   the list for each root as `<base>.manifest` and `.manifest.sig`, root
   only. Zone 0 keeps the generation the committed root uses and, during a

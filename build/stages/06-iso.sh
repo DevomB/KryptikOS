@@ -542,39 +542,73 @@ s_esp() {
     echo "--- ESP (usb) ---"; mdir -i "${IMG}/esp-usb.img" -/ :: | grep -vE '^\s*$'
 }
 
-make_gpt_image() {   # make_gpt_image OUT ESP-IMG ROOT-IMG ROOT-LABEL
-    local out="$1" esp="$2" root="$3" label="$4"
-    local esp_bytes root_bytes
+# The medium's copy of this release's software images: the list, its signature and each image, not
+# the controls a development build signs for the suites. Fails when the build made no list.
+medium_images() {   # medium_images DIR
+    [[ -f "${IMAGES}/images.manifest" ]] || return 1
+    rm -rf "$1"; mkdir -p "$1"; chmod 0755 "$1"
+    install -m 0644 "${IMAGES}"/images.manifest* "${IMAGES}"/*.img "$1/"
+}
+
+# make_images_fs DIR OUT: DIR as the ext4 of the USB's kryptik-images partition, made as the root's is.
+make_images_fs() {
+    local bytes; bytes="$(du -sb "$1" | cut -f1)"
+    local fs_bytes=$(( bytes + bytes / 8 + 16 * 1024 * 1024 ))
+    fs_bytes=$(( (fs_bytes + 4095) / 4096 * 4096 ))
+    local id; id="$(printf 'kryptik-images %s %s' "$KRYPTIK_VERSION" "$(root_json root_hash)" | sha256_of_stdin)"
+    id="${id:0:8}-${id:8:4}-${id:12:4}-${id:16:4}-${id:20:12}"
+    make_ext4 "$1" "$2" "$fs_bytes" "$id" kryptik-images
+    if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+        make_ext4 "$1" "${2}.again" "$fs_bytes" "$id" kryptik-images
+        cmp -s "$2" "${2}.again" || { echo "FAIL: two mke2fs runs over the medium's images wrote different filesystems"; return 1; }
+        rm -f "${2}.again"
+    fi
+}
+
+make_gpt_image() {   # make_gpt_image OUT ESP-IMG ROOT-IMG ROOT-LABEL [IMAGES-FS]
+    local out="$1" esp="$2" root="$3" label="$4" images="${5:-}"
+    local esp_bytes root_bytes images_sectors=0
     esp_bytes="$(stat -c %s "$esp")"; root_bytes="$(stat -c %s "$root")"
     local esp_sectors=$(( esp_bytes / 512 ))
     local root_sectors=$(( (root_bytes + 1048575) / 1048576 * 2048 ))
+    [[ -z "$images" ]] || images_sectors=$(( ($(stat -c %s "$images") + 1048575) / 1048576 * 2048 ))
     local esp_start=2048
     local root_start=$(( esp_start + esp_sectors ))
-    local total=$(( root_start + root_sectors + 2048 + 34 ))
+    local images_start=$(( root_start + root_sectors ))
+    local total=$(( images_start + images_sectors + 2048 + 34 ))
+    local table="label: gpt
+unit: sectors
+start=${esp_start}, size=${esp_sectors}, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=\"kryptik-esp\"
+start=${root_start}, size=${root_sectors}, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=\"${label}\""
+    # The release's software images, after the root: the installer copies them into the store.
+    [[ -z "$images" ]] || table+="
+start=${images_start}, size=${images_sectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"kryptik-images\""
     rm -f "$out"
     truncate -s $(( total * 512 )) "$out"
-    sfdisk --quiet --wipe always "$out" <<EOF
-label: gpt
-unit: sectors
-start=${esp_start}, size=${esp_sectors}, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="kryptik-esp"
-start=${root_start}, size=${root_sectors}, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name="${label}"
-EOF
+    sfdisk --quiet --wipe always "$out" <<< "$table"
     dd if="$esp" of="$out" bs=512 seek="$esp_start" conv=notrunc,sparse status=none
     dd if="$root" of="$out" bs=512 seek="$root_start" conv=notrunc,sparse status=none
+    [[ -z "$images" ]] || dd if="$images" of="$out" bs=512 seek="$images_start" conv=notrunc,sparse status=none
     sfdisk -l "$out" | sed 's/^/  /'
 }
 
 s_usb() {
     echo "inputs digest: $1"
-    local out="${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img"
-    make_gpt_image "$out" "${IMG}/esp-usb.img" "${IMG}/kryptik-root.img" kryptik-media
+    local out="${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img" fs=()
+    if medium_images "${IMG}/medium-images"; then
+        [[ -f "${IMG}/medium-images/images.manifest.sig" ]] || { echo "images.manifest is not signed"; return 1; }
+        make_images_fs "${IMG}/medium-images" "${IMG}/medium-images.img"
+        fs=("${IMG}/medium-images.img")
+    fi
+    make_gpt_image "$out" "${IMG}/esp-usb.img" "${IMG}/kryptik-root.img" kryptik-media "${fs[@]}"
+    rm -rf "${IMG}/medium-images" "${IMG}/medium-images.img"
     sha256sum "$out" | sed "s| .*/| |" > "${out}.sha256"
     echo "usb image: $(stat -c %s "$out") bytes ($(du -h "$out" | cut -f1) on disk)"
     cat "${out}.sha256"
 }
 
-make_iso() {   # make_iso OUT ESP-IMG
-    local out="$1" esp="$2"
+make_iso() {   # make_iso OUT ESP-IMG [IMAGES-DIR]
+    local out="$1" esp="$2" images="${3:-}"
     local t; t="$(mktemp -d)"
     cp "$SB_CERT" "$t/kryptik-sb.crt"
     cp "${IMG}/root.json" "$t/"
@@ -585,6 +619,12 @@ appended partition (see root.json); the ISO kernel names its offset. To boot
 from a USB stick use the USB image instead: this ISO's kernel looks for
 /dev/sr0.
 EOF
+    local graft=(esp.img="$esp" kryptik-sb.crt="$t/kryptik-sb.crt" root.json="$t/root.json" README.txt="$t/README.txt")
+    if [[ -n "$images" ]]; then
+        printf '%s\n' "The software images under images/ are named by images.manifest, which the" \
+            "release key signs (images.manifest.sig); the installer copies them." >> "$t/README.txt"
+        graft+=(images="$images")
+    fi
     rm -f "$out"
     # Linux filesystem data, as a GUID: xorriso takes an MBR type byte or a
     # GUID, not sfdisk's 0x8300 shorthand.
@@ -592,8 +632,7 @@ EOF
     xorriso -as mkisofs -quiet -o "$out" -iso-level 3 -V KRYPTIK -J -R \
         -e esp.img -no-emul-boot -isohybrid-gpt-basdat \
         -append_partition 2 0FC63DAF-8483-4772-8E79-3D69D8477DE4 "${IMG}/kryptik-root.img" -appended_part_as_gpt \
-        -graft-points esp.img="$esp" kryptik-sb.crt="$t/kryptik-sb.crt" root.json="$t/root.json" README.txt="$t/README.txt" \
-        2>&1 | grep -vE '^\s*$'
+        -graft-points "${graft[@]}" 2>&1 | grep -vE '^\s*$'
     rc="${PIPESTATUS[0]}"
     rm -rf "$t"
     [[ "$rc" -eq 0 ]] || { echo "xorriso exited ${rc}"; return 1; }
@@ -607,7 +646,13 @@ s_bind_iso() {
     echo "inputs digest: $1"
     echo "--- pass 1: layout (a placeholder ESP of the final size) ---"
     make_esp "${IMG}/esp-iso.img" slot-a .efi
-    make_iso "${IMG}/layout.iso" "${IMG}/esp-iso.img"
+    local images=""
+    if medium_images "${IMG}/iso-images"; then
+        images="${IMG}/iso-images"
+        # Signed at sign time: one 2048-byte block holds the signature, as it holds this.
+        [[ -f "${images}/images.manifest.sig" ]] || printf 'placeholder\n' > "${images}/images.manifest.sig"
+    fi
+    make_iso "${IMG}/layout.iso" "${IMG}/esp-iso.img" ${images:+"$images"}
     local start; start="$(part2_start "${IMG}/layout.iso")"
     [[ -n "$start" ]] || { echo "could not read the appended partition's start"; sfdisk -d "${IMG}/layout.iso"; return 1; }
     echo "appended root partition starts at sector ${start}"
@@ -621,7 +666,7 @@ s_bind_iso() {
         "$total_sectors" "$start" "$(verity_table /dev/dm-0)" "$COMMON_ARGS" > "${IMG}/cmdlines/media-iso.txt"
     printf '%s\n' "$start" > "${IMG}/iso-root-start"
     cat "${IMG}/cmdlines/media-iso.txt"
-    rm -f "${IMG}/layout.iso" "${IMG}/esp-iso.img"
+    rm -rf "${IMG}/layout.iso" "${IMG}/esp-iso.img" "${IMG}/iso-images"
     echo "--- bind the ISO kernel ---"
     bind_in_chroot media-iso
 }
@@ -634,7 +679,13 @@ s_iso() {
     sign_one media-iso
     echo "--- pass 2: the real ESP and ISO ---"
     make_esp "${IMG}/esp-iso.img" media-iso
-    make_iso "$iso" "${IMG}/esp-iso.img"
+    local images=""
+    if medium_images "${IMG}/iso-images"; then
+        images="${IMG}/iso-images"
+        [[ -f "${images}/images.manifest.sig" ]] || { echo "images.manifest is not signed"; return 1; }
+    fi
+    make_iso "$iso" "${IMG}/esp-iso.img" ${images:+"$images"}
+    rm -rf "${IMG}/iso-images"
     local start2; start2="$(part2_start "$iso")"
     [[ "$start2" == "$start" ]] || { echo "FAIL: the root partition moved from where the ISO kernel was bound (${start} -> ${start2})"; return 1; }
     echo "ok: root partition start unchanged at ${start2}"
@@ -824,7 +875,7 @@ bound rootfs        s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/co
 bound images        s_images "$KRYPTIK_VERSION" "$(images_inputs | sha256_of_stdin)"
 bound cmdlines      s_cmdlines "$(_hash_file "${IMG}/root.json")"
 bound bind-kernels  s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
-bound bind-iso      s_bind_iso "$(cat "${IMG}/root.json" "$SB_CERT" | sha256_of_stdin)"
+bound bind-iso      s_bind_iso "$(cat "${IMG}/root.json" "$SB_CERT" | sha256_of_stdin)$(_hash_file "${IMAGES}/images.manifest")"
 if [[ "$PHASE" == bind ]]; then
     echo
     ok "Stage 06 bound ${KRYPTIK_VERSION} in ${IMG}: KRYPTIK_MEDIA_PHASE=sign signs it"
@@ -833,8 +884,8 @@ fi
 step sign-images    s_sign_images "$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "$ANCHOR")"
 step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$SB_CERT")"
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
-step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"
-step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/kernels/media-iso.efi" "${IMG}/root.json" "${IMG}/iso-root-start" | sha256_of_stdin)"
+step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "${IMAGES}/images.manifest.sig")"
+step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/kernels/media-iso.efi" "${IMG}/root.json" "${IMG}/iso-root-start" | sha256_of_stdin)$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "${IMAGES}/images.manifest.sig")"
 step sums           s_sums "$(cat "${IMG}/kryptik-${KRYPTIK_VERSION}"{-usb.img,.iso}.sha256 | sha256_of_stdin)$(_hash_file "$ANCHOR")"
 step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)" "${LATEST_KEY:+with a statement key}"
 step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" "${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS.sig" "$ANCHOR" | sha256_of_stdin)"
