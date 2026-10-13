@@ -291,20 +291,25 @@ fi
 # --- the shipped manifest and the shipped lockfile must agree ---------------
 
 # A row with no lock line is refused at fetch time; a lock line with no row is a hash nobody checks.
+# The root's rows are in sources.lock, the software images' in build/images/sources.lock.
 bash "$TOOL" --list > "${W}/live-manifest" 2>/dev/null
-awk '{n = $3; sub(/.*\//, "", n); print n}' "${W}/live-manifest" | sort -u > "${W}/mf"
-awk '{print $2}' "${ROOT}/sources.lock" | sort -u > "${W}/lk"
+bash "$TOOL" --list-root > "${W}/root-manifest" 2>/dev/null
+names() { awk '{n = $3; sub(/.*\//, "", n); print n}' "$1" | sort -u; }
+names "${W}/root-manifest" > "${W}/mf-root"
+comm -23 <(names "${W}/live-manifest") "${W}/mf-root" > "${W}/mf-images"
+awk '{print $2}' "${ROOT}/sources.lock" | sort -u > "${W}/lk-root"
+awk '{print $2}' "${ROOT}/build/images/sources.lock" | sort -u > "${W}/lk-images"
 
-miss="$(comm -23 "${W}/mf" "${W}/lk" | tr '\n' ' ')"
+miss="$(comm -23 "${W}/mf-root" "${W}/lk-root" | tr '\n' ' ')$(comm -23 "${W}/mf-images" "${W}/lk-images" | tr '\n' ' ')"
 if [[ -z "${miss// /}" ]]; then
-    green "every source in the manifest has a sources.lock entry"
+    green "every source in the manifest has an entry in its lock"
 else
     red "manifest rows with no lock entry: ${miss}"
 fi
 
-stale="$(comm -13 "${W}/mf" "${W}/lk" | tr '\n' ' ')"
+stale="$(comm -13 "${W}/mf-root" "${W}/lk-root" | tr '\n' ' ')$(comm -13 "${W}/mf-images" "${W}/lk-images" | tr '\n' ' ')"
 if [[ -z "${stale// /}" ]]; then
-    green "every sources.lock entry corresponds to a manifest row"
+    green "every lock entry corresponds to a manifest row of its own set"
 else
     red "lock entries with no manifest row: ${stale}"
 fi
@@ -321,7 +326,7 @@ fi
 
 # A value no tool knows fails there too; here it fails before it ships.
 odd="$(awk '
-    $4 !~ /^(gnu|kernel|sig|asc|stem\.sig|sums:[^\/]+\.(asc|sig)|probe|sha256|sha256\.txt|tag|none)$/ { print $1 " sig=" $4; next }
+    $4 !~ /^(gnu|kernel|sig|asc|stem\.sig|sums:[^\/]+\.(asc|sig)|probe|sha256|sha256\.txt|sha256sum|stem\.sha256sum|tag|none)$/ { print $1 " sig=" $4; next }
     $5 !~ /^(gnu|vdir|github|listing|rule|eol|follows:.+)$/ { print $1 " new=" $5 }
 ' "${W}/live-manifest" | tr '\n' ' ')"
 if [[ -z "${odd// /}" ]]; then

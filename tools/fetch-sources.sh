@@ -182,7 +182,7 @@ image_manifest() {
 toolkit|pcre2|${V_PCRE2}|${MIRROR_GITHUB}/PCRE2Project/pcre2/releases/download/pcre2-${V_PCRE2}/pcre2-${V_PCRE2}.tar.bz2|sig|rule
 toolkit|glib|${V_GLIB}|${gnome}/glib/${V_GLIB%.*}/glib-${V_GLIB}.tar.xz|stem.sha256sum|rule
 toolkit|libpng|${V_LIBPNG}|${MIRROR_SOURCEFORGE}/libpng/libpng-${V_LIBPNG}.tar.xz|none|rule
-toolkit|freetype|${V_FREETYPE}|${MIRROR_SAVANNAH}/freetype/freetype-${V_FREETYPE}.tar.xz|sig|listing
+toolkit|freetype|${V_FREETYPE}|${MIRROR_SAVANNAH_MASTER}/freetype/freetype-${V_FREETYPE}.tar.xz|sig|listing
 toolkit|harfbuzz|${V_HARFBUZZ}|${MIRROR_GITHUB}/harfbuzz/harfbuzz/releases/download/${V_HARFBUZZ}/harfbuzz-${V_HARFBUZZ}.tar.xz|none|github
 toolkit|fontconfig|${V_FONTCONFIG}|${MIRROR_FDO_GITLAB}/api/v4/projects/890/packages/generic/fontconfig/${V_FONTCONFIG}/fontconfig-${V_FONTCONFIG}.tar.xz|sha256sum|rule
 toolkit|fribidi|${V_FRIBIDI}|${MIRROR_GITHUB}/fribidi/fribidi/releases/download/v${V_FRIBIDI}/fribidi-${V_FRIBIDI}.tar.xz|none|github
