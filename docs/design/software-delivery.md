@@ -205,7 +205,14 @@ up ADR-001 in the zones where the applications run.
   toolchain only builds use, is never packed or listed. `image_over` is not
   followed through: an image built over one that is itself built over others
   names those too, and a zone names every image of the chain, as each image's
-  `requires:` line is checked on its own.
+  `requires:` line is checked on its own. An image is built again when what
+  it is built from changes: its definition, the shared recipe helpers and
+  flags, its rows' recipes as stage 04 fingerprints a step, the images under
+  it, and the base system up to `wlroots`, the last step an image builds
+  against (`IMAGES_BASE`). Zone 0's own programs and applications come after
+  it in stage 04, so changing them rebuilds no image, and a kept image's tree
+  is checked against the root again. A release builds every image from
+  nothing.
 - **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
   makes the root (ext4 without a journal, then the verity tree, with a
   salt and UUID derived from the content), runs the root's artifact audit

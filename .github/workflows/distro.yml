@@ -332,13 +332,15 @@ jobs:
         if: always()
         run: rm -f /mnt/kryptik/work-after-05.tar.zst
 
-      # The images built over this very base system, from an earlier run: make images keeps each whose
-      # fingerprint still matches its inputs and builds the rest. Not for a tag, which builds from nothing.
+      # The images built over this base system, up to the last step they build against (IMAGES_BASE in
+      # 04-images.sh), from an earlier run: make images keeps each whose fingerprint still matches its
+      # inputs and builds the rest. Not for a tag, which builds from nothing.
       - name: Which base system the images are built over
         id: images_key
         if: github.ref_type != 'tag'
         run: |
-          base="$(sudo sed -n 's/^fingerprint: //p' "$KRYPTIK_WORK/.stamps/bs-licences" | cut -c1-16)"
+          step="$(sed -n 's/^IMAGES_BASE="\([a-z0-9-]*\)"$/\1/p' build/stages/04-images.sh)"
+          base="$(sudo sed -n 's/^fingerprint: //p' "$KRYPTIK_WORK/.stamps/bs-${step:-none}" | cut -c1-16)"
           if [ -n "$base" ]; then echo "prefix=images-v1-${{ needs.toolchain.outputs.ttfp }}-${base}-" >> "$GITHUB_OUTPUT"; fi
 
       - name: Software images from an earlier run (cached)

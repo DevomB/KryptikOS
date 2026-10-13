@@ -190,9 +190,11 @@ floors are given with each layer.
     half hours. That fits the system job's six hours after a warm stage 04,
     but not every run should pay it.
   - The trees of the shipped images go into a cache of their own, keyed by
-    their fingerprints, which include the base system's stamp. A run
-    restores a tree whose inputs have not changed, so only a change to the
-    browser, the toolkit or the base system rebuilds it.
+    their fingerprints, which include the base system's stamp up to
+    `wlroots`, the last step an image builds against. A run restores a tree
+    whose inputs have not changed, so only a change to the browser, the
+    toolkit or the base system up to `wlroots` rebuilds it; zone 0's own
+    programs, which stage 04 builds after it, do not.
 - **Updates.** ESR has a security release every four weeks. Its pins are the
   images' (`build/images/versions.env`), so a bump rebuilds the browser and
   leaves stage 04 and its cache alone.
