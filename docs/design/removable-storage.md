@@ -105,7 +105,7 @@ until its reader is chosen.
   stick nobody vouches for goes to `untrusted`, where a reader its
   filesystem subverts holds nothing worth taking.
 - **Zones that never get one.** The net zone never does. A zone's file
-  may refuse sticks (`[storage] removable = false`), as `vault`'s does.
+  may refuse sticks (`[storage] removable = false`), as `vault`'s will.
 - **The broker hands it over.** The zone asks with `stick`. The reply
   carries the descriptor only while the user's grant names that zone and
   that partition, the same way the microphone's grant is held. The grant
