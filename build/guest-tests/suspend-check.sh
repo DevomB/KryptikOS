@@ -84,12 +84,14 @@ blocked() {
     echo "${second# }"
 }
 # What the session's programs wait on, for a round that found the lock or the compositor stuck:
-# each one's state and kernel wait, and the session log's last lines, onto the serial line.
+# each one's state, kernel wait and stack, and the system call it is in with its arguments (a
+# poll's timeout tells the lock's 15 s wait on the daemon from a wait on the compositor), and
+# the session log's last lines, onto the serial line.
 stuck_report() {
     local p c
     for p in $(pgrep -x 'dwl|kryptik-lock|kryptik-chrome|seatd'); do
         c="$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)"
-        info "pid ${p} ${c:0:60}: state $(awk '{print $3}' "/proc/$p/stat" 2>/dev/null), waits in $(cat "/proc/$p/wchan" 2>/dev/null); $(tr '\n' '|' < "/proc/$p/stack" 2>/dev/null | cut -c1-300)"
+        info "pid ${p} ${c:0:60}: state $(awk '{print $3}' "/proc/$p/stat" 2>/dev/null), waits in $(cat "/proc/$p/wchan" 2>/dev/null), syscall $(cat "/proc/$p/syscall" 2>/dev/null); $(tr '\n' '|' < "/proc/$p/stack" 2>/dev/null | cut -c1-300)"
     done
     tail -n 25 "$slog" 2>/dev/null | sed 's/^/GT INFO session.log: /'
 }
