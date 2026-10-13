@@ -748,8 +748,8 @@ lock0_pid=$!
 wait_for 15 grep -q 'keyboard entered the window' "$LOG/lock-zone0.out"
 mark lock untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 300 grab" > "$LOG/launch-lock.out" 2>&1
-lock_grabbed() { since_mark lock untrusted | grep -q '^popup committed '; }
-lock_popup_done() { since_mark lock untrusted | grep -q '^popup done'; }
+lock_grabbed() { since_mark lock untrusted | grep -q 'popup committed '; }
+lock_popup_done() { since_mark lock untrusted | grep -q 'popup done'; }
 wait_for 20 lock_grabbed
 locked0="$(said locked)"; refused0="$(said refused)"; unlocked0="$(said unlocked)"
 echo "GT KEY-LOCK"
@@ -772,7 +772,7 @@ fi
 # starts it again came before it.
 pkill -KILL -n -x -u "$USER_NAME" kryptik-lock 2>/dev/null
 if wait_for 20 more locked "$((locked0 + 1))" && grep -q 'the lock died of signal 9; locking again' "$slog" \
-   && [[ "$(entered0)" -eq 1 ]] && ! since_mark lock untrusted | grep -q '^keyboard entered'; then
+   && [[ "$(entered0)" -eq 1 ]] && ! since_mark lock untrusted | grep -q 'keyboard entered'; then
     pass "lock-survives-its-death" "killed, the lock locked again, and no window got the keyboard meanwhile"
 else
     fail "lock-survives-its-death" "lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); zone 0's window: $(tr '\n' ' ' < "$LOG/lock-zone0.out"); the zone's: $(since_mark lock untrusted | tail -3 | tr '\n' ' ')"
@@ -782,8 +782,8 @@ fi
 stop_zone untrusted
 mark lock2 untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 120 grab" > "$LOG/launch-lock2.out" 2>&1
-lock2_grabbed() { since_mark lock2 untrusted | grep -q '^popup committed '; }
-lock2_done() { since_mark lock2 untrusted | grep -q '^popup done'; }
+lock2_grabbed() { since_mark lock2 untrusted | grep -q 'popup committed '; }
+lock2_done() { since_mark lock2 untrusted | grep -q 'popup done'; }
 wait_for 20 lock2_grabbed; grabbed_locked=$?
 # The wrong password's 2 s pause ended while the zone restarted.
 echo "GT LOCK-TYPE-RIGHT"
@@ -792,7 +792,7 @@ if wait_for 30 more unlocked "$unlocked0" && wait_for 10 back0; then
 else
     fail "lock-unlocks-with-password" "lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); zone 0's window: $(tr '\n' ' ' < "$LOG/lock-zone0.out")"
 fi
-if [[ "$grabbed_locked" -eq 0 ]] && more unlocked "$unlocked0" && wait_for 10 lock2_done && ! since_mark lock2 untrusted | grep -q '^keyboard entered'; then
+if [[ "$grabbed_locked" -eq 0 ]] && more unlocked "$unlocked0" && wait_for 10 lock2_done && ! since_mark lock2 untrusted | grep -q 'keyboard entered'; then
     pass "lock-keeps-keys-from-zone-grab" "a zone's popup grabbed the keyboard while locked; the password still reached the lock, and the popup closed at the unlock"
 else
     fail "lock-keeps-keys-from-zone-grab" "the zone's probe: $(since_mark lock2 untrusted | tail -4 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-lock2.out")"
