@@ -7,6 +7,7 @@
 #   ./tools/fetch-sources.sh --list             print the resolved manifest, download nothing
 #   ./tools/fetch-sources.sh --list-root        only the sources the root is built from
 #   ./tools/fetch-sources.sh --list-image NAME  only those software image NAME is built from
+#   ./tools/fetch-sources.sh --crates CRATE     name, version and hash of the crates CRATE's lock names
 #
 # The software images' sources are pinned in build/images/versions.env and locked in
 # build/images/sources.lock, so a change to them is no input of stage 04. They are kept in
@@ -25,8 +26,9 @@ case "${1:-}" in
     --list) MODE="list" ;;
     --list-root) MODE="list-root" ;;
     --list-image) MODE="list-image"; IMAGE="${2:?--list-image needs an image name}" ;;
+    --crates) MODE="crates"; CRATE="${2:?--crates needs a .crate file}" ;;
     "")     ;;
-    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, or nothing)" ;;
+    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, --crates CRATE, or nothing)" ;;
 esac
 
 # Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs, and crates.io.
@@ -319,6 +321,12 @@ fetch_crates() {
     done <<< "$list"
     ok "$(basename "$crate"): the ${n} crates its Cargo.lock names, verified"
 }
+
+# For the source bundle and the pruning, which keep what a crate's own lock names.
+if [[ "$MODE" == crates ]]; then
+    crate_lock "$CRATE"
+    exit
+fi
 
 lookup_hash() {   # lookup_hash FILE LOCK
     [[ -f "$2" ]] || return 1

@@ -64,6 +64,22 @@ for ws in compartments/kryptikd compositor; do
 done
 ok "the crates of both Rust workspaces"
 
+# A crate a software image is built with, cbindgen for the browser, comes with the crates its own lock
+# names, which fetch-sources.sh fetched into sources/images/crates/: each, held to that lock's hash.
+nc=0
+while read -r _ _ url _; do
+    f="${url##*/}"
+    [[ "$f" == *.crate ]] || continue
+    while read -r cname cver csum; do
+        c="${KRYPTIK_SOURCES}/images/crates/${cname}-${cver}.crate"
+        [[ -f "$c" ]] || die "crate ${cname} ${cver}, which ${f} is built from, is not downloaded; run make sources"
+        [[ "$(sha256_of "$c")" == "$csum" ]] || die "crate ${cname} ${cver} does not match ${f}'s Cargo.lock"
+        mkdir -p "$OUT/crates/images"
+        [[ -f "$OUT/crates/images/${c##*/}" ]] || { cp "$c" "$OUT/crates/images/"; nc=$((nc + 1)); }
+    done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --crates "${KRYPTIK_SOURCES}/${f}")
+done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
+ok "${nc} crates the software images' crates are built from"
+
 (cd "$OUT" && {
     printf '# Kryptik corresponding source for commit %s\n' "$commit"
     find . -type f ! -name MANIFEST -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
