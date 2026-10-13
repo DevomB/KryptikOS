@@ -738,6 +738,7 @@ usr/lib/kryptik/guest-tests/gui-check.sh
 usr/lib/kryptik/guest-tests/icmp-echo.py
 usr/lib/kryptik/guest-tests/image-probe.sh
 usr/lib/kryptik/guest-tests/probe-sources.py
+usr/lib/kryptik/guest-tests/sound-check.sh
 usr/lib/kryptik/guest-tests/zones-check.sh
 usr/lib/kryptik/s6-rc/compiled/servicedirs/eudev/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/getty-tty1/run
@@ -754,6 +755,8 @@ usr/lib/libacl.la
 usr/lib/libacl.so.1.*
 usr/lib/libaio.so.1.*
 usr/lib/libanl.so.1
+usr/lib/libasound.la
+usr/lib/libasound.so.2.*
 usr/lib/libasprintf.la
 usr/lib/libattr.la
 usr/lib/libattr.so.1.*

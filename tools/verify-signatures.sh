@@ -257,6 +257,9 @@ PINNED_FPRS=(
     # libexpat names no signer: gentoo.org's WKD serves this for sping@gentoo.org (source-notes.tsv)
     "3176EF7DB2367F1FCA4F306B1F9B0E909AF37285"   # Sebastian Pipping, expat
 
+    # https://www.alsa-project.org/wiki/Download (retrieved 2026-10-13) states this fingerprint
+    # and links the key, https://www.alsa-project.org/files/pub/gpg-release-key-v1.txt.
+    "F04DF50737AC1A884C4B3D718380596DA6E59C91"   # ALSA Release Team, alsa-lib
     # The software images' sources (build/images/versions.env).
     # https://github.com/PCRE2Project/pcre2/blob/main/SECURITY.md (retrieved 2026-10-13) names it for
     # 10.45 on, cross-signed by Philip Hazel's earlier key. It signs with a subkey GitHub's copy lacks.

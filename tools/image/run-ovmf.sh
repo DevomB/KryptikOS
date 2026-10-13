@@ -6,7 +6,8 @@
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
 #        [--vars-file FILE] [--mode console|smoke|serve] [--timeout N]
 #        [--log FILE] [--net none|user] [--mem MB] [--cpus N] [--gpu]
-#        [--second-head] [--allow-reboot] [--until REGEX] [--name TAG]
+#        [--second-head] [--sound WAV] [--allow-reboot] [--until REGEX]
+#        [--name TAG]
 #
 #   --usb IMG      the medium as a USB mass-storage device (removable)
 #   --iso ISO      the medium as a SATA CD-ROM (/dev/sr0 in the guest)
@@ -35,6 +36,9 @@
 #   --second-head  with --gpu in serve mode: a second output on the GPU, off
 #                  until a VNC client on the printed socket asks for a size
 #                  (vm-drive.py's head: step), which plugs a monitor in
+#   --sound WAV    two HD Audio cards: the first only plays, into the file WAV
+#                  at 48 kHz, and the second plays to nothing and records
+#                  silence (QEMU's WAV writer has no input)
 #   --mode console interactive serial console (Ctrl-A X quits)
 # shellcheck disable=SC2054  # commas inside QEMU options are option syntax, not array separators
 set -Eeuo pipefail
@@ -43,7 +47,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SELF}/../../build/lib/common.sh"
 
 USB=""; ISO=""; NOMEDIA=0; DISKS=(); TESTCTL=""; VARS="clean"; VARS_FILE=""
-MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; HEAD2=0; ALLOW_REBOOT=0; NAME="vm"
+MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; HEAD2=0; SOUND=""; ALLOW_REBOOT=0; NAME="vm"
 DISK_RO=0; DISK_4K=0; BLKDEBUG=""; UNTIL=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -65,10 +69,11 @@ while [[ "$#" -gt 0 ]]; do
         --cpus)      CPUS="${2:?}"; shift 2 ;;
         --gpu)       GPU=1; shift ;;
         --second-head) HEAD2=1; shift ;;
+        --sound)     SOUND="${2:?}"; shift 2 ;;
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
         --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,43p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -151,6 +156,14 @@ if [[ "$GPU" -eq 1 ]]; then
     ARGS+=( -device virtio-keyboard-pci -device virtio-mouse-pci )
 else
     ARGS+=( -display none -vga none )
+fi
+if [[ -n "$SOUND" ]]; then
+    # A comma would end QEMU's path option early.
+    [[ "$SOUND" != *,* ]] || die "--sound: no commas in the path: ${SOUND}"
+    case "$(readlink -f "$SOUND")" in /dev/*|/sys/*|/proc/*) die "refusing to use ${SOUND}" ;; esac
+    ARGS+=( -audiodev "wav,id=snd0,path=${SOUND},out.frequency=48000" -audiodev none,id=snd1
+            -device ich9-intel-hda,id=hda0 -device hda-output,bus=hda0.0,audiodev=snd0
+            -device ich9-intel-hda,id=hda1 -device hda-duplex,bus=hda1.0,audiodev=snd1 )
 fi
 [[ "$ALLOW_REBOOT" -eq 1 ]] || ARGS+=( -no-reboot )
 case "$NET" in

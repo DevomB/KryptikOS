@@ -177,6 +177,7 @@ havoc|${V_HAVOC}|${MIRROR_GITHUB}/ii8/havoc/archive/${V_HAVOC}/havoc-${V_HAVOC}.
 dejavu-fonts|${V_DEJAVU_FONTS}|${MIRROR_GITHUB}/dejavu-fonts/dejavu-fonts/releases/download/version_${V_DEJAVU_FONTS//./_}/dejavu-fonts-ttf-${V_DEJAVU_FONTS}.tar.bz2|probe|github
 lynx|${V_LYNX}|${MIRROR_DICKEY}/lynx/tarballs/lynx${V_LYNX}.tar.bz2|asc|rule
 nano|${V_NANO}|${MIRROR_NANO}/v${V_NANO%%.*}/nano-${V_NANO}.tar.xz|asc|vdir
+alsa-lib|${V_ALSA_LIB}|${MIRROR_ALSA}/lib/alsa-lib-${V_ALSA_LIB}.tar.bz2|sig|listing
 glibc-fhs-patch|${V_GLIBC}|${MIRROR_LFS_PATCHES}/glibc-${V_GLIBC}-fhs-1.patch|none|follows:glibc
 linux-hardened|${V_LINUX_HARDENED}|${MIRROR_HARDENED}/v${V_LINUX_HARDENED}/linux-hardened-v${V_LINUX_HARDENED}.patch|sig|eol
 MANIFEST

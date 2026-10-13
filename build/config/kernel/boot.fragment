@@ -263,6 +263,46 @@ CONFIG_INTEL_HID_EVENT=m
 CONFIG_WIRELESS_HOTKEY=m
 CONFIG_ASUS_WIRELESS=m
 
+# --- sound: modules, for zone 0's mixer (docs/design/laptop.md) --------------
+# HD Audio with its HDMI and DisplayPort outputs, and USB audio. The kernel
+# loads no module by itself (STATIC_USERMODEHELPER), and an HDA codec binds
+# only to a codec driver loaded before the controller probes it, so modprobe
+# loads them all ahead of snd-hda-intel (build/config/modprobe.d/sound.conf);
+# the generic parser takes any other codec. Not the MIDI sequencer and its
+# timer, the obsolete API, or the codec's debug interface. Codecs that need
+# firmware (CA0132), DSP platforms (Sound Open Firmware) and the speaker
+# amplifiers behind ASoC are not covered.
+CONFIG_SOUND=m
+CONFIG_SND=m
+# CONFIG_SND_SUPPORT_OLD_API is not set
+# CONFIG_SND_HRTIMER is not set
+# CONFIG_SND_SEQUENCER is not set
+CONFIG_SND_HDA_INTEL=m
+# CONFIG_SND_HDA_HWDEP is not set
+# A codec powers down a second after the mixer closes the card.
+CONFIG_SND_HDA_POWER_SAVE_DEFAULT=1
+CONFIG_SND_HDA_GENERIC=m
+CONFIG_SND_HDA_CODEC_REALTEK=m
+# Of Realtek's families, those UEFI machines carry (ALC269, ALC662, ALC882);
+# the generic parser takes the older ones.
+# CONFIG_SND_HDA_CODEC_ALC260 is not set
+# CONFIG_SND_HDA_CODEC_ALC262 is not set
+# CONFIG_SND_HDA_CODEC_ALC268 is not set
+# CONFIG_SND_HDA_CODEC_ALC680 is not set
+# CONFIG_SND_HDA_CODEC_ALC861 is not set
+# CONFIG_SND_HDA_CODEC_ALC861VD is not set
+# CONFIG_SND_HDA_CODEC_ALC880 is not set
+CONFIG_SND_HDA_CODEC_CONEXANT=m
+CONFIG_SND_HDA_CODEC_SENARYTECH=m
+CONFIG_SND_HDA_CODEC_SIGMATEL=m
+CONFIG_SND_HDA_CODEC_CIRRUS=m
+CONFIG_SND_HDA_CODEC_CS8409=m
+CONFIG_SND_HDA_CODEC_HDMI=m
+# Tegra's is ARM's, and NVIDIA's MCP chipsets predate the machines this runs on.
+# CONFIG_SND_HDA_CODEC_HDMI_NVIDIA_MCP is not set
+# CONFIG_SND_HDA_CODEC_HDMI_TEGRA is not set
+CONFIG_SND_USB_AUDIO=m
+
 # --- built in by defconfig, needed only as modules --------------------------
 # As a module, cfg80211 reads the regulatory database from the verified root
 # instead of asking before there is one; the rest load by modalias.
