@@ -15,13 +15,13 @@ everything below is built from it by the workflows in `.github/workflows/`.
 | Part | What it enforces | Code | Tests | Design |
 | --- | --- | --- | --- | --- |
 | Zone launch | user, pid, mount, ipc, uts, cgroup, time and network namespaces; uid maps from a declared range; a sealed tmpfs root with the system paths bound read-only; supervision by parent-death signals | `compartments/kryptikd/src/spawn.rs`, `isolate.rs`, `rootfs.rs`, `zone.rs`, `caps.rs` | `compartments/tests/launcher.sh`, `adversarial.sh`; `build/guest-tests/zones-check.sh` | [privileged launch](design/privileged-launch.md), [zone registry](design/zone-registry.md) |
-| Syscall filter | default-deny seccomp-bpf, about 200 calls, argument rules on `clone`, `ioctl`, `socket`; kill on the rest | `seccomp.rs`, `policy.rs`, `compartments/zones/policy/` | `seccomp.rs` unit tests, the boundary suite | [hardening](hardening.md#zone-syscall-filter), [zone policy files](design/zone-policy-files.md) |
+| Syscall filter | default-deny seccomp-bpf, about 200 calls, argument rules on `clone`, `ioctl`, `socket`; kill on the rest; the Wayland proxy's own list of about thirty | `seccomp.rs`, `policy.rs`, `compartments/zones/policy/` | `seccomp.rs` unit tests, the boundary suite, `tools/tests/proxy-calls.sh` | [hardening](hardening.md#zone-syscall-filter), [zone policy files](design/zone-policy-files.md) |
 | File access | Landlock over the pivoted root: read and exec on `/`, write only in home, `/tmp`, `/dev` nodes, `/proc` | `landlock.rs` | `landlock::tests`, the launcher suite | [zone policy files](design/zone-policy-files.md) |
 | Resources | cgroup v2 leaves with memory, pids, cpu and io limits; ephemeral homes on a bounded tmpfs | `cgroup.rs`, `rootfs.rs` | the launcher suite's cgroup sections | [resource limits](design/resource-limits-and-ephemeral-zones.md) |
 | Encrypted volumes | a LUKS2 volume per persistent zone, open only while it runs | `volume.rs` | `volume.rs` tests, `zones-check.sh` | [encrypted volumes](design/encrypted-volumes.md) |
 | The net zone | sole holder of the NICs; isolated bridge ports; NAT and a resolver; Wi-Fi credentials | `netzone.rs`, `netlink.rs`, `wifi.rs`, `tools/net/netzone-init.sh` | `netzone.rs`, `netlink.rs` tests; `zones-check.sh` | [net zone](design/net-zone.md) |
 | The broker | one socket per zone, identity by peer uid; clipboard, consented file transfer; time and update verbs for the net zone alone | `broker.rs`, `consent.rs`, `serve.rs`, `tools/desktop/kryptik-chrome` | `broker::tests` with a fuzz corpus, `compartments/tests/serve.sh`, `tools/tests/chrome-confirm.py`, `gui-check.sh` | [broker](design/broker.md), [clock](design/time.md) |
-| The desktop boundary | one Wayland proxy per zone offering nine globals and serving the zone's own data device, app_id and title rewritten; dwl drawing zone borders | `compositor/wlproxy/`, `compositor/zoneid/`, `tools/desktop/dwl-zone-borders.py`, `build/desktop/dwl-config.h`, `tools/desktop/kryptik-launch.c` | `tools/tests/compositor.sh`, `make gui-test` | [architecture](architecture.md#gui), [broker](design/broker.md#compositor-proxy) |
+| The desktop boundary | one Wayland proxy per zone offering nine globals and serving the zone's own data device, app_id and title rewritten; dwl serving each zone a socket filtered to the same nine and drawing its border from that socket | `compositor/wlproxy/`, `compositor/zoneid/`, `tools/desktop/dwl-zone-borders.py`, `build/desktop/dwl-config.h`, `tools/desktop/kryptik-launch.c` | `tools/tests/compositor.sh`, `make gui-test` | [architecture](architecture.md#gui), [broker](design/broker.md#compositor-proxy) |
 | Boot | the signed kernel as the EFI application with its command line and root hash compiled in; dm-verity root; no initramfs | `build/stages/05-kernel.sh`, `06-iso.sh`, `06-kernel-bind.sh`, `build/config/kernel/` | `make integrity-test`, `media-smoke`, `media-refused-foreign-keys` | [boot and updates](design/boot-and-updates.md) |
 | State encryption | LUKS2 state partition on the root's disk; `/etc` overlay allow-list; degraded state | `build/service-scripts/sysinit.sh`, `devices.sh`, `ask.sh` | `make state-test`, `install-test` | [state encryption](design/state-encryption.md) |
 | Installer and recovery | whole-disk install with every check before the first write; slot and header recovery from the medium | `tools/install/kryptik-install.sh`, `tools/update/kryptik-recover` | `make install-test`, `tools/tests/installer.sh` | [boot and updates](design/boot-and-updates.md#installer) |
@@ -161,9 +161,8 @@ From [status](status.md#known-gaps) and the designs' own lists:
   ([supply chain](supply-chain.md#open-problems)).
 - dhcpcd runs without its own privilege separation; the net zone is its
   sandbox.
-- Every `kryptik-wlproxy` runs as the login user and connects to the
-  compositor's own socket, which offers capture and input injection, so a
-  bug in a proxy would reach the whole desktop.
+- dwl runs as the login user, so a bug in it reaches the whole desktop
+  ([compositor separation](design/compositor-separation.md)).
 - The artifact audit's soft findings, each with its reason in
   `build/config/artifact-accepted.txt`.
 - The net zone's "not built" list: no MAC or IP pinning on bridge ports, and

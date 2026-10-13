@@ -48,6 +48,8 @@ pub const ACCESS_WRITE: u64 = FS_WRITE_FILE
 /// Write existing files; create or remove nothing (/dev, /proc).
 pub const ACCESS_WRITE_FILE: u64 = FS_WRITE_FILE | FS_TRUNCATE;
 pub const ACCESS_EXEC: u64 = FS_EXECUTE;
+/// One file's bytes: with ACCESS_EXEC, what exec needs of a program, which it opens to read.
+pub const ACCESS_READ_FILE: u64 = FS_READ_FILE;
 /// ioctl on device files (ABI 5+). Granted only on /dev, for terminals.
 pub const ACCESS_IOCTL_DEV: u64 = FS_IOCTL_DEV;
 

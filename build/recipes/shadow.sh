@@ -14,6 +14,9 @@ s_shadow() {
         -e 's:/var/spool/mail:/var/mail:' \
         -e '/PATH=/{s@/sbin:@@;s@/usr/sbin:@@}' \
         -i etc/login.defs
+    # A new home is its user's alone: no other uid, a zone's proxy's included, lists it.
+    sed -i '/^#\?HOME_MODE/d' etc/login.defs
+    printf 'HOME_MODE\t0700\n' >> etc/login.defs
 
     ./configure --sysconfdir=/etc --disable-static --with-{b,yes}crypt \
         --without-libbsd --with-group-name-max-length=32
