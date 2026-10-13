@@ -34,12 +34,16 @@ references `main()`, so every shared library fails to link.
 
 A package that cannot build with a flag goes in
 `build/config/hardening-exceptions.txt` as `<package> <flag> # reason`;
-`build/lib/common.sh` fails the build on an entry without a reason. The only
-one is glibc's `-D_FORTIFY_SOURCE=3`: glibc implements FORTIFY, and its own
+`build/lib/common.sh` fails the build on an entry without a reason. There are
+two. glibc's `-D_FORTIFY_SOURCE=3`: glibc implements FORTIFY, and its own
 `--enable-fortify-source=3` applies it to everything but the loader, startup
 and checking code (its `elf`, `dlfcn`, `csu` and `debug` directories), whose
 programs `pldd`, `sprof`, `pcprofiledump` and `sotruss-lib.so` the audit
-accepts by name.
+accepts by name. And Firefox's `-fno-delete-null-pointer-checks`, in the
+browser image: under it GCC 14 cannot evaluate SpiderMonkey's compile-time
+checks, which compare an object's address with null, and with
+`CONFIG_DEFAULT_MMAP_MIN_ADDR=65536` no process can map page 0, so a null check
+the compiler deletes gains an attacker nothing.
 
 ### What the audit finds
 
