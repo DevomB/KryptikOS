@@ -64,6 +64,8 @@ pub const MAX_PENDING_BYTES: usize = 1 << 20; // per direction
 pub const MAX_PENDING_FDS: usize = 64;
 pub const MAX_TOPLEVELS_PER_SESSION: usize = 8;
 pub const MAX_TOPLEVELS_PER_ZONE: usize = 64;
+/// Menus and their submenus, tooltips: the compositor keeps each inside its window.
+pub const MAX_POPUPS_PER_SESSION: usize = 16;
 pub const MAX_SHM_POOLS_PER_SESSION: usize = 32;
 pub const MAX_SHM_POOLS_PER_ZONE: usize = 128;
 pub const MAX_SHM_POOL_BYTES: usize = 64 << 20; // room for a 4K RGBA frame and stride padding

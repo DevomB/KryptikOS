@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch dwl.c (dwl v0.8) for zone borders, focus and scene layers.
+"""Patch dwl.c (dwl v0.8) for zone borders, focus, scene layers and popups.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -11,7 +11,8 @@ import sys
 # not found instead of patching with fuzz. The colour comes from the app_id
 # prefix only the zone's proxy sets; focus is shown by width (a band of the
 # root colour when unfocused), and fullscreen keeps the border under a bar
-# that names the zone.
+# that names the zone. A zone's popups are drawn inside its window's frame
+# and last while the window has the keyboard.
 
 # The bar's lettering, 5x7: capitals for the letters, digits and '-' of a zone name.
 FONT = {
@@ -62,7 +63,7 @@ static const unsigned char zonefont[128][7] = {
 
 /* Kryptik: a fullscreen window leaves the top barpx rows of its output to a
  * bar in its zone's colour that names the zone, outside the window's frame:
- * its surfaces are clipped to the frame, and a zone has no popups. */
+ * its surfaces and its popups are clipped to the frame. */
 static void
 zonebar(Client *c)
 {
@@ -530,6 +531,103 @@ focusclient(Client *c, int lift)
      """\t\tselmon = c->mon;
 \t\tc->isurgent = 0;
 \t\tc->unasked = 0;
+"""),
+    # A zone's popup is placed inside its window, below its border. dwl
+    # parents a popup to the client's tree, beside the clipped surface, and
+    # places it on the whole monitor.
+    ("""\tbox.y -= (type == LayerShell ? l->scene->node.y : c->geom.y);
+\twlr_xdg_popup_unconstrain_from_box(popup, &box);
+""",
+     """\tbox.y -= (type == LayerShell ? l->scene->node.y : c->geom.y);
+\t/* Kryptik: a zone's popup is placed inside its window, below its border. */
+\tif (c && c->zoneborder != unzonedcolor)
+\t\tbox = (struct wlr_box){(int)c->bw, (int)c->bw, c->geom.width - 2 * (int)c->bw, c->geom.height - 2 * (int)c->bw};
+\twlr_xdg_popup_unconstrain_from_box(popup, &box);
+"""),
+    # A client may draw a popup of any size wherever it is placed, so before
+    # each frame every zone popup is clipped to its window's content.
+    ("""void
+rendermon(struct wl_listener *listener, void *data)
+{
+""",
+     """/* Kryptik: a zone's popups, and theirs in turn, are drawn inside its window
+ * and nowhere else, whatever their size or place. The clip is in each popup
+ * surface's own coordinates; an empty one would turn clipping off. */
+static void
+clippopups(Client *c, struct wlr_xdg_surface *parent)
+{
+\tstruct wlr_xdg_popup *popup;
+\tstruct wlr_scene_tree *tree;
+\tstruct wlr_box clip;
+\tint x, y;
+
+\twl_list_for_each(popup, &parent->popups, link) {
+\t\tif (!(tree = popup->base->surface->data))
+\t\t\tcontinue;
+\t\twlr_scene_node_coords(&tree->node, &x, &y);
+\t\tclip = (struct wlr_box){
+\t\t\t.x = c->geom.x + (int)c->bw - x + popup->base->geometry.x,
+\t\t\t.y = c->geom.y + (int)c->bw - y + popup->base->geometry.y,
+\t\t\t.width = c->geom.width - 2 * (int)c->bw,
+\t\t\t.height = c->geom.height - 2 * (int)c->bw,
+\t\t};
+\t\twlr_scene_node_set_enabled(&tree->node, !wlr_box_empty(&clip));
+\t\tif (wlr_box_empty(&clip))
+\t\t\tcontinue;
+\t\twlr_scene_subsurface_tree_set_clip(&tree->node, &clip);
+\t\t/* That reached its children's trees too, in the wrong coordinates. */
+\t\tclippopups(c, popup->base);
+\t}
+}
+
+void
+rendermon(struct wl_listener *listener, void *data)
+{
+"""),
+    ("""\t/* Render if no XDG clients have an outstanding resize and are visible on
+\t * this monitor. */
+""",
+     """\t/* Kryptik: a zone's popups, wherever they moved since, stay inside its window. */
+\twl_list_for_each(c, &clients, link)
+\t\tif (c->zoneborder != unzonedcolor)
+\t\t\tclippopups(c, c->surface.xdg);
+
+\t/* Render if no XDG clients have an outstanding resize and are visible on
+\t * this monitor. */
+"""),
+    # A popup's grab, which wlroots grants without checking its serial, keeps
+    # the keyboard where it is: focusclient ends every other window's popups,
+    # not only the old one's, before the keyboard moves. A session lock and a
+    # keyboard layer call focusclient(NULL) first, so they end them all.
+    ("""void
+focusclient(Client *c, int lift)
+{
+""",
+     """/* Kryptik: popups last while their window has the keyboard. */
+static void
+endpopups(Client *keep)
+{
+\tstruct wlr_xdg_popup *popup, *tmp;
+\tClient *c;
+
+\twl_list_for_each(c, &clients, link)
+\t\tif (c != keep)
+\t\t\twl_list_for_each_safe(popup, tmp, &c->surface.xdg->popups, link)
+\t\t\t\twlr_xdg_popup_destroy(popup);
+}
+
+void
+focusclient(Client *c, int lift)
+{
+"""),
+    ("""\tif ((old_client_type = toplevel_from_wlr_surface(old, &old_c, &old_l)) == XDGShell) {
+\t\tstruct wlr_xdg_popup *popup, *tmp;
+\t\twl_list_for_each_safe(popup, tmp, &old_c->surface.xdg->popups, link)
+\t\t\twlr_xdg_popup_destroy(popup);
+\t}
+""",
+     """\told_client_type = toplevel_from_wlr_surface(old, &old_c, &old_l);
+\tendpopups(c);
 """),
 ]
 

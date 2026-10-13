@@ -362,6 +362,7 @@ pub struct Session {
     pub shm_pool_bytes: usize,
     pub shm_pool_count: usize,
     pub toplevels: usize,
+    pub popups: usize,
     /// Globals let through to the client: name -> (interface, version cap).
     globals: HashMap<u32, (&'static str, u32)>,
     /// wl_output object -> the global it was bound from, which names the output to the zone.
@@ -395,6 +396,7 @@ impl Session {
             shm_pool_bytes: 0,
             shm_pool_count: 0,
             toplevels: 0,
+            popups: 0,
             globals: HashMap::new(),
             outputs: HashMap::new(),
             hidden_count: 0,
@@ -434,9 +436,14 @@ impl Session {
         if iface.name == "xdg_toplevel" && self.toplevels >= policy::MAX_TOPLEVELS_PER_SESSION {
             return Err(SessionError::ResourceLimit("too many toplevels in one session"));
         }
+        if iface.name == "xdg_popup" && self.popups >= policy::MAX_POPUPS_PER_SESSION {
+            return Err(SessionError::ResourceLimit("too many popups in one session"));
+        }
         self.objects.insert(id, (iface, version))?;
-        if iface.name == "xdg_toplevel" {
-            self.toplevels += 1;
+        match iface.name {
+            "xdg_toplevel" => self.toplevels += 1,
+            "xdg_popup" => self.popups += 1,
+            _ => {}
         }
         Ok(())
     }
@@ -603,9 +610,6 @@ impl Session {
                             }
                         }
                     }
-                    if iface.name == "xdg_surface" && m.name == "get_popup" {
-                        return Err(SessionError::Forbidden("xdg_surface.get_popup"));
-                    }
                     if iface.name == "wl_shm" && m.name == "create_pool" {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
@@ -756,8 +760,10 @@ impl Session {
                     if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
-                        if self.objects.get(id).is_some_and(|(i, _)| i.name == "xdg_toplevel") {
-                            self.toplevels -= 1;
+                        match self.objects.get(id).map(|(i, _)| i.name) {
+                            Some("xdg_toplevel") => self.toplevels -= 1,
+                            Some("xdg_popup") => self.popups -= 1,
+                            _ => {}
                         }
                         self.outputs.remove(&id);
                         if let Some(generation) = self.pool_ids.remove(&id) {

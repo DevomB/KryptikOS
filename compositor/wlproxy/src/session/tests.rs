@@ -210,14 +210,26 @@ fn id_slots_bounded() {
 }
 
 #[test]
-fn popup_refused() {
+fn popup_limit_and_reclaim() {
+    // A popup reaches the compositor, which keeps it inside its window; a session holds a few.
     let (mut s, mut c, mut sv) = make();
     s.objects.place(2, (protocol::find("xdg_surface").unwrap(), 1));
     s.objects.place(3, (protocol::find("xdg_positioner").unwrap(), 1));
-    c.write_all(&MessageWriter::new(2, 2).u32(4).u32(0).u32(3).finish().unwrap()).unwrap();
-    assert!(matches!(pump_all(&mut s), Err(SessionError::Forbidden(_))));
-    assert!(!s.has_object(4));
+    for id in 4..4 + policy::MAX_POPUPS_PER_SESSION as u32 {
+        c.write_all(&MessageWriter::new(2, 2).u32(id).u32(0).u32(3).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+        assert!(s.has_object(id));
+    }
+    assert_eq!(s.popups, policy::MAX_POPUPS_PER_SESSION);
+    assert!(!read_all(&mut sv).is_empty(), "the popups were forwarded");
+    let denied = 4 + policy::MAX_POPUPS_PER_SESSION as u32;
+    c.write_all(&MessageWriter::new(2, 2).u32(denied).u32(0).u32(3).finish().unwrap()).unwrap();
+    assert!(matches!(pump_all(&mut s), Err(SessionError::ResourceLimit(_))));
+    assert!(!s.has_object(denied));
     assert!(read_all(&mut sv).is_empty());
+    sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(4).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    assert_eq!(s.popups, policy::MAX_POPUPS_PER_SESSION - 1);
 }
 
 #[test]

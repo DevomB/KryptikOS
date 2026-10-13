@@ -229,16 +229,21 @@ yet; ADR-004's cost text says so.
 
 ## What the proxy must offer for a usable browser
 
-Firefox does not run on the proxy as it is: the proxy refuses
-`xdg_surface.get_popup` and ends the session, and every GTK menu, dropdown
-and tooltip is a popup. Four things are needed, each with its own review:
+Four things are needed, each with its own review. The first is built.
 
-- **Popups.** The proxy refuses them because a popup is a surface with no
-  border, which the compositor will place over other windows, zone 0's
-  among them. A browser needs them back in a form that cannot leave its own
-  window: inside the zone's toplevel, under its border, or refused. How the
-  proxy and the compositor hold that is not designed here, and it is the
-  first thing this design needs.
+- **Popups.** Every GTK menu, dropdown and tooltip is one, a surface with
+  no border of its own, so a zone's is held to its window. The proxy lets
+  `xdg_surface.get_popup` through, sixteen at a time to a connection. dwl
+  places a zone's popup inside its window, below the border, and clips it
+  there before every frame, since a client may draw a buffer of any size
+  wherever its popup is placed. A popup lasts while its window has the
+  keyboard: wlroots grants a popup's keyboard grab without checking its
+  serial, and a grab keeps the keyboard where it is, so every other
+  window's popups close before the keyboard moves
+  (`tools/desktop/dwl-zone-borders.py`). `make gui-test` opens one larger
+  than the screen from a window that does not have the keyboard: the
+  screenshot shows it only inside its window's frame, and the menu still
+  takes the keyboard and closes it.
 - **Copy and paste inside a zone.** The proxy serves
   `wl_data_device_manager` itself, keeping selections among its own zone's
   clients and never forwarding them to the compositor, and joins it to the

@@ -34,6 +34,13 @@
  *                             many frames came, how far the compositor's frame
  *                             times and this process's monotonic clock each
  *                             ran, and how far apart the two clocks are
+ *   wlprobe popup SECONDS [grab]
+ *                             as oversize 0, and once drawn open a popup from
+ *                             the window's centre, larger than the screen, that
+ *                             may be neither moved nor resized, and answer its
+ *                             configure 200 px larger still, in cyan; with grab,
+ *                             grab the keyboard for it with a made-up serial.
+ *                             Says the popup's configure and when it is done
  *
  * Exit: 0 listed, bind accepted or window held; 3 refused (wl_display.error,
  * or closed); 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute
@@ -132,6 +139,9 @@ static int late, kb_left;                    /* fullscreen late: ask once the ke
 /* child: 1 wanted once drawn, 2 wanted once fullscreen, 3 mapped; its objects. */
 static int child, cconf_w, cconf_h;
 static uint32_t csurface, cxdg, ctoplevel;
+/* popup: 1 wanted once drawn, 2 asked for; with grab, its keyboard grab. */
+static int popup, popup_grab, pconf_x, pconf_y, pconf_w, pconf_h;
+static uint32_t psurface, pxdg, ppopup;
 static uint32_t next_id = TOPLEVEL + 1;
 /* animate: the window's last buffer, its frame callback's id (reused once the
  * server frees it: 1 asked, 2 done, 0 freed), and the first and last frame's
@@ -141,9 +151,11 @@ static uint32_t last_buffer, frame_cb, comp_first, comp_last;
 static int64_t own_first, own_last;
 static time_t anim_end;
 
-/* A w x h buffer in magenta, which is no zone's colour, attached and
- * committed on a surface. A failure closes the probe. */
-static int blit(uint32_t surface, int w, int h)
+/* The window's colour, magenta, and a popup's, cyan: no zone's, and nothing else draws them. */
+static const uint32_t window_rgb = 0xff00ff, popup_rgb = 0x00ffff;
+
+/* A w x h buffer in rgb, attached and committed on a surface. A failure closes the probe. */
+static int blit(uint32_t surface, int w, int h, uint32_t rgb)
 {
 	int stride = w * 4;
 	size_t size = (size_t)stride * (size_t)h;
@@ -157,7 +169,7 @@ static int blit(uint32_t surface, int w, int h)
 	if (!charge) {
 		uint32_t *px = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (px == MAP_FAILED) { printf("mmap: %s\n", strerror(errno)); close(fd); draw_failed = closed = 1; return -1; }
-		for (size_t i = 0; i < size / 4; i++) px[i] = 0x00ff00ff;
+		for (size_t i = 0; i < size / 4; i++) px[i] = rgb;
 		munmap(px, size);
 	}
 	uint32_t pool = next_id++, buffer = next_id++;
@@ -216,7 +228,7 @@ static void draw(void)
 	if (charge && drawn) return;                 /* one sparse pool for one measurement */
 	int w = charge ? 1024 : (conf_w > 0 ? conf_w : 300) + extra;
 	int h = charge ? 1024 : (conf_h > 0 ? conf_h : 200) + extra;
-	if (blit(SURFACE, w, h)) return;
+	if (blit(SURFACE, w, h, window_rgb)) return;
 	drawn = 1;
 	printf("committed %dx%d for a %dx%d configure%s%s\n", w, h, conf_w, conf_h,
 		conf_fs ? " (fullscreen)" : "",
@@ -227,7 +239,7 @@ static void draw(void)
 static void draw_child(void)
 {
 	int w = cconf_w > 0 ? cconf_w : 300, h = cconf_h > 0 ? cconf_h : 200;
-	if (blit(csurface, w, h)) return;
+	if (blit(csurface, w, h, window_rgb)) return;
 	printf("child committed %dx%d\n", w, h);
 	fflush(stdout);
 }
@@ -308,6 +320,49 @@ static void set_cursor(uint32_t serial)
 	fflush(stdout);
 }
 
+/* A popup of the window's, anchored at its centre and growing right and down,
+ * 1600 x 1600 on a 1280x800 screen, with no adjustment allowed: drawn where
+ * asked, it covers whatever lies right of and below the window's centre. */
+static void open_popup(void)
+{
+	unsigned char b[16];
+	uint32_t positioner = next_id++;
+	int w = conf_w > 0 ? conf_w : 300, h = conf_h > 0 ? conf_h : 200;
+	psurface = next_id++; pxdg = next_id++; ppopup = next_id++;
+	put32(b, positioner);
+	send_msg(WM_BASE, 1, b, 4);                /* xdg_wm_base.create_positioner */
+	put32(b, 1600); put32(b + 4, 1600);
+	send_msg(positioner, 1, b, 8);             /* xdg_positioner.set_size */
+	put32(b, (uint32_t)(w / 2)); put32(b + 4, (uint32_t)(h / 2)); put32(b + 8, 1); put32(b + 12, 1);
+	send_msg(positioner, 2, b, 16);            /* xdg_positioner.set_anchor_rect */
+	put32(b, 8);
+	send_msg(positioner, 4, b, 4);             /* xdg_positioner.set_gravity: bottom_right */
+	put32(b, 0);
+	send_msg(positioner, 5, b, 4);             /* xdg_positioner.set_constraint_adjustment: none */
+	put32(b, psurface);
+	send_msg(COMPOSITOR, 0, b, 4);             /* wl_compositor.create_surface */
+	put32(b, pxdg); put32(b + 4, psurface);
+	send_msg(WM_BASE, 2, b, 8);                /* xdg_wm_base.get_xdg_surface */
+	put32(b, ppopup); put32(b + 4, XDG_SURFACE); put32(b + 8, positioner);
+	send_msg(pxdg, 2, b, 12);                  /* xdg_surface.get_popup */
+	if (popup_grab) {
+		put32(b, seat_id); put32(b + 4, 0);
+		send_msg(ppopup, 1, b, 8);             /* xdg_popup.grab, with a serial no input gave */
+	}
+	send_msg(psurface, 6, b, 0);               /* wl_surface.commit: ask for a configure */
+	popup = 2;
+	printf("asked for a popup%s\n", popup_grab ? " with a keyboard grab" : "");
+	fflush(stdout);
+}
+
+static void draw_popup(void)
+{
+	int w = (pconf_w > 0 ? pconf_w : 1600) + 200, h = (pconf_h > 0 ? pconf_h : 1600) + 200;
+	if (blit(psurface, w, h, popup_rgb)) return;
+	printf("popup committed %dx%d for a %dx%d configure at %d,%d\n", w, h, pconf_w, pconf_h, pconf_x, pconf_y);
+	fflush(stdout);
+}
+
 /* Consume one message if present. Returns 1 consumed, 0 need more, -1 malformed. */
 static int handle_one(void)
 {
@@ -363,6 +418,19 @@ static int handle_one(void)
 		put32(b, get32(body));
 		send_msg(cxdg, 4, b, 4);               /* xdg_surface.ack_configure */
 		draw_child();
+	} else if (popup && object == ppopup && opcode == 0) {
+		pconf_x = (int)get32(body);            /* xdg_popup.configure(x, y, width, height) */
+		pconf_y = (int)get32(body + 4);
+		pconf_w = (int)get32(body + 8);
+		pconf_h = (int)get32(body + 12);
+	} else if (popup && object == ppopup && opcode == 1) {
+		puts("popup done");                     /* xdg_popup.popup_done */
+		fflush(stdout);
+	} else if (popup && object == pxdg && opcode == 0) {
+		unsigned char b[4];
+		put32(b, get32(body));
+		send_msg(pxdg, 4, b, 4);               /* xdg_surface.ack_configure */
+		draw_popup();
 	} else if (cursor && object == pointer_id && opcode == 0) {
 		set_cursor(get32(body));                /* wl_pointer.enter(serial, surface, x, y) */
 	} else if (cursor && opcode == 0 && (object == SURFACE || (cursor_surf && object == cursor_surf))) {
@@ -373,7 +441,8 @@ static int handle_one(void)
 		uint32_t s = get32(body + 4);          /* wl_keyboard.enter|leave(serial, surface, ...) */
 		if (opcode == 2 && s == SURFACE) kb_left = 1;
 		printf("keyboard %s %s\n", opcode == 1 ? "entered" : "left",
-			s == SURFACE ? "the window" : (csurface && s == csurface) ? "the child" : "another surface");
+			s == SURFACE ? "the window" : (csurface && s == csurface) ? "the child"
+			: (psurface && s == psurface) ? "the popup" : "another surface");
 		fflush(stdout);
 	} else if (animate && frame_cb && object == frame_cb && opcode == 0) {
 		frame_done(get32(body));                /* wl_callback.done(time) */
@@ -473,6 +542,8 @@ static int hold_oversize(int more, int seconds, const char *title)
 		}
 		if ((child == 1 && drawn) || (child == 2 && drawn && conf_fs))
 			open_child();
+		if (popup == 1 && drawn)
+			open_popup();
 	}
 	return draw_failed ? 1 : 0;
 }
@@ -481,15 +552,16 @@ int main(int argc, char **argv)
 {
 	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize")
 	                 && strcmp(argv[1], "fullscreen") && strcmp(argv[1], "child") && strcmp(argv[1], "charge")
-	                 && strcmp(argv[1], "cursor") && strcmp(argv[1], "animate"))
+	                 && strcmp(argv[1], "cursor") && strcmp(argv[1], "animate") && strcmp(argv[1], "popup"))
 	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
 	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "child") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "charge") && argc != 2)
 	    || (!strcmp(argv[1], "cursor") && argc != 3)
-	    || (!strcmp(argv[1], "animate") && argc != 3)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS | animate SECONDS\n");
+	    || (!strcmp(argv[1], "animate") && argc != 3)
+	    || (!strcmp(argv[1], "popup") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "grab"))))) {
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS | animate SECONDS | popup SECONDS [grab]\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -521,6 +593,7 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "child")) { child = argc == 4 ? 2 : 1; return hold_oversize(0, atoi(argv[2]), "child-parent"); }
 	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
 	if (!strcmp(argv[1], "cursor")) { cursor = 1; return hold_oversize(0, atoi(argv[2]), "cursor"); }
+	if (!strcmp(argv[1], "popup")) { popup = 1; popup_grab = argc == 4; return hold_oversize(0, atoi(argv[2]), "popup"); }
 	if (!strcmp(argv[1], "animate")) {
 		animate = 1;
 		int held = hold_oversize(0, atoi(argv[2]), "animate");

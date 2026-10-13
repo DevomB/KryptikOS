@@ -14,6 +14,8 @@
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
+#   GT SCREENSHOT-POPUP                             take a screenshot
+#   GT KEY-MENU-POPUP                               press Alt+p (the chrome menu)
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
@@ -664,6 +666,34 @@ if ran_alike "$f1" "$c1" "$o1" && (( $(abs "$g1") >= 60000 )); then
 else
     fail "zone-window-animates" "$(since_mark animate untrusted | tail -3 | tr '\n' ' '); $(zone_why untrusted)"
 fi
+stop_zone untrusted
+# --- a zone's popup, inside its window and only while it has the keyboard ----------------
+# wlprobe popup opens a popup from its window's centre, larger than the screen, that may be
+# neither moved nor resized, draws it 200 px larger still in cyan, and grabs the keyboard for
+# it with a serial no input gave, which wlroots does not check. The window maps behind zone
+# 0's, so the grab is a window's that has no keyboard. The host's screenshot must show the
+# window's frame whole and no cyan outside it; the menu Alt+p opens must take the keyboard,
+# and the popup goes as it does.
+mark popup untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 40 grab" > "$LOG/launch-popup.out" 2>&1
+popup_drawn() { since_mark popup untrusted | grep -q '^popup committed '; }
+if wait_for 20 popup_drawn && grep -q '^zone=0' "$RT/kryptik/focus"; then
+    pass "zone-popup-drawn" "$(since_mark popup untrusted | grep '^popup committed '), behind zone 0's window"
+else
+    fail "zone-popup-drawn" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); probe: $(since_mark popup untrusted | tail -4 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-popup.out"); $(zone_why untrusted)"
+fi
+sleep 2
+echo "GT SCREENSHOT-POPUP"
+sleep 6
+menus_before="$(menu_windows)"
+popup_done() { since_mark popup untrusted | grep -q '^popup done'; }
+echo "GT KEY-MENU-POPUP"
+if wait_for 20 more_menus && wait_for 10 popup_done && wait_for 10 grep -q '^zone=0' "$RT/kryptik/focus"; then
+    pass "zone-popup-yields-keyboard" "the menu opened over the zone's grab, and the popup was closed as the keyboard moved"
+else
+    fail "zone-popup-yields-keyboard" "menu windows: $(menu_windows), ${menus_before} before; focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); probe: $(since_mark popup untrusted | tail -4 | tr '\n' ' ')"
+fi
+pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 stop_zone untrusted
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
