@@ -475,11 +475,11 @@ static int idled;
 
 static void watch_global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version)
 {
-	(void)data; (void)version;
+	(void)data;
 	if (!strcmp(iface, wl_seat_interface.name) && !seat)
 		seat = wl_registry_bind(r, name, &wl_seat_interface, 1);
-	else if (!strcmp(iface, ext_idle_notifier_v1_interface.name))
-		notifier = wl_registry_bind(r, name, &ext_idle_notifier_v1_interface, 1);
+	else if (!strcmp(iface, ext_idle_notifier_v1_interface.name) && version >= 2)
+		notifier = wl_registry_bind(r, name, &ext_idle_notifier_v1_interface, 2);
 }
 
 static void watch_global_remove(void *data, struct wl_registry *r, uint32_t name)
@@ -521,10 +521,12 @@ static int watch_idle(long secs)
 	wl_registry_add_listener(registry, &watch_registry_listener, NULL);
 	wl_display_roundtrip(display);
 	if (!seat || !notifier) {
-		say("the compositor offers no idle notification");
+		say("the compositor offers no idle notification that counts input alone");
 		return 1;
 	}
-	struct ext_idle_notification_v1 *n = ext_idle_notifier_v1_get_idle_notification(notifier, (uint32_t)secs * 1000, seat);
+	/* Input alone counts, not idle inhibitors: what may hold the screen awake, a video in a
+	 * zone say, must never hold the session unlocked. */
+	struct ext_idle_notification_v1 *n = ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)secs * 1000, seat);
 	ext_idle_notification_v1_add_listener(n, &idle_listener, NULL);
 	pid_t locker = 0;
 	while (wl_display_dispatch(display) != -1) {

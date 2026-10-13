@@ -188,9 +188,11 @@ in a child that starts again when a signal kills it. At resume the state
 passphrase will be the unlock instead: whoever knows it already owns the
 machine. On idle, the chrome starts `kryptik-lock --idle`, which waits on
 dwl's `ext-idle-notify-v1` and locks after ten minutes without input, or
-the minutes in `~/.config/kryptik/lock-idle` (0 never). No zone can bind the
-notifier, which would tell it when the user is away. Locking before suspend
-is still to come.
+the minutes in `~/.config/kryptik/lock-idle` (0 never). It counts input
+alone (the protocol's version 2), so an idle inhibitor, which the browser
+design would let a zone hold to keep the screen awake, never keeps the
+session unlocked. No zone can bind the notifier, which would tell it when
+the user is away. Locking before suspend is still to come.
 
 The lock's check, in `make gui-test`:
 
