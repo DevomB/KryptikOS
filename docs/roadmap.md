@@ -193,12 +193,25 @@ A desktop someone can live in, built the same way.
   viewer, a file manager that understands transfers between zones.
 - **Software from somewhere.** A package manager and a signed binary
   repository, or zones that carry their own userland. An ADR first.
-- **The laptop.** Per-zone sound brokered like the clipboard, Bluetooth,
-  suspend with the zone volumes' keys dropped too (`kryptik suspend`, the
-  power key and the lid drop the state partition's and each zone
-  volume's), power management,
-  hotplug and multiple monitors, input methods and a second keyboard layout
-  to switch to.
+- **The laptop.** Hotplug and several monitors. What else the laptop design
+  asked for is built: sound mixed in zone 0 for each zone, the microphone
+  granted to one zone at a time; suspend with the state partition's and each
+  zone volume's keys dropped, by `kryptik suspend`, the power key, the lid
+  or idleness; the power source, a low battery and brightness; and up to
+  four keyboard layouts to switch between ([status](status.md)).
+- **USB sticks.** Decided (ADR-025): read in the zone the user gives one
+  to, through a descriptor and a reader of Kryptik's own, never mounted;
+  FAT first, exFAT a named gap, FUSE a later decision of its own
+  ([removable storage](design/removable-storage.md)).
+- **A camera.** Decided (ADR-026): granted to one zone at a time, as the
+  microphone is, its driver loaded only for the grant
+  ([camera](design/camera.md)).
+- **Bluetooth.** Decided (ADR-027): none for 1.0, where calls use USB or
+  wired headsets or a Bluetooth headset's USB dongle; after it, a zone of
+  its own for a headset's audio alone ([Bluetooth](design/bluetooth.md)).
+- **Input methods.** Decided (ADR-028): none for 1.0; after it, one per
+  zone that asks, fcitx5 as a software image, its virtual keyboard bound
+  to the zone ([input methods](design/input-methods.md)).
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so
