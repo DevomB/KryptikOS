@@ -76,6 +76,15 @@ fn refuses_what_stage_06_never_writes() {
             list(&[&good, &image("viewer"), "needs: viewer allow-syscall seccomp", "needs: browser allow-syscall mlockall"]),
         ),
         ("an unknown line", list(&[&good, "signer: someone"])),
+        ("requires for an image not listed", list(&[&good, &image("toolkit"), "requires: viewer toolkit"])),
+        ("requires nothing", list(&[&good, &image("toolkit"), "requires: browser"])),
+        ("requires itself", list(&[&good, &image("toolkit"), "requires: browser browser"])),
+        ("requires an image not listed", list(&[&good, &image("toolkit"), "requires: browser fonts"])),
+        ("requires one image twice", list(&[&good, &image("toolkit"), "requires: browser toolkit toolkit"])),
+        ("two requires lines for one image", list(&[&good, &image("toolkit"), "requires: browser toolkit", "requires: browser toolkit"])),
+        ("requires out of image order", list(&[&good, &image("fonts"), &image("toolkit"), "requires: toolkit fonts", "requires: browser toolkit"])),
+        ("requires after needs", list(&[&good, &image("toolkit"), "needs: browser allow-syscall seccomp", "requires: browser toolkit"])),
+        ("an image after requires", list(&[&good, "requires: browser toolkit", &image("toolkit")])),
     ] {
         assert!(parse(&text).is_err(), "{why}: {text:?}");
     }
@@ -114,6 +123,32 @@ fn needs_must_be_granted_by_the_zone_policy() {
     // What the base policy already allows needs no grant.
     let base = parse(&list(&[&image("browser"), "needs: browser allow-syscall read"])).unwrap();
     assert!(needs_met(&base, "browser", None).is_ok());
+}
+
+#[test]
+fn an_image_built_over_others_needs_them_named() {
+    let m = parse(&list(&[
+        &image("browser"),
+        &image("fonts"),
+        &image("toolkit"),
+        "requires: browser toolkit fonts",
+        "requires: toolkit fonts",
+        "needs: browser allow-syscall seccomp",
+    ]))
+    .unwrap();
+    assert_eq!(
+        m.requires,
+        vec![
+            ("browser".to_string(), vec!["toolkit".to_string(), "fonts".to_string()]),
+            ("toolkit".to_string(), vec!["fonts".to_string()]),
+        ]
+    );
+    let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert!(requires_met(&m, &names(&["browser", "toolkit", "fonts"])).is_ok());
+    assert!(requires_met(&m, &names(&["fonts"])).is_ok(), "an image built over nothing");
+    let refused = requires_met(&m, &names(&["browser", "toolkit"])).unwrap_err();
+    assert!(refused.contains("\"fonts\""), "{refused}");
+    assert!(requires_met(&m, &names(&["toolkit"])).is_err());
 }
 
 #[test]
