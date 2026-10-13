@@ -21,7 +21,7 @@ everything below is built from it by the workflows in `.github/workflows/`.
 | Encrypted volumes | a LUKS2 volume per persistent zone, open only while it runs | `volume.rs` | `volume.rs` tests, `zones-check.sh` | [encrypted volumes](design/encrypted-volumes.md) |
 | The net zone | sole holder of the NICs; isolated bridge ports; NAT and a resolver; Wi-Fi credentials | `netzone.rs`, `netlink.rs`, `wifi.rs`, `tools/net/netzone-init.sh` | `netzone.rs`, `netlink.rs` tests; `zones-check.sh` | [net zone](design/net-zone.md) |
 | The broker | one socket per zone, identity by peer uid; clipboard, consented file transfer; time and update verbs for the net zone alone | `broker.rs`, `consent.rs`, `serve.rs`, `tools/desktop/kryptik-chrome` | `broker::tests` with a fuzz corpus, `compartments/tests/serve.sh`, `tools/tests/chrome-confirm.py`, `gui-check.sh` | [broker](design/broker.md), [clock](design/time.md) |
-| The desktop boundary | one Wayland proxy per zone offering eight globals, app_id and title rewritten; dwl drawing zone borders | `compositor/wlproxy/`, `compositor/zoneid/`, `tools/desktop/dwl-zone-borders.py`, `build/desktop/dwl-config.h`, `tools/desktop/kryptik-launch.c` | `tools/tests/compositor.sh`, `make gui-test` | [architecture](architecture.md#gui), [broker](design/broker.md#compositor-proxy) |
+| The desktop boundary | one Wayland proxy per zone offering nine globals and serving the zone's own data device, app_id and title rewritten; dwl drawing zone borders | `compositor/wlproxy/`, `compositor/zoneid/`, `tools/desktop/dwl-zone-borders.py`, `build/desktop/dwl-config.h`, `tools/desktop/kryptik-launch.c` | `tools/tests/compositor.sh`, `make gui-test` | [architecture](architecture.md#gui), [broker](design/broker.md#compositor-proxy) |
 | Boot | the signed kernel as the EFI application with its command line and root hash compiled in; dm-verity root; no initramfs | `build/stages/05-kernel.sh`, `06-iso.sh`, `06-kernel-bind.sh`, `build/config/kernel/` | `make integrity-test`, `media-smoke`, `media-refused-foreign-keys` | [boot and updates](design/boot-and-updates.md) |
 | State encryption | LUKS2 state partition on the root's disk; `/etc` overlay allow-list; degraded state | `build/service-scripts/sysinit.sh`, `devices.sh`, `ask.sh` | `make state-test`, `install-test` | [state encryption](design/state-encryption.md) |
 | Installer and recovery | whole-disk install with every check before the first write; slot and header recovery from the medium | `tools/install/kryptik-install.sh`, `tools/update/kryptik-recover` | `make install-test`, `tools/tests/installer.sh` | [boot and updates](design/boot-and-updates.md#installer) |
@@ -45,7 +45,7 @@ uid N with no capabilities in the initial namespace):
 - its broker socket at `/run/kryptik/broker`: `version`, `clipboard-set`,
   `clipboard-get`, `transfer` with one descriptor;
 - its Wayland proxy socket at `/run/kryptik/wayland-0`, every message of the
-  eight globals it is offered;
+  nine globals it is offered and of the data device the proxy serves;
 - its veth into the net zone's bridge: the net zone's resolver, NAT, and
   whatever the net zone forwards;
 - what it can read: zone 0's `/usr` read-only, a masked `/proc`, a minimal

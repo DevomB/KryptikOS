@@ -66,13 +66,17 @@ grep 'ZT FAIL' <<<"$T2" | sed 's/^/        /'
 for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-unprivileged zone0-nic zone0-no-route zone0-offline routed-egress routed-ping routed-ping6 routed-dns net-lease-names-resolver dns-follows-lease dns-after-reload routed-ipv6-noglobal zone-separation volume-hidden home-hidden fail-closed net-restart-ready reattach-after-restart uplink-returned uplink-retaken reattach-egress uplink-refused wifi-beyond routed-restart-path uplink-address-refused zone-flows-capped net-cpu-max-set \
             wifi-module wifi-ap wifi-add wifi-associated wifi-lease wifi-egress wifi-forget \
             wifi-no-dpp \
+            status-network-line \
             wifi-second-network \
             wifi-bss-age \
+            wifi-hidden \
             uplink-renamed-plain uplink-state-reset \
             radio-off-at-start \
             radio-recarried \
             wifi-wpa2-plain wifi-sae wifi-open wifi-own-address wifi-address-per-network wifi-supplicant-unprivileged wifi-supplicant-no-nft \
+            wifi-refused-wpa2 wifi-refused-cleared wifi-refused-sae \
             zone-clocks-own \
+            wifi-sae-h2e \
             time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden dns-own-resolver dns-own-port-closed dns-cache-per-zone dns-uplink-closed net-zone-sysfs-nics-only \
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \

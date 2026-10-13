@@ -5,7 +5,8 @@
 //!   request  one per connection, NUL-free text lines:
 //!              run <zone> [wayland=<path>] [pass=fd], `arg <word>` lines, `end`
 //!                (with pass=fd, one descriptor rides with the first bytes)
-//!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `end`
+//!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `hidden` for a
+//!                network that hides its name, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              wifi-scan, answered once the nic zone has scanned
 //!              check-password, `password <password>`, `end` (the screen lock's)
@@ -298,17 +299,18 @@ fn parse_run(text: &str) -> Result<Request, String> {
 }
 
 /// Debug prints the SSID only: the passphrase is never formatted. `open`: a network saved
-/// with no passphrase, which `wifi-add` takes in place of `psk`.
+/// with no passphrase, which `wifi-add` takes in place of `psk`; `hidden`: one asked for by name.
 struct WifiRequest {
     ssid: String,
     psk: Option<String>,
     open: bool,
+    hidden: bool,
 }
 
 impl std::fmt::Debug for WifiRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let psk = if self.psk.is_some() { "<set>" } else { "None" };
-        write!(f, "WifiRequest {{ ssid: {:?}, psk: {psk}, open: {} }}", self.ssid, self.open)
+        write!(f, "WifiRequest {{ ssid: {:?}, psk: {psk}, open: {}, hidden: {} }}", self.ssid, self.open, self.hidden)
     }
 }
 
@@ -320,8 +322,8 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
         let word = verb.split_whitespace().next().unwrap_or("wifi");
         return Err(format!("{word}: the verb stands alone on its line"));
     }
-    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>` or `open`, `end`" } else { "`ssid <SSID>`, `end`" };
-    let (mut ssid, mut psk, mut open, mut ended) = (None, None, false, false);
+    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>` or `open`, maybe `hidden`, `end`" } else { "`ssid <SSID>`, `end`" };
+    let (mut ssid, mut psk, mut open, mut hidden, mut ended) = (None, None, false, false, false);
     for l in lines {
         if l == "end" {
             ended = true;
@@ -339,6 +341,10 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
             if std::mem::replace(&mut open, true) {
                 return Err(format!("{verb}: two open lines"));
             }
+        } else if l == "hidden" && verb == "wifi-add" {
+            if std::mem::replace(&mut hidden, true) {
+                return Err(format!("{verb}: two hidden lines"));
+            }
         } else {
             return Err(format!(
                 "{verb}: unexpected line; the request is {shape}, one per line, and neither value may hold a newline"
@@ -352,7 +358,7 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
     if verb == "wifi-add" && psk.is_some() == open {
         return Err("wifi-add: a psk line or an open line, one of them".into());
     }
-    Ok(WifiRequest { ssid, psk, open })
+    Ok(WifiRequest { ssid, psk, open, hidden })
 }
 
 // --- the proxy socket ----------------------------------------------------------
@@ -1064,7 +1070,7 @@ fn zone_running(name: &str) -> bool {
 /// The nic zone's word on the network: the line its program wrote last
 /// (tools/net/netzone-init.sh, `report`) in its own /run. The zone is untrusted, so only
 /// `net_summary`'s words leave here, and zone 0's window shows nothing else of the line.
-fn net_status(name: &str) -> Option<String> {
+pub(crate) fn net_status(name: &str) -> Option<String> {
     let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(name) else {
         return None;
     };
@@ -1074,8 +1080,9 @@ fn net_status(name: &str) -> Option<String> {
 }
 
 /// The words for a net zone's status line, or none for a line of another form: whether it is
-/// ready, the Wi-Fi network (an SSID as Rust quotes a string, so nothing unprintable reaches a
-/// terminal), the uplink's address and whether there is DNS.
+/// ready, the Wi-Fi network joined or the one that refused the passphrase (an SSID as iw prints
+/// one, read back to its bytes and shown as `wifi::shown` shows them, so nothing unprintable
+/// reaches a terminal), the uplink's address and whether there is DNS.
 fn net_summary(line: &str) -> Option<String> {
     if line.starts_with("NOT READY") {
         return Some("not ready: forwarding is off".into());
@@ -1106,8 +1113,13 @@ fn net_summary(line: &str) -> Option<String> {
         "off" => Some("Wi-Fi switched off".to_string()),
         "connecting" => Some("Wi-Fi connecting".to_string()),
         "associated" => Some("Wi-Fi joined".to_string()),
-        ssid if !ssid.is_empty() && ssid.len() <= 32 => Some(format!("Wi-Fi {ssid:?}")),
-        _ => return None,
+        printed => {
+            let named = |p: &str| crate::wifi::ssid_from_iw(p).map(|b| crate::wifi::shown(&b));
+            Some(match printed.strip_prefix("refused:") {
+                Some(p) => format!("Wi-Fi {} refused the passphrase", named(p)?),
+                None => format!("Wi-Fi {}", named(printed)?),
+            })
+        }
     };
     Some(match wifi {
         Some(w) => format!("ready: {w}, {uplink}, {dns}"),
@@ -1453,7 +1465,8 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 }
             };
             let done = if verb == "wifi-add" {
-                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref()).map(|a| crate::wifi::said(&req.ssid, a, req.open))
+                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref(), req.hidden)
+                    .map(|(a, hidden)| crate::wifi::said(&req.ssid, a, req.open, hidden))
             } else {
                 crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| format!("forgot network {:?}", req.ssid))
             };

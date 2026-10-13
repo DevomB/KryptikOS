@@ -95,6 +95,13 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT SCREENSHOT-OVERSIZE" "sleep:2" "screendump:${SHOT_OVER}" \
     "expect:GT KEY-FOCUS-FORGED" "key:alt+j" \
     "expect:GT KEY-FOCUS-PERSONAL" "key:alt+j" \
+    "expect:GT KEY-FOCUS-CLIP 1" "key:alt+j" "expect:GT KEY-FOCUS-CLIP 2" "key:alt+j" \
+    "expect:GT KEY-FOCUS-CLIP 3" "key:alt+j" "expect:GT KEY-FOCUS-CLIP 4" "key:alt+j" \
+    "expect:GT KEY-FOCUS-CLIP-PERSONAL" "key:alt+j" \
+    "expect:GT KEY-FOCUS-MOVE 1" "key:alt+j" "expect:GT KEY-FOCUS-MOVE 2" "key:alt+j" \
+    "expect:GT KEY-FOCUS-MOVE 3" "key:alt+j" "expect:GT KEY-FOCUS-MOVE 4" "key:alt+j" \
+    "expect:GT KEY-FOCUS-MOVED 1" "key:alt+j" "expect:GT KEY-FOCUS-MOVED 2" "key:alt+j" \
+    "expect:GT KEY-FOCUS-MOVED 3" "key:alt+j" "expect:GT KEY-FOCUS-MOVED 4" "key:alt+j" \
     "type-from:GT CONSENT-CODE 1 ([0-9]+)" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
     "expect:GT POINTER-ZONE0" "pointer:-4000,-4000" "pointer:120,120" \
@@ -132,14 +139,16 @@ gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 25 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in session-socket compositor-running chrome-focus-record chrome-window-is-zone0 zone0-sees-capture zone-proxy-path zone-sees-needed zone-hidden-globals zone-bind-refused proxy-logged-refusal \
-            map-keeps-zone0-focus close-keeps-zone0-focus alone-keeps-no-keyboard alone-reached-by-key focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone menu-names-stale-statement menu-names-install-age menu-update-auto menu-names-failed-trial menu-names-armed-trial zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
+            map-keeps-zone0-focus close-keeps-zone0-focus alone-keeps-no-keyboard alone-reached-by-key focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone menu-names-stale-statement menu-names-install-age menu-update-auto menu-names-failed-trial menu-names-armed-trial zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved zone-copy-pastes-in-zone zone-copy-stays-in-zone zone-copy-not-in-zone0 \
+            move-door-unreached move-crosses-zones move-leaves-nothing-behind move-in-no-log move-door-refuses-others \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
             second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
-            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown compositor-socket-unreached \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
+            status-network-line-user \
             zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done

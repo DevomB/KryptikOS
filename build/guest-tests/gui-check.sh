@@ -11,6 +11,8 @@
 #   GT KEY-ZOOM-BELOW, GT KEY-ZOOM-AGAIN            press Alt+Return (zoom)
 #   GT KEY-PARENT-FULLSCREEN, GT KEY-LATE-FULLSCREEN press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
+#   GT KEY-FOCUS-CLIP 1..4, GT KEY-FOCUS-CLIP-PERSONAL  press Alt+j
+#   GT KEY-FOCUS-MOVE 1..4, GT KEY-FOCUS-MOVED 1..4     press Alt+j
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
@@ -119,10 +121,10 @@ for g in wl_compositor wl_shm wl_seat xdg_wm_base; do
 done
 [[ -z "$needed_missing" ]] && pass "zone-sees-needed" "wl_compositor, wl_shm, wl_seat, xdg_wm_base offered" || fail "zone-sees-needed" "not offered:$needed_missing"
 hidden_seen=""
-for g in zwlr_screencopy_manager_v1 wl_data_device_manager zwlr_data_control_manager_v1 zwlr_layer_shell_v1 zwp_virtual_keyboard_manager_v1 zwlr_virtual_pointer_manager_v1 zwlr_export_dmabuf_manager_v1 zwlr_gamma_control_manager_v1 zwlr_output_manager_v1 ext_session_lock_manager_v1 zwlr_foreign_toplevel_manager_v1; do
+for g in zwlr_screencopy_manager_v1 zwlr_data_control_manager_v1 zwp_primary_selection_device_manager_v1 zwlr_layer_shell_v1 zwp_virtual_keyboard_manager_v1 zwlr_virtual_pointer_manager_v1 zwlr_export_dmabuf_manager_v1 zwlr_gamma_control_manager_v1 zwlr_output_manager_v1 ext_session_lock_manager_v1 zwlr_foreign_toplevel_manager_v1; do
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
 done
-[[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, clipboard, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
+[[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, data-control, primary-selection, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
 # No zone reaches the compositor's socket: of every socket untrusted's user can
 # find, none is the one dwl listens on, and its own is the proxy's. Each file is
 # stat'ed, which sees through a socket bound in over a file. The launcher marks
@@ -142,6 +144,13 @@ elif grep -q "^SOCK ${comp} " <<<"$socks"; then
     fail "compositor-socket-unreached" "the zone reaches dwl's socket: $(grep "^SOCK ${comp} " <<<"$socks" | tr '\n' ';')"
 else
     pass "compositor-socket-unreached" "none of the zone's $(grep -c . <<<"$socks") sockets is dwl's (${comp}); it reaches the proxy's"
+fi
+# The move gesture's socket, beside the proxy's, is none of them either.
+door="$(stat -c '%d:%i' "$RT/kryptik/untrusted/control" 2>/dev/null)"
+if [[ -n "$door" ]] && socks_done && ! grep -q "^SOCK ${door} " <<<"$socks"; then
+    pass "move-door-unreached" "none of the zone's sockets is the move gesture's (${door})"
+else
+    fail "move-door-unreached" "the gesture's socket: ${door:-not found}; the zone's reaching it: $(grep "^SOCK ${door:-none} " <<<"$socks" | tr '\n' ';')"
 fi
 wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
 mark bind untrusted
@@ -364,6 +373,13 @@ if wait_for 60 net_ready && [[ "$(net_line)" =~ ^ready:\ uplink\ [0-9.]+/[0-9]+,
 else
     fail "menu-network-line" "kryptik-launch --info net: $(as_user "kryptik-launch --info net" 2>&1 | tr '\n' ' ')"
 fi
+# At the text login the user's `kryptik status net` asks the launch service for the same line.
+status_user="$(as_user "kryptik status net" 2>&1)"
+if [[ -n "$(net_line)" && "$status_user" == *$'\n'"    network  $(net_line)"* ]]; then
+    pass "status-network-line-user" "kryptik status net, as the user: $(grep -m1 'network  ' <<<"$status_user" | sed 's/^ *//')"
+else
+    fail "status-network-line-user" "kryptik status net: $(tr '\n' ' ' <<<"$status_user" | cut -c1-300); the menu's: $(net_line)"
+fi
 # A zone 0 window taking focus keeps the last zone window's record, which the menu's f shows.
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 15 zone-0" > "$LOG/zone0-window.out" 2>&1 &
 if wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus"; then
@@ -567,6 +583,103 @@ wait_for 30 grep -q 'clipboard-empty' /var/log/kryptik/zone-untrusted.log; empti
 if [[ "$second" == *from-untrusted* && "$emptied" = 0 ]]; then pass "clipboard-moved" "personal holds the one payload the gesture moved, and untrusted's own broker answers empty: moved, not copied"; else fail "clipboard-moved" "personal: $(echo "$second" | tail -2 | tr '\n' ' '); untrusted: $(since_mark clip untrusted | tail -3 | tr '\n' ' ')"; fi
 stop_zone untrusted; stop_zone personal
 
+# --- copy and paste inside a zone -------------------------------------------
+# The proxy serves the zone's selection to the zone's own clients (compositor/wlproxy/src/
+# clipboard.rs): a copy in one of untrusted's windows pastes in another of untrusted's, and
+# reaches neither personal's windows nor zone 0's, whose selection is the compositor's. A
+# client is offered the selection as the keyboard enters it, so Alt+j walks the keyboard
+# round the windows: four presses visit the copying window and then the pasting one, in
+# either order they mapped.
+mark copy untrusted
+launch_plain untrusted "sh -c '/usr/libexec/kryptik/wlprobe copy 90 kryptik4471 & exec /usr/libexec/kryptik/wlprobe paste 90'" > "$LOG/launch-copy.out" 2>&1
+two_drawn() { [[ "$(since_mark copy untrusted | grep -c 'committed ')" -ge 2 ]]; }
+wait_for 20 two_drawn
+for k in 1 2 3 4; do
+    echo "GT KEY-FOCUS-CLIP $k"
+    sleep 3
+done
+if since_mark copy untrusted | grep -q 'copied$' && since_mark copy untrusted | grep -q 'pasted: kryptik4471$'; then
+    pass "zone-copy-pastes-in-zone" "one of untrusted's clients copied, and another pasted the text"
+else
+    fail "zone-copy-pastes-in-zone" "$(since_mark copy untrusted | grep -E 'copied|pasted|no selection|sent to|keyboard|copy cancelled' | tail -8 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-copy.out")"
+fi
+stop_zone untrusted
+mark paste personal
+launch personal "/usr/libexec/kryptik/wlprobe paste 30" > "$LOG/launch-paste.out" 2>&1
+paste_drawn() { since_mark paste personal | grep -q 'committed '; }
+wait_for 20 paste_drawn
+echo "GT KEY-FOCUS-CLIP-PERSONAL"
+pasted_personal() { since_mark paste personal | grep -qE 'no selection|pasted: |a selection'; }
+if wait_for 15 pasted_personal && since_mark paste personal | grep -q 'no selection' && ! since_mark paste personal | grep -q 'pasted: '; then
+    pass "zone-copy-stays-in-zone" "personal's client, given the keyboard, was offered no selection"
+else
+    fail "zone-copy-stays-in-zone" "$(since_mark paste personal | tail -5 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-paste.out")"
+fi
+stop_zone personal
+as_user "/usr/libexec/kryptik/wlprobe paste 6" > "$LOG/paste-zone0.out" 2>&1
+if grep -q '^no selection' "$LOG/paste-zone0.out" && ! grep -q '^pasted: ' "$LOG/paste-zone0.out"; then
+    pass "zone-copy-not-in-zone0" "zone 0's client, on the compositor itself, was offered no selection"
+else
+    fail "zone-copy-not-in-zone0" "$(tr '\n' ' ' < "$LOG/paste-zone0.out")"
+fi
+
+# --- the move gesture carries a zone's copy to another zone's windows -------
+# kryptik-launch --clipboard-move, the chrome's m<N><M>, takes what untrusted's windows copied
+# from untrusted's proxy, gives it to personal's, and clears it in untrusted once personal holds
+# it: personal's window pastes it, and untrusted's is no longer offered it. Four Alt+j presses
+# before the move visit every window, the copying one among them, and four after it again.
+mark move untrusted
+launch_plain untrusted "sh -c '/usr/libexec/kryptik/wlprobe copy 120 moved4471 & exec /usr/libexec/kryptik/wlprobe paste 120'" > "$LOG/launch-move.out" 2>&1
+mark move personal
+launch personal "/usr/libexec/kryptik/wlprobe paste 120" > "$LOG/launch-move-paste.out" 2>&1
+three_drawn() { [[ "$(since_mark move untrusted | grep -c 'committed ')" -ge 2 ]] && since_mark move personal | grep -q 'committed '; }
+wait_for 30 three_drawn
+for k in 1 2 3 4; do
+    echo "GT KEY-FOCUS-MOVE $k"
+    sleep 3
+done
+as_user "kryptik-launch --clipboard-move untrusted personal" > "$LOG/move.out" 2>&1; moved=$?
+mark moved untrusted; mark moved personal
+for k in 1 2 3 4; do
+    echo "GT KEY-FOCUS-MOVED $k"
+    sleep 3
+done
+if since_mark move untrusted | grep -q 'copied$' && [[ "$moved" = 0 ]] \
+   && grep -qx "moved 9 bytes of text/plain;charset=utf-8 from untrusted's windows to personal's" "$LOG/move.out" \
+   && since_mark moved personal | grep -q 'pasted: moved4471$'; then
+    pass "move-crosses-zones" "$(cat "$LOG/move.out"); personal's window pasted it"
+else
+    fail "move-crosses-zones" "move: $(tr '\n' ' ' < "$LOG/move.out") (rc $moved); untrusted: $(since_mark move untrusted | grep -E 'copied|pasted|no selection|keyboard' | tail -4 | tr '\n' ' '); personal: $(since_mark moved personal | tail -3 | tr '\n' ' ')"
+fi
+if since_mark moved untrusted | grep -q 'no selection' && ! since_mark moved untrusted | grep -q 'pasted: '; then
+    pass "move-leaves-nothing-behind" "untrusted's pasting window, given the keyboard after the move, was offered no selection"
+else
+    fail "move-leaves-nothing-behind" "$(since_mark moved untrusted | tail -4 | tr '\n' ' ')"
+fi
+# What moved is in no log of zone 0's: the proxies and the launcher name the type and length.
+if grep -q 'move: took 9 bytes of text/plain;charset=utf-8' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null \
+   && ! grep -rqsF moved4471 "$RT/kryptik" /run/uncaught-logs; then
+    pass "move-in-no-log" "$(grep -h 'move: ' "$RT/kryptik/untrusted/proxy.log" "$RT/kryptik/personal/proxy.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+else
+    fail "move-in-no-log" "proxy lines: $(grep -h 'move' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null | tail -2 | tr '\n' ' '); holding the text: $(grep -rlsF moved4471 "$RT/kryptik" /run/uncaught-logs | tr '\n' ' ')"
+fi
+# The gesture's socket answers the session's user alone: root, past the directory's 0700,
+# is refused like any zone's uid would be.
+door="$RT/kryptik/untrusted/control"
+refusal="$(python3 - "$door" 2>&1 <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(5)
+s.connect(sys.argv[1])
+s.sendall(b"take\n")
+s.shutdown(socket.SHUT_WR)
+print(s.recv(200).decode(errors="replace").strip())
+PY
+)"
+[[ "$refusal" == "error: not the session's user" ]] && pass "move-door-refuses-others" "root, at $door, was told: $refusal" \
+    || fail "move-door-refuses-others" "root got: ${refusal:-nothing}"
+stop_zone untrusted; stop_zone personal
+
 # --- transfers: the user decides --------------------------------------------
 launch work "havoc" > /dev/null 2>&1   # work must be running to receive
 # policy first: untrusted names no destination
@@ -640,7 +753,7 @@ wait_for 10 grep -q 'the cursor image entered an output' "$LOG/cursor-zone0.out"
 wait "$probe0" 2>/dev/null
 stop_zone untrusted
 mark cursor untrusted
-launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 20" > "$LOG/launch-cursor.out" 2>&1
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 20 shape" > "$LOG/launch-cursor.out" 2>&1
 cursor_asked() { since_mark cursor untrusted | grep -q 'set a '; }
 wait_for 20 probe_committed cursor || fail "cursor-mapped" "the probe did not draw its window: $(tr '\n' ' ' < "$LOG/launch-cursor.out")"
 echo "GT POINTER-UNTRUSTED"
@@ -652,6 +765,12 @@ if since_mark cursor untrusted | grep -q 'the cursor image entered an output'; t
     fail "zone-cursor-not-shown" "the compositor took the zone's cursor image: it entered an output"
 else
     pass "zone-cursor-not-shown" "six seconds after the zone asked, its cursor image has entered no output"
+fi
+# A cursor by name is the compositor's own drawing, from its theme: the zone may ask for one.
+if since_mark cursor untrusted | grep -q 'asked for the text cursor by name' && ! since_mark cursor untrusted | grep -qE 'refused|connection closed'; then
+    pass "zone-cursor-by-name" "the zone asked for the text cursor by name through its proxy, and its session stood"
+else
+    fail "zone-cursor-by-name" "$(since_mark cursor untrusted | tail -4 | tr '\n' ' ')"
 fi
 # --- a zone's window animates on a clock of its own ----------------------------------------
 # A zone's monotonic clock starts at a random point (isolate::set_time_origin), so the
