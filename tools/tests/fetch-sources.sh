@@ -414,6 +414,15 @@ else
     red "lock entries with no manifest row: ${stale}"
 fi
 
+# Mozilla's key is taken from the KEY file beside the pinned release; a Firefox bump that left the row
+# behind would keep importing a file that never learns a later revocation.
+vf="$(sed -n 's/^V_FIREFOX=//p' "${ROOT}/build/images/versions.env")"
+if [[ -n "$vf" ]] && grep -Eq "^14F26682D0916CDD81E37B6D61B7B526D98F0353[[:space:]]+origin[[:space:]]+https://archive[.]mozilla[.]org/pub/firefox/releases/${vf//./[.]}esr/KEY[[:space:]]" "${ROOT}/tools/key-provenance.tsv"; then
+    green "Mozilla's key row names the KEY file beside the pinned Firefox, ${vf}esr"
+else
+    red "tools/key-provenance.tsv's Mozilla row does not name releases/${vf:-?}esr/KEY: a Firefox bump moves it too"
+fi
+
 # The browser's Rust layer and kryptikd's compiler are one release: both locks hold the same three.
 rust_shared="$(awk 'NR == FNR { if ($1 !~ /^#/ && NF == 2) want[$2] = $1; next }
                     ($2 in want) { n++; if (want[$2] != $1) bad = bad " " $2 }

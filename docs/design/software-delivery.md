@@ -211,7 +211,9 @@ up ADR-001 in the zones where the applications run.
   salt and UUID derived from the content), runs the root's artifact audit
   over it with the image's own accepted findings
   (`build/images/NAME.accepted`, each with its reason) or none, and the
-  image's own program list, and writes a manifest,
+  image's own program list, after leaving out what `build/images/NAME.strip`
+  names (headers, pkg-config files, code generators: what only builds over the
+  image use, which keep them in its build tree), and writes a manifest,
   `images-<release>/images.manifest`:
 
   ```text
