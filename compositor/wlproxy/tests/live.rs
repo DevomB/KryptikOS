@@ -2,7 +2,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -149,7 +149,8 @@ impl Proxy {
     }
 
     /// As the launch daemon starts it: the listener made here and handed over as descriptor 3,
-    /// and the upstream as descriptor 4, which the proxy connects through by its /proc path.
+    /// the upstream as descriptor 4, which the proxy connects through by its /proc path, and the
+    /// gesture's socket (`dir/control`) as descriptor 5, answering this test's uid.
     fn start_passed(zone: &str) -> Proxy {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("kwlp-{}-{n}", std::process::id()));
@@ -162,20 +163,23 @@ impl Proxy {
         let path = std::ffi::CString::new(upstream_path.as_os_str().as_bytes()).unwrap();
         let up = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
         assert!(up >= 0, "{}: {}", upstream_path.display(), std::io::Error::last_os_error());
-        let keep = [listener.as_raw_fd(), up];
+        let control = UnixListener::bind(dir.join("control")).unwrap();
+        let keep = [listener.as_raw_fd(), up, control.as_raw_fd()];
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_kryptik-wlproxy"));
         unsafe {
             cmd.pre_exec(move || {
-                // Both copied above 9 first, so placing one cannot overwrite the other.
+                // All copied above 9 first, so placing one cannot overwrite another.
                 let high = keep.map(|fd| libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10));
-                if high.iter().any(|&fd| fd < 0) || libc::dup2(high[0], 3) < 0 || libc::dup2(high[1], 4) < 0 {
+                if high.iter().any(|&fd| fd < 0) || (0..3).any(|i| libc::dup2(high[i], 3 + i as RawFd) < 0) {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
             });
         }
+        let uid = unsafe { libc::geteuid() }.to_string();
         let child = cmd
             .args(["--zone", zone, "--listen-fd", "3", "--upstream", "/proc/self/fd/4"])
+            .args(["--control-fd", "5", "--control-uid", uid.as_str()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -431,10 +435,203 @@ fn serves_through_the_daemons_descriptors() {
     let (mut c, mut u) = p.connect();
     c.write_all(&get_registry(2)).unwrap();
     assert_eq!(read_exact_or_panic(&mut u, 12, "get_registry through the passed listener"), get_registry(2));
+    let own = global(2, 0xFFFF_FF00, "wl_data_device_manager", 3);
+    assert_eq!(read_exact_or_panic(&mut c, own.len(), "the proxy's own data device"), own);
     let want = global(2, 1, "wl_compositor", 6);
     u.write_all(&want).unwrap();
     assert_eq!(read_exact_or_panic(&mut c, want.len(), "wl_compositor back through it"), want);
     p.assert_alive("serving through the daemon's descriptors");
+}
+
+/// What a client has been sent and not yet looked at, the descriptors that rode along included.
+#[derive(Default)]
+struct Inbox {
+    bytes: Vec<u8>,
+    fds: Vec<RawFd>,
+}
+
+impl Inbox {
+    /// Every message up to and including the first to `object` with `opcode`, as (object,
+    /// opcode, body).
+    fn until(&mut self, s: &UnixStream, object: u32, opcode: u16, what: &str) -> Vec<(u32, u16, Vec<u8>)> {
+        let start = Instant::now();
+        loop {
+            let (mut at, mut msgs) = (0, Vec::new());
+            while self.bytes.len() - at >= 8 {
+                let word = u32::from_ne_bytes(self.bytes[at + 4..at + 8].try_into().unwrap());
+                let size = (word >> 16) as usize;
+                assert!(size >= 8, "a malformed message waiting for {what}");
+                if self.bytes.len() - at < size {
+                    break;
+                }
+                let id = u32::from_ne_bytes(self.bytes[at..at + 4].try_into().unwrap());
+                let op = (word & 0xffff) as u16;
+                msgs.push((id, op, self.bytes[at + 8..at + size].to_vec()));
+                at += size;
+                if (id, op) == (object, opcode) {
+                    self.bytes.drain(..at);
+                    return msgs;
+                }
+            }
+            assert!(start.elapsed() < TIMEOUT, "timed out waiting for {what}; got {msgs:?}");
+            self.recv(s, what);
+        }
+    }
+
+    /// One recvmsg: its bytes, and its descriptors kept for the test to take.
+    fn recv(&mut self, s: &UnixStream, what: &str) {
+        let mut buf = [0u8; 4096];
+        let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+        let mut cbuf = [0u64; 32];
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cbuf.as_mut_ptr().cast();
+        msg.msg_controllen = std::mem::size_of_val(&cbuf) as _;
+        let n = unsafe { libc::recvmsg(s.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC) };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            assert!(matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted), "{what}: {e}");
+            return;
+        }
+        assert!(n > 0, "end of file waiting for {what}");
+        self.bytes.extend_from_slice(&buf[..n as usize]);
+        unsafe {
+            let mut c = libc::CMSG_FIRSTHDR(&msg);
+            while !c.is_null() {
+                if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
+                    let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / std::mem::size_of::<RawFd>();
+                    let data = libc::CMSG_DATA(c) as *const RawFd;
+                    for i in 0..count {
+                        self.fds.push(std::ptr::read_unaligned(data.add(i)));
+                    }
+                }
+                c = libc::CMSG_NXTHDR(&msg, c);
+            }
+        }
+    }
+}
+
+/// A client of the zone with wl_seat 3, its keyboard 4, the proxy's data device manager 5 and a
+/// data device 6.
+fn data_device(c: &mut UnixStream, u: &mut UnixStream) {
+    c.write_all(&get_registry(2)).unwrap();
+    let own = global(2, 0xFFFF_FF00, "wl_data_device_manager", 3);
+    assert_eq!(read_exact_or_panic(c, own.len(), "the proxy's own data device"), own);
+    assert_eq!(read_exact_or_panic(u, 12, "get_registry at the upstream"), get_registry(2));
+    let seat = global(2, 1, "wl_seat", 9);
+    u.write_all(&seat).unwrap();
+    assert_eq!(read_exact_or_panic(c, seat.len(), "the seat"), seat);
+    c.write_all(&bind(2, 1, "wl_seat", 9, 3)).unwrap();
+    c.write_all(&msg(3, 1, &u32ne(4))).unwrap(); // wl_seat.get_keyboard
+    c.write_all(&bind(2, 0xFFFF_FF00, "wl_data_device_manager", 3, 5)).unwrap();
+    c.write_all(&msg(5, 1, &[u32ne(6), u32ne(3)].concat())).unwrap(); // get_data_device
+    // The compositor speaks for the keyboard only once it has heard of it.
+    Inbox::default().until(u, 3, 1, "get_keyboard at the upstream");
+}
+
+fn enter(u: &mut UnixStream) {
+    u.write_all(&msg(4, 1, &[u32ne(10), u32ne(20), u32ne(0)].concat())).unwrap(); // enter(serial, surface, keys [])
+}
+
+fn leave(u: &mut UnixStream) {
+    u.write_all(&msg(4, 2, &[u32ne(11), u32ne(20)].concat())).unwrap(); // leave(serial, surface)
+}
+
+/// The client copies: its data source `source`, offering `mime`, set as the selection.
+fn copy(c: &mut UnixStream, source: u32, mime: &str) {
+    c.write_all(&msg(5, 0, &u32ne(source))).unwrap(); // create_data_source
+    c.write_all(&msg(source, 0, &wl_string(mime))).unwrap(); // offer
+    c.write_all(&msg(6, 1, &[u32ne(source), u32ne(10)].concat())).unwrap(); // set_selection
+}
+
+/// The wl_data_offer that a data_offer event among `msgs` made.
+fn offer_in(msgs: &[(u32, u16, Vec<u8>)]) -> u32 {
+    let (_, _, body) = msgs.iter().find(|m| (m.0, m.1) == (6, 0)).expect("a data_offer event");
+    u32::from_ne_bytes(body[..4].try_into().unwrap())
+}
+
+/// The client pastes `offer` as `mime`; the read end of the descriptor it gave.
+fn paste(c: &UnixStream, offer: u32, mime: &str) -> UnixStream {
+    let (r, w) = UnixStream::pair().unwrap();
+    send_fds(c, &msg(offer, 1, &wl_string(mime)), &[w.as_raw_fd()]); // receive
+    r.set_read_timeout(Some(TIMEOUT)).unwrap();
+    r
+}
+
+/// One request on the gesture's socket, and the whole answer.
+fn gesture(p: &Proxy, request: &[u8]) -> Vec<u8> {
+    let mut s = UnixStream::connect(p.dir.join("control")).expect("connect to the gesture's socket");
+    s.set_read_timeout(Some(TIMEOUT)).unwrap();
+    s.write_all(request).unwrap();
+    s.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut answer = Vec::new();
+    s.read_to_end(&mut answer).expect("the proxy's answer");
+    answer
+}
+
+/// Copy and paste inside the zone, and the gesture's take, give and clear on the socket the
+/// daemon hands over: each of the proxy's paths for them, which CI traces.
+#[test]
+fn copy_paste_and_the_gesture_through_the_daemons_descriptors() {
+    const TEXT: &str = "text/plain;charset=utf-8";
+    let mut p = Proxy::start_passed("work");
+    let (mut ca, mut ua) = p.connect();
+    let (mut cb, mut ub) = p.connect();
+    data_device(&mut ca, &mut ua);
+    data_device(&mut cb, &mut ub);
+    let (mut ia, mut ib) = (Inbox::default(), Inbox::default());
+    assert_eq!(gesture(&p, b"take\n"), b"empty\n", "nothing copied yet");
+
+    // A has the keyboard and copies; a take reads the copy through a pipe that A writes.
+    enter(&mut ua);
+    ia.until(&ca, 4, 1, "the keyboard's enter at A");
+    copy(&mut ca, 7, TEXT);
+    ia.until(&ca, 6, 5, "A's copy offered back to it");
+    let mut ctl = UnixStream::connect(p.dir.join("control")).expect("connect to the gesture's socket");
+    ctl.set_read_timeout(Some(TIMEOUT)).unwrap();
+    ctl.write_all(b"take\n").unwrap();
+    ctl.shutdown(std::net::Shutdown::Write).unwrap();
+    let got = ia.until(&ca, 7, 1, "the take's send at A's source");
+    assert!(String::from_utf8_lossy(&got[got.len() - 1].2).contains(TEXT), "{got:?}");
+    let mut pipe = unsafe { std::fs::File::from_raw_fd(ia.fds.pop().expect("the take's pipe")) };
+    pipe.write_all(b"hello").unwrap();
+    drop(pipe);
+    let mut answer = Vec::new();
+    ctl.read_to_end(&mut answer).expect("the take's answer");
+    let answer = String::from_utf8(answer).unwrap();
+    assert!(answer.starts_with("ok ") && answer.ends_with(&format!(" {TEXT} 5\nhello")), "{answer:?}");
+
+    // Given bytes are the proxy's own selection: A's copy is cancelled, A's paste of them is
+    // written by the proxy, a take is answered from them, and a clear ends them.
+    assert_eq!(gesture(&p, format!("give {TEXT} 5\nworld").as_bytes()), b"ok\n");
+    let got = ia.until(&ca, 6, 5, "the given selection offered to A");
+    assert!(got.iter().any(|m| (m.0, m.1) == (7, 2)), "A's copy hears it was replaced: {got:?}");
+    let mut r = paste(&ca, offer_in(&got), TEXT);
+    let mut pasted = String::new();
+    r.read_to_string(&mut pasted).expect("the proxy's paste");
+    assert_eq!(pasted, "world");
+    let answer = String::from_utf8(gesture(&p, b"take\n")).unwrap();
+    assert!(answer.ends_with(&format!(" {TEXT} 5\nworld")), "{answer:?}");
+    let generation = answer.split(' ').nth(1).unwrap().to_string();
+    assert_eq!(gesture(&p, format!("clear {generation}\n").as_bytes()), b"ok\n");
+    ia.until(&ca, 6, 5, "the cleared selection said to A");
+
+    // A copies again and B, given the keyboard, pastes it: B's descriptor reaches A's source.
+    copy(&mut ca, 8, TEXT);
+    ia.until(&ca, 6, 5, "A's second copy offered back to it");
+    leave(&mut ua);
+    enter(&mut ub);
+    let got = ib.until(&cb, 4, 1, "the keyboard's enter at B");
+    let mut r = paste(&cb, offer_in(&got), TEXT);
+    ia.until(&ca, 8, 1, "B's paste at A's source");
+    let mut writer = unsafe { std::fs::File::from_raw_fd(ia.fds.pop().expect("B's descriptor")) };
+    writer.write_all(b"moved").unwrap();
+    drop(writer);
+    let mut pasted = String::new();
+    r.read_to_string(&mut pasted).expect("B's paste");
+    assert_eq!(pasted, "moved");
+    p.assert_alive("after the zone's copies and the gesture");
 }
 
 /// `--once` serves one session and removes the listener on exit.
