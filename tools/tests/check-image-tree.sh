@@ -64,7 +64,7 @@ fresh; ln -s /usr/share/probe/README "$U/usr/bin/probe-readme"
 out="$(check)"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "an absolute link that stays in /usr passes" || bad "absolute link in: rc=$rc: $out"
 
-fresh; rm -rf "$U/usr"
+fresh; rm -rf "${U:?}/usr"
 out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"installed nothing under /usr"* ]] \
     && ok "an image with nothing under /usr fails" || bad "empty image: rc=$rc: $out"

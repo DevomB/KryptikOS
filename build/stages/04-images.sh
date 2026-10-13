@@ -114,6 +114,7 @@ source "${KRYPTIK_ROOT}/build/lib/recipes.sh"
 source "${DEFS}/${name}.sh"
 # Stage 04's last build step: a rebuilt base system rebuilds every image.
 stage_depends_on "bs-" licences
+# shellcheck disable=SC2154  # image_rows comes from the image's definition
 for ((i = 0; i < ${#image_rows[@]}; i += 2)); do
     # shellcheck disable=SC2086  # a recipe is a word-split command, as in stage 04
     step "${image_rows[i]}" ${image_rows[i+1]}
