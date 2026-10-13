@@ -46,6 +46,19 @@ EOF
         MOZ_NOSPAM=1 ./mach --no-interactive build
     env MOZBUILD_STATE_PATH="${src}/.mozbuild" ./mach --no-interactive install
     test -x /usr/lib/firefox/firefox
+    # Enterprise policies: no telemetry or studies, no update checks (updates are the image's), and
+    # no question of the default browser, which a zone has no other of.
+    install -d -m 0755 /usr/lib/firefox/distribution
+    cat > /usr/lib/firefox/distribution/policies.json <<'EOF'
+{
+  "policies": {
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DisableAppUpdate": true,
+    "DontCheckDefaultBrowser": true
+  }
+}
+EOF
 }
 
 s_browser_licences() {
