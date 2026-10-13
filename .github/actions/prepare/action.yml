@@ -50,11 +50,15 @@ runs:
         # A changed lock restores the previous set; every file is still hashed against the lock.
         restore-keys: sources-
 
+    # With the signatures, which verify-signatures keeps beside the root's: when an image's pin alone
+    # moves, only this cache is saved again.
     - if: inputs.image-sources != ''
       id: image_sources
       uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
-        path: /mnt/kryptik/sources/images
+        path: |
+          /mnt/kryptik/sources/images
+          /mnt/kryptik/sources/.signatures
         key: image-sources-v1-${{ hashFiles('build/images/sources.lock') }}
         restore-keys: image-sources-v1-
 
@@ -88,5 +92,7 @@ runs:
     - if: inputs.image-sources == 'fetch' && steps.image_sources.outputs.cache-hit != 'true'
       uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
-        path: /mnt/kryptik/sources/images
+        path: |
+          /mnt/kryptik/sources/images
+          /mnt/kryptik/sources/.signatures
         key: image-sources-v1-${{ hashFiles('build/images/sources.lock') }}
