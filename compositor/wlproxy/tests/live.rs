@@ -1,6 +1,7 @@
 //! The proxy as a process, event loop included; the upstream is the test's own Unix listener.
 
 use std::io::{ErrorKind, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -145,6 +146,43 @@ impl Proxy {
             std::thread::sleep(Duration::from_millis(10));
         }
         p
+    }
+
+    /// As the launch daemon starts it: the listener made here and handed over as descriptor 3,
+    /// and the upstream as descriptor 4, which the proxy connects through by its /proc path.
+    fn start_passed(zone: &str) -> Proxy {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("kwlp-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let upstream_path = dir.join("upstream");
+        let listen = dir.join("wayland-0");
+        let upstream = UnixListener::bind(&upstream_path).unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let listener = UnixListener::bind(&listen).unwrap();
+        let path = std::ffi::CString::new(upstream_path.as_os_str().as_bytes()).unwrap();
+        let up = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        assert!(up >= 0, "{}: {}", upstream_path.display(), std::io::Error::last_os_error());
+        let keep = [listener.as_raw_fd(), up];
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_kryptik-wlproxy"));
+        unsafe {
+            cmd.pre_exec(move || {
+                // Both copied above 9 first, so placing one cannot overwrite the other.
+                let high = keep.map(|fd| libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10));
+                if high.iter().any(|&fd| fd < 0) || libc::dup2(high[0], 3) < 0 || libc::dup2(high[1], 4) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = cmd
+            .args(["--zone", zone, "--listen-fd", "3", "--upstream", "/proc/self/fd/4"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn kryptik-wlproxy");
+        unsafe { libc::close(up) };
+        Proxy { child, dir, listen, upstream }
     }
 
     fn stderr_so_far(&mut self) -> String {
@@ -380,6 +418,19 @@ fn refused_client_leaves_others_running() {
     p.assert_alive("after refusing a client");
     good.write_all(&sync(3)).unwrap();
     assert_eq!(read_exact_or_panic(&mut ugood, 12, "the good client's sync after the refusal"), sync(3));
+}
+
+/// Started as the launch daemon starts it, the proxy serves through the descriptors it was given.
+#[test]
+fn serves_through_the_daemons_descriptors() {
+    let mut p = Proxy::start_passed("work");
+    let (mut c, mut u) = p.connect();
+    c.write_all(&get_registry(2)).unwrap();
+    assert_eq!(read_exact_or_panic(&mut u, 12, "get_registry through the passed listener"), get_registry(2));
+    let want = global(2, 1, "wl_compositor", 6);
+    u.write_all(&want).unwrap();
+    assert_eq!(read_exact_or_panic(&mut c, want.len(), "wl_compositor back through it"), want);
+    p.assert_alive("serving through the daemon's descriptors");
 }
 
 /// `--once` serves one session and removes the listener on exit.

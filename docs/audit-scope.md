@@ -15,7 +15,7 @@ everything below is built from it by the workflows in `.github/workflows/`.
 | Part | What it enforces | Code | Tests | Design |
 | --- | --- | --- | --- | --- |
 | Zone launch | user, pid, mount, ipc, uts, cgroup, time and network namespaces; uid maps from a declared range; a sealed tmpfs root with the system paths bound read-only; supervision by parent-death signals | `compartments/kryptikd/src/spawn.rs`, `isolate.rs`, `rootfs.rs`, `zone.rs`, `caps.rs` | `compartments/tests/launcher.sh`, `adversarial.sh`; `build/guest-tests/zones-check.sh` | [privileged launch](design/privileged-launch.md), [zone registry](design/zone-registry.md) |
-| Syscall filter | default-deny seccomp-bpf, about 200 calls, argument rules on `clone`, `ioctl`, `socket`; kill on the rest | `seccomp.rs`, `policy.rs`, `compartments/zones/policy/` | `seccomp.rs` unit tests, the boundary suite | [hardening](hardening.md#zone-syscall-filter), [zone policy files](design/zone-policy-files.md) |
+| Syscall filter | default-deny seccomp-bpf, about 200 calls, argument rules on `clone`, `ioctl`, `socket`; kill on the rest; the Wayland proxy's own list of about thirty | `seccomp.rs`, `policy.rs`, `compartments/zones/policy/` | `seccomp.rs` unit tests, the boundary suite, `tools/tests/proxy-calls.sh` | [hardening](hardening.md#zone-syscall-filter), [zone policy files](design/zone-policy-files.md) |
 | File access | Landlock over the pivoted root: read and exec on `/`, write only in home, `/tmp`, `/dev` nodes, `/proc` | `landlock.rs` | `landlock::tests`, the launcher suite | [zone policy files](design/zone-policy-files.md) |
 | Resources | cgroup v2 leaves with memory, pids, cpu and io limits; ephemeral homes on a bounded tmpfs | `cgroup.rs`, `rootfs.rs` | the launcher suite's cgroup sections | [resource limits](design/resource-limits-and-ephemeral-zones.md) |
 | Encrypted volumes | a LUKS2 volume per persistent zone, open only while it runs | `volume.rs` | `volume.rs` tests, `zones-check.sh` | [encrypted volumes](design/encrypted-volumes.md) |
@@ -161,9 +161,8 @@ From [status](status.md#known-gaps) and the designs' own lists:
   ([supply chain](supply-chain.md#open-problems)).
 - dhcpcd runs without its own privilege separation; the net zone is its
   sandbox.
-- dwl runs as the login user, so a bug in it reaches the whole desktop, and
-  each `kryptik-wlproxy` runs under the zones' seccomp filter, not yet one
-  cut to its own calls ([compositor separation](design/compositor-separation.md)).
+- dwl runs as the login user, so a bug in it reaches the whole desktop
+  ([compositor separation](design/compositor-separation.md)).
 - The artifact audit's soft findings, each with its reason in
   `build/config/artifact-accepted.txt`.
 - The net zone's "not built" list: no MAC or IP pinning on bridge ports, and

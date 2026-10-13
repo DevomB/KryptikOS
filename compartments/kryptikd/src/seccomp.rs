@@ -630,9 +630,11 @@ fn install_with(
     if !cfg!(target_arch = "x86_64") {
         return Err(SeccompError::UnsupportedArch);
     }
+    attach(&build_program_full(allow, deny_action, sockets)?, flags)
+}
 
-    let prog = build_program_full(allow, deny_action, sockets)?;
-
+/// no_new_privs, then `prog` through seccomp(2) with `flags`.
+fn attach(prog: &[SockFilter], flags: libc::c_ulong) -> Result<libc::c_long, SeccompError> {
     // Needed by an unprivileged caller; also keeps a later setuid exec unprivileged.
     let nnp = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if nnp < 0 {
@@ -732,6 +734,87 @@ pub fn install_supplicant_filter() -> Result<(), SeccompError> {
         return Err(os("prctl(PR_SET_SECCOMP)"));
     }
     Ok(())
+}
+
+/// What the Wayland proxy calls from its exec on (proxy.rs), in place of the zone filter: about
+/// thirty of the zone's calls. `tools/tests/proxy-calls.sh` runs the static proxy under strace
+/// and fails on a call it makes that is missing here.
+pub const PROXY_ALLOWLIST: &[libc::c_long] = &[
+    // Its exec, the C library's start and Rust's (TLS, the stack guard, SIGPIPE ignored), its end.
+    libc::SYS_execve, libc::SYS_arch_prctl, libc::SYS_set_tid_address, libc::SYS_rt_sigaction,
+    libc::SYS_sigaltstack, libc::SYS_prlimit64, libc::SYS_exit, libc::SYS_exit_group,
+    // Memory, none of it executable (`proxy_program`).
+    libc::SYS_brk, libc::SYS_mmap, libc::SYS_munmap, libc::SYS_mremap, libc::SYS_mprotect,
+    libc::SYS_madvise,
+    /* The loop: its clients, dwl's socket for the zone, the gesture's socket and the copies'
+     * pipes. A poll that a stop interrupted resumes through restart_syscall. */
+    libc::SYS_poll, libc::SYS_restart_syscall, libc::SYS_accept4, libc::SYS_socket, libc::SYS_connect,
+    libc::SYS_getsockopt, libc::SYS_recvmsg, libc::SYS_sendmsg, libc::SYS_recvfrom, libc::SYS_read,
+    libc::SYS_write, libc::SYS_pipe2, libc::SYS_fcntl, libc::SYS_ioctl, libc::SYS_close,
+    // A HashMap's keys, and the clock where the vDSO gives none.
+    libc::SYS_getrandom, libc::SYS_clock_gettime,
+];
+
+const FIONBIO: u32 = 0x5421;
+const PROT_EXEC: u32 = 0x4;
+
+/* The proxy's filter: its calls alone, sockets only AF_UNIX, ioctl only FIONBIO (Rust's
+ * set_nonblocking), and no memory mapped or made executable. Anything else kills it, as a zone
+ * is killed. */
+fn proxy_program() -> Vec<SockFilter> {
+    let (allow, kill) = (SECCOMP_RET_ALLOW, SECCOMP_RET_KILL_PROCESS);
+    let mut p = vec![
+        stmt(BPF_LD | BPF_W | BPF_ABS, OFF_ARCH),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+        stmt(BPF_RET | BPF_K, kill),
+        stmt(BPF_LD | BPF_W | BPF_ABS, OFF_NR),
+        jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, 0, 1),
+        stmt(BPF_RET | BPF_K, kill),
+    ];
+    let no_exec = [
+        stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(2)),
+        jump(BPF_JMP | BPF_JSET | BPF_K, PROT_EXEC, 0, 1),
+        stmt(BPF_RET | BPF_K, kill),
+        stmt(BPF_RET | BPF_K, allow),
+    ];
+    /* A call its argument decides: a block that always returns, or a jump past it with the
+     * number still loaded. */
+    let rules = [
+        (libc::SYS_socket, [
+            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(0)),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 0, 1),
+            stmt(BPF_RET | BPF_K, allow),
+            stmt(BPF_RET | BPF_K, kill),
+        ]),
+        (libc::SYS_ioctl, [
+            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(1)),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, FIONBIO, 0, 1),
+            stmt(BPF_RET | BPF_K, allow),
+            stmt(BPF_RET | BPF_K, kill),
+        ]),
+        (libc::SYS_mmap, no_exec),
+        (libc::SYS_mprotect, no_exec),
+    ];
+    for (nr, body) in &rules {
+        p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, *nr as u32, 0, body.len() as u8));
+        p.extend_from_slice(body);
+    }
+    for &nr in PROXY_ALLOWLIST {
+        if !rules.iter().any(|(r, _)| *r == nr) {
+            p.push(jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
+            p.push(stmt(BPF_RET | BPF_K, allow));
+        }
+    }
+    p.push(stmt(BPF_RET | BPF_K, kill));
+    p
+}
+
+/// Install the proxy's filter on this single-threaded process, the last step before its exec.
+pub fn confine_proxy() -> Result<(), SeccompError> {
+    if !cfg!(target_arch = "x86_64") {
+        return Err(SeccompError::UnsupportedArch);
+    }
+    attach(&proxy_program(), SECCOMP_FILTER_FLAG_TSYNC).map(|_| ())
 }
 
 /// Install the standard zone filter.
