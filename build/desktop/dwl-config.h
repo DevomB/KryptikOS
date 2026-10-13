@@ -1,8 +1,8 @@
-/* Kryptik's dwl configuration. A border's colour comes from the zone in the
- * `kryptik.<zone>.` app_id prefix the proxy stamps (dwl-zone-borders.py adds
- * that to dwl.c); focus widens the coloured part but never changes the colour.
- * Programs start in a zone through kryptik-launch; only the chrome's menu
- * runs on the session's own display. */
+/* Kryptik's dwl configuration. A border's colour comes from the zone whose
+ * socket the window's client came through (dwl-zone-borders.py adds a socket
+ * per zone to dwl.c); focus widens the coloured part but never changes the
+ * colour. Programs start in a zone through kryptik-launch; only the chrome's
+ * menu runs on the session's own display. */
 #include "zone-colours.h"
 
 #define COLOR(hex)    { ((hex >> 24) & 0xFF) / 255.0f, \
@@ -20,13 +20,12 @@ static const float rootcolor[]             = COLOR(0x101418ff);
 static const float urgentcolor[]           = COLOR(KRYPTIK_URGENT_BORDER);
 static const float fullscreen_bg[]         = {0.0f, 0.0f, 0.0f, 1.0f};
 
-/* zone -> border colour; see zone-colours.h */
+/* zone -> border colour, and a socket each; see zone-colours.h */
 #define ZONE_ENTRY(name, border) { name, COLOR(border) },
 static const ZoneColor zonecolors_table[] = {
 	KRYPTIK_ZONE_COLOURS(ZONE_ENTRY)
 };
 static const float unzonedcolor[] = COLOR(KRYPTIK_UNZONED_BORDER);
-static const float unknownzonecolor[] = COLOR(KRYPTIK_UNKNOWN_BORDER);
 
 /* tagging - TAGCOUNT must be no greater than 31 */
 #define TAGCOUNT (9)

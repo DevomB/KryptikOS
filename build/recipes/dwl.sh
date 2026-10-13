@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# dwl with Kryptik's keybindings (the trusted launcher) and zone border colours (zone identity).
+# dwl with Kryptik's keybindings (the trusted launcher), and a socket and a border colour per zone
+# (zone identity).
 s_dwl() {
     local cfg_sha="${1:-none}" colours_sha="${2:-none}" patch_sha="${3:-none}"
     local desk="${KRYPTIK_ROOT}/build/desktop"
@@ -33,8 +34,8 @@ s_dwl() {
     cp "$cfg" config.h
     make PREFIX=/usr XWAYLAND= XLIBS=
     make PREFIX=/usr install
-    # The installed binary must carry the change; the chooser's app_id prefix is a literal in it.
-    grep -aq 'kryptik\.' /usr/bin/dwl || { echo "FAIL: /usr/bin/dwl does not contain the zone chooser"; return 1; }
-    echo "installed dwl with per-zone borders"
+    # The installed binary must carry the change; the zones' socket directory is a literal in it.
+    grep -aq 'kryptik-compositor' /usr/bin/dwl || { echo "FAIL: /usr/bin/dwl does not serve the zones' sockets"; return 1; }
+    echo "installed dwl with a socket and a border colour per zone"
     dwl -v 2>&1 | head -1 || true
 }

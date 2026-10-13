@@ -15,7 +15,9 @@
  *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
  *
  * A display goes through the zone's own proxy at $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0, which the
- * daemon binds into the zone: a zone never sees the compositor's own socket.
+ * daemon binds into the zone: a zone never sees the compositor's own socket. The proxy reaches dwl
+ * through the zone's socket, $XDG_RUNTIME_DIR/kryptik-compositor/ZONE, which offers only what the
+ * proxy passes on and is how dwl knows the zone of each window.
  * --ask reads an encrypted zone's passphrase on the controlling terminal, or hands over to
  * kryptik-chrome --prompt; it travels as a descriptor, never in argv or environ.
  */
@@ -152,17 +154,14 @@ static void join(char *out, const char *dir, const char *name)
 static const char *ensure_proxy(const char *zone)
 {
 	static char sock[PATH_MAX];
-	char top[PATH_MAX], dir[PATH_MAX], pidfile[PATH_MAX], logfile[PATH_MAX], oldlog[PATH_MAX], upstream[PATH_MAX];
+	char top[PATH_MAX], dir[PATH_MAX], pidfile[PATH_MAX], logfile[PATH_MAX], oldlog[PATH_MAX];
+	char comp[PATH_MAX], upstream[PATH_MAX];
 	const char *rt = getenv("XDG_RUNTIME_DIR");
-	const char *disp = getenv("WAYLAND_DISPLAY");
 	if (!rt || !*rt)
 		die("XDG_RUNTIME_DIR is not set; use --no-display for a zone without a window");
-	if (!disp || !*disp)
-		disp = "wayland-0";
-	if (disp[0] != '/')
-		join(upstream, rt, disp);
-	else if (snprintf(upstream, sizeof upstream, "%s", disp) >= (int)sizeof upstream)
-		die("path too long: %s", disp);
+	/* dwl's socket for this zone, never its own. */
+	join(comp, rt, "kryptik-compositor");
+	join(upstream, comp, zone);
 	join(top, rt, "kryptik");
 	mkdir(top, 0700);
 	join(dir, top, zone);

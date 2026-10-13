@@ -7,30 +7,32 @@ today, and weighs four changes: a socket per zone with the compositor's own
 filter, the proxies as users of their own under seccomp and Landlock, the
 compositor as a user of its own and confined as zones are, and moving the
 Wayland protocol out of zone 0 so that only pixels and input cross. It gives
-their costs and an order. The proposed decision is ADR-024 in
-[decisions](../decisions.md).
+their costs and an order; the first is built. The proposed decision is
+ADR-024 in [decisions](../decisions.md).
 
 ## What a compromise reaches today
 
 - **Everything runs as the login user.** `kryptik-session` execs dwl as that
   user, who is in groups `seat` and `kryptik`. `kryptik-launch`, run by
   the same user, forks one `kryptik-wlproxy` per zone with `--upstream`
-  naming dwl's own socket (`tools/desktop/kryptik-launch.c`). The chrome is
-  dwl's status reader, the same user again.
+  naming dwl's socket for that zone (`tools/desktop/kryptik-launch.c`).
+  The chrome is dwl's status reader, the same user again.
 - **dwl's own socket offers everything.** dwl 0.8 creates screencopy,
   export-dmabuf, data-control, primary selection, the virtual keyboard and
-  pointer, layer-shell, session lock and the rest on the one socket in the
-  user's runtime directory. Kryptik's change to dwl draws borders and
-  filters nothing (`tools/desktop/dwl-zone-borders.py`). The proxy is what
-  keeps those globals from zones (`compositor/wlproxy/src/policy.rs`).
+  pointer, layer-shell, session lock and the rest, and its own socket in the
+  user's runtime directory offers them all. Beside it, in
+  `kryptik-compositor/`, each zone's socket offers only the proxy's eight
+  globals (`tools/desktop/dwl-zone-borders.py`), so the proxy
+  (`compositor/wlproxy/src/policy.rs`) and dwl must both be wrong before a
+  zone's client binds a hidden one.
 - **So a proxy bug gives a zone the desktop.** A zone that gains code
   execution in its proxy runs as the login user. It can connect to dwl's own
   socket and bind screencopy, which captures every zone, and the virtual
   keyboard, which types into any window, the chrome's consent question
   included. It can also write answers into `/run/kryptik-consent` (group
   `kryptik`), ask the launch daemon to move clipboards or apply an update,
-  and read the user's home. It can stamp its windows `kryptik.vault.`,
-  because the zone a window belongs to is whatever its proxy wrote.
+  and read the user's home. Every zone's socket is the login user's, so it
+  can connect to `vault`'s and draw its windows with `vault`'s border.
 - **A dwl bug gives the same,** and also every pixel and every key.
 
 The proxy parses every message a zone sends, so its parser is the first
@@ -54,18 +56,22 @@ thing a zone attacks. It is Rust, bounded, and fuzzed with a corpus
 
 ### A socket per zone, filtered by the compositor
 
-dwl serves one more socket per zone, created when the launch path starts the
-zone's proxy. It filters every client on that socket with wlroots' global
-filter (`wl_display_set_global_filter`) to the same list the proxy allows.
-dwl knows a client's zone from the socket it came through, and draws the
-border from that, not from the app_id the proxy wrote.
+Built. dwl serves one more socket per zone, `kryptik-compositor/<zone>` in
+the user's runtime directory, for each zone in its colour table, which are
+the root's zones. It filters every client on those sockets with
+libwayland's global filter (`wl_display_set_global_filter`) to the same
+list the proxy allows, and binding another global by its number ends the
+connection. dwl knows a client's zone from the socket it came through, and
+takes the border, the fullscreen bar's name and the zone its status gives
+the chrome from that, not from the app_id the proxy wrote.
 
-- A compromised proxy then gets what its zone already had: the allowed
-  globals, under its own zone's identity. A window stamped `kryptik.vault.`
-  through `work`'s socket gets `work`'s border.
+- A client of a zone's socket gets the allowed globals, under that zone's
+  identity: a window stamped `kryptik.vault.` through `work`'s socket gets
+  `work`'s border. A compromised proxy, still the login user, can connect
+  to any of the sockets; the next step takes that away.
 - **Cost:** a change to dwl (sockets per zone, the filter, the border from
-  the socket), the proxy's upstream argument, and two gui-test cases. The
-  proxy and the compositor then check the same list twice: two
+  the socket), the proxy's upstream argument, and the desktop suite's
+  checks. The proxy and the compositor check the same list twice: two
   implementations must both be wrong before a zone gets a hidden global.
 
 ### The proxies as users of their own, confined
@@ -149,6 +155,7 @@ favour of moving the protocol into the zones, which does shrink it.
 
 1. **A socket per zone with the compositor's filter.** It is the smallest
    change, and the identity of a window stops depending on the proxy.
+   Built.
 2. **Proxies as their own users, confined.** Together with the first step, a
    proxy bug gives the zone nothing it did not have.
 3. **The compositor as its own user, confined,** with the spawner.
@@ -161,12 +168,18 @@ Wayland parsing out of zone 0.
 
 ## The check that proves it done
 
-`make gui-test`, extended step by step:
+`make gui-test`, extended step by step. It checks the first step:
 
-- through any zone's compositor socket, a probe is offered only the
-  allowlist, and binding screencopy disconnects it;
-- a client on `work`'s socket that claims a `kryptik.vault.` app_id is drawn
-  with `work`'s border and title prefix;
+- the proxy's upstream is its zone's socket. Through `untrusted`'s, a probe
+  is offered only the allowlist, and binding screencopy, the virtual
+  keyboard or the session lock by the number zone 0's list gives it ends
+  its connection, while zone 0's client binds screencopy's;
+- a client on `personal`'s socket that claims a `kryptik.vault.` app_id is
+  personal's: it takes the keyboard from personal's window, as personal's
+  own would, and the chrome names it personal.
+
+The next steps add:
+
 - a proxy's process has its own uid, `Seccomp: 2` and `NoNewPrivs: 1`. That
   uid cannot open dwl's own socket, the consent directory, the launch
   daemon's socket or the user's home;

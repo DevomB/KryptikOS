@@ -108,25 +108,26 @@ for g in zwlr_screencopy_manager_v1 wl_data_device_manager zwlr_data_control_man
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
 done
 [[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, clipboard, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
-# No zone reaches the compositor's socket: of every socket untrusted's user can
-# find, none is the one dwl listens on, and its own is the proxy's. Each file is
+# No zone reaches dwl's sockets: of every socket untrusted's user can find, none
+# is dwl's own or one of its zones' sockets, and its own is the proxy's. Each file is
 # stat'ed, which sees through a socket bound in over a file. The launcher marks
 # each line of a zone's output in its log ("zone untrusted| "), so the lines
 # are found unanchored.
-comp="$(stat -c '%d:%i' "$RT/wayland-0" 2>/dev/null)"
+mapfile -t comps < <(stat -c '%d:%i' "$RT/wayland-0" "$RT"/kryptik-compositor/* 2>/dev/null)
 mark socks untrusted
 launch_plain untrusted "sh -c 'find / -path /proc -prune -o -path /sys -prune -o -exec stat -c \"T-%F %d:%i %n\" {} + 2>/dev/null | grep \"^T-socket \" | sed \"s/^T-socket /SOCK /\"; echo SOCKS-DONE'" > "$LOG/launch-socks.out" 2>&1
 socks_done() { since_mark socks untrusted | grep -q SOCKS-DONE; }
 wait_for 120 socks_done
 socks="$(since_mark socks untrusted | grep -o 'SOCK [0-9][0-9]*:[0-9][0-9]* .*')"
-if [[ -z "$comp" ]] || ! socks_done; then
-    fail "compositor-socket-unreached" "the compositor's socket (${comp:-not found}) or the zone's list ($(since_mark socks untrusted | tail -2 | tr '\n' ' ')) could not be read"
+reached="$(for id in "${comps[@]}"; do grep "^SOCK ${id} " <<<"$socks"; done)"
+if [[ "${#comps[@]}" -lt 2 ]] || ! socks_done; then
+    fail "compositor-socket-unreached" "dwl's sockets (${comps[*]:-not found}) or the zone's list ($(since_mark socks untrusted | tail -2 | tr '\n' ' ')) could not be read"
 elif [[ "$socks" != *" /run/kryptik/wayland-0"* ]]; then
     fail "compositor-socket-unreached" "the zone found no proxy socket, so its list proves nothing: $(tr '\n' ';' <<<"$socks")"
-elif grep -q "^SOCK ${comp} " <<<"$socks"; then
-    fail "compositor-socket-unreached" "the zone reaches dwl's socket: $(grep "^SOCK ${comp} " <<<"$socks" | tr '\n' ';')"
+elif [[ -n "$reached" ]]; then
+    fail "compositor-socket-unreached" "the zone reaches a socket of dwl's: $(tr '\n' ';' <<<"$reached")"
 else
-    pass "compositor-socket-unreached" "none of the zone's $(grep -c . <<<"$socks") sockets is dwl's (${comp}); it reaches the proxy's"
+    pass "compositor-socket-unreached" "none of the zone's $(grep -c . <<<"$socks") sockets is one of dwl's ${#comps[@]} (${comps[*]}); it reaches the proxy's"
 fi
 wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
 mark bind untrusted
@@ -135,6 +136,43 @@ sleep 3
 out="$(since_mark bind untrusted)"
 [[ "$out" == *"bind refused"* ]] && pass "zone-bind-refused" "a bind of the screencopy manager got wl_display.error and a closed connection" || fail "zone-bind-refused" "$(echo "$out" | tail -3 | tr '\n' ' ')"
 grep -q 'not advertised' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null && pass "proxy-logged-refusal" "$(grep 'not advertised' "$RT/kryptik/untrusted/proxy.log" | tail -1 | cut -c1-120)" || fail "proxy-logged-refusal" "no refusal in the proxy log"
+
+# --- dwl's socket for each zone -----------------------------------------------
+# The proxy reaches dwl through untrusted's own socket, never dwl's. Through it a
+# client is told only of the globals the proxy lets through, and binding a hidden
+# one by the number zone 0's list gives it ends the connection; zone 0's own
+# client binds that number (the control).
+zsock="$RT/kryptik-compositor/untrusted"
+proxy_cmd="$(tr '\0' ' ' < "/proc/$(cat "$RT/kryptik/untrusted/proxy.pid" 2>/dev/null)/cmdline" 2>/dev/null)"
+[[ "$proxy_cmd" == *"--upstream $zsock "* ]] && pass "proxy-upstream-zone-socket" "untrusted's proxy reaches dwl at $zsock" \
+    || fail "proxy-upstream-zone-socket" "the proxy's command line: ${proxy_cmd:-none}"
+as_user "WAYLAND_DISPLAY=$zsock /usr/libexec/kryptik/wlprobe list" > "$LOG/probe-zone-socket.out" 2>&1
+offered="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" | sort -u | tr '\n' ' ')"
+beyond="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" \
+    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter' | tr '\n' ' ')"
+if grep -qxF "connected $zsock" "$LOG/probe-zone-socket.out" && [[ -z "$beyond" && "$offered" == *xdg_wm_base* && "$offered" == *wl_seat* ]]; then
+    pass "zone-socket-allowlist" "dwl tells untrusted's socket of ${offered% } alone"
+else
+    fail "zone-socket-allowlist" "beyond the proxy's list: ${beyond:-none}; offered: ${offered:-none}; $(tail -2 "$LOG/probe-zone-socket.out" | tr '\n' ' ')"
+fi
+number_of() { awk -v g="$1" '$1 == "global" && $3 == g { print $2; exit }' "$LOG/probe-zone0.out"; }
+as_user "/usr/libexec/kryptik/wlprobe bind zwlr_screencopy_manager_v1 $(number_of zwlr_screencopy_manager_v1)" > "$LOG/bind-zone0-screencopy.out" 2>&1
+refused=""; taken=""
+for g in zwlr_screencopy_manager_v1 zwp_virtual_keyboard_manager_v1 ext_session_lock_manager_v1; do
+    num="$(number_of "$g")"
+    as_user "WAYLAND_DISPLAY=$zsock /usr/libexec/kryptik/wlprobe bind $g ${num:-0}" > "$LOG/bind-zone-socket-$g.out" 2>&1
+    if [[ -n "$num" ]] && grep -qF "message=invalid global $g ($num)" "$LOG/bind-zone-socket-$g.out" \
+       && grep -q '^bind refused' "$LOG/bind-zone-socket-$g.out"; then
+        refused+=" $g ($num)"
+    else
+        taken+=" $g (${num:-not listed for zone 0}): $(tail -2 "$LOG/bind-zone-socket-$g.out" | tr '\n' ' ')"
+    fi
+done
+if grep -q '^bind accepted' "$LOG/bind-zone0-screencopy.out" && [[ -z "$taken" ]]; then
+    pass "zone-socket-bind-refused" "each bound by its number on untrusted's socket ended the connection:${refused}; zone 0's client bound screencopy"
+else
+    fail "zone-socket-bind-refused" "zone 0's control: $(tail -1 "$LOG/bind-zone0-screencopy.out");${taken:- none taken}"
+fi
 
 # --- a zone window goes fullscreen only by the user's key ----------------
 # wlprobe asks for it once drawn and says which configures were fullscreen;
@@ -496,6 +534,18 @@ if [[ "$out" == *"global "* && "$out" != *"virtual_keyboard"* && "$out" != *"vir
 launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
 echo "GT KEY-FOCUS-PERSONAL"
 wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' '); $(zone_why personal)"
+# A window is the zone's whose socket its client came through, whatever app_id it
+# claims: a client of personal's socket calling itself vault's takes the keyboard
+# from personal's window, as personal's own would, and the chrome names it personal.
+as_user "WLPROBE_APP_ID=kryptik.vault.forged WAYLAND_DISPLAY=$RT/kryptik-compositor/personal /usr/libexec/kryptik/wlprobe oversize 0 12 socket-named" > "$LOG/socket-named.out" 2>&1 &
+named_pid=$!
+if wait_for 15 grep -qx 'title=socket-named' "$RT/kryptik/focus" && grep -qx 'zone=personal' "$RT/kryptik/focus" \
+   && grep -q 'keyboard entered the window' "$LOG/socket-named.out"; then
+    pass "zone-socket-names-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "zone-socket-names-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); the probe: $(tail -3 "$LOG/socket-named.out" | tr '\n' ' ')"
+fi
+wait "$named_pid" 2>/dev/null
 # --- zone 0 runs no user application (ADR-003) ------------------------------
 ppid_of() { awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
 lineage=" $$ "; p="$(ppid_of "$$")"
