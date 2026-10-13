@@ -79,5 +79,19 @@ else
     printf '  SKIP  a whiteout fails (making one needs root)\n'
 fi
 
+# overlayfs's opaque mark is a trusted xattr, which only root can set.
+opaque() { python3 -c 'import os, sys; os.setxattr(sys.argv[1], "trusted.overlay.opaque", b"y")' "$1" 2>/dev/null; }
+fresh
+if opaque "$U/usr/share/probe"; then
+    out="$(check)"; rc=$?
+    [[ "$rc" -eq 0 ]] && ok "a new directory overlayfs marked opaque passes: the root has nothing there" || bad "new opaque: rc=$rc: $out"
+    fresh; mkdir -p "$U/usr/share/info"; chmod --reference="$L/usr/share/info" "$U/usr/share/info"; opaque "$U/usr/share/info"
+    out="$(check)"; rc=$?
+    [[ "$rc" -ne 0 && "$out" == *"hides what the root has under /usr/share/info"* ]] \
+        && ok "an opaque directory over one of the root's fails" || bad "opaque over the root's: rc=$rc: $out"
+else
+    printf '  SKIP  opaque directories (setting the mark needs root)\n'
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
