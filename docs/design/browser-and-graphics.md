@@ -138,6 +138,53 @@ separate is a recipe and a pin review of its own. H.264 needs FFmpeg's
 decoder, which Firefox loads if it is present; whether to ship it is a
 licensing question as much as a size one, and is left open.
 
+## How the browser image is built
+
+Firefox ESR 153 is the `browser` software image, built over the toolkit
+image and over build-only layers that never reach a zone (`image_ships=no`,
+[software delivery](software-delivery.md)). Stage 04 already treats cmake
+this way: a pinned binary the build runs and never installs. ESR 153's own
+floors are given with each layer.
+
+- **Its layers.**
+  - **`rust`:** the pinned release toolchain for `x86_64-unknown-linux-gnu`,
+    vouched for by the same Rust key as kryptikd's. ESR 153 needs 1.90 or
+    newer.
+  - **`clang`:** LLVM's release build, for libclang. bindgen loads it to
+    generate the style system's bindings, and its `wasm32` target compiles
+    the sandboxed libraries. It is about a gigabyte compressed, in the
+    sources cache. A source build of clang and libclang would instead cost
+    an hour each time the base system changes.
+  - **`cbindgen`:** 0.29.4 or newer, built with the `rust` layer. Its crate
+    and the crates its lock file names are fetched before the build, since
+    the chroot has no network, and checked against that lock.
+  - **`nasm`:** for dav1d's AV1 decoder.
+  - **Node.js** is left out: ESR 153 still takes `--disable-nodejs`.
+- **The build.**
+  - Stage 04's GCC with the hardening flags; an exception each flag needs
+    goes into `hardening-exceptions.txt` with its reason.
+  - `--enable-default-toolkit=cairo-gtk3-wayland-only`, `--disable-dbus`,
+    `--enable-release`, `--disable-tests`, `--disable-crashreporter`,
+    `--disable-updater` (updates are the image's) and `--disable-eme`.
+  - `--disable-jemalloc`, as the image preloads hardened_malloc for every
+    process.
+  - `--disable-audio-backends` until sound reaches zones. The ESR default
+    is PulseAudio, and ALSA needs alsa-lib and a sound path designed first.
+  - The first build is `--without-wasm-sandboxed-libraries`. The next adds
+    a WASI sysroot to the `clang` layer, since a font or spelling parser
+    bug should stay inside that sandbox.
+- **Time.**
+  - On four cores with GCC, without LTO or PGO, ESR takes about two and a
+    half hours. That fits the system job's six hours after a warm stage 04,
+    but not every run should pay it.
+  - The trees of the shipped images go into a cache of their own, keyed by
+    their fingerprints, which include the base system's stamp. A run
+    restores a tree whose inputs have not changed, so only a change to the
+    browser, the toolkit or the base system rebuilds it.
+- **Updates.** ESR has a security release every four weeks. Its pins are the
+  images' (`build/images/versions.env`), so a bump rebuilds the browser and
+  leaves stage 04 and its cache alone.
+
 ## GPU rendering, zone by zone
 
 ### What software rendering gives
