@@ -355,7 +355,13 @@ configured the zone keeps its IPv4 path and the launcher says so.
   beacon offering one changes nothing, and has no management frames to
   protect. Anyone in range reads what crosses it, as on any open network,
   and any access point may take its name: what a zone sends there is private
-  only where the zone encrypts it.
+  only where the zone encrypts it. A network saved with `--hidden` (a
+  `hidden` line in the request) gets `scan_ssid=1`: its access point beacons
+  with no name and answers only a probe request that names it, so the
+  station names it in its scans wherever it is until it joins, from a random
+  address where the radio allows one, and anyone listening learns that it
+  knows that network. A new passphrase keeps it so, as without it the
+  network would not be found again; forgetting it starts over.
 - **A failed join is followed by a scan.** The file's header sets
   `scan_res_valid_for_connect=0`, so the supplicant never joins from an
   earlier scan without a new one. With two networks saved, wpa_supplicant

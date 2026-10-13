@@ -77,9 +77,11 @@ USAGE:
     kryptikd wifi list                the net zone's Wi-Fi networks, SSIDs only
     kryptikd wifi scan                the networks in range, as the net zone hears
                                       them, with their security and signal
-    kryptikd wifi add SSID [--open]   add one, or replace its passphrase; the
+    kryptikd wifi add SSID [--open] [--hidden]
+                                      add one, or replace its passphrase; the
                                       passphrase is read from stdin, never argv;
-                                      --open saves it with none, an open network
+                                      --open saves it with none, an open network;
+                                      --hidden asks for one that hides its name
     kryptikd wifi forget SSID         remove one
                    [--wifi-dir DIR]   (the session does this through `kryptik
                                       wifi` and the launch daemon; this is root's
@@ -1100,7 +1102,7 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let ssid = args.get(2).filter(|a| !a.starts_with("--"));
     let usage = || {
-        eprintln!("usage: kryptikd wifi list | scan | add SSID [--open] | forget SSID   [--wifi-dir DIR]");
+        eprintln!("usage: kryptikd wifi list | scan | add SSID [--open] [--hidden] | forget SSID   [--wifi-dir DIR]");
         ExitCode::from(2)
     };
     let refused = |e: String| {
@@ -1131,6 +1133,7 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
                 return refused(e);
             }
             let open = args.iter().any(|a| a == "--open");
+            let hidden = args.iter().any(|a| a == "--hidden");
             let pass = if open {
                 None
             } else {
@@ -1143,8 +1146,8 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
                 Ok(o) => o,
                 Err(e) => return refused(e),
             };
-            match wifi::add(&dir, owner, ssid, pass.as_deref()) {
-                Ok(a) => println!("{}; {}", wifi::said(ssid, a, open), wifi::restart_net_zone(&dir)),
+            match wifi::add(&dir, owner, ssid, pass.as_deref(), hidden) {
+                Ok((a, hidden)) => println!("{}; {}", wifi::said(ssid, a, open, hidden), wifi::restart_net_zone(&dir)),
                 Err(e) => return refused(e),
             }
             ExitCode::SUCCESS
