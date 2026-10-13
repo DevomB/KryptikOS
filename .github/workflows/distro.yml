@@ -351,7 +351,8 @@ jobs:
         with:
           name: work-after-05
           path: /mnt/kryptik/work-after-05.tar.zst
-          retention-days: 1
+          # A tag's stage 06 job may be re-run after its owner's approval, so it keeps a week.
+          retention-days: ${{ github.ref_type == 'tag' && 7 || 1 }}
           compression-level: 0
 
       - name: Stage logs
@@ -454,11 +455,16 @@ jobs:
         run: rm -f /mnt/kryptik/images-cache.tar.zst
 
       # Each image's tree and record for stage 06, cached or not, and the stamps and logs the build left.
+      # A layer that does not ship keeps only its record: stage 06 reads no more of it.
       - name: Pack the images for the next job
         run: |
           cd /mnt/kryptik
+          layers=()
+          for rec in work/image-build/*/record; do
+            if [ "$(sudo sed -n 's/^ships: //p' "$rec")" = no ]; then layers+=(--exclude="image-build/$(basename "$(dirname "$rec")")/tree"); fi
+          done
           sudo tar -I 'zstd -T0' -cf images-tree.tar.zst -C work --exclude='image-build/*/upper' \
-            --exclude='image-build/*/overlay-work' --exclude='image-build/*/sysroot' image-build .stamps logs
+            --exclude='image-build/*/overlay-work' --exclude='image-build/*/sysroot' "${layers[@]}" image-build .stamps logs
           sudo chown "$(id -u):$(id -g)" images-tree.tar.zst
           ls -la images-tree.tar.zst
 
@@ -466,7 +472,7 @@ jobs:
         with:
           name: images-tree
           path: /mnt/kryptik/images-tree.tar.zst
-          retention-days: 1
+          retention-days: ${{ github.ref_type == 'tag' && 7 || 1 }}
           compression-level: 0
 
       - name: Stage logs
@@ -488,7 +494,6 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           sources: restore
-          image-sources: restore
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
