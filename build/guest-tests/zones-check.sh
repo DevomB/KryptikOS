@@ -1581,10 +1581,11 @@ fi
 # reads; then zones of this check's own: one granted the probe's call, one not,
 # and one that names no image.
 IMGS=/var/lib/kryptik/images; IZ=/root/zt/image-zones
-img_dev="$(blkid -L kryptik-zt-images 2>/dev/null)"
+# The label tools/image/zones-test.sh gives the disk, within ext4's 16 bytes.
+img_dev="$(blkid -L kryptik-zt-img 2>/dev/null)"
 mkdir -p /run/zt-images "$IZ/policy"
 if [[ -z "$img_dev" ]] || ! mount -o ro "$img_dev" /run/zt-images; then
-    fail "image-store" "no kryptik-zt-images disk holds the signed images: ${img_dev:-none attached}"
+    fail "image-store" "no kryptik-zt-img disk holds the signed images: ${img_dev:-none attached}"
 else
     D=/run/zt-images
     this_root="$(sed -n 's/.*sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
