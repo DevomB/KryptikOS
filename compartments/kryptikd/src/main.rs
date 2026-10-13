@@ -15,6 +15,7 @@ mod landlock;
 mod netlink;
 mod netzone;
 mod policy;
+mod proxy;
 mod registry;
 mod rootfs;
 mod seccomp;

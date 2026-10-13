@@ -7,33 +7,32 @@ today, and weighs four changes: a socket per zone with the compositor's own
 filter, the proxies as users of their own under seccomp and Landlock, the
 compositor as a user of its own and confined as zones are, and moving the
 Wayland protocol out of zone 0 so that only pixels and input cross. It gives
-their costs and an order; the first is built. The proposed decision is
+their costs and an order; the first two are built. The proposed decision is
 ADR-024 in [decisions](../decisions.md).
 
 ## What a compromise reaches today
 
-- **Everything runs as the login user.** `kryptik-session` execs dwl as that
-  user, who is in groups `seat` and `kryptik`. `kryptik-launch`, run by
-  the same user, forks one `kryptik-wlproxy` per zone with `--upstream`
-  naming dwl's socket for that zone (`tools/desktop/kryptik-launch.c`).
-  The chrome is dwl's status reader, the same user again.
+- **dwl and the chrome run as the login user.** `kryptik-session` execs dwl
+  as that user, who is in groups `seat` and `kryptik`; the chrome is dwl's
+  status reader, the same user again. The proxies do not: the launch daemon
+  starts each zone's as a user of its own (below).
 - **dwl's own socket offers everything.** dwl 0.8 creates screencopy,
   export-dmabuf, data-control, primary selection, the virtual keyboard and
   pointer, layer-shell, session lock and the rest, and its own socket in the
-  user's runtime directory offers them all. Beside it, in
-  `kryptik-compositor/`, each zone's socket offers only the proxy's eight
-  globals (`tools/desktop/dwl-zone-borders.py`), so the proxy
-  (`compositor/wlproxy/src/policy.rs`) and dwl must both be wrong before a
-  zone's client binds a hidden one.
-- **So a proxy bug gives a zone the desktop.** A zone that gains code
-  execution in its proxy runs as the login user. It can connect to dwl's own
-  socket and bind screencopy, which captures every zone, and the virtual
-  keyboard, which types into any window, the chrome's consent question
-  included. It can also write answers into `/run/kryptik-consent` (group
-  `kryptik`), ask the launch daemon to move clipboards or apply an update,
-  and read the user's home. Every zone's socket is the login user's, so it
-  can connect to `vault`'s and draw its windows with `vault`'s border.
-- **A dwl bug gives the same,** and also every pixel and every key.
+  user's runtime directory offers them all. Each zone's socket, in
+  `/run/kryptik/compositor/<uid>/`, offers only the proxy's eight globals
+  (`tools/desktop/dwl-zone-borders.py`) and takes only the session and that
+  zone's proxy, so the proxy (`compositor/wlproxy/src/policy.rs`) and dwl
+  must both be wrong before a zone's client binds a hidden one.
+- **So a proxy bug gives a zone what it had.** A zone that gains code
+  execution in its proxy runs as that proxy's uid, with no file to open,
+  no network and no group. It reaches its own zone's socket of dwl's,
+  with the same globals and the same zone as before, and nothing else:
+  not dwl's own socket, the consent directory, the launch daemon, the
+  user's home or another zone's socket.
+- **A dwl bug gives the desktop:** screencopy, the virtual keyboard, the
+  consent directory, the launch daemon, the user's home, and every pixel
+  and every key.
 
 The proxy parses every message a zone sends, so its parser is the first
 thing a zone attacks. It is Rust, bounded, and fuzzed with a corpus
@@ -56,9 +55,9 @@ thing a zone attacks. It is Rust, bounded, and fuzzed with a corpus
 
 ### A socket per zone, filtered by the compositor
 
-Built. dwl serves one more socket per zone, `kryptik-compositor/<zone>` in
-the user's runtime directory, for each zone in its colour table, which are
-the root's zones. It filters every client on those sockets with
+Built. dwl serves one more socket per zone, in
+`/run/kryptik/compositor/<uid>/`, for each zone in its colour table, which
+are the root's zones. It filters every client on those sockets with
 libwayland's global filter (`wl_display_set_global_filter`) to the same
 list the proxy allows, and binding another global by its number ends the
 connection. dwl knows a client's zone from the socket it came through, and
@@ -67,8 +66,8 @@ the chrome from that, not from the app_id the proxy wrote.
 
 - A client of a zone's socket gets the allowed globals, under that zone's
   identity: a window stamped `kryptik.vault.` through `work`'s socket gets
-  `work`'s border. A compromised proxy, still the login user, can connect
-  to any of the sockets; the next step takes that away.
+  `work`'s border. Which proxy may connect to which socket is the next
+  step's.
 - **Cost:** a change to dwl (sockets per zone, the filter, the border from
   the socket), the proxy's upstream argument, and the desktop suite's
   checks. The proxy and the compositor check the same list twice: two
@@ -76,21 +75,38 @@ the chrome from that, not from the app_id the proxy wrote.
 
 ### The proxies as users of their own, confined
 
-Each proxy runs as a uid of its own, one per zone, outside every zone's
-mapping and outside groups `kryptik` and `seat`. It runs under a seccomp
-filter as short as its loop needs (socket reads and writes with descriptor
-passing, epoll, close, exit), with a Landlock ruleset that grants no file
-access once its sockets are open, and in an empty network namespace.
+Built. The launch daemon starts each zone's proxy for the session that asks
+for a display (`compartments/kryptikd/src/proxy.rs`), as it starts zones,
+since the session user cannot switch uid:
+
+- as the top uid of the zone's block, `uid_base + 65535`, which no zone
+  maps, with no supplementary group. No account names it, as an account a
+  release adds never reaches an installed system's `/etc/passwd`;
+- in an empty network namespace and a cgroup of its own, with 128 MiB of
+  memory, which its clients' queues fit, and room for one process;
+- with `no_new_privs`, under the zones' seccomp filter for now, and with a
+  Landlock ruleset that grants only executing its own program, so once it
+  runs it opens no file at all. A filter cut to its own loop follows once
+  a run has traced the calls it makes;
+- with its listening socket made by the daemon at
+  `/run/kryptik/proxy/<uid>/<zone>/wayland-0` and passed as `--listen-fd`.
+  The zone's directory is root's alone, so the socket is reached only
+  through the launcher's bind into the zone; the log is beside the
+  directory, the session's to read.
+
 `connect(2)` to the zone's compositor socket is not a Landlock access, so
-new clients still reach dwl. The launch daemon starts proxies, as it starts
-zones, since the session user cannot switch uid.
+new clients still reach dwl, which takes a client on a zone's socket only
+from the session's uid or that zone's proxy uid (`SO_PEERCRED`). A
+zone's proxy uid is one whoever the session is, so while one session's
+desktop shows a zone, the daemon refuses another session a display for
+it. Stopping the zone ends its proxy.
 
 - A compromised proxy can no longer read the user's files, answer consent
-  questions, reach the launch daemon or dwl's own socket, or touch another
-  zone's proxy.
-- **Cost:** the launch daemon starts and stops proxies; uids are reserved
-  per zone; and kryptikd's seccomp and Landlock code gains a second caller,
-  which then justifies a small shared crate.
+  questions, reach the launch daemon or dwl's own socket, or connect to
+  another zone's socket.
+- **Cost:** the launch daemon starts and stops proxies, and a uid per zone
+  is reserved. kryptikd confines the proxy before the exec with its own
+  seccomp and Landlock code, so no crate is shared.
 
 ### The compositor as a user of its own, confined as zones are
 
@@ -157,7 +173,7 @@ favour of moving the protocol into the zones, which does shrink it.
    change, and the identity of a window stops depending on the proxy.
    Built.
 2. **Proxies as their own users, confined.** Together with the first step, a
-   proxy bug gives the zone nothing it did not have.
+   proxy bug gives the zone nothing it did not have. Built.
 3. **The compositor as its own user, confined,** with the spawner.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.
@@ -168,7 +184,7 @@ Wayland parsing out of zone 0.
 
 ## The check that proves it done
 
-`make gui-test`, extended step by step. It checks the first step:
+`make gui-test`, extended step by step. It checks the first two:
 
 - the proxy's upstream is its zone's socket. Through `untrusted`'s, a probe
   is offered only the allowlist, and binding screencopy, the virtual
@@ -176,13 +192,15 @@ Wayland parsing out of zone 0.
   its connection, while zone 0's client binds screencopy's;
 - a client on `personal`'s socket that claims a `kryptik.vault.` app_id is
   personal's: it takes the keyboard from personal's window, as personal's
-  own would, and the chrome names it personal.
+  own would, and the chrome names it personal;
+- `untrusted`'s proxy has its own uid and no group, `Seccomp: 2`,
+  `NoNewPrivs: 1`, a network namespace of its own and its cgroup's limits.
+  That uid lists neither the user's home (0700) nor the consent
+  directory, and connects to neither the launch daemon's socket nor dwl's
+  own; `personal`'s proxy uid is turned away from `untrusted`'s socket.
 
 The next steps add:
 
-- a proxy's process has its own uid, `Seccomp: 2` and `NoNewPrivs: 1`. That
-  uid cannot open dwl's own socket, the consent directory, the launch
-  daemon's socket or the user's home;
 - once the compositor runs as its own user, the same is true of dwl's uid,
   and the desktop suite passes with dwl confined;
 - a zone's client that starts a window still gets it, with its border, after

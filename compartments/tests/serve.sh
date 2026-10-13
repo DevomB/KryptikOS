@@ -46,7 +46,8 @@ chmod 0755 "$WORK" "$ROOTFS"
 declare -a BG_PIDS=()
 cleanup() {
     for p in "${BG_PIDS[@]:-}"; do [[ -n "$p" ]] && kill -9 "$p" 2>/dev/null; done
-    [[ -n "${RT_DIR:-}" && -d "$RT_DIR" ]] && rm -rf "$RT_DIR/alpha" "$RT_DIR/beta" 2>/dev/null
+    # A proxy the daemon started outlives it: its upstream is under $WORK.
+    pkill -f -- "--upstream $WORK/" 2>/dev/null
     rm -rf "$WORK" 2>/dev/null
 }
 trap cleanup EXIT
@@ -321,66 +322,58 @@ else
     fail "S7e run alpha and beta for the gesture: ${ra%$'\n'} / ${rb%$'\n'}"
 fi
 
-# --- the proxy socket --------------------------------------------------------
+# --- the zone's proxy ----------------------------------------------------------
+# The daemon starts the zone's proxy itself, on dwl's socket for the zone. A developer instance
+# keeps its own uid, so its own uid and namespaces are checked on the installed system
+# (gui-check's proxy-own-user), never here.
 
-head_ "the proxy socket"
+head_ "the zone's proxy"
+LOGDIR="$(dirname "$SOCK")"
 r="$(ask 'run alpha wayland=/tmp/wayland-0\narg /bin/true\nend\n')"
-if [[ "$r" == "error: wayland socket must be /run/user/$EUID/kryptik/alpha/wayland-0"* ]]; then pass "S8a a socket outside the session's runtime directory is refused"; else fail "S8a: $r"; fi
-r="$(ask "run alpha wayland=/run/user/$EUID/kryptik/beta/wayland-0\narg /bin/true\nend\n")"
-if [[ "$r" == "error: wayland socket must be"* ]]; then pass "S8b another zone's socket is refused"; else fail "S8b: $r"; fi
-
-RT_DIR=""
-if [[ -d "/run/user/$EUID" && -w "/run/user/$EUID" ]]; then
-    RT_DIR="/run/user/$EUID/kryptik"
-elif (( PRIVILEGED == 1 )) && mkdir -p "/run/user/$EUID" 2>/dev/null; then
-    chmod 700 "/run/user/$EUID"; RT_DIR="/run/user/$EUID/kryptik"
-fi
-if [[ -z "$RT_DIR" ]]; then
-    skip "S8c-S8h need a writable /run/user/$EUID (none here)"
-elif [[ ! -x "$WLPROXY" ]]; then
-    skip "S8c-S8h need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
+if [[ "$r" == "error: run: unknown option"* ]]; then pass "S8a a socket path from the asker is refused: the daemon chooses the proxy's"; else fail "S8a: $r"; fi
+r="$(ask 'run alpha wayland\narg /bin/true\nend\n')"
+if [[ "$r" == "error: no compositor serves zone \"alpha\" for uid $EUID"* ]]; then pass "S8b with no compositor socket for the zone, no proxy starts"; else fail "S8b: $r"; fi
+r="$(ask 'runtime\n')"
+CDIR="$LOGDIR/compositor/$EUID"
+if [[ "$r" == ok\ * && -d "$CDIR" && ! -L "$CDIR" && "$(stat -c %a "$CDIR")" == 711 ]]; then
+    pass "S8c runtime also makes the session's compositor directory, 0711"
 else
-    mkdir -p "$RT_DIR/alpha" "$RT_DIR/beta"; chmod 700 "$RT_DIR" "$RT_DIR/alpha" "$RT_DIR/beta"
-    UP="$WORK/upstream.sock"
+    fail "S8c: $r; $(stat -c '%a %F' "$CDIR" 2>&1)"
+fi
+
+if [[ ! -x "$WLPROXY" ]]; then
+    skip "S8d-S8h need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
+else
+    UP="$CDIR/alpha"
     python3 "$WORK/upstream.py" "$UP" & BG_PIDS+=("$!")
     for _ in $(seq 1 50); do [[ -S "$UP" ]] && break; sleep 0.05; done
-    WL="$RT_DIR/alpha/wayland-0"
-    r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
-    if [[ "$r" == "error: wayland socket: wayland-0:"* ]]; then pass "S8c a socket that does not exist is refused"; else fail "S8c: $r"; fi
-
-    # Something that is not the proxy, listening at the right path.
-    python3 "$WORK/upstream.py" "$WL" & IMP=$!; BG_PIDS+=("$IMP")
-    for _ in $(seq 1 50); do [[ -S "$WL" ]] && break; sleep 0.05; done
-    r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
-    if [[ "$r" == "error: wayland socket is not served by kryptik-wlproxy"* ]]; then pass "S8d a listener that is not the proxy is refused"; else fail "S8d: $r"; fi
-    kill "$IMP" 2>/dev/null; wait "$IMP" 2>/dev/null; rm -f "$WL"
-
-    # The proxy, but for another zone.
-    "$WLPROXY" --zone beta --listen "$WL" --upstream "$UP" > "$WORK/proxy-beta.log" 2>&1 & PB=$!; BG_PIDS+=("$PB")
-    for _ in $(seq 1 50); do [[ -S "$WL" ]] && break; sleep 0.05; done
-    r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
-    if [[ "$r" == "error: wayland socket is served by a proxy for another zone"* ]]; then pass "S8e a proxy for another zone is refused"; else fail "S8e: $r"; fi
-    kill "$PB" 2>/dev/null; wait "$PB" 2>/dev/null; rm -f "$WL"
-
-    # The zone's own proxy; the zone sees it at /run/kryptik/wayland-0.
-    "$WLPROXY" --zone alpha --listen "$WL" --upstream "$UP" > "$WORK/proxy-alpha.log" 2>&1 & PA=$!; BG_PIDS+=("$PA")
-    for _ in $(seq 1 50); do [[ -S "$WL" ]] && break; sleep 0.05; done
-    r="$(ask "run alpha wayland=$WL\narg /bin/sh\narg -c\narg test -S /run/kryptik/wayland-0 && echo WL_$MARK; sleep 1\nend\n")"
+    PLOG="$LOGDIR/proxy/$EUID/alpha.log"
+    r="$(ask "run alpha wayland\narg /bin/sh\narg -c\narg test -S /run/kryptik/wayland-0 && echo WL_$MARK; sleep 1\nend\n")"
+    PP="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
     if [[ "$r" == ok\ [0-9]* ]]; then
         ok=0; for _ in $(seq 1 40); do grep -q "WL_$MARK" "$ZLOG" 2>/dev/null && { ok=1; break; }; sleep 0.1; done
-        if [[ "$ok" -eq 1 ]]; then pass "S8f the session's own proxy socket is accepted and reaches the zone"; else fail "S8f zone did not see /run/kryptik/wayland-0"; fi
-        if grep -q "client #1 connected" "$WORK/proxy-alpha.log"; then pass "S8g the daemon identified the listener by connecting to it"; else fail "S8g no probe connection in the proxy log"; fi
+        if [[ "$ok" -eq 1 ]]; then pass "S8d the daemon starts the zone's proxy, whose socket reaches the zone"; else fail "S8d zone did not see /run/kryptik/wayland-0"; fi
+        if grep -q "listening on descriptor 3 -> $UP" "$PLOG" 2>/dev/null; then
+            pass "S8e the proxy took its listener from the daemon, upstream the zone's compositor socket"
+        else
+            fail "S8e proxy log $PLOG: $(tr '\n' ' ' < "$PLOG" 2>&1)"
+        fi
+        if [[ -n "$PP" ]] && grep -qx 'NoNewPrivs:[[:space:]]*1' "/proc/$PP/status" && grep -qx 'Seccomp:[[:space:]]*2' "/proc/$PP/status"; then
+            pass "S8f the proxy runs with no_new_privs, under seccomp"
+        else
+            fail "S8f proxy pid ${PP:-none}: $(grep -E '^(NoNewPrivs|Seccomp):' "/proc/${PP:-none}/status" 2>&1 | tr '\n' ' ')"
+        fi
     else
-        fail "S8f run with the real proxy: $r"
+        fail "S8d run with a display: $r; proxy log: $(tr '\n' ' ' < "$PLOG" 2>&1)"
     fi
     for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
-
-    # A symlinked zone directory to that valid socket: the path is walked without following links.
-    mv "$RT_DIR/alpha" "$RT_DIR/alpha.real"; ln -s "$RT_DIR/alpha.real" "$RT_DIR/alpha"
-    r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
-    if [[ "$r" == "error: wayland socket path:"* ]]; then pass "S8h a symlink on the way to the socket is refused"; else fail "S8h: $r"; fi
-    rm -f "$RT_DIR/alpha"; mv "$RT_DIR/alpha.real" "$RT_DIR/alpha"
-    kill "$PA" 2>/dev/null; wait "$PA" 2>/dev/null
+    r="$(ask "run alpha wayland\narg /bin/true\nend\n")"
+    PP2="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
+    if [[ "$r" == ok\ [0-9]* && -n "$PP" && "$PP2" == "$PP" ]]; then pass "S8g a second run uses the same proxy"; else fail "S8g: $r; proxy ${PP:-none} then ${PP2:-none}"; fi
+    for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+    ask 'stop alpha\n' > /dev/null
+    gone=0; for _ in $(seq 1 50); do kill -0 "${PP:-0}" 2>/dev/null || { gone=1; break; }; sleep 0.1; done
+    if [[ -n "$PP" && "$gone" -eq 1 ]]; then pass "S8h stopping the zone ends its proxy"; else fail "S8h proxy ${PP:-none} after stop"; fi
 fi
 
 # --- the net zone's Wi-Fi credentials ----------------------------------------

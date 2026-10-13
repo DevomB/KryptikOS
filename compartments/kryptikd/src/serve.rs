@@ -3,8 +3,9 @@
 //!
 //!   socket   /run/kryptik-launch/launch.sock   (root:kryptik 0660)
 //!   request  one per connection, NUL-free text lines:
-//!              run <zone> [wayland=<path>] [pass=fd], `arg <word>` lines, `end`
-//!                (with pass=fd, one descriptor rides with the first bytes)
+//!              run <zone> [wayland] [pass=fd], `arg <word>` lines, `end`
+//!                (wayland: through the zone's proxy, which serve starts for the session;
+//!                with pass=fd, one descriptor rides with the first bytes)
 //!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              wifi-scan, answered once the nic zone has scanned
@@ -27,10 +28,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use crate::proxy::Proxy;
+
 pub const SOCKET_DIR: &str = "/run/kryptik-launch";
 pub const SOCKET_PATH: &str = "/run/kryptik-launch/launch.sock";
 pub const GROUP: &str = "kryptik";
-/// The only program a session's proxy socket may be served by.
+/// The proxy serve starts for a zone's display.
 pub const PROXY_EXE: &str = "/usr/bin/kryptik-wlproxy";
 const MAX_REQUEST: usize = 16 * 1024;
 /// A request must be complete within this after the connection is accepted.
@@ -231,7 +234,7 @@ fn ident_ok(s: &str) -> bool {
 
 struct Request {
     zone: String,
-    wayland: Option<PathBuf>,
+    wayland: bool,
     wants_fd: bool,
     argv: Vec<String>,
 }
@@ -247,10 +250,10 @@ fn parse_run(text: &str) -> Result<Request, String> {
     if !ident_ok(&zone) {
         return Err(format!("run: zone name {zone:?} is not a plain identifier"));
     }
-    let mut req = Request { zone, wayland: None, wants_fd: false, argv: Vec::new() };
+    let mut req = Request { zone, wayland: false, wants_fd: false, argv: Vec::new() };
     for opt in w {
-        if let Some(p) = opt.strip_prefix("wayland=") {
-            req.wayland = Some(PathBuf::from(p));
+        if opt == "wayland" {
+            req.wayland = true;
         } else if opt == "pass=fd" {
             req.wants_fd = true;
         } else {
@@ -428,82 +431,58 @@ pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<OwnedFd, String> 
     Ok(dir)
 }
 
-/// Accept only `/run/user/<uid>/kryptik/<zone>/wayland-0`, walked without following symlinks:
-/// the session's from `<uid>/` down, `kryptik/` and `<zone>/` private, its proxy listening.
-fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<ProxySocket, String> {
-    let want = PathBuf::from(format!("/run/user/{uid}/kryptik/{zone}/wayland-0"));
-    if p != want {
-        return Err(format!("wayland socket must be {}", want.display()));
+/// Where the proxies listen and dwl serves each zone: /run/kryptik, or a developer instance's own
+/// directory.
+fn run_dir(cfg: &ServeConfig) -> PathBuf {
+    if cfg.developer {
+        cfg.log_dir.clone()
+    } else {
+        PathBuf::from("/run/kryptik")
     }
-    let root = openat_component(libc::AT_FDCWD, "/", libc::O_PATH | libc::O_DIRECTORY)?;
-    let mut dir = root;
-    let uid_s = uid.to_string();
-    for (i, comp) in ["run", "user", uid_s.as_str(), "kryptik", zone].iter().enumerate() {
-        let next = openat_component(dir.as_raw_fd(), comp, libc::O_PATH | libc::O_DIRECTORY)
-            .map_err(|e| format!("wayland socket path: {e}"))?;
-        if i >= 2 {
-            let st = fstat(next.as_raw_fd())?;
-            if st.st_uid != uid {
-                return Err(format!("wayland socket path: {comp}/ is owned by uid {}, not the session", st.st_uid));
-            }
-            if i >= 3 && st.st_mode & 0o077 != 0 {
-                return Err(format!("wayland socket path: {comp}/ is not private (mode {:o})", st.st_mode & 0o7777));
-            }
-        }
-        dir = next;
-    }
-    let sock = openat_component(dir.as_raw_fd(), "wayland-0", libc::O_PATH).map_err(|e| format!("wayland socket: {e}"))?;
-    let st = fstat(sock.as_raw_fd())?;
-    if st.st_mode & libc::S_IFMT != libc::S_IFSOCK {
-        return Err("wayland socket is not a socket".into());
-    }
-    if st.st_uid != uid {
-        return Err(format!("wayland socket is owned by uid {}, not the session", st.st_uid));
-    }
-    verify_proxy_listener(&sock, uid, zone, proxy_exe)?;
-    Ok(ProxySocket { _fd: sock, path: want, inode: InodeId::of(&st) })
 }
 
-/// SO_PEERCRED names whoever called listen(), which must be the session's kryptik-wlproxy for
-/// this zone. Only the session could pass the socket on, and it reaches the compositor anyway.
-fn verify_proxy_listener(sock: &OwnedFd, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<(), String> {
-    // Non-blocking: a full backlog on the session's listener must not block the root daemon.
-    let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, 0) };
-    if s < 0 {
-        return Err(format!("socket: {}", std::io::Error::last_os_error()));
+/// `zone`'s proxy for `uid`'s session, started if none runs: its socket, held open and named by
+/// inode for the launcher. A zone's proxy has one uid whoever the session is, so while it serves
+/// one session's desktop another's is refused.
+fn proxy_socket(cfg: &ServeConfig, uid: u32, zone: &crate::zone::Zone, proxies: &mut Vec<Proxy>) -> Result<ProxySocket, String> {
+    let i = match proxies.iter().position(|p| p.zone == zone.name) {
+        Some(i) if proxies[i].session != uid => {
+            return Err(format!("zone {:?} shows its windows on uid {}'s desktop, one desktop at a time", zone.name, proxies[i].session));
+        }
+        Some(i) => i,
+        None => {
+            let p = crate::proxy::start(&run_dir(cfg), &cfg.proxy_exe, uid, zone, !cfg.developer)?;
+            eprintln!("kryptikd serve: uid {uid} zone {:?}: proxy {} started", zone.name, p.pid);
+            proxies.push(p);
+            proxies.len() - 1
+        }
+    };
+    let path = proxies[i].socket.clone();
+    let fd = open_nofollow(&path, true)?;
+    let st = fstat(fd.as_raw_fd())?;
+    Ok(ProxySocket { _fd: fd, path, inode: InodeId::of(&st) })
+}
+
+/// Create /run/kryptik/compositor/<uid>, where dwl serves each zone a socket: root's above it, the
+/// session's own and 0711, so a zone's proxy reaches only the socket it is given.
+fn compositor_dir(cfg: &ServeConfig, uid: u32) -> Result<(), String> {
+    let top = run_dir(cfg).join("compositor");
+    std::fs::create_dir_all(&top).map_err(|e| format!("{}: {e}", top.display()))?;
+    if !cfg.developer {
+        std::fs::set_permissions(&top, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("{}: {e}", top.display()))?;
     }
-    let s = unsafe { OwnedFd::from_raw_fd(s) };
-    let path = format!("/proc/self/fd/{}", sock.as_raw_fd());
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    addr.sun_family = libc::AF_UNIX as _;
-    for (i, b) in path.bytes().enumerate() {
-        addr.sun_path[i] = b as _;
+    let dir = top.join(uid.to_string());
+    match std::fs::symlink_metadata(&dir) {
+        Ok(md) if !md.is_dir() => return Err(format!("{} exists and is not a directory", dir.display())),
+        Ok(_) => {}
+        Err(_) => std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?,
     }
-    let len = (std::mem::size_of::<libc::sa_family_t>() + path.len() + 1) as libc::socklen_t;
-    if unsafe { libc::connect(s.as_raw_fd(), &addr as *const _ as *const libc::sockaddr, len) } < 0 {
-        return Err(format!("nothing usable is listening on the wayland socket: {}", std::io::Error::last_os_error()));
-    }
-    let peer = peer_cred(s.as_raw_fd()).map_err(|e| format!("wayland socket: cannot identify the listener: {e}"))?;
-    if peer.uid != uid {
-        return Err(format!("wayland socket is served by uid {}, not the session", peer.uid));
-    }
-    let cmdline = std::fs::read(format!("/proc/{}/cmdline", peer.pid))
-        .map_err(|e| format!("wayland socket: cannot read the listener's command line: {e}"))?;
-    let argv: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
-    let is_proxy = argv.first().map(|a| a.ends_with(b"kryptik-wlproxy")).unwrap_or(false);
-    if !is_proxy {
-        return Err("wayland socket is not served by kryptik-wlproxy".into());
-    }
-    let zone_arg = argv.windows(2).any(|w| w[0] == b"--zone" && w[1] == zone.as_bytes());
-    if !zone_arg {
-        return Err(format!("wayland socket is served by a proxy for another zone, not {zone:?}"));
-    }
-    // A same-uid process named like the proxy is not it (developer instances skip this).
-    if let Some(want) = proxy_exe {
-        match std::fs::read_link(format!("/proc/{}/exe", peer.pid)) {
-            Ok(exe) if exe == want => {}
-            Ok(exe) => return Err(format!("wayland socket is served by {}, not {}", exe.display(), want.display())),
-            Err(e) => return Err(format!("wayland socket: cannot identify the listener's program: {e}")),
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o711)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !cfg.developer {
+        let gid = gid_of_uid(uid).unwrap_or(uid);
+        let c = CString::new(dir.display().to_string()).map_err(|_| "NUL in path".to_string())?;
+        if unsafe { libc::chown(c.as_ptr(), uid, gid) } < 0 {
+            return Err(format!("chown {}: {}", dir.display(), std::io::Error::last_os_error()));
         }
     }
     Ok(())
@@ -797,8 +776,9 @@ extern "C" fn on_child(_sig: libc::c_int) {
     }
 }
 
-/// Reap children: record a pending launcher's or a job's status, log any other.
-fn reap(pending: &mut [Pending], jobs: &mut [Job]) {
+/// Reap children: record a pending launcher's or a job's status, forget an ended proxy, log any
+/// other.
+fn reap(pending: &mut [Pending], jobs: &mut [Job], proxies: &mut Vec<Proxy>) {
     loop {
         let mut st = 0;
         let p = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
@@ -807,6 +787,11 @@ fn reap(pending: &mut [Pending], jobs: &mut [Job]) {
         }
         if let Some(j) = jobs.iter_mut().find(|j| j.pid == p) {
             j.exited = Some(st);
+            continue;
+        }
+        if let Some(i) = proxies.iter().position(|x| x.pid == p) {
+            let x = proxies.remove(i);
+            eprintln!("kryptikd serve: zone {:?}'s proxy for uid {} (pid {p}) {}", x.zone, x.session, exit_text(st));
             continue;
         }
         match pending.iter_mut().find(|x| x.launch.pid == p) {
@@ -861,7 +846,7 @@ pub struct ServeConfig {
     pub zones_dir: PathBuf,
     pub rootfs: String,
     pub log_dir: PathBuf,
-    /// The program that must be listening on a session's proxy socket.
+    /// The proxy serve starts for a zone's display.
     pub proxy_exe: PathBuf,
     /// The net zone's Wi-Fi credentials (wifi.rs), bound into the nic zone.
     pub wifi_dir: PathBuf,
@@ -1032,7 +1017,7 @@ fn net_summary(line: &str) -> Option<String> {
 }
 
 /// Serve one connection; a started launch is returned and a slow command pushed to `jobs`.
-fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
+fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, proxies: &mut Vec<Proxy>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let Ok(peer) = peer_cred(fd) else {
         reply(&conn, "error: unidentified peer\n");
@@ -1091,7 +1076,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
             }
         }
-        "runtime" => match runtime_dir(cfg, uid) {
+        "runtime" => match runtime_dir(cfg, uid).and_then(|d| compositor_dir(cfg, uid).map(|()| d)) {
             Ok(d) => reply(&conn, &format!("ok {}\n", d.display())),
             Err(e) => reply(&conn, &format!("error: {e}\n")),
         },
@@ -1116,6 +1101,10 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             if !ident_ok(zone) {
                 reply(&conn, "error: bad zone name\n");
                 return None;
+            }
+            // A stopped zone shows no window: its proxy goes with it, and the next start makes one.
+            if let Some(p) = proxies.iter().find(|p| p.zone == zone) {
+                unsafe { libc::kill(p.pid, libc::SIGTERM) };
             }
             let what = JobKind::Stop { uid, zone: zone.to_string() };
             match start_job(conn, what, std::process::Command::new("/proc/self/exe").args(["stop", zone])) {
@@ -1270,20 +1259,24 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 }
             };
             // Check the zone exists before forking, so a bad name is answered now.
-            if let Err(e) = zone_named(cfg, &req.zone) {
-                reply(&conn, &format!("error: {e}\n"));
-                return None;
-            }
-            let wayland = match &req.wayland {
-                None => None,
-                Some(w) => match verify_proxy_socket(w, uid, &req.zone, if cfg.developer { None } else { Some(&cfg.proxy_exe) }) {
+            let zone = match zone_named(cfg, &req.zone) {
+                Ok(z) => z,
+                Err(e) => {
+                    reply(&conn, &format!("error: {e}\n"));
+                    return None;
+                }
+            };
+            let wayland = if req.wayland {
+                match proxy_socket(cfg, uid, &zone, proxies) {
                     Ok(sock) => Some(sock),
                     Err(e) => {
                         eprintln!("kryptikd serve: uid {uid} zone {:?}: {e}", req.zone);
                         reply(&conn, &format!("error: {e}\n"));
                         return None;
                     }
-                },
+                }
+            } else {
+                None
             };
             let pass = if req.wants_fd {
                 match carried {
@@ -1366,6 +1359,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
+    let mut proxies: Vec<Proxy> = Vec::new();
     // The login prompt carries what `kryptik update status` says of a stale statement, on the
     // installed system's instance: checked as it starts, then hourly, as days are what count.
     let mut notice_due = (!cfg.developer).then(Instant::now);
@@ -1379,7 +1373,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             }
             notice_due = Some(Instant::now() + NOTICE_EVERY);
         }
-        reap(&mut pending, &mut jobs);
+        reap(&mut pending, &mut jobs, &mut proxies);
         jobs.retain_mut(|j| match j.exited {
             Some(st) => {
                 finish_job(j, st);
@@ -1486,7 +1480,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             match listener.accept() {
                 Ok((conn, _)) => {
                     let _ = conn.set_nonblocking(false);
-                    if let Some(p) = handle(&cfg, conn, &mut jobs) {
+                    if let Some(p) = handle(&cfg, conn, &mut jobs, &mut proxies) {
                         pending.push(p);
                     }
                 }

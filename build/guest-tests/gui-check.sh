@@ -48,7 +48,7 @@ wait_for() {   # wait_for SECONDS CMD...
 zone_log() { cat "/var/log/kryptik/zone-$1.log" 2>/dev/null; }
 # A filter kill below the zone's pid 1 shows only in the kernel's audit line (type=1326).
 zone_why() {   # zone_why ZONE: the registry, both logs, what runs and the filter's last kills
-    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "$RT/kryptik/$1/proxy.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | tail -3 | tr '\n' ' ')"
+    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "/run/kryptik/proxy/$UID_/$1.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | tail -3 | tr '\n' ' ')"
 }
 mark() { echo "--- $1 ---" >> "/var/log/kryptik/zone-$2.log" 2>/dev/null; }
 since_mark() {   # since_mark MARK ZONE: the zone's log after the marker line
@@ -113,7 +113,7 @@ done
 # stat'ed, which sees through a socket bound in over a file. The launcher marks
 # each line of a zone's output in its log ("zone untrusted| "), so the lines
 # are found unanchored.
-mapfile -t comps < <(stat -c '%d:%i' "$RT/wayland-0" "$RT"/kryptik-compositor/* 2>/dev/null)
+mapfile -t comps < <(stat -c '%d:%i' "$RT/wayland-0" /run/kryptik/compositor/"$UID_"/* 2>/dev/null)
 mark socks untrusted
 launch_plain untrusted "sh -c 'find / -path /proc -prune -o -path /sys -prune -o -exec stat -c \"T-%F %d:%i %n\" {} + 2>/dev/null | grep \"^T-socket \" | sed \"s/^T-socket /SOCK /\"; echo SOCKS-DONE'" > "$LOG/launch-socks.out" 2>&1
 socks_done() { since_mark socks untrusted | grep -q SOCKS-DONE; }
@@ -135,15 +135,16 @@ launch_plain untrusted "/usr/libexec/kryptik/wlprobe bind zwlr_screencopy_manage
 sleep 3
 out="$(since_mark bind untrusted)"
 [[ "$out" == *"bind refused"* ]] && pass "zone-bind-refused" "a bind of the screencopy manager got wl_display.error and a closed connection" || fail "zone-bind-refused" "$(echo "$out" | tail -3 | tr '\n' ' ')"
-grep -q 'not advertised' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null && pass "proxy-logged-refusal" "$(grep 'not advertised' "$RT/kryptik/untrusted/proxy.log" | tail -1 | cut -c1-120)" || fail "proxy-logged-refusal" "no refusal in the proxy log"
+plog="/run/kryptik/proxy/$UID_/untrusted.log"
+grep -q 'not advertised' "$plog" 2>/dev/null && pass "proxy-logged-refusal" "$(grep 'not advertised' "$plog" | tail -1 | cut -c1-120)" || fail "proxy-logged-refusal" "no refusal in the proxy log $plog"
 
 # --- dwl's socket for each zone -----------------------------------------------
 # The proxy reaches dwl through untrusted's own socket, never dwl's. Through it a
 # client is told only of the globals the proxy lets through, and binding a hidden
 # one by the number zone 0's list gives it ends the connection; zone 0's own
 # client binds that number (the control).
-zsock="$RT/kryptik-compositor/untrusted"
-proxy_cmd="$(tr '\0' ' ' < "/proc/$(cat "$RT/kryptik/untrusted/proxy.pid" 2>/dev/null)/cmdline" 2>/dev/null)"
+zsock="/run/kryptik/compositor/$UID_/untrusted"
+proxy_cmd="$(tr '\0' ' ' < "/proc/$(pgrep -f '^kryptik-wlproxy --zone untrusted ' | head -1)/cmdline" 2>/dev/null)"
 [[ "$proxy_cmd" == *"--upstream $zsock "* ]] && pass "proxy-upstream-zone-socket" "untrusted's proxy reaches dwl at $zsock" \
     || fail "proxy-upstream-zone-socket" "the proxy's command line: ${proxy_cmd:-none}"
 as_user "WAYLAND_DISPLAY=$zsock /usr/libexec/kryptik/wlprobe list" > "$LOG/probe-zone-socket.out" 2>&1
@@ -172,6 +173,69 @@ if grep -q '^bind accepted' "$LOG/bind-zone0-screencopy.out" && [[ -z "$taken" ]
     pass "zone-socket-bind-refused" "each bound by its number on untrusted's socket ended the connection:${refused}; zone 0's client bound screencopy"
 else
     fail "zone-socket-bind-refused" "zone 0's control: $(tail -1 "$LOG/bind-zone0-screencopy.out");${taken:- none taken}"
+fi
+
+# --- the proxy as a user of its own -------------------------------------------
+# untrusted's proxy, which the launch daemon started, runs as the top uid of the
+# zone's block, which no zone maps, with no group, under no_new_privs and seccomp,
+# in a network namespace and a cgroup of its own. That uid lists neither the
+# user's home nor the consent directory and reaches neither the launch daemon's
+# socket, dwl's own nor any proxy's from outside a zone; and dwl refuses
+# personal's proxy uid on untrusted's socket.
+puid() { echo $(( $(sed -n 's/^uid_base[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "/etc/kryptik/zones/$1.toml") + 65535 )); }
+P_UNTRUSTED="$(puid untrusted)"; P_PERSONAL="$(puid personal)"
+ppid_="$(pgrep -f '^kryptik-wlproxy --zone untrusted ' | head -1)"
+st="/proc/${ppid_:-none}/status"
+ids="$P_UNTRUSTED[[:space:]]*$P_UNTRUSTED[[:space:]]*$P_UNTRUSTED[[:space:]]*$P_UNTRUSTED"
+if [[ -n "$ppid_" ]] && grep -qx "Uid:[[:space:]]*$ids" "$st" && grep -qx "Gid:[[:space:]]*$ids" "$st" \
+   && grep -qx 'Groups:[[:space:]]*' "$st" && grep -qx 'NoNewPrivs:[[:space:]]*1' "$st" && grep -qx 'Seccomp:[[:space:]]*2' "$st" \
+   && [[ "$(readlink "/proc/$ppid_/ns/net")" != "$(readlink /proc/1/ns/net)" ]]; then
+    pass "proxy-own-user" "untrusted's proxy (pid $ppid_) is uid $P_UNTRUSTED with no group, NoNewPrivs 1, Seccomp 2, in a network namespace of its own"
+else
+    fail "proxy-own-user" "pid ${ppid_:-none}: $(grep -E '^(Uid|Gid|Groups|NoNewPrivs|Seccomp):' "$st" 2>/dev/null | tr '\n' ' ')net $(readlink "/proc/$ppid_/ns/net" 2>/dev/null) against $(readlink /proc/1/ns/net)"
+fi
+pcg="$(sed -n 's/^0:://p' "/proc/${ppid_:-none}/cgroup" 2>/dev/null)"
+if [[ "$pcg" == */proxy-untrusted.* && "$(cat "/sys/fs/cgroup$pcg/memory.max" 2>/dev/null)" == 134217728 && "$(cat "/sys/fs/cgroup$pcg/pids.max" 2>/dev/null)" == 1 ]]; then
+    pass "proxy-cgroup" "$pcg: memory.max 128 MiB, pids.max 1"
+else
+    fail "proxy-cgroup" "cgroup ${pcg:-none}: memory.max $(cat "/sys/fs/cgroup$pcg/memory.max" 2>&1), pids.max $(cat "/sys/fs/cgroup$pcg/pids.max" 2>&1)"
+fi
+reach="$(python3 - "$P_UNTRUSTED" "$(getent passwd "$USER_NAME" | cut -d: -f6)" "$RT/wayland-0" "/run/kryptik/proxy/$UID_/untrusted/wayland-0" <<'PY'
+import errno, os, socket, sys
+uid, home, own, proxy = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+os.setgroups([]); os.setgid(uid); os.setuid(uid)
+for kind, path in (("dir", home), ("dir", "/run/kryptik-consent"), ("sock", "/run/kryptik-launch/launch.sock"), ("sock", own), ("sock", proxy)):
+    try:
+        if kind == "dir":
+            os.listdir(path)
+        else:
+            s = socket.socket(socket.AF_UNIX)
+            s.connect(path)
+            s.close()
+        print(f"REACHED {path}")
+    except OSError as e:
+        print(f"refused {path} {errno.errorcode.get(e.errno, e.errno)}")
+PY
+)"
+if [[ "$(grep -c '^refused .* EACCES$' <<<"$reach")" -eq 5 ]]; then
+    pass "proxy-uid-reaches-nothing" "as uid $P_UNTRUSTED: $(tr '\n' ';' <<<"$reach")"
+else
+    fail "proxy-uid-reaches-nothing" "as uid $P_UNTRUSTED: $(tr '\n' ';' <<<"$reach")"
+fi
+slog="$RT/kryptik/session.log"
+refused_before="$(grep -c "^dwl: zone untrusted refused a client of uid $P_PERSONAL\$" "$slog" 2>/dev/null)"
+other="$(python3 - "$P_PERSONAL" "$zsock" <<'PY'
+import os, sys
+uid = int(sys.argv[1])
+os.setgroups([]); os.setgid(uid); os.setuid(uid)
+os.execve("/usr/libexec/kryptik/wlprobe", ["wlprobe", "list"], {"WAYLAND_DISPLAY": sys.argv[2]})
+PY
+)"
+dwl_refused() { [[ "$(grep -c "^dwl: zone untrusted refused a client of uid $P_PERSONAL\$" "$slog" 2>/dev/null)" -gt "${refused_before:-0}" ]]; }
+if [[ "$other" == *"closed before the registry was listed"* ]] && wait_for 5 dwl_refused; then
+    pass "zone-socket-refuses-other-proxy" "personal's proxy uid $P_PERSONAL was closed on untrusted's socket, and dwl said so"
+else
+    fail "zone-socket-refuses-other-proxy" "the probe as uid $P_PERSONAL: $(tr '\n' ' ' <<<"$other"); dwl: $(grep 'refused a client' "$slog" 2>/dev/null | tail -2 | tr '\n' ' ')"
 fi
 
 # --- a zone window goes fullscreen only by the user's key ----------------
@@ -537,7 +601,7 @@ wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-wi
 # A window is the zone's whose socket its client came through, whatever app_id it
 # claims: a client of personal's socket calling itself vault's takes the keyboard
 # from personal's window, as personal's own would, and the chrome names it personal.
-as_user "WLPROBE_APP_ID=kryptik.vault.forged WAYLAND_DISPLAY=$RT/kryptik-compositor/personal /usr/libexec/kryptik/wlprobe oversize 0 12 socket-named" > "$LOG/socket-named.out" 2>&1 &
+as_user "WLPROBE_APP_ID=kryptik.vault.forged WAYLAND_DISPLAY=/run/kryptik/compositor/$UID_/personal /usr/libexec/kryptik/wlprobe oversize 0 12 socket-named" > "$LOG/socket-named.out" 2>&1 &
 named_pid=$!
 if wait_for 15 grep -qx 'title=socket-named' "$RT/kryptik/focus" && grep -qx 'zone=personal' "$RT/kryptik/focus" \
    && grep -q 'keyboard entered the window' "$LOG/socket-named.out"; then

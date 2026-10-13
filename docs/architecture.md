@@ -69,11 +69,13 @@ D-Bus or shared `/tmp`: every channel is a confused-deputy risk.
 No zone can reach the compositor's own socket. A zone started from the
 desktop gets its own `kryptik-wlproxy`, which hides the capture, clipboard,
 input-injection and similar Wayland globals and stamps each window with its
-zone. The proxy reaches the compositor through a socket the compositor
-serves that zone alone, which offers the same globals and no others, and
-the compositor takes a window's zone from the socket its client came
-through, for its border and for the chrome. A window the proxy could not
-stamp is refused, never left to be drawn as zone 0's.
+zone. The launch daemon starts the proxy as a user of its own, with no file
+to open and no network. It reaches the compositor through a socket the
+compositor serves that zone alone, which takes that proxy's uid and offers
+the same globals and no others, and the compositor takes a window's zone
+from the socket its client came through, for its border and for the
+chrome. A window the proxy could not stamp is refused, never left to be
+drawn as zone 0's.
 Over a zone's window the pointer is the compositor's own cursor: an image
 the zone set would be drawn above every window, wherever it chose. Of the
 monitors a zone learns sizes and modes, not make, model or serial: the
