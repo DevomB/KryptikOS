@@ -16,8 +16,10 @@ ADR-021 is proposed and ADR-022, for suspend, accepted.
 ### Where things stand
 
 The kernel builds HD Audio and USB audio as signed modules
-(`boot.fragment`), and the image carries alsa-lib without its MIDI,
-sequencer, use-case manager and DSP topology parts. `kryptik-sound` mixes
+(`boot.fragment`), and the image carries alsa-lib without its use-case
+manager and DSP topology parts; its MIDI and sequencer API is there for
+Firefox's Web MIDI and finds no device, as the kernel builds no sequencer
+and no zone has `/dev/snd`. `kryptik-sound` mixes
 in zone 0 and every zone but the net zone plays through it, as the
 recommendation below has it. The chrome's menu grants the microphone
 (`c<N>`, and `c` takes it back), sets the volume of all and of each zone
