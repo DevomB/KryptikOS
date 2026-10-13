@@ -248,14 +248,20 @@ zonesockets(void)
 \tif (!rt || snprintf(dir, sizeof(dir), "%s/kryptik-compositor", rt) >= (int)sizeof(dir)
 \t\t\t|| (mkdir(dir, 0700) < 0 && errno != EEXIST))
 \t\tdie("startup: no directory for the zones' sockets:");
+\t/* A zone whose socket fails opens no window; the others' still do. */
 \tfor (z = zonecolors_table; z < END(zonecolors_table); z++) {
-\t\tif (snprintf(sa.sun_path, sizeof(sa.sun_path), "%s/%s", dir, z->zone) >= (int)sizeof(sa.sun_path))
-\t\t\tdie("startup: zone %s: its socket's path is too long", z->zone);
+\t\tif (snprintf(sa.sun_path, sizeof(sa.sun_path), "%s/%s", dir, z->zone) >= (int)sizeof(sa.sun_path)) {
+\t\t\tfprintf(stderr, "dwl: zone %s gets no socket: its path is too long\\n", z->zone);
+\t\t\tcontinue;
+\t\t}
 \t\tunlink(sa.sun_path);
-\t\tif ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) < 0
-\t\t\t\t|| bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 || listen(fd, 16) < 0
-\t\t\t\t|| !wl_event_loop_add_fd(event_loop, fd, WL_EVENT_READABLE, zoneaccept, (void *)z))
-\t\t\tdie("startup: zone %s: %s:", z->zone, sa.sun_path);
+\t\tif ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) < 0) {
+\t\t\tfprintf(stderr, "dwl: zone %s gets no socket: %s\\n", z->zone, strerror(errno));
+\t\t} else if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 || listen(fd, 16) < 0
+\t\t\t\t|| !wl_event_loop_add_fd(event_loop, fd, WL_EVENT_READABLE, zoneaccept, (void *)z)) {
+\t\t\tfprintf(stderr, "dwl: zone %s gets no socket at %s: %s\\n", z->zone, sa.sun_path, strerror(errno));
+\t\t\tclose(fd);
+\t\t}
 \t}
 }
 
