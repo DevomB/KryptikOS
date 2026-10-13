@@ -16,7 +16,8 @@ image_rows=(
 # Stage 04's GCC and hardening flags; libclang only for bindgen. With no network: Firefox's own vendored
 # crates and Python packages, no toolchain bootstrap, no Node.js. No D-Bus, which no zone has, no updater
 # (updates are the image's), no crash reporter, no EME, no jemalloc (hardened_malloc is preloaded), and
-# no sound until sound reaches zones. The first build keeps no wasm sandbox for its libraries.
+# no sound until sound reaches zones. The first build keeps no wasm sandbox for its libraries. No debug
+# symbols: stage 06 strips them anyway, and linking libxul with them would need more than the runner has.
 s_browser_firefox() {
     local src llvm="/usr/lib/llvm-${V_LLVM%%.*}"
     src="$(unpack "firefox-${V_FIREFOX}esr.source.tar.xz" "firefox-${V_FIREFOX}")"
@@ -27,6 +28,7 @@ ac_add_options --enable-application=browser
 ac_add_options --enable-default-toolkit=cairo-gtk3-wayland-only
 ac_add_options --enable-release
 ac_add_options --disable-debug
+ac_add_options --disable-debug-symbols
 ac_add_options --disable-tests
 ac_add_options --disable-bootstrap
 ac_add_options --disable-nodejs
