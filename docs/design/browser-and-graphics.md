@@ -217,8 +217,10 @@ floors are given with each layer.
     every other, confirmed by Mozilla's security blog post of August 2026.
     The key material is taken from the `KEY` file beside the release rather
     than from the keyserver, whose copy lacks the new subkey and the old
-    one's revocation. It is imported again on every run, so a later
-    revocation lands.
+    one's revocation. That is an `origin` row in `tools/key-provenance.tsv`,
+    a kind only a pinned key may have: the pin says who signs, the row only
+    where the key is fetched from on every run, so a later revocation lands.
+    Rust's and LLVM's keys come from their own sites the same way.
 
 ## GPU rendering, zone by zone
 

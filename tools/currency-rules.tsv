@@ -57,5 +57,11 @@ gtk3	listing	https://download.gnome.org/sources/gtk/cache.json	gtk-(3\.24\.[0-9]
 libpng	listing	https://api.github.com/repos/pnggroup/libpng/tags?per_page=100	"name": "v(1\.6\.[0-9]+)"	-
 fontconfig	api	https://gitlab.freedesktop.org/api/v4/projects/890/releases?per_page=20	tag_name	drop90
 libglvnd	api	https://gitlab.freedesktop.org/api/v4/projects/glvnd%2Flibglvnd/releases?per_page=20	tag_name	-
+# GitHub's API answers with spaced JSON, which only a listing pattern reads.
+rustc	listing	https://api.github.com/repos/rust-lang/rust/releases?per_page=20	"tag_name": "([0-9]+\.[0-9]+\.[0-9]+)"	-
+cbindgen	listing	https://api.github.com/repos/mozilla/cbindgen/releases?per_page=20	"tag_name": "v?([0-9]+\.[0-9]+\.[0-9]+)"	-
+nasm	listing	https://www.nasm.us/pub/nasm/releasebuilds/	([0-9]+\.[0-9]+(\.[0-9]+)?)/	-
+# The current ESR and, while two overlap, the next one; the pin's own ESR series is what counts.
+firefox	listing	https://product-details.mozilla.org/1.0/firefox_versions.json	"FIREFOX_ESR[_NEXT]*": "([0-9]+\.[0-9]+\.[0-9]+)esr"	major
 # An odd minor is a development snapshot.
 cairo	listing	https://www.cairographics.org/releases/	cairo-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz	even

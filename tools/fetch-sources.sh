@@ -202,6 +202,13 @@ toolkit|libepoxy|${V_LIBEPOXY}|${MIRROR_GITHUB}/anholt/libepoxy/archive/${V_LIBE
 toolkit|at-spi2-core|${V_AT_SPI2_CORE}|${gnome}/at-spi2-core/${V_AT_SPI2_CORE%.*}/at-spi2-core-${V_AT_SPI2_CORE}.tar.xz|stem.sha256sum|rule
 toolkit|hicolor-icon-theme|${V_HICOLOR_ICON_THEME}|${MIRROR_ICON_THEME}/hicolor-icon-theme-${V_HICOLOR_ICON_THEME}.tar.xz|asc|listing
 toolkit|gtk3|${V_GTK3}|${gnome}/gtk/${V_GTK3%.*}/gtk-${V_GTK3}.tar.xz|stem.sha256sum|rule
+rust|rustc|${V_RUST}|https://static.rust-lang.org/dist/rustc-${V_RUST}-x86_64-unknown-linux-gnu.tar.xz|asc|rule
+rust|cargo|${V_RUST}|https://static.rust-lang.org/dist/cargo-${V_RUST}-x86_64-unknown-linux-gnu.tar.xz|asc|follows:rustc
+rust|rust-std|${V_RUST}|https://static.rust-lang.org/dist/rust-std-${V_RUST}-x86_64-unknown-linux-gnu.tar.xz|asc|follows:rustc
+clang|llvm|${V_LLVM}|${MIRROR_GITHUB}/llvm/llvm-project/releases/download/llvmorg-${V_LLVM}/LLVM-${V_LLVM}-Linux-X64.tar.zst|sig|github
+cbindgen|cbindgen|${V_CBINDGEN}|https://static.crates.io/crates/cbindgen/cbindgen-${V_CBINDGEN}.crate|none|rule
+nasm|nasm|${V_NASM}|https://www.nasm.us/pub/nasm/releasebuilds/${V_NASM}/nasm-${V_NASM}.tar.xz|none|rule
+browser|firefox|${V_FIREFOX}|https://archive.mozilla.org/pub/firefox/releases/${V_FIREFOX}esr/source/firefox-${V_FIREFOX}esr.source.tar.xz|asc|rule
 MANIFEST
 }
 

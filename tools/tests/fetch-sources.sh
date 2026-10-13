@@ -361,6 +361,16 @@ else
     red "lock entries with no manifest row: ${stale}"
 fi
 
+# The browser's Rust layer and kryptikd's compiler are one release: both locks hold the same three.
+rust_shared="$(awk 'NR == FNR { if ($1 !~ /^#/ && NF == 2) want[$2] = $1; next }
+                    ($2 in want) { n++; if (want[$2] != $1) bad = bad " " $2 }
+                    END { print n + 0 bad }' "${ROOT}/build/config/rust.lock" "${ROOT}/build/images/sources.lock")"
+if [[ "$rust_shared" == 3 ]]; then
+    green "build/config/rust.lock and the images' lock hold the same Rust tarballs"
+else
+    red "the Rust tarballs the two locks share, and those whose hashes differ: ${rust_shared}"
+fi
+
 # An unset version leaves a field empty (a URL like gdbm-.tar.gz, a quiet 404) and the row short.
 blank="$(awk 'NF != 5 {print $1}' "${W}/live-manifest" | tr '\n' ' ')"
 if [[ -z "${blank// /}" ]]; then

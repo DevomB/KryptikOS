@@ -267,6 +267,13 @@ PINNED_FPRS=(
     # FreeType publishes only the long id BE6C3AAC63AD8E3F: docs/release in its repository since
     # 2.12.0, and each release announcement. This key ends in it and has signed every release since.
     "E30674707856409FF1948010BE6C3AAC63AD8E3F"   # Werner Lemberg, freetype (long id alone: weaker)
+    # Mozilla's security blog of 2026-08-10 states it with its new signing subkey 827E6586...76767AA3,
+    # as does the KEY file beside each release. key-provenance.tsv takes the key from that file.
+    "14F26682D0916CDD81E37B6D61B7B526D98F0353"   # Mozilla Software Releases, firefox
+    # https://static.rust-lang.org/rust-key.gpg.ascii (retrieved 2026-10-13), beside the releases.
+    "108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE"   # Rust Language, rustc, cargo and rust-std
+    # https://releases.llvm.org/release-keys.asc (retrieved 2026-10-13), the release managers' keys.
+    "D574BD5D1D0E98895E3BF90044F2485E45D59042"   # Tobias Hieta, LLVM's release builds
 )
 
 # Primaries and subkeys: GOODSIG names a subkey, while pins and keys.manifest hold primaries.
@@ -349,6 +356,16 @@ load_key_provenance() {
                     fi
                     ;;
                 wkd)  [[ "$l" == *@*.* ]]     || why="a wkd locator must be an email address" ;;
+                origin)
+                    if [[ "$l" == https://* ]] || [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" && "$l" == file://* ]]; then
+                        :
+                    else
+                        why="an origin locator must be an https URL"
+                    fi
+                    # It says where the key is taken from, never who signs: the pin says that.
+                    [[ " ${PINNED_FPRS[*]} " == *" ${f} "* ]] \
+                        || why="an origin row is for a key pinned in PINNED_FPRS"
+                    ;;
                 *)    why="unknown kind '${k}'" ;;
             esac
         fi
@@ -415,7 +432,7 @@ import_provenance_keys_for() {
 
         tmp="$(mktemp)"
         case "${PROV_KIND[$i]}" in
-            korg|github|savannah)
+            korg|github|savannah|origin)
                 if ! curl -fsSL --max-time 30 --retry 2 --retry-delay 5 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
                     warn "${name}: could not fetch the published key from ${PROV_LOC[$i]}"
                     PROV_MISSED[$i]=1
