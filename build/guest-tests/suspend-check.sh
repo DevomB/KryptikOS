@@ -117,6 +117,9 @@ tick() { echo "sh -c \"while :; do date +%s >> /home/$1/ticks; sleep 1; done\"";
 as_user "kryptik-launch --no-display --passphrase-fd 3 work -- $(tick work) 3<$UPP" > "$OUT/launch-work.out" 2>&1 &
 as_user "kryptik-launch --no-display untrusted -- $(tick untrusted)" > "$OUT/launch-untrusted.out" 2>&1 &
 ticks() { wc -l < "$R/$1/ticks" 2>/dev/null || echo 0; }
+# Counted again at each look: wait_for runs its command anew, its arguments as they were.
+lines_past() { [[ "$(wc -l < "$1" 2>/dev/null || echo 0)" -gt "$2" ]]; }
+ticks_past() { [[ "$(ticks "$1")" -gt "$2" ]]; }
 if wait_for 60 test -s "$R/work/ticks" && wait_for 60 test -s "$R/untrusted/ticks"; then
     pass "zones-ticking" "work (its own volume) and untrusted count a tick a second"
 else
@@ -178,13 +181,13 @@ fi
 wait_for 15 none_frozen && pass "zones-thawed" "$(zones_frozen)" || fail "zones-thawed" "$(zones_frozen)"
 # Its file is read only now: in the window, reading it would have waited too.
 n_before="$(wc -l < "$WLOG")"
-if wait_for 15 test "$(wc -l < "$WLOG")" -gt "$n_before"; then
+if wait_for 15 lines_past "$WLOG" "$n_before"; then
     pass "writer-resumes" "the writer goes on, past line ${n_before}"
 else
     fail "writer-resumes" "still ${n_before} lines"
 fi
 t_work="$(ticks work)"; t_untrusted="$(ticks untrusted)"
-if wait_for 15 test "$(ticks work)" -gt "$t_work" && wait_for 15 test "$(ticks untrusted)" -gt "$t_untrusted"; then
+if wait_for 15 ticks_past work "$t_work" && wait_for 15 ticks_past untrusted "$t_untrusted"; then
     pass "zones-tick-again" "work and untrusted count on"
 else
     fail "zones-tick-again" "work $(ticks work) after ${t_work}, untrusted $(ticks untrusted) after ${t_untrusted}"
