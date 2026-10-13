@@ -194,6 +194,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:v2:grep ^VERSION_ID= /etc/os-release; cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
     "$(ROOTSH 'sha256sum -c /root/work.sha && kryptik-update status && echo B-OK')" "expect:B-OK" \
+    "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/image-probe.sh')" "expect:IMAGE-PROBE " \
     "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
@@ -203,6 +204,9 @@ txt | grep -q "KRYPTIK_SMOKE: boot_identity=slot=b" && green "booted slot b" || 
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB}" || red "guest did not report ${VB}"
 txt | grep -q "boot-success: committed: BOOTX64.EFI is now slot b" && green "boot-success committed slot b" || red "no commit of slot b"
 txt | grep -q "committed slot:   b" && green "status shows committed slot b" || red "committed slot is not b"
+txt | grep -q 'IMAGE-PROBE kryptik-probe 1.0, from the probe image: ' \
+    && green "a zone on ${VB} runs the probe from the image apply kept with it" \
+    || red "the probe image did not run on ${VB}: $(txt | grep -m1 'IMAGE-PROBE')"
 txt | grep -qF "floor    ${B_FLOOR} UTC (release ${VB}, the newest this machine committed to" \
     && green "the clock's floor is ${VB}'s signed date (${B_FLOOR} UTC)" || red "after the commit of ${VB} the floor is not its date: $(txt | grep -E '(floor|release)  ' | tail -2 | tr '\n' ' ')"
 
@@ -268,11 +272,15 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result; echo RB2-OK')" "expect:slot=b" "expect:commit b" "expect:RB2-OK" \
+    "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/image-probe.sh')" "expect:IMAGE-PROBE " \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "rollback: slot b armed, booted and committed" || red "step 5 drive failed"
 stop_unless_ok "$rc" "step 5"
 txt | grep -q "version_id=${VB}" && green "guest reports ${VB} after rollback" || red "guest did not report ${VB}"
+txt | grep -q 'IMAGE-PROBE kryptik-probe 1.0, from the probe image: ' \
+    && green "after ${VA} was applied to the other slot, ${VB}'s images were still kept, and its zone runs the probe" \
+    || red "${VB}'s probe image did not run after the rollback: $(txt | grep -m1 'IMAGE-PROBE')"
 
 # ----------------------------------------------------------------- step 6 --
 step "step 6: interruption during the slot write, then after arming"
@@ -429,6 +437,10 @@ else
     # the user, automatic fetching brings the release whole without a fetch
     # (one asked for as well changes nothing), then apply, trial boot and
     # commit, and the setting outlasts the update.
+    # The staged release: the root's files and the image list with its signature, listed, and each
+    # image the list names, left out of the listing and held to the list instead. No single quote:
+    # vm-drive's su wraps the command in them.
+    staged="cd /var/lib/kryptik/update/incoming/${VB} && "'sed -n "s/^image: \([a-z0-9-]*\) .*/\1.img.zst/p" images.manifest > /tmp/staged-images; ls | grep -vxF -f /tmp/staged-images | sort | tr "\n" " "; echo LISTED; w=0; while read -r f; do [ -s "$f" ] || w=1; done < /tmp/staged-images; echo IMAGES-WHOLE=$w'
     drive "${UP_TO_STATEMENT[@]}" \
         "$(ROOTSH 'sleep 70; echo STAGED-UNASKED=$(ls /var/lib/kryptik/update/incoming 2>/dev/null | wc -l)')" "expect:STAGED-UNASKED=0" \
         "run:kryptik update status | grep -q 'fetching *only when asked'" \
@@ -437,7 +449,7 @@ else
         "run:kryptik update fetch" "expect:${VB} will be fetched" \
         "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" "run:$(wait_arrival)" \
         "run:kryptik update status | grep -q 'bytes, complete'" \
-        "$(ROOTSH "ls /var/lib/kryptik/update/incoming/${VB} | sort | tr \"\\n\" \" \"; echo LISTED")" "expect:kryptik-a.efi kryptik-b.efi kryptik-root.img.zst manifest manifest.sig root.json LISTED" \
+        "$(ROOTSH "$staged")" "expect:images.manifest images.manifest.sig kryptik-a.efi kryptik-b.efi kryptik-root.img.zst manifest manifest.sig root.json LISTED" "expect:IMAGES-WHOLE=0" \
         "run:kryptik update apply" "expect:armed: the next boot tries slot b" \
         "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
         "login:${TUSER}:${TPASS}" \

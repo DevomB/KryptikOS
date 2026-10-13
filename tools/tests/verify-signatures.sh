@@ -948,6 +948,11 @@ bad_prov "${UNKFPR}  savannah  https://savannah.example/project/release-gpgkeys.
          "a savannah locator on another host is refused"
 bad_prov "${UNKFPR}  savannah  https://savannah.gnu.org/project/memberlist.php?group=x  2026-09-11  unknown  x" \
          "a savannah locator that is not the project's release keyring is refused"
+# An origin row says where a pinned key's material comes from, and nothing about who signs.
+bad_prov "${UNKFPR}  origin  https://example.test/KEY  2026-10-13  unknown  unknown fixture <unknown@example.test>" \
+         "an origin row for a key no pin names is refused"
+bad_prov "14F26682D0916CDD81E37B6D61B7B526D98F0353  origin  http://archive.mozilla.org/KEY  2026-10-13  firefox  Mozilla" \
+         "an origin locator that is not https is refused"
 
 # Shipped github rows need both the endpoint shape and the release-author tie.
 gh_bad=0

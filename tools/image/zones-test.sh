@@ -10,7 +10,8 @@
 #   step 2  guest-tests/zones-check.sh: kernel support, the net zone, zone 0
 #           offline, routed egress and DNS, zone separation, fail-closed
 #           restart, the net zone over a mac80211_hwsim radio, time claims,
-#           limits, and the LUKS2 volume lifecycle
+#           limits, the LUKS2 volume lifecycle, and the software images stage
+#           06 signed for this root, stacked over a zone's /usr
 #   step 3  the compartment suites' [vm] rows on the target kernel (not with
 #           --skip-suites)
 #   step 4  reboot; the encrypted zone's data is still there
@@ -27,12 +28,12 @@ while [[ "$#" -gt 0 ]]; do
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
         --skip-suites) SUITES=0; shift ;;
-        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
 [[ -f "$USB" ]] || die "--usb IMG is required"
-for t in python3 sfdisk truncate; do have "$t" || die "required tool not found: $t"; done
+for t in python3 sfdisk truncate mkfs.ext4; do have "$t" || die "required tool not found: $t"; done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/zones.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
@@ -48,8 +49,24 @@ install_disk zones-install "$USB" --vars clean && green "installed" || { red "in
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the guest-side zone, network and storage checks (as root)"
+# The software images stage 06 packed and signed for this medium's root, beside it as
+# images-VERSION, on a disk of their own: the guest's image checks keep them from there.
+MVER="$(basename "$USB")"; MVER="${MVER#kryptik-}"; MVER="${MVER%-usb.img}"
+IMAGES="$(dirname "$USB")/images-${MVER}"
+IMGDISK="${VMDIR}/zones-images.img"
+# The label the guest finds the disk by: ext4 keeps 16 bytes of one, and cuts a longer one short.
+IMGLABEL=kryptik-zt-img
+(( ${#IMGLABEL} <= 16 )) || { red "the images disk's label ${IMGLABEL} is over ext4's 16 bytes"; exit 1; }
+IMGARGS=()
+if [[ -f "${IMAGES}/images.manifest.sig" ]] && rm -f "$IMGDISK" \
+   && truncate -s "$(( $(du -sm "$IMAGES" | cut -f1) + 64 ))M" "$IMGDISK" \
+   && mkfs.ext4 -q -F -L "$IMGLABEL" -d "$IMAGES" "$IMGDISK"; then
+    IMGARGS=(--disk "$IMGDISK")
+else
+    red "no signed software images for ${MVER} at ${IMAGES}: the guest's image checks have nothing to keep"
+fi
 # 3 GB, not 2: ephemeral-size-bound fills untrusted's 2G tmpfs, which is RAM, until ENOSPC.
-start_vm zones-p2 --net user --mem 3072
+start_vm zones-p2 --net user --mem 3072 "${IMGARGS[@]}"
 DRIVE_TIMEOUT=900 drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/zones-check.sh 2>&1 | tee /var/log/kryptik/zones-check.log; echo ZCHECK-DONE')" \
     "expect:ZT END" "expect:ZCHECK-DONE"
@@ -81,7 +98,8 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
             setuid-only-allowed no-file-capabilities sysctls-applied host-activity-hidden fetch-and-sntp-no-caps \
-            microcode-notice; do
+            microcode-notice \
+            image-store image-runs image-needs-refused image-hidden image-explained image-list-namespace image-list-other-base image-corrupt image-toolkit image-browser; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 

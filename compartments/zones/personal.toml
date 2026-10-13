@@ -29,3 +29,8 @@ border_color   = "#009b79"
 border_pattern = "dashed"
 glyph          = "●"
 label          = "PERSONAL"
+
+[software]
+# The browser, and the toolkit it is built over (docs/design/software-delivery.md); the call its
+# content sandbox needs is granted in the zone's policy.
+images = "browser toolkit"

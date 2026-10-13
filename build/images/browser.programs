@@ -1,0 +1,9 @@
+# The browser image's executable files, as build/config/image-programs.txt names the root's. Written
+# from Firefox's packaging manifest; the first build checks it.
+usr/lib/firefox/firefox
+usr/lib/firefox/firefox-bin
+usr/lib/firefox/glxtest
+usr/lib/firefox/vaapitest
+usr/lib/firefox/pingsender
+usr/lib/firefox/*.so
+usr/lib/firefox/gmp-clearkey/*/libclearkey.so

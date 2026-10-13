@@ -357,7 +357,12 @@ fn exactly_one_nic_zone() {
     assert!(format!("{err}").contains("claim the physical NIC"), "got: {err}");
 
     let none = vec![zone_with("work", "routed", "#111111")];
-    assert!(check_invariants(&none).is_err());
+    let err = check_invariants(&none).unwrap_err();
+    assert!(format!("{err}").contains("routed zones would have no path out"), "got: {err}");
+
+    // Zones without network need no path out, so no NIC zone.
+    let offline = vec![zone_with("work", "none", "#111111"), zone_with("vault", "none", "#222222")];
+    assert!(check_invariants(&offline).is_ok());
 
     let one = vec![
         zone_with("net", "nic", "#111111"),
@@ -374,4 +379,14 @@ fn duplicate_colours_are_rejected() {
     ];
     let err = check_invariants(&zones).unwrap_err();
     assert!(format!("{err}").contains("border_color"), "got: {err}");
+}
+
+#[test]
+fn software_images_are_space_separated_names() {
+    let with = |images: &str| VAULT.replace("[ui]", &format!("[software]\nimages = \"{images}\"\n[ui]"));
+    assert_eq!(Zone::from_str(&with("browser pdf-viewer")).unwrap().images, vec!["browser", "pdf-viewer"]);
+    assert!(Zone::from_str(VAULT).unwrap().images.is_empty(), "no [software], no images");
+    for bad in ["", "Browser", "a/b", "browser browser", "x_y"] {
+        assert!(Zone::from_str(&with(bad)).is_err(), "{bad:?}");
+    }
 }

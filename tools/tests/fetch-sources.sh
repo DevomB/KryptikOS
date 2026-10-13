@@ -270,6 +270,106 @@ else
     red "--lock did not state that it records whatever is present"; show
 fi
 
+# --- a software image's sources ---------------------------------------------
+
+# Kept in sources/images/, the images' own cache, and named in sources/ by a link.
+printf 'upstream payload for delta-4.0\n' > "${UPSTREAM}/delta-4.0.tar.gz"
+IMANIFEST="${W}/image-manifest"
+printf 'toolkit|delta|4.0|file://%s/delta-4.0.tar.gz|probe|listing\n' "$UPSTREAM" > "$IMANIFEST"
+images_root() {
+    build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+    mkdir -p "${FAKE}/build/images"
+    printf '%s  delta-4.0.tar.gz\n' "$(sha_of "${UPSTREAM}/delta-4.0.tar.gz")" > "${FAKE}/build/images/sources.lock"
+}
+run_images() {
+    KRYPTIK_ROOT="$FAKE" KRYPTIK_FETCH_SELFTEST=1 KRYPTIK_FETCH_MANIFEST="$MANIFEST" \
+        KRYPTIK_FETCH_IMAGE_MANIFEST="$IMANIFEST" NO_COLOR=1 bash "$TOOL" "$@" > "$OUT" 2>&1
+    RC=$?
+}
+
+images_root
+run_images
+expect_pass "an image's source is fetched and verified against the images' lock" "4 package(s) verified"
+if [[ -f "${FAKE}/sources/images/delta-4.0.tar.gz" && ! -L "${FAKE}/sources/images/delta-4.0.tar.gz" \
+      && "$(readlink "${FAKE}/sources/delta-4.0.tar.gz")" == images/delta-4.0.tar.gz ]]; then
+    green "it is kept in sources/images/ and named in sources/ by a relative link"
+else
+    red "the image's source is not in sources/images/ behind a link"; ls -la "${FAKE}/sources" "${FAKE}/sources/images" 2>&1 | sed 's/^/        /'
+fi
+
+images_root
+run_images --root
+expect_pass "--root fetches the root's sources alone" "3 package(s) verified"
+if [[ ! -e "${FAKE}/sources/images/delta-4.0.tar.gz" ]]; then
+    green "--root leaves the images' sources alone"
+else
+    red "--root fetched an image's source"
+fi
+
+# --root still moves one a cache left at the top, so the root's set is saved without it.
+images_root
+cp "${UPSTREAM}/delta-4.0.tar.gz" "${FAKE}/sources/delta-4.0.tar.gz"
+run_images --root
+if [[ "$RC" -eq 0 && -L "${FAKE}/sources/delta-4.0.tar.gz" && -f "${FAKE}/sources/images/delta-4.0.tar.gz" ]]; then
+    green "--root moves an image's source left at the top into sources/images/"
+else
+    red "--root left an image's source at the top (exit ${RC})"; show
+fi
+
+# A set cached before images/ existed has the image's file in sources/ itself.
+images_root
+cp "${UPSTREAM}/delta-4.0.tar.gz" "${FAKE}/sources/delta-4.0.tar.gz"
+run_images
+expect_pass "an image's source cached in sources/ itself still verifies" "1 cached"
+if [[ -L "${FAKE}/sources/delta-4.0.tar.gz" && -f "${FAKE}/sources/images/delta-4.0.tar.gz" ]]; then
+    green "it moves into sources/images/, a link left in its place"
+else
+    red "the image's source was not moved into sources/images/"
+fi
+
+# --- a crate's own crates ----------------------------------------------------
+
+# The crate's hash is locked; its Cargo.lock gives the hash of each crate it builds from.
+CR="${W}/crates"; mkdir -p "${CR}/dep" "${W}/tool-1.0"
+printf 'dep crate\n' > "${CR}/dep/dep-0.1.0.crate"
+dep_sum="$(sha_of "${CR}/dep/dep-0.1.0.crate")"
+crate_with() {   # crate_with DEP-HASH: tool-1.0.crate whose Cargo.lock locks dep 0.1.0 to DEP-HASH
+    printf '[[package]]\nname = "dep"\nversion = "0.1.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "%s"\n\n[[package]]\nname = "tool"\nversion = "1.0"\n' "$1" > "${W}/tool-1.0/Cargo.lock"
+    tar -czf "${UPSTREAM}/tool-1.0.crate" -C "$W" tool-1.0
+}
+CMANIFEST="${W}/crate-manifest"
+printf 'tool|tool|1.0|file://%s/tool-1.0.crate|none|listing\n' "$UPSTREAM" > "$CMANIFEST"
+crates_root() {
+    build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+    mkdir -p "${FAKE}/build/images"
+    printf '%s  tool-1.0.crate\n' "$(sha_of "${UPSTREAM}/tool-1.0.crate")" > "${FAKE}/build/images/sources.lock"
+}
+run_crates() {
+    KRYPTIK_ROOT="$FAKE" KRYPTIK_FETCH_SELFTEST=1 KRYPTIK_FETCH_MANIFEST="$MANIFEST" \
+        KRYPTIK_FETCH_IMAGE_MANIFEST="$CMANIFEST" KRYPTIK_CRATES="file://${CR}" NO_COLOR=1 bash "$TOOL" > "$OUT" 2>&1
+    RC=$?
+}
+
+crate_with "$dep_sum"; crates_root
+run_crates
+expect_pass "a crate's Cargo.lock brings the crates it names, each verified" "the 1 crates its Cargo.lock names, verified"
+[[ -f "${FAKE}/sources/images/crates/dep-0.1.0.crate" ]] \
+    && green "they land in sources/images/crates/" || red "the named crate is not in sources/images/crates/"
+
+crate_with 0000000000000000000000000000000000000000000000000000000000000000; crates_root
+run_crates
+expect_fail "a crate whose bytes are not what the Cargo.lock says is refused" "CHECKSUM MISMATCH for crate dep 0.1.0"
+
+KRYPTIK_ROOT="$FAKE" NO_COLOR=1 bash "$TOOL" --crates "${UPSTREAM}/tool-1.0.crate" > "$OUT" 2>&1
+[[ "$(cat "$OUT")" == "dep 0.1.0 0000000000000000000000000000000000000000000000000000000000000000" ]] \
+    && green "--crates prints what a crate's lock names" || { red "--crates printed something else"; show; }
+
+if KRYPTIK_ROOT="$FAKE" KRYPTIK_CRATES="file://${CR}" NO_COLOR=1 bash "$TOOL" --list > "$OUT" 2>&1; then
+    red "a crates mirror was taken without the test's manifest"
+else
+    grep -qF "KRYPTIK_CRATES replaces crates.io" "$OUT" && green "a crates mirror is refused outside the test" || { red "the crates mirror refusal did not say why"; show; }
+fi
+
 # --- arguments and the selftest gate ----------------------------------------
 
 run --list
@@ -291,22 +391,46 @@ fi
 # --- the shipped manifest and the shipped lockfile must agree ---------------
 
 # A row with no lock line is refused at fetch time; a lock line with no row is a hash nobody checks.
+# The root's rows are in sources.lock, the software images' in build/images/sources.lock.
 bash "$TOOL" --list > "${W}/live-manifest" 2>/dev/null
-awk '{n = $3; sub(/.*\//, "", n); print n}' "${W}/live-manifest" | sort -u > "${W}/mf"
-awk '{print $2}' "${ROOT}/sources.lock" | sort -u > "${W}/lk"
+bash "$TOOL" --list-root > "${W}/root-manifest" 2>/dev/null
+names() { awk '{n = $3; sub(/.*\//, "", n); print n}' "$1" | sort -u; }
+names "${W}/root-manifest" > "${W}/mf-root"
+comm -23 <(names "${W}/live-manifest") "${W}/mf-root" > "${W}/mf-images"
+awk '{print $2}' "${ROOT}/sources.lock" | sort -u > "${W}/lk-root"
+awk '{print $2}' "${ROOT}/build/images/sources.lock" | sort -u > "${W}/lk-images"
 
-miss="$(comm -23 "${W}/mf" "${W}/lk" | tr '\n' ' ')"
+miss="$(comm -23 "${W}/mf-root" "${W}/lk-root" | tr '\n' ' ')$(comm -23 "${W}/mf-images" "${W}/lk-images" | tr '\n' ' ')"
 if [[ -z "${miss// /}" ]]; then
-    green "every source in the manifest has a sources.lock entry"
+    green "every source in the manifest has an entry in its lock"
 else
     red "manifest rows with no lock entry: ${miss}"
 fi
 
-stale="$(comm -13 "${W}/mf" "${W}/lk" | tr '\n' ' ')"
+stale="$(comm -13 "${W}/mf-root" "${W}/lk-root" | tr '\n' ' ')$(comm -13 "${W}/mf-images" "${W}/lk-images" | tr '\n' ' ')"
 if [[ -z "${stale// /}" ]]; then
-    green "every sources.lock entry corresponds to a manifest row"
+    green "every lock entry corresponds to a manifest row of its own set"
 else
     red "lock entries with no manifest row: ${stale}"
+fi
+
+# Mozilla's key is taken from the KEY file beside the pinned release; a Firefox bump that left the row
+# behind would keep importing a file that never learns a later revocation.
+vf="$(sed -n 's/^V_FIREFOX=//p' "${ROOT}/build/images/versions.env")"
+if [[ -n "$vf" ]] && grep -Eq "^14F26682D0916CDD81E37B6D61B7B526D98F0353[[:space:]]+origin[[:space:]]+https://archive[.]mozilla[.]org/pub/firefox/releases/${vf//./[.]}esr/KEY[[:space:]]" "${ROOT}/tools/key-provenance.tsv"; then
+    green "Mozilla's key row names the KEY file beside the pinned Firefox, ${vf}esr"
+else
+    red "tools/key-provenance.tsv's Mozilla row does not name releases/${vf:-?}esr/KEY: a Firefox bump moves it too"
+fi
+
+# The browser's Rust layer and kryptikd's compiler are one release: both locks hold the same three.
+rust_shared="$(awk 'NR == FNR { if ($1 !~ /^#/ && NF == 2) want[$2] = $1; next }
+                    ($2 in want) { n++; if (want[$2] != $1) bad = bad " " $2 }
+                    END { print n + 0 bad }' "${ROOT}/build/config/rust.lock" "${ROOT}/build/images/sources.lock")"
+if [[ "$rust_shared" == 3 ]]; then
+    green "build/config/rust.lock and the images' lock hold the same Rust tarballs"
+else
+    red "the Rust tarballs the two locks share, and those whose hashes differ: ${rust_shared}"
 fi
 
 # An unset version leaves a field empty (a URL like gdbm-.tar.gz, a quiet 404) and the row short.
@@ -321,7 +445,7 @@ fi
 
 # A value no tool knows fails there too; here it fails before it ships.
 odd="$(awk '
-    $4 !~ /^(gnu|kernel|sig|asc|stem\.sig|sums:[^\/]+\.(asc|sig)|probe|sha256|sha256\.txt|tag|none)$/ { print $1 " sig=" $4; next }
+    $4 !~ /^(gnu|kernel|sig|asc|stem\.sig|sums:[^\/]+\.(asc|sig)|probe|sha256|sha256\.txt|sha256sum|stem\.sha256sum|tag|none)$/ { print $1 " sig=" $4; next }
     $5 !~ /^(gnu|vdir|github|listing|rule|eol|follows:.+)$/ { print $1 " new=" $5 }
 ' "${W}/live-manifest" | tr '\n' ' ')"
 if [[ -z "${odd// /}" ]]; then

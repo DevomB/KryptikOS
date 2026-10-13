@@ -125,7 +125,9 @@ jobs:
           sudo mkdir -p /mnt/kryptik && sudo chown "$(id -u):$(id -g)" /mnt/kryptik
           ./tools/fetch-sources.sh --list
 
-      # Restores the last set; `make sources` checks it against the lock and fetches what is missing.
+      # Restores the last sets; `make sources` checks them against the locks and fetches what is missing.
+      # The software images' sources, under images/, are a cache of their own (the prepare action's),
+      # set aside while the root's is saved.
       - name: Upstream sources (cached by sources.lock)
         id: sources
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
@@ -135,21 +137,54 @@ jobs:
           restore-keys: |
             sources-
 
-      # Fetches the signatures into the cached set for the gate below; this pass is not the verdict.
+      # With the signatures, which verify-signatures keeps beside the root's: when an image's pin alone
+      # moves, only this cache is saved again.
+      - name: The software images' sources (cached by build/images/sources.lock)
+        id: image_sources
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            /mnt/kryptik/sources/images
+            /mnt/kryptik/sources/.signatures
+          key: image-sources-v1-${{ hashFiles('build/images/sources.lock') }}
+          restore-keys: |
+            image-sources-v1-
+
+      # Runs on two hits as well: the root's set restored may be one saved without the links that name
+      # each image source in sources/ (an older set's), and only this pass makes them. On a miss it
+      # fetches the signatures into the cached set for the gate below; that pass is not the verdict.
       - name: Fetch and verify the sources
-        if: steps.sources.outputs.cache-hit != 'true'
+        env:
+          MISSED: ${{ steps.sources.outputs.cache-hit != 'true' || steps.image_sources.outputs.cache-hit != 'true' }}
         run: |
           make sources
           ./tools/prune-sources.sh
-          ./tools/verify-signatures.sh > /dev/null 2>&1 || true
+          [[ "$MISSED" != true ]] || ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
       # Not from a pull request: its cache is scoped to the merge ref and would duplicate the set.
+      - name: Set the software images' sources aside
+        if: ${{ github.event_name != 'pull_request' && steps.sources.outputs.cache-hit != 'true' }}
+        run: if [[ -d /mnt/kryptik/sources/images ]]; then mv /mnt/kryptik/sources/images /mnt/kryptik/images-aside; fi
+
       - name: Save the sources
         if: ${{ github.event_name != 'pull_request' && steps.sources.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/sources
           key: ${{ steps.sources.outputs.cache-primary-key }}
+
+      - name: The software images' sources back in place
+        if: always()
+        run: if [[ -d /mnt/kryptik/images-aside ]]; then mv /mnt/kryptik/images-aside /mnt/kryptik/sources/images; fi
+
+      - name: Save the software images' sources
+        if: ${{ github.event_name != 'pull_request' && steps.image_sources.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            /mnt/kryptik/sources/images
+            /mnt/kryptik/sources/.signatures
+          key: ${{ steps.image_sources.outputs.cache-primary-key }}
 
       # Informational, as mirrors go down; a one-byte ranged GET, since some GNU mirrors refuse HEAD.
       - name: Every source URL is reachable
@@ -205,17 +240,22 @@ jobs:
       - name: Signatures, strict
         run: ./tools/verify-signatures.sh --strict
 
+      # The root's sources in sources.lock, the software images' in build/images/sources.lock.
       - name: sources.lock covers the manifest
         run: |
           fail=0
-          while read -r name ver url _; do
-            file=$(basename "$url")
-            if ! grep -q "  $file\$" sources.lock; then
-              echo "  MISSING FROM LOCK: $file"
-              fail=1
-            fi
-          done < <(./tools/fetch-sources.sh --list)
-          [ $fail -eq 0 ] && echo "sources.lock covers every manifest entry"
+          check() {
+            while read -r name ver url _; do
+              file=$(basename "$url")
+              if ! grep -q "  $file\$" "$1"; then
+                echo "  MISSING FROM $1: $file"
+                fail=1
+              fi
+            done
+          }
+          check sources.lock < <(./tools/fetch-sources.sh --list-root)
+          check build/images/sources.lock < <(./tools/fetch-sources.sh --list | grep -vxF -f <(./tools/fetch-sources.sh --list-root))
+          [ $fail -eq 0 ] && echo "sources.lock and build/images/sources.lock cover every manifest entry"
           exit $fail
 
   compartments:

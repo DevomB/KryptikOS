@@ -109,21 +109,121 @@ browser.
 ## The toolkit stack
 
 GTK 3 for Firefox, built with `-Dx11_backend=false`, so no X11 library
-enters the image, and without the accessibility bridge, which talks D-Bus:
+enters the image, and without the accessibility bridge, which talks D-Bus.
+It is the `toolkit` software image (`build/images/toolkit.sh`), which the
+browser image is built over:
 
-- glib, pango, harfbuzz, fribidi, freetype, fontconfig, cairo (pixman is
-  already built), gdk-pixbuf with libpng and libjpeg-turbo, libepoxy, ATK
-  from at-spi2-core;
-- shared-mime-info, the hicolor theme and one small icon theme;
-- GSettings with its keyfile backend, since dconf needs D-Bus;
-- fonts: DejaVu is shipped; Noto for wider scripts costs tens of megabytes,
-  and CJK fonts a hundred or more, so they are a choice, not a default.
+- glib (with pcre2, without its JIT), pango, harfbuzz, fribidi, freetype,
+  fontconfig, cairo (pixman is the root's), gdk-pixbuf with libpng, libepoxy
+  and ATK from at-spi2-core, built alone with a patch that drops its
+  unused libxml2;
+- the Khronos EGL headers from libglvnd, which libepoxy and GTK's Wayland
+  backend compile against. No EGL library comes with them: a zone has no
+  GPU, so GL stays unavailable there;
+- gdk-pixbuf reads PNG alone, built in: GTK's theme and icons are PNG, and
+  each other loader is a parser more. JPEG, GIF and the rest come only if a
+  program the image carries needs them; Firefox decodes its own;
+- the hicolor theme. An icon theme with symbolic icons needs librsvg, so
+  GTK falls back to its built-in icons until one is chosen;
+- fontconfig's and GTK's configuration under `/usr/etc`, as an image adds
+  nothing outside `/usr`; fontconfig keeps its cache in the user's home;
+- GSettings with the memory backend by default, or the keyfile backend
+  (`GSETTINGS_BACKEND=keyfile`), since dconf needs D-Bus;
+- printing to a file alone, which GTK requires; no CUPS;
+- fonts: DejaVu is the root's; Noto for wider scripts costs tens of
+  megabytes, and CJK fonts a hundred or more, so they are a choice, not a
+  default.
+
+gtk3-demo and gtk3-widget-factory come with it, the first GUI programs a
+zone can run. The zones suite runs `fc-match` and `gtk-query-immodules-3.0`
+in a zone that names the image, which loads every library GTK needs.
 
 Firefox's own copies of NSS, NSPR, libvpx, dav1d and opus stay bundled: they
 are built from source in its tree either way, and every library made
 separate is a recipe and a pin review of its own. H.264 needs FFmpeg's
 decoder, which Firefox loads if it is present; whether to ship it is a
 licensing question as much as a size one, and is left open.
+
+## The document viewer
+
+PDFs open in the browser's own viewer, pdf.js, which runs as page script
+inside the content process's sandbox. No image of its own is needed until a
+workflow needs a format pdf.js does not read. zathura, the light viewer that
+was the alternative, moved to GTK 4 in 2026 and now also needs json-glib,
+libmagic, sqlite and xxhash. Building it would mean a second toolkit image,
+or pinning a GTK 3 branch nobody maintains any more.
+
+## How the browser image is built
+
+Firefox ESR 153 is the `browser` software image, built over the toolkit
+image and over build-only layers that never reach a zone (`image_ships=no`,
+[software delivery](software-delivery.md)). Stage 04 already treats cmake
+this way: a pinned binary the build runs and never installs. ESR 153's own
+floors are given with each layer.
+
+- **Its layers.**
+  - **`rust`:** the pinned release toolchain for `x86_64-unknown-linux-gnu`,
+    vouched for by the same Rust key as kryptikd's. ESR 153 needs 1.90 or
+    newer.
+  - **`clang`:** LLVM's release build, for libclang. bindgen loads it to
+    generate the style system's bindings, and its `wasm32` target compiles
+    the sandboxed libraries. It is about a gigabyte compressed, in the
+    sources cache. A source build of clang and libclang would instead cost
+    an hour each time the base system changes.
+  - **`cbindgen`:** 0.29.4 or newer, built with the `rust` layer. Its crate
+    and the crates its lock file names are fetched before the build, since
+    the chroot has no network, and checked against that lock.
+  - **`nasm`:** for dav1d's AV1 decoder.
+  - **Node.js** is left out: ESR 153 still takes `--disable-nodejs`.
+- **The build.**
+  - Stage 04's GCC with the hardening flags; an exception each flag needs
+    goes into `hardening-exceptions.txt` with its reason.
+  - `--enable-default-toolkit=cairo-gtk3-wayland-only`, `--disable-dbus`,
+    `--enable-release`, `--disable-tests`, `--disable-crashreporter`,
+    `--disable-updater` (updates are the image's) and `--disable-eme`.
+  - `--disable-jemalloc`, as the image preloads hardened_malloc for every
+    process.
+  - `--disable-audio-backends` until sound reaches zones. The ESR default
+    is PulseAudio, and ALSA needs alsa-lib and a sound path designed first.
+  - The first build is `--without-wasm-sandboxed-libraries`. The next adds
+    a WASI sysroot to the `clang` layer, since a font or spelling parser
+    bug should stay inside that sandbox.
+- **Time.**
+  - On four cores with GCC, without LTO or PGO, ESR takes about two and a
+    half hours. That fits the system job's six hours after a warm stage 04,
+    but not every run should pay it.
+  - The trees of the shipped images go into a cache of their own, keyed by
+    their fingerprints, which include the base system's stamp. A run
+    restores a tree whose inputs have not changed, so only a change to the
+    browser, the toolkit or the base system rebuilds it.
+- **Updates.** ESR has a security release every four weeks. Its pins are the
+  images' (`build/images/versions.env`), so a bump rebuilds the browser and
+  leaves stage 04 and its cache alone.
+- **Choices taken.**
+  - **The Rust tarballs are image sources.** The `rust` layer lists the
+    rustc, cargo and rust-std tarballs `build/config/rust.lock` pins, so the
+    signature and currency gates cover them, and kryptikd's compiler with
+    them. A CI check holds both locks to the same hashes, so the shipped
+    daemon and the browser are built by one release, bumped every six weeks.
+  - **cbindgen is built inside the chroot, offline.** Its crate and the
+    crates its own lock file names are fetched beforehand and checked
+    against that lock. In the chroot each is unpacked into a vendored source
+    directory, and `cargo build --offline --locked` uses the `rust` layer.
+    Stage 03's runner and stage 04's cache key stay as they are.
+  - **The images' sources have a cache of their own.** They go under
+    `sources/images/`, keyed by `build/images/sources.lock`, each named in
+    `sources/` by a link, so every tool finds it where it always has. The
+    root's set is keyed by `sources.lock` alone and saved with `images/` set
+    aside, so a browser bump copies neither set into the other's entry. A job
+    that builds no image fetches the root's alone (`fetch-sources.sh --root`).
+  - **Mozilla's key comes from Mozilla.** The fingerprint is pinned like
+    every other, confirmed by Mozilla's security blog post of August 2026.
+    The key material is taken from the `KEY` file beside the release rather
+    than from the keyserver, whose copy lacks the new subkey and the old
+    one's revocation. That is an `origin` row in `tools/key-provenance.tsv`,
+    a kind only a pinned key may have: the pin says who signs, the row only
+    where the key is fetched from on every run, so a later revocation lands.
+    Rust's and LLVM's keys come from their own sites the same way.
 
 ## GPU rendering, zone by zone
 

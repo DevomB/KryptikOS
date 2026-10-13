@@ -174,7 +174,7 @@ pub fn default_volume_path(zone: &str) -> String {
     format!("{DEFAULT_VOLUME_DIR}/{zone}.luks")
 }
 
-fn run(what: &str, prog: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<String, (i32, String)> {
+pub(crate) fn run(what: &str, prog: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<String, (i32, String)> {
     let mut cmd = Command::new(prog);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });

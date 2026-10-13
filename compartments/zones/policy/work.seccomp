@@ -1,1 +1,3 @@
 # work: the base policy only; the directives are in docs/design/zone-policy-files.md.
+# The browser image's need: Firefox's content sandbox installs a seccomp filter of its own.
+allow-syscall seccomp

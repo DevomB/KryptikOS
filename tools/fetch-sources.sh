@@ -1,24 +1,39 @@
 #!/usr/bin/env bash
 # Fetch and verify upstream source tarballs.
 #
-#   ./tools/fetch-sources.sh            download and verify against sources.lock
-#   ./tools/fetch-sources.sh --lock     download and WRITE sources.lock
-#   ./tools/fetch-sources.sh --list     print the resolved manifest, download nothing
+#   ./tools/fetch-sources.sh                    download and verify against sources.lock
+#   ./tools/fetch-sources.sh --root             only the root's, for a job that builds no image
+#   ./tools/fetch-sources.sh --lock             download and WRITE sources.lock
+#   ./tools/fetch-sources.sh --list             print the resolved manifest, download nothing
+#   ./tools/fetch-sources.sh --list-root        only the sources the root is built from
+#   ./tools/fetch-sources.sh --list-image NAME  only those software image NAME is built from
+#   ./tools/fetch-sources.sh --crates CRATE     name, version and hash of the crates CRATE's lock names
 #
+# The software images' sources are pinned in build/images/versions.env and locked in
+# build/images/sources.lock, so a change to them is no input of stage 04. They are kept in
+# sources/images/, which has a cache of its own, each named in sources/ by a link where every
+# reader looks. A Rust crate's own Cargo.lock names the crates it is built from, each with its
+# hash: they go to sources/images/crates/, for an offline build in the chroot.
 # --lock trusts whatever downloads: audit sources.lock before committing it (docs/supply-chain.md).
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
 
-MODE="verify"
+MODE="verify"; IMAGE=""; ROOT_ONLY=0
 case "${1:-}" in
+    --root) ROOT_ONLY=1 ;;
     --lock) MODE="lock" ;;
     --list) MODE="list" ;;
+    --list-root) MODE="list-root" ;;
+    --list-image) MODE="list-image"; IMAGE="${2:?--list-image needs an image name}" ;;
+    --crates) MODE="crates"; CRATE="${2:?--crates needs a .crate file}" ;;
     "")     ;;
-    *)      die "unknown argument: $1 (expected --lock, --list, or nothing)" ;;
+    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, --crates CRATE, or nothing)" ;;
 esac
 
-# Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs.
+# Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs, and crates.io.
+[[ -z "${KRYPTIK_CRATES:-}" || -n "${KRYPTIK_FETCH_MANIFEST:-}" ]] \
+    || die "KRYPTIK_CRATES replaces crates.io for tools/tests/fetch-sources.sh alone"
 if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
     [[ "${KRYPTIK_FETCH_SELFTEST:-0}" == "1" ]] \
         || die "Refusing to fetch or lock against a substituted manifest without KRYPTIK_FETCH_SELFTEST=1"
@@ -35,6 +50,8 @@ fi
 #   probe         whichever of .sig, .asc and .sign is published, now or in a later release
 #   sha256        the publisher's .sha256 beside it (tools/verify-provenance.sh)
 #   sha256.txt    the same, named .sha256.txt
+#   sha256sum     the same, named .sha256sum
+#   stem.sha256sum  a .sha256sum named without the .tar.* suffix (glib-2.90.1.sha256sum)
 #   tag           a signed tag the archive must reproduce (tools/verify-provenance.sh)
 #   none          nothing, as beside a generated GitHub, GitLab or sr.ht archive
 # new: where its newest release is found (tools/check-source-currency.sh)
@@ -165,12 +182,58 @@ linux-hardened|${V_LINUX_HARDENED}|${MIRROR_HARDENED}/v${V_LINUX_HARDENED}/linux
 MANIFEST
 }
 
-if [[ "$MODE" == "list" ]]; then
-    manifest | while IFS='|' read -r name ver url sig new; do
-        printf '%-12s %-10s %s %s %s\n' "$name" "$ver" "$url" "$sig" "$new"
-    done
-    exit 0
-fi
+# The software images' sources (build/images/versions.env), never installed in the root: the image
+# each is built into, then the row as above. Their checksums are in build/images/sources.lock.
+image_manifest() {
+    if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
+        # A test's images, when it gives any.
+        [[ -z "${KRYPTIK_FETCH_IMAGE_MANIFEST:-}" ]] || cat "$KRYPTIK_FETCH_IMAGE_MANIFEST"
+        return 0
+    fi
+    local gnome="$MIRROR_GNOME"
+    cat <<MANIFEST
+toolkit|pcre2|${V_PCRE2}|${MIRROR_GITHUB}/PCRE2Project/pcre2/releases/download/pcre2-${V_PCRE2}/pcre2-${V_PCRE2}.tar.bz2|sig|rule
+toolkit|glib|${V_GLIB}|${gnome}/glib/${V_GLIB%.*}/glib-${V_GLIB}.tar.xz|stem.sha256sum|rule
+toolkit|libpng|${V_LIBPNG}|${MIRROR_SOURCEFORGE}/libpng/libpng-${V_LIBPNG}.tar.xz|none|rule
+toolkit|freetype|${V_FREETYPE}|${MIRROR_SAVANNAH_MASTER}/freetype/freetype-${V_FREETYPE}.tar.xz|sig|listing
+toolkit|harfbuzz|${V_HARFBUZZ}|${MIRROR_GITHUB}/harfbuzz/harfbuzz/releases/download/${V_HARFBUZZ}/harfbuzz-${V_HARFBUZZ}.tar.xz|none|github
+toolkit|fontconfig|${V_FONTCONFIG}|${MIRROR_FDO_GITLAB}/api/v4/projects/890/packages/generic/fontconfig/${V_FONTCONFIG}/fontconfig-${V_FONTCONFIG}.tar.xz|sha256sum|rule
+toolkit|fribidi|${V_FRIBIDI}|${MIRROR_GITHUB}/fribidi/fribidi/releases/download/v${V_FRIBIDI}/fribidi-${V_FRIBIDI}.tar.xz|none|github
+toolkit|cairo|${V_CAIRO}|${MIRROR_CAIRO}/cairo-${V_CAIRO}.tar.xz|sums:cairo-${V_CAIRO}.tar.xz.sha256sum.asc|rule
+toolkit|pango|${V_PANGO}|${gnome}/pango/${V_PANGO%.*}/pango-${V_PANGO}.tar.xz|stem.sha256sum|rule
+toolkit|gdk-pixbuf|${V_GDK_PIXBUF}|${gnome}/gdk-pixbuf/${V_GDK_PIXBUF%.*}/gdk-pixbuf-${V_GDK_PIXBUF}.tar.xz|stem.sha256sum|rule
+toolkit|libglvnd|${V_LIBGLVND}|${MIRROR_FDO_GITLAB}/glvnd/libglvnd/-/archive/v${V_LIBGLVND}/libglvnd-v${V_LIBGLVND}.tar.gz|none|rule
+toolkit|libepoxy|${V_LIBEPOXY}|${MIRROR_GITHUB}/anholt/libepoxy/archive/${V_LIBEPOXY}/libepoxy-${V_LIBEPOXY}.tar.gz|none|github
+toolkit|at-spi2-core|${V_AT_SPI2_CORE}|${gnome}/at-spi2-core/${V_AT_SPI2_CORE%.*}/at-spi2-core-${V_AT_SPI2_CORE}.tar.xz|stem.sha256sum|rule
+toolkit|hicolor-icon-theme|${V_HICOLOR_ICON_THEME}|${MIRROR_ICON_THEME}/hicolor-icon-theme-${V_HICOLOR_ICON_THEME}.tar.xz|asc|listing
+toolkit|gtk3|${V_GTK3}|${gnome}/gtk/${V_GTK3%.*}/gtk-${V_GTK3}.tar.xz|stem.sha256sum|rule
+rust|rustc|${V_RUST}|https://static.rust-lang.org/dist/rustc-${V_RUST}-x86_64-unknown-linux-gnu.tar.xz|asc|rule
+rust|cargo|${V_RUST}|https://static.rust-lang.org/dist/cargo-${V_RUST}-x86_64-unknown-linux-gnu.tar.xz|asc|follows:rustc
+rust|rust-std|${V_RUST}|https://static.rust-lang.org/dist/rust-std-${V_RUST}-x86_64-unknown-linux-gnu.tar.xz|asc|follows:rustc
+clang|llvm|${V_LLVM}|${MIRROR_GITHUB}/llvm/llvm-project/releases/download/llvmorg-${V_LLVM}/LLVM-${V_LLVM}-Linux-X64.tar.zst|sig|github
+cbindgen|cbindgen|${V_CBINDGEN}|https://static.crates.io/crates/cbindgen/cbindgen-${V_CBINDGEN}.crate|none|rule
+nasm|nasm|${V_NASM}|https://www.nasm.us/pub/nasm/releasebuilds/${V_NASM}/nasm-${V_NASM}.tar.xz|none|rule
+browser|firefox|${V_FIREFOX}|https://archive.mozilla.org/pub/firefox/releases/${V_FIREFOX}esr/source/firefox-${V_FIREFOX}esr.source.tar.xz|asc|rule
+MANIFEST
+}
+
+# Every source, each row led by "." for the root's or by the image it is built into.
+all_sources() {
+    manifest | sed 's/^/.|/'
+    image_manifest
+}
+
+case "$MODE" in
+    list|list-root|list-image)
+        all_sources | while IFS='|' read -r owner name ver url sig new; do
+            case "$MODE" in
+                list-root)  [[ "$owner" == . ]] || continue ;;
+                list-image) [[ "$owner" == "$IMAGE" ]] || continue ;;
+            esac
+            printf '%-12s %-10s %s %s %s\n' "$name" "$ver" "$url" "$sig" "$new"
+        done
+        exit 0 ;;
+esac
 
 mkdir -p "$KRYPTIK_SOURCES"
 
@@ -221,23 +284,79 @@ fetch_attempt() {
     return 1
 }
 
-lookup_hash() {
-    [[ -f "$KRYPTIK_LOCK" ]] || return 1
-    awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$KRYPTIK_LOCK"
+# crate_lock CRATE: name, version and hash of each crates.io package the crate's Cargo.lock names.
+crate_lock() {
+    python3 -I - "$1" <<'PY'
+import sys, tarfile, tomllib
+with tarfile.open(sys.argv[1], "r:gz") as t:
+    m = next((m for m in t.getmembers() if m.isfile() and m.name.count("/") == 1 and m.name.endswith("/Cargo.lock")), None)
+    if m is None:
+        sys.exit(f"{sys.argv[1]} holds no Cargo.lock at its top")
+    lock = tomllib.loads(t.extractfile(m).read().decode())
+for p in lock.get("package", []):
+    if p.get("source", "").startswith("registry+") and "checksum" in p:
+        print(p["name"], p["version"], p["checksum"])
+PY
+}
+
+# fetch_crates CRATE: the crates its Cargo.lock names, each held to the hash the lock gives. The
+# crate's own hash, in the images' lock, vouches for its Cargo.lock.
+fetch_crates() {
+    local crate="$1" list name ver sum dest n=0
+    list="$(crate_lock "$crate")" || die "$(basename "$crate"): its Cargo.lock could not be read"
+    mkdir -p "${KRYPTIK_SOURCES}/images/crates"
+    while read -r name ver sum; do
+        [[ -n "$name" ]] || continue
+        dest="${KRYPTIK_SOURCES}/images/crates/${name}-${ver}.crate"
+        if [[ -f "$dest" ]]; then
+            [[ "$(sha256_of "$dest")" == "$sum" ]] \
+                || die "CHECKSUM MISMATCH for crate ${name} ${ver}: it CHANGED after $(basename "$crate")'s Cargo.lock locked it. Do not delete it before finding out why."
+        else
+            fetch_one "${KRYPTIK_CRATES:-https://static.crates.io/crates}/${name}/${name}-${ver}.crate" "$dest" \
+                || die "download failed: crate ${name} ${ver}, which $(basename "$crate") builds from"
+            [[ "$(sha256_of "$dest")" == "$sum" ]] \
+                || die "CHECKSUM MISMATCH for crate ${name} ${ver}, downloaded just now: not the hash $(basename "$crate")'s Cargo.lock gives. Remove ${dest} and retry."
+        fi
+        n=$((n + 1))
+    done <<< "$list"
+    ok "$(basename "$crate"): the ${n} crates its Cargo.lock names, verified"
+}
+
+# For the source bundle and the pruning, which keep what a crate's own lock names.
+if [[ "$MODE" == crates ]]; then
+    crate_lock "$CRATE"
+    exit
+fi
+
+lookup_hash() {   # lookup_hash FILE LOCK
+    [[ -f "$2" ]] || return 1
+    awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$2"
 }
 
 if [[ "$MODE" == "lock" ]]; then
     warn "Lock mode: recording checksums of whatever downloads."
-    warn "Audit sources.lock against upstream signatures before committing it."
+    warn "Audit sources.lock and build/images/sources.lock against upstream signatures before committing them."
     : > "${KRYPTIK_LOCK}.new"
+    # A tree without software images has no directory for their lock.
+    if [[ -d "${KRYPTIK_IMAGES_LOCK%/*}" ]]; then : > "${KRYPTIK_IMAGES_LOCK}.new"; fi
 fi
 
 total=0; fetched=0; cached=0
-while IFS='|' read -r name ver url _; do
+while IFS='|' read -r owner name ver url _; do
     [[ -z "$name" ]] && continue
-    total=$((total + 1))
     file="$(basename "$url")"
     dest="${KRYPTIK_SOURCES}/${file}"
+    lock="$KRYPTIK_LOCK"; [[ "$owner" == . ]] || lock="$KRYPTIK_IMAGES_LOCK"
+    if [[ "$owner" != . ]]; then
+        mkdir -p "${KRYPTIK_SOURCES}/images"
+        # One fetched before images/ was made moves in, under --root too, so the root's set is
+        # saved without it.
+        if [[ -f "$dest" && ! -L "$dest" ]]; then mv -- "$dest" "${KRYPTIK_SOURCES}/images/${file}"; fi
+        ln -sfn "images/${file}" "$dest"
+        dest="${KRYPTIK_SOURCES}/images/${file}"
+        [[ "$ROOT_ONLY" -eq 0 ]] || continue
+    fi
+    total=$((total + 1))
 
     was_fetched=no
     if [[ -f "$dest" ]]; then
@@ -254,11 +373,11 @@ while IFS='|' read -r name ver url _; do
     actual="$(sha256_of "$dest")"
 
     if [[ "$MODE" == "lock" ]]; then
-        printf '%s  %s\n' "$actual" "$file" >> "${KRYPTIK_LOCK}.new"
+        printf '%s  %s\n' "$actual" "$file" >> "${lock}.new"
         ok "${name} ${ver}  ${actual:0:16}…"
     else
-        if ! expected="$(lookup_hash "$file")"; then
-            die "no entry for ${file} in sources.lock; run './tools/fetch-sources.sh --lock', then audit it."
+        if ! expected="$(lookup_hash "$file" "$lock")"; then
+            die "no entry for ${file} in ${lock#"$KRYPTIK_ROOT"/}; run './tools/fetch-sources.sh --lock', then audit it."
         fi
         if [[ "$actual" != "$expected" ]]; then
             err "CHECKSUM MISMATCH for ${file}"
@@ -271,8 +390,9 @@ while IFS='|' read -r name ver url _; do
             die "It was already on disk, so it CHANGED after it was locked. Do not delete it before finding out why (docs/supply-chain.md)."
         fi
         ok "${name} ${ver}  verified"
+        [[ "$file" != *.crate ]] || fetch_crates "$dest"
     fi
-done < <(manifest)
+done < <(all_sources)
 
 # Kept in the sources cache for the signature gate, as ftp.gnu.org does not answer every runner.
 keyring="${KRYPTIK_SOURCES}/.keys/gnu-keyring.gpg"
@@ -284,9 +404,12 @@ if [[ ! -s "$keyring" ]]; then
 fi
 
 if [[ "$MODE" == "lock" ]]; then
-    sort -k2 "${KRYPTIK_LOCK}.new" > "$KRYPTIK_LOCK"
-    rm -f "${KRYPTIK_LOCK}.new"
-    ok "wrote $(wc -l < "$KRYPTIK_LOCK") entries to sources.lock"
+    for lock in "$KRYPTIK_LOCK" "$KRYPTIK_IMAGES_LOCK"; do
+        [[ -f "${lock}.new" ]] || continue
+        sort -k2 "${lock}.new" > "$lock"
+        rm -f "${lock}.new"
+        ok "wrote $(wc -l < "$lock") entries to ${lock#"$KRYPTIK_ROOT"/}"
+    done
     warn "NOT YET AUDITED. Verify against upstream signatures before trusting."
 else
     ok "${total} package(s) verified (${fetched} downloaded, ${cached} cached)"

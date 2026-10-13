@@ -1,0 +1,26 @@
+# What the toolkit image keeps for the images built over it, the browser's, and never ships to a zone:
+# headers and pkg-config files, code generators and test tools, documentation (stage 06's pack_image).
+usr/include
+usr/lib/glib-2.0/include
+usr/lib/pkgconfig
+usr/share/aclocal
+usr/share/gettext/its
+usr/share/glib-2.0/codegen
+usr/share/glib-2.0/gdb
+usr/share/gdb
+usr/share/doc
+usr/bin/gdbus-codegen
+usr/bin/gdk-pixbuf-csource
+usr/bin/gdk-pixbuf-pixdata
+usr/bin/gdk-pixbuf-query-loaders
+usr/bin/gi-compile-repository
+usr/bin/gi-decompile-typelib
+usr/bin/gi-inspect-typelib
+usr/bin/glib-compile-resources
+usr/bin/glib-genmarshal
+usr/bin/glib-gettextize
+usr/bin/glib-mkenums
+usr/bin/gtester
+usr/bin/gtester-report
+usr/bin/gtk-builder-tool
+usr/bin/gtk-encode-symbolic-svg

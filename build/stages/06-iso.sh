@@ -48,6 +48,8 @@ KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory=
 COMMIT="$(git -c safe.directory="$TOP" -C "$TOP" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
 ESP_MIB=512
 export KRYPTIK_VERSION
+# This release's software images, beside its payload and channel: two releases' media can share IMG.
+IMAGES="${IMG}/images-${KRYPTIK_VERSION}"
 # Where the image's net zone asks for releases (docs/design/update-channel.md).
 # Empty, the image names no channel and fetches nothing.
 KRYPTIK_CHANNEL="${KRYPTIK_CHANNEL:-}"
@@ -328,17 +330,162 @@ EOF
     cat "${IMG}/root.json"
 }
 
-# make_ext4 TREE IMAGE BYTES UUID: the sysroot's mke2fs (1.47.1), which clamps every time it
+# make_ext4 TREE IMAGE BYTES UUID [LABEL]: the sysroot's mke2fs (1.47.1), which clamps every time it
 # writes to SOURCE_DATE_EPOCH, in the chroot; TREE and IMAGE are under the work tree's images/.
 make_ext4() {
     rm -f "$2"; truncate -s "$3" "$2"
     env KRYPTIK_ROOT="$KRYPTIK_ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
-        "$CHROOTD" run /usr/sbin/mke2fs -q -F -t ext4 -L kryptik-root -O '^has_journal' -U "$4" \
+        "$CHROOTD" run /usr/sbin/mke2fs -q -F -t ext4 -L "${5:-kryptik-root}" -O '^has_journal' -U "$4" \
         -E "root_owner=0:0,hash_seed=$4" -d "/kryptik-work${1#"$KRYPTIK_WORK"}" "/kryptik-work${2#"$KRYPTIK_WORK"}" \
         > /dev/null
 }
 
 root_json() { sed -n "s/^  \"$1\": \"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}\$/\1/p" "${IMG}/root.json"; }
+
+# pack_image NAME VERSION TREE BASE: IMG/images/NAME.img as the root is packed (ext4, then its dm-verity
+# tree at data-blocks*4096), and its line of images.manifest on stdout.
+pack_image() {
+    local name="$1" version="$2" tree="$3" base="$4"
+    local stage; stage="$(mktemp -d "${IMG}/image-stage.XXXXXX")"
+    chmod 0755 "$stage"
+    rsync -aH --numeric-ids "${tree}/" "${stage}/"
+    # What the image keeps for those built over it and never ships (build/images/NAME.strip, a glob
+    # a line under its root): an entry that matches nothing is stale, as in its program list.
+    local strip_list="${KRYPTIK_ROOT}/build/images/${name}.strip" glob gone=()
+    if [[ -f "$strip_list" ]]; then
+        while IFS= read -r glob || [[ -n "$glob" ]]; do
+            [[ -n "$glob" && "$glob" != \#* ]] || continue
+            [[ "$glob" != /* && "$glob" != *..* ]] || { echo "FAIL: image ${name}: ${glob} is not a path under its root" >&2; return 1; }
+            mapfile -t gone < <(compgen -G "${stage}/${glob}")
+            [[ "${#gone[@]}" -gt 0 ]] || { echo "FAIL: image ${name}: ${glob} in ${name}.strip names nothing" >&2; return 1; }
+            rm -rf -- "${gone[@]}"
+        done < "$strip_list"
+    fi
+    strip_root "$stage" >&2
+    if find "$stage" -perm /6000 -print | grep . >&2; then echo "FAIL: a setuid or setgid file in image ${name}" >&2; return 1; fi
+    # Against the image's own accepted findings, each with its reason, or none: the root's list
+    # names the root's objects, and --strict refuses an entry that matches nothing.
+    local accepted="${KRYPTIK_ROOT}/build/images/${name}.accepted"
+    if [[ ! -f "$accepted" ]]; then accepted="${stage}.accepted"; : > "$accepted"; fi
+    # Every check runs before the step fails, so one run shows each finding.
+    local failed=0
+    "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict --accepted "$accepted" "$stage" >&2 || failed=1
+    "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "$stage" --list "${KRYPTIK_ROOT}/build/images/${name}.programs" >&2 || failed=1
+    "${KRYPTIK_ROOT}/tools/check-image-licences.sh" --image "$name" "$stage" >&2 || failed=1
+    [[ "$failed" -eq 0 ]] || { echo "FAIL: image ${name} did not pass the checks above" >&2; return 1; }
+    local bytes; bytes="$(du -sb "$stage" | cut -f1)"
+    local fs_bytes=$(( bytes + bytes / 8 + 16 * 1024 * 1024 ))
+    fs_bytes=$(( (fs_bytes + 4095) / 4096 * 4096 ))
+    local img="${IMAGES}/${name}.img" id
+    # The UUID and directory hash seed, from what the image is and the root it is built for.
+    id="$(printf 'kryptik-image %s %s %s' "$name" "$version" "$base" | sha256_of_stdin)"
+    id="${id:0:8}-${id:8:4}-${id:12:4}-${id:16:4}-${id:20:12}"
+    make_ext4 "$stage" "$img" "$fs_bytes" "$id" "kryptik-${name}"
+    if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+        make_ext4 "$stage" "${img}.again" "$fs_bytes" "$id" "kryptik-${name}"
+        cmp -s "$img" "${img}.again" || { echo "FAIL: two mke2fs runs over image ${name} wrote different images" >&2; return 1; }
+        rm -f "${img}.again"
+    fi
+    local data_blocks=$(( fs_bytes / 4096 ))
+    local salt; salt="$(sha256_of "$img")"
+    local total=$(( fs_bytes + fs_bytes / 64 + 4 * 1024 * 1024 ))
+    truncate -s $(( (total + 4095) / 4096 * 4096 )) "$img"
+    veritysetup format --no-superblock --hash=sha256 --data-block-size=4096 --hash-block-size=4096 \
+        --data-blocks="$data_blocks" --hash-offset="$fs_bytes" --salt="$salt" \
+        --root-hash-file="${stage}.hash" "$img" "$img" >&2
+    local root_hash; root_hash="$(tr -d '\n' < "${stage}.hash")"
+    [[ ${#root_hash} -eq 64 ]] || { echo "image ${name}: bad root hash ${root_hash}" >&2; return 1; }
+    veritysetup verify --no-superblock --hash=sha256 --data-block-size=4096 --hash-block-size=4096 \
+        --data-blocks="$data_blocks" --hash-offset="$fs_bytes" --salt="$salt" "$img" "$img" "$root_hash" >&2
+    rm -rf "$stage" "${stage}.hash" "${stage}.accepted"
+    printf 'image: %s %s bytes=%s sha256=%s data-blocks=%s root-hash=%s salt=%s\n' \
+        "$name" "$version" "$(stat -c %s "$img")" "$(sha256_of "$img")" "$data_blocks" "$root_hash" "$salt"
+}
+
+# Each software image the image stage built (build/stages/04-images.sh), in IMAGES with
+# images.manifest naming them for this root: the release, the root's hash as their base, an image line
+# each by name, a requires line for each built over others that ship, then each image's policy lines
+# (build/images/NAME.needs). sign-images signs it. A layer that does not ship, a toolchain, is left out.
+# With no image built there is no list, as kryptikd refuses one that names none.
+s_images() {
+    local version="$1" base; base="$(root_json root_hash)"
+    local rec name ver line dep reqs needs=() images=() requires=()
+    rm -rf "$IMAGES"; mkdir -p "$IMAGES"
+    # By name in byte order, the list's own, which its requires and needs lines follow. Not by path:
+    # there "probe-x/record" comes before "probe/record", as "-" sorts below "/".
+    for name in $(for rec in "${KRYPTIK_WORK}"/image-build/*/record; do basename "${rec%/record}"; done | LC_ALL=C sort); do
+        rec="${KRYPTIK_WORK}/image-build/${name}/record"
+        [[ -f "$rec" ]] || continue
+        name="$(sed -n 's/^name: //p' "$rec")"; ver="$(sed -n 's/^version: //p' "$rec")"
+        if [[ "$(sed -n 's/^ships: //p' "$rec")" == no ]]; then
+            echo "--- image ${name} ${ver}: a layer others are built over, not shipped ---"
+            continue
+        fi
+        echo "--- image ${name} ${ver} ---"
+        images+=("$(pack_image "$name" "$ver" "$(dirname "$rec")/tree" "$base")")
+        reqs=""
+        for dep in $(sed -n 's/^over: //p' "$rec"); do
+            [[ "$(sed -n 's/^ships: //p' "${KRYPTIK_WORK}/image-build/${dep}/record")" == no ]] || reqs+=" ${dep}"
+        done
+        [[ -z "$reqs" ]] || requires+=("requires: ${name}${reqs}")
+        if [[ -f "${KRYPTIK_ROOT}/build/images/${name}.needs" ]]; then
+            while IFS= read -r line; do
+                [[ -z "$line" || "$line" == \#* ]] || needs+=("needs: ${name} ${line}")
+            done < "${KRYPTIK_ROOT}/build/images/${name}.needs"
+        fi
+    done
+    if [[ "${#images[@]}" -eq 0 ]]; then
+        rmdir "$IMAGES"
+        echo "no software image built (make images): no images.manifest"
+        return 0
+    fi
+    {
+        printf 'KRYPTIK-IMAGES-1\nrelease: %s\nbase: %s\n' "$version" "$base"
+        printf '%s\n' "${images[@]}" | LC_ALL=C sort
+        if [[ "${#requires[@]}" -gt 0 ]]; then printf '%s\n' "${requires[@]}"; fi
+        if [[ "${#needs[@]}" -gt 0 ]]; then printf '%s\n' "${needs[@]}"; fi
+    } > "${IMAGES}/images.manifest"
+    echo "--- images.manifest ---"
+    cat "${IMAGES}/images.manifest"
+}
+
+# images.manifest signed by the release key in kryptik-image, and checked as the guest checks it. A
+# development build also signs the two lists the guest must refuse: release-ns, the same list in the
+# release manifests' namespace, and other-base, a list for another root.
+s_sign_images() {
+    echo "inputs digest: $1"
+    local dir="$IMAGES" m="${IMAGES}/images.manifest"
+    [[ -f "$m" ]] || { echo "no images.manifest: no software image to sign"; return 0; }
+    rm -rf "${m}.sig" "${dir}/controls"
+    # As s_sums: a security key asks on stderr to be touched, and the terminal, when there is one, gets it.
+    local to=/dev/null; { : > /dev/tty; } 2>/dev/null && to=/dev/tty
+    ssh-keygen -Y sign -f "$RELEASE_KEY" -n kryptik-image "$m" >/dev/null 2>"$to" \
+        || { echo "could not sign ${m}"; return 1; }
+    ssh-keygen -Y verify -f "$ANCHOR" -I kryptik-release -n kryptik-image -s "${m}.sig" < "$m" \
+        || { echo "FAIL: the image's anchor refuses the image list's signature"; return 1; }
+    if ssh-keygen -Y verify -f "$ANCHOR" -I kryptik-release -n kryptik-release -s "${m}.sig" < "$m" >/dev/null 2>&1; then
+        echo "FAIL: the image list's signature passes for a release manifest's"; return 1
+    fi
+    if [[ "$ROLE" == development ]]; then
+        mkdir -p "${dir}/controls/release-ns" "${dir}/controls/other-base"
+        cp "$m" "${dir}/controls/release-ns/manifest"
+        ssh-keygen -Y sign -f "$RELEASE_KEY" -n kryptik-release "${dir}/controls/release-ns/manifest" >/dev/null 2>&1 \
+            || { echo "could not sign the release-ns control"; return 1; }
+        sed "s/^base: .*/base: $(printf '0%.0s' {1..64})/" "$m" > "${dir}/controls/other-base/manifest"
+        ssh-keygen -Y sign -f "$RELEASE_KEY" -n kryptik-image "${dir}/controls/other-base/manifest" >/dev/null 2>&1 \
+            || { echo "could not sign the other-base control"; return 1; }
+    fi
+    find "$dir" -type f | LC_ALL=C sort
+}
+
+# What s_images reads: each built image's record, the image definitions, and the root it is built for.
+images_inputs() {
+    local f
+    for f in "${KRYPTIK_WORK}"/image-build/*/record "${KRYPTIK_ROOT}"/build/images/*.* "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" \
+             "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${IMG}/root.json"; do
+        if [[ -f "$f" ]]; then printf '%s %s\n' "$f" "$(sha256_of "$f")"; fi
+    done
+}
 
 verity_table() {   # verity_table <dev>: the root image's dm-verity table
     printf '0 %s verity 1 %s %s 4096 4096 %s %s sha256 %s %s 1 panic_on_corruption' \
@@ -429,39 +576,76 @@ s_esp() {
     echo "--- ESP (usb) ---"; mdir -i "${IMG}/esp-usb.img" -/ :: | grep -vE '^\s*$'
 }
 
-make_gpt_image() {   # make_gpt_image OUT ESP-IMG ROOT-IMG ROOT-LABEL
-    local out="$1" esp="$2" root="$3" label="$4"
-    local esp_bytes root_bytes
+# The medium's copy of this release's software images: the list, its signature and each image, not
+# the controls a development build signs for the suites. Fails when the build made no list.
+medium_images() {   # medium_images DIR
+    [[ -f "${IMAGES}/images.manifest" ]] || return 1
+    rm -rf "$1"; mkdir -p "$1"; chmod 0755 "$1"
+    install -m 0644 "${IMAGES}"/images.manifest* "${IMAGES}"/*.img "$1/"
+}
+
+# make_images_fs DIR OUT: DIR as the FAT32 of the USB's kryptik-images partition, as the ESP is made.
+# Whoever can write the stick can craft this filesystem, and the installer mounts it: FAT is the
+# parser the ESP already needs, where ext4's is far larger.
+make_images_fs() {
+    local f
+    for f in "$1"/*; do
+        (( $(stat -c %s "$f") < 4 * 1024 * 1024 * 1024 )) || { echo "$(basename "$f") is 4 GiB or more, past what FAT32 holds"; return 1; }
+    done
+    local bytes; bytes="$(du -sb "$1" | cut -f1)"
+    local mib=$(( (bytes + bytes / 16) / 1048576 + 16 ))
+    (( mib >= 64 )) || mib=64
+    local id; id="$(printf 'kryptik-images %s %s' "$KRYPTIK_VERSION" "$(root_json root_hash)" | sha256_of_stdin)"
+    rm -f "$2"
+    truncate -s $(( mib * 1048576 )) "$2"
+    mkfs.vfat -F 32 -n KRYPTIKIMG -i "${id:0:8}" "$2" >/dev/null
+    mcopy -i "$2" "$1"/* ::/
+}
+
+make_gpt_image() {   # make_gpt_image OUT ESP-IMG ROOT-IMG ROOT-LABEL [IMAGES-FS]
+    local out="$1" esp="$2" root="$3" label="$4" imgfs="${5:-}"
+    local esp_bytes root_bytes images_sectors=0
     esp_bytes="$(stat -c %s "$esp")"; root_bytes="$(stat -c %s "$root")"
     local esp_sectors=$(( esp_bytes / 512 ))
     local root_sectors=$(( (root_bytes + 1048575) / 1048576 * 2048 ))
+    [[ -z "$imgfs" ]] || images_sectors=$(( ($(stat -c %s "$imgfs") + 1048575) / 1048576 * 2048 ))
     local esp_start=2048
     local root_start=$(( esp_start + esp_sectors ))
-    local total=$(( root_start + root_sectors + 2048 + 34 ))
+    local images_start=$(( root_start + root_sectors ))
+    local total=$(( images_start + images_sectors + 2048 + 34 ))
+    local table="label: gpt
+unit: sectors
+start=${esp_start}, size=${esp_sectors}, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=\"kryptik-esp\"
+start=${root_start}, size=${root_sectors}, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=\"${label}\""
+    # The release's software images, after the root: the installer copies them into the store.
+    [[ -z "$imgfs" ]] || table+="
+start=${images_start}, size=${images_sectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"kryptik-images\""
     rm -f "$out"
     truncate -s $(( total * 512 )) "$out"
-    sfdisk --quiet --wipe always "$out" <<EOF
-label: gpt
-unit: sectors
-start=${esp_start}, size=${esp_sectors}, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="kryptik-esp"
-start=${root_start}, size=${root_sectors}, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name="${label}"
-EOF
+    sfdisk --quiet --wipe always "$out" <<< "$table"
     dd if="$esp" of="$out" bs=512 seek="$esp_start" conv=notrunc,sparse status=none
     dd if="$root" of="$out" bs=512 seek="$root_start" conv=notrunc,sparse status=none
+    [[ -z "$imgfs" ]] || dd if="$imgfs" of="$out" bs=512 seek="$images_start" conv=notrunc,sparse status=none
     sfdisk -l "$out" | sed 's/^/  /'
 }
 
 s_usb() {
     echo "inputs digest: $1"
-    local out="${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img"
-    make_gpt_image "$out" "${IMG}/esp-usb.img" "${IMG}/kryptik-root.img" kryptik-media
+    local out="${IMG}/kryptik-${KRYPTIK_VERSION}-usb.img" fs=()
+    if medium_images "${IMG}/medium-images"; then
+        [[ -f "${IMG}/medium-images/images.manifest.sig" ]] || { echo "images.manifest is not signed"; return 1; }
+        make_images_fs "${IMG}/medium-images" "${IMG}/medium-images.img"
+        fs=("${IMG}/medium-images.img")
+    fi
+    make_gpt_image "$out" "${IMG}/esp-usb.img" "${IMG}/kryptik-root.img" kryptik-media "${fs[@]}"
+    rm -rf "${IMG}/medium-images" "${IMG}/medium-images.img"
     sha256sum "$out" | sed "s| .*/| |" > "${out}.sha256"
     echo "usb image: $(stat -c %s "$out") bytes ($(du -h "$out" | cut -f1) on disk)"
     cat "${out}.sha256"
 }
 
-make_iso() {   # make_iso OUT ESP-IMG
-    local out="$1" esp="$2"
+make_iso() {   # make_iso OUT ESP-IMG [IMAGES-DIR]
+    local out="$1" esp="$2" imgdir="${3:-}"
     local t; t="$(mktemp -d)"
     cp "$SB_CERT" "$t/kryptik-sb.crt"
     cp "${IMG}/root.json" "$t/"
@@ -472,6 +656,12 @@ appended partition (see root.json); the ISO kernel names its offset. To boot
 from a USB stick use the USB image instead: this ISO's kernel looks for
 /dev/sr0.
 EOF
+    local graft=(esp.img="$esp" kryptik-sb.crt="$t/kryptik-sb.crt" root.json="$t/root.json" README.txt="$t/README.txt")
+    if [[ -n "$imgdir" ]]; then
+        printf '%s\n' "The software images under images/ are named by images.manifest, which the" \
+            "release key signs (images.manifest.sig); the installer copies them." >> "$t/README.txt"
+        graft+=(images="$imgdir")
+    fi
     rm -f "$out"
     # Linux filesystem data, as a GUID: xorriso takes an MBR type byte or a
     # GUID, not sfdisk's 0x8300 shorthand.
@@ -479,8 +669,7 @@ EOF
     xorriso -as mkisofs -quiet -o "$out" -iso-level 3 -V KRYPTIK -J -R \
         -e esp.img -no-emul-boot -isohybrid-gpt-basdat \
         -append_partition 2 0FC63DAF-8483-4772-8E79-3D69D8477DE4 "${IMG}/kryptik-root.img" -appended_part_as_gpt \
-        -graft-points esp.img="$esp" kryptik-sb.crt="$t/kryptik-sb.crt" root.json="$t/root.json" README.txt="$t/README.txt" \
-        2>&1 | grep -vE '^\s*$'
+        -graft-points "${graft[@]}" 2>&1 | grep -vE '^\s*$'
     rc="${PIPESTATUS[0]}"
     rm -rf "$t"
     [[ "$rc" -eq 0 ]] || { echo "xorriso exited ${rc}"; return 1; }
@@ -494,7 +683,13 @@ s_bind_iso() {
     echo "inputs digest: $1"
     echo "--- pass 1: layout (a placeholder ESP of the final size) ---"
     make_esp "${IMG}/esp-iso.img" slot-a .efi
-    make_iso "${IMG}/layout.iso" "${IMG}/esp-iso.img"
+    local imgdir=""
+    if medium_images "${IMG}/iso-images"; then
+        imgdir="${IMG}/iso-images"
+        # Signed at sign time: one 2048-byte block holds the signature, as it holds this.
+        [[ -f "${imgdir}/images.manifest.sig" ]] || printf 'placeholder\n' > "${imgdir}/images.manifest.sig"
+    fi
+    make_iso "${IMG}/layout.iso" "${IMG}/esp-iso.img" ${imgdir:+"$imgdir"}
     local start; start="$(part2_start "${IMG}/layout.iso")"
     [[ -n "$start" ]] || { echo "could not read the appended partition's start"; sfdisk -d "${IMG}/layout.iso"; return 1; }
     echo "appended root partition starts at sector ${start}"
@@ -508,7 +703,7 @@ s_bind_iso() {
         "$total_sectors" "$start" "$(verity_table /dev/dm-0)" "$COMMON_ARGS" > "${IMG}/cmdlines/media-iso.txt"
     printf '%s\n' "$start" > "${IMG}/iso-root-start"
     cat "${IMG}/cmdlines/media-iso.txt"
-    rm -f "${IMG}/layout.iso" "${IMG}/esp-iso.img"
+    rm -rf "${IMG}/layout.iso" "${IMG}/esp-iso.img" "${IMG}/iso-images"
     echo "--- bind the ISO kernel ---"
     bind_in_chroot media-iso
 }
@@ -521,7 +716,13 @@ s_iso() {
     sign_one media-iso
     echo "--- pass 2: the real ESP and ISO ---"
     make_esp "${IMG}/esp-iso.img" media-iso
-    make_iso "$iso" "${IMG}/esp-iso.img"
+    local imgdir=""
+    if medium_images "${IMG}/iso-images"; then
+        imgdir="${IMG}/iso-images"
+        [[ -f "${imgdir}/images.manifest.sig" ]] || { echo "images.manifest is not signed"; return 1; }
+    fi
+    make_iso "$iso" "${IMG}/esp-iso.img" ${imgdir:+"$imgdir"}
+    rm -rf "${IMG}/iso-images"
     local start2; start2="$(part2_start "$iso")"
     [[ "$start2" == "$start" ]] || { echo "FAIL: the root partition moved from where the ISO kernel was bound (${start} -> ${start2})"; return 1; }
     echo "ok: root partition start unchanged at ${start2}"
@@ -573,9 +774,20 @@ s_payload() {
     cp "${IMG}/kernels/slot-a.signed.efi" "$out/kryptik-a.efi"
     cp "${IMG}/kernels/slot-b.signed.efi" "$out/kryptik-b.efi"
     cp "${IMG}/root.json" "$out/"
+    # The release's software images, signed for this root and each compressed for the trip as the
+    # root image is: apply decompresses them into the state partition's store.
+    local images=() img
+    if [[ -f "${IMAGES}/images.manifest.sig" ]]; then
+        cp "${IMAGES}/images.manifest" "${IMAGES}/images.manifest.sig" "$out/"
+        images=(images.manifest images.manifest.sig)
+        for img in "${IMAGES}"/*.img; do
+            zstd -q -T0 -19 "$img" -o "$out/$(basename "$img").zst" || { echo "could not compress ${img}"; return 1; }
+            images+=("$(basename "$img").zst")
+        done
+    fi
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" create --out "$out/manifest" --name kryptik \
         --version "$KRYPTIK_VERSION" --role "$ROLE" --root "$out" \
-        kryptik-root.img.zst kryptik-a.efi kryptik-b.efi root.json
+        kryptik-root.img.zst kryptik-a.efi kryptik-b.efi root.json "${images[@]}"
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" sign --key "$RELEASE_KEY" "$out/manifest"
     # Verify as the guest will: the image's anchor, --exact.
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$ANCHOR" --principal kryptik-release \
@@ -694,25 +906,36 @@ check_bound() {
         grep -q -a -F -e "$(root_json root_hash)" "${IMG}/kernels/${v}.efi" || die "${v}.efi is not bound to this root"
     done
     ok "the bound root trusts ${ANCHOR}, and its four kernels are bound to it"
+    if [[ -f "${IMAGES}/images.manifest" ]]; then
+        [[ "$(sed -n 's/^base: //p' "${IMAGES}/images.manifest")" == "$(root_json root_hash)" ]] || die "images.manifest is for another root"
+        local name sha
+        while read -r _ name _ _ sha _; do
+            sha="${sha#sha256=}"
+            [[ "$(sha256_of "${IMAGES}/${name}.img")" == "$sha" ]] || die "image ${name} changed since images.manifest named it"
+        done < <(grep '^image: ' "${IMAGES}/images.manifest")
+        ok "the bound images are the ones images.manifest names"
+    fi
 }
 
 # --- run --------------------------------------------------------------------
 [[ "$PHASE" != sign ]] || check_bound
 bound rootfs        s_rootfs "$KRYPTIK_VERSION" "$(cat "${KRYPTIK_ROOT}/build/config/image-excludes.txt" "${KRYPTIK_ROOT}/build/config/setuid-allowlist.txt" "${KRYPTIK_ROOT}/build/config/capability-allowlist.txt" "${KRYPTIK_ROOT}/tools/audit-setuid.sh" "${KRYPTIK_ROOT}/build/config/artifact-accepted.txt" "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" "${KRYPTIK_ROOT}/build/config/image-programs.txt" "${KRYPTIK_ROOT}/tools/check-image-programs.sh" | sha256_of_stdin)" "$KRYPTIK_CHANNEL" "$ROLE" "$(_hash_file "$ANCHOR")"
+bound images        s_images "$KRYPTIK_VERSION" "$(images_inputs | sha256_of_stdin)"
 bound cmdlines      s_cmdlines "$(_hash_file "${IMG}/root.json")"
 bound bind-kernels  s_bind_kernels "$(cat "${IMG}"/cmdlines/{slot-a,slot-b,media-usb}.txt | sha256_of_stdin)"
-bound bind-iso      s_bind_iso "$(cat "${IMG}/root.json" "$SB_CERT" | sha256_of_stdin)"
+bound bind-iso      s_bind_iso "$(cat "${IMG}/root.json" "$SB_CERT" | sha256_of_stdin)$(_hash_file "${IMAGES}/images.manifest")"
 if [[ "$PHASE" == bind ]]; then
     echo
     ok "Stage 06 bound ${KRYPTIK_VERSION} in ${IMG}: KRYPTIK_MEDIA_PHASE=sign signs it"
     exit 0
 fi
+step sign-images    s_sign_images "$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "$ANCHOR")"
 step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$SB_CERT")"
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
-step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"
-step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/kernels/media-iso.efi" "${IMG}/root.json" "${IMG}/iso-root-start" | sha256_of_stdin)"
+step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "${IMAGES}/images.manifest.sig")"
+step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/kernels/media-iso.efi" "${IMG}/root.json" "${IMG}/iso-root-start" | sha256_of_stdin)$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "${IMAGES}/images.manifest.sig")"
 step sums           s_sums "$(cat "${IMG}/kryptik-${KRYPTIK_VERSION}"{-usb.img,.iso}.sha256 | sha256_of_stdin)$(_hash_file "$ANCHOR")"
-step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)" "${LATEST_KEY:+with a statement key}"
+step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)$(_hash_file "${IMAGES}/images.manifest.sig")" "${LATEST_KEY:+with a statement key}"
 step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" "${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS.sig" "$ANCHOR" | sha256_of_stdin)"
 echo
 ok "Stage 06 finished: ${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"

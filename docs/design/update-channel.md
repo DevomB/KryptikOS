@@ -89,8 +89,8 @@ latest.sig    an OpenSSH signature over those bytes, namespace kryptik-latest
 reach, and the release key signs only in a release run its maintainer
 approves, so the build uses two.
 The anchor stage 06 puts on the image lists the release key as
-`kryptik-release namespaces="kryptik-release,kryptik-media"` (manifests, and
-the media's checksums) and the statement key as
+`kryptik-release namespaces="kryptik-release,kryptik-media,kryptik-image"`
+(manifests, the media's checksums and image lists) and the statement key as
 `kryptik-latest namespaces="kryptik-latest"`, each honoured in its own
 namespaces only, and no key under both. While a key is replaced it lists the
 old one and the new one. A development build proves the split with a probe
