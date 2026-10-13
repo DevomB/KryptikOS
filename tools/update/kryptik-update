@@ -9,6 +9,7 @@
 #   kryptik-update check-manifest DIR       verify only: signature, role, version
 #   kryptik-update check-pointer FILE SIG   verify only: the pointer's signature
 #   kryptik-update check-release DIR        verify only: signature, role; any version
+#   kryptik-update check-images DIR         verify only: an image list's signature
 #
 #   --retry     arm again a slot whose last trial failed
 #   --recovery  accept an older signed release (a downgrade)
@@ -26,6 +27,8 @@ NAMESPACE=kryptik-release
 MAGIC=KRYPTIK-MANIFEST-1
 LATEST_NAMESPACE=kryptik-latest
 LATEST_MAGIC=KRYPTIK-LATEST-1
+IMAGE_NAMESPACE=kryptik-image
+IMAGES_MAGIC=KRYPTIK-IMAGES-1
 # On the verified root: never under /etc, which the state partition can shadow.
 SIGNERS=/usr/share/kryptik/trust/release-signers
 ROLE_FILE=/usr/share/kryptik/trust/required-role
@@ -42,7 +45,7 @@ SNAP=""
 # outside their own directory. They read what the net zone sent, so they do not
 # run as root: kryptikd runs them as nobody, on copies.
 case "${1:-}" in
-    check-manifest|check-pointer|check-release)
+    check-manifest|check-pointer|check-release|check-images)
         [ "$(id -u)" != 0 ] || die "$1 does not run as root; kryptikd runs it as nobody"
         tools="ssh-keygen sha256sum cp awk sed sort head mktemp" ;;
     *)
@@ -56,7 +59,7 @@ done
 # Only partitions on the root's own disk; an ambiguous label is refused, never
 # resolved by taking the first (devices.sh).
 case "${1:-}" in
-    check-manifest|check-pointer|check-release) ;;
+    check-manifest|check-pointer|check-release|check-images) ;;
     *)
         # shellcheck source=/dev/null
         . /usr/libexec/kryptik/devices.sh
@@ -299,6 +302,19 @@ cmd_check_pointer() {
     verify_signed "$SNAP/latest" "$SNAP/latest.sig" "$LATEST_NAMESPACE" pointer
 }
 
+# Exit 0 if a copy of DIR's image list is signed by an enrolled key in the
+# image namespace. What it lists, and whether it fits the running root,
+# kryptikd judges (images.rs).
+cmd_check_images() {
+    [ $# = 1 ] && [ -d "$1" ] || die "check-images needs the directory holding manifest and manifest.sig"
+    SNAP="${SNAP:-$(mktemp -d /run/kryptik/update-manifest.XXXXXX 2>/dev/null || mktemp -d)}"
+    chmod 0700 "$SNAP"
+    cp -- "$1/manifest" "$SNAP/manifest" || die "cannot copy the image list"
+    cp -- "$1/manifest.sig" "$SNAP/manifest.sig" || die "cannot copy the image list's signature"
+    [ "$(head -1 "$SNAP/manifest")" = "$IMAGES_MAGIC" ] || die "the image list is not a $IMAGES_MAGIC"
+    verify_signed "$SNAP/manifest" "$SNAP/manifest.sig" "$IMAGE_NAMESPACE" "image list"
+}
+
 # For the clock's floor (docs/design/time.md): the manifest a slot was applied
 # from, kept on the state partition, believed only as apply would believe it,
 # in any version order, and the created date its signed manifest names.
@@ -447,5 +463,6 @@ case "${1:-}" in
     check-manifest) shift; cmd_check_manifest "$@" ;;
     check-pointer)  shift; cmd_check_pointer "$@" ;;
     check-release)  shift; cmd_check_release "$@" ;;
-    *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    check-images)   shift; cmd_check_images "$@" ;;
+    *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

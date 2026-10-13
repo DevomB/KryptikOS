@@ -189,14 +189,22 @@ up ADR-001 in the zones where the applications run.
 
   ```text
   KRYPTIK-IMAGES-1
-  base: 1.2.0
-  image: browser 140.4.0 root-hash=<64 hex> salt=<hex> bytes=<n> sha256=<64 hex>
+  release: 1.2.0
+  base: <the root's dm-verity root hash>
+  image: browser 140.4.0 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
   needs: browser allow-syscall seccomp
   ```
 
   signed by the release key in the namespace `kryptik-image`, which the
-  anchor grants the release key alone.
-- **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, root
+  anchor grants the release key alone. The base is the root hash, not the
+  version, as a version can name two builds; kryptikd reads the running one
+  from the signed kernel's command line. The verity parameters are the
+  root's (SHA-256, 4096-byte blocks, no superblock, the hash tree after
+  `data-blocks`), so every value kryptikd passes to dm-verity is signed.
+  Image lines are sorted by name and a needs line uses the policy-file
+  syntax; anything else in the file refuses it.
+- **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
+  the list for each root as `<base>.manifest` and `.manifest.sig`, root
   only. Zone 0 keeps the generation the committed root uses and, during a
   trial, the one the trial root uses.
 - **Fetched** by the same verbs as a release. The statement of what is
@@ -204,10 +212,12 @@ up ADR-001 in the zones where the applications run.
   only images whose hash it does not hold, never past the signed size.
 - **Mounted** by kryptikd on first use: a read-only loop device, dm-verity
   with the manifest's root hash, and ext4 mounted read-only, `nosuid,nodev`
-  at `/run/kryptik/images/<name>`. A mapping that dm-verity has marked
-  corrupted is not used again: the next start of a zone that names the image
-  is refused, with the reason, until the image is fetched again. For each distinct set of images a zone
-  names, kryptikd mounts a read-only overlay (no upper directory; the
+  under `/run/kryptik/images/<name>/`, one directory per root hash. Each
+  start checks the list's signature again, as nobody, on a copy of the bytes
+  it then reads. A mapping that dm-verity has marked corrupted is not used
+  again: the next start of a zone that names the image is refused, with the
+  reason, until the image is fetched again. For each distinct set of images
+  a zone names, kryptikd mounts a read-only overlay (no upper directory; the
   images' `usr` over the root's `/usr`) at `/run/kryptik/usr/<set>` in the
   initial namespace, and the zone's bind of `/usr` takes that instead. Since
   zone 0 mounts it and the zone only receives a bind, the hardened kernel's
@@ -217,7 +227,7 @@ up ADR-001 in the zones where the applications run.
 
   ```toml
   [software]
-  images = ["browser"]
+  images = "browser"
   ```
 
   `untrusted` names the browser image too, since the
