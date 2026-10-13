@@ -201,7 +201,7 @@ A desktop someone can live in, built the same way.
   to, through a descriptor and a reader of Kryptik's own, never mounted;
   FAT first, exFAT a named gap, FUSE a later decision of its own
   ([removable storage](design/removable-storage.md)).
-- **A camera.** Proposed (ADR-026): granted to one zone at a time, as the
+- **A camera.** Decided (ADR-026): granted to one zone at a time, as the
   microphone is, its driver loaded only for the grant
   ([camera](design/camera.md)).
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to

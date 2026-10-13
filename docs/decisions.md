@@ -575,7 +575,7 @@ which would let every program there browse the stick, stays out: it adds a
 kernel subsystem, and needs a decision of its own, weighed against
 `CONFIG_FUSE_FS`, if copying first proves too clumsy.
 
-## ADR-026 (proposed): A camera is granted to one zone at a time, its driver loaded only for the grant
+## ADR-026: A camera is granted to one zone at a time, its driver loaded only for the grant
 
 The kernel builds Video for Linux and `uvcvideo` as modules, and
 `uvcvideo` never loads by a device's alias. In the chrome the user grants
@@ -584,8 +584,8 @@ loads the driver and makes the camera's node in a directory it bound into
 that zone at its start, the zone's `/dev/video0` a link there. The grant
 ends with the user's gesture, the zone's stop or the screen locking: the
 node goes, the driver unbinds from the device, so every descriptor open
-on it fails, and the module unloads
-([camera](design/camera.md)).
+on it fails, and the module unloads; one that will not stays until the next
+grant, the grant over all the same ([camera](design/camera.md)).
 
 **Why:** a video call in a zone's browser needs a camera, and a driver
 that parses what any USB device says about itself, as `uvcvideo` does,

@@ -6,7 +6,7 @@ kernel builds no video support at all. This design weighs adding one against
 the kernel code it brings into every zone's kernel. It keeps the rules the
 microphone set: one zone at a time, the user's gesture in zone 0 the only way
 to grant it, and the grant visible for as long as it lasts.
-[ADR-026](../decisions.md) is proposed.
+[ADR-026](../decisions.md) decides it: the grant.
 
 ## What the kernel would add
 
@@ -52,10 +52,10 @@ to grant it, and the grant visible for as long as it lasts.
   V4L2 device or PipeWire, both more kernel or more daemon. Rejected for
   now.
 
-## Recommendation
+## The decision
 
-A camera granted like the microphone, with the driver loaded only for a
-grant.
+ADR-026 decides: a camera granted like the microphone, with the driver
+loaded only for a grant.
 
 - **The grant.** In the chrome, `k<N>` grants zone N the camera, as `c<N>`
   grants the microphone. kryptikd loads `uvcvideo`, finds the camera's node
@@ -69,11 +69,19 @@ grant.
   tmpfs that allows device nodes; the directory is root's, and a zone, in
   a user namespace of its own, can make no device node anyway. The link
   points nowhere until a grant, when kryptikd makes the node there, owned
-  by the zone's uid, mode 0600. Nothing mounts into a running zone.
+  by the zone's uid, mode 0600. Nothing mounts into a running zone. The
+  open has two gates to pass besides the node's mode: the directory's mount
+  must allow device nodes (not `nodev`), and the zone's Landlock ruleset
+  must grant reading, writing and device ioctls beneath it, as it does for
+  `/dev`, since the ruleset is checked on the path the link leads to.
 - **The end.** `k` alone, the zone's stop, or the screen locking takes the
   camera back: no zone watches the room while the user is away. kryptikd
   removes the node, unbinds the driver from the device so that every
-  descriptor open on it fails from then on, and unloads `uvcvideo`.
+  descriptor open on it fails from then on, and unloads `uvcvideo`
+  (`modprobe -r`, which takes the V4L2 core and videobuf2 with it once
+  nothing uses them). Should the module not unload, something still
+  holding it, the grant ends all the same, the node gone and the driver
+  unbound; the module stays until the next grant, and the chrome says so.
 - **What the user sees.** While a zone holds the camera, a window of the
   chrome's names the zone, as the microphone's does. The camera's light, on
   machines that tie it to the sensor in hardware, says when it captures.
