@@ -62,17 +62,19 @@ runs:
         key: image-sources-v1-${{ hashFiles('build/images/sources.lock') }}
         restore-keys: image-sources-v1-
 
-    # A cache evicted since the build job is fetched again, not taken as gone.
-    - if: (inputs.sources != '' && steps.sources.outputs.cache-hit != 'true') || (inputs.image-sources != '' && steps.image_sources.outputs.cache-hit != 'true')
+    # A cache evicted since the build job is fetched again, not taken as gone. With the images' sources
+    # this runs on two hits as well: the root's set restored may be one saved without the links that
+    # name each image source in sources/ (main's, or an older set's), and only this pass makes them.
+    - if: (inputs.sources != '' && steps.sources.outputs.cache-hit != 'true') || inputs.image-sources != ''
       shell: bash
       env:
-        MODE: ${{ inputs.sources }}
         IMAGES: ${{ inputs.image-sources }}
+        SAVES: ${{ (inputs.sources == 'fetch' && steps.sources.outputs.cache-hit != 'true') || (inputs.image-sources == 'fetch' && steps.image_sources.outputs.cache-hit != 'true') }}
       run: |
         if [[ -n "$IMAGES" ]]; then make sources; else ./tools/fetch-sources.sh --root; fi
         ./tools/prune-sources.sh
-        # Fetches the signatures into the saved set for CI's gate; this pass is not the verdict.
-        [[ "$MODE" != fetch ]] || ./tools/verify-signatures.sh > /dev/null 2>&1 || true
+        # Fetches the signatures into the set saved below for CI's gate; this pass is not the verdict.
+        [[ "$SAVES" != true ]] || ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
     # Saved now rather than at the end, so a job that fails later does not refetch the new files.
     - if: inputs.sources == 'fetch' && steps.sources.outputs.cache-hit != 'true'
