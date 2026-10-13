@@ -17,7 +17,9 @@
 # timeout and wakes the guest, which waits three minutes at the state prompt before the
 # passphrase, typed again, resumes it. Last, a read left waiting on the suspended device keeps
 # the kernel from sleeping when the guest is asked again: the refusal is told, and the passphrase
-# still brings the partition back.
+# still brings the partition back. Then each of what else has the machine sleep: the power
+# button, pressed through QMP, with the session unlocked and with it locked, kryptik-lock
+# --suspend with a lock up already, and idleness after the lock.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -73,6 +75,16 @@ DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
     "expect:GT KEY-LOCK 2" "key:alt+shift+l" \
     "expect:GT SLEEPING 2" "asleep-or:120:GT DID-NOT-SLEEP 2" "if-asleep:sleep:5" "if-asleep:wakeup" \
     "expect:GT LOCK-TYPE-STATE 3" "${SPASS_KEYS[@]}" "key:ret" \
+    "expect:GT POWER-KEY 1" "powerkey" "asleep-or:120:GT DID-NOT-SLEEP 3" "if-asleep:sleep:5" "if-asleep:wakeup" \
+    "expect:GT LOCK-TYPE-STATE 4" "${SPASS_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-LOCK 3" "key:alt+shift+l" \
+    "expect:GT POWER-KEY 2" "powerkey" "asleep-or:120:GT DID-NOT-SLEEP 4" "if-asleep:sleep:5" "if-asleep:wakeup" \
+    "expect:GT LOCK-TYPE-STATE 5" "${SPASS_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-LOCK 4" "key:alt+shift+l" \
+    "expect:GT SLEEPING 3" "asleep-or:120:GT DID-NOT-SLEEP 5" "if-asleep:sleep:5" "if-asleep:wakeup" \
+    "expect:GT LOCK-TYPE-STATE 6" "${SPASS_KEYS[@]}" "key:ret" \
+    "expect:GT SLEEPING 4" "asleep-or:120:GT DID-NOT-SLEEP 6" "if-asleep:sleep:5" "if-asleep:wakeup" \
+    "expect:GT LOCK-TYPE-STATE 7" "${SPASS_KEYS[@]}" "key:ret" \
     "expect:GT END" "expect:SCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
@@ -88,7 +100,9 @@ grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in second-passphrase session-up zones-ticking state-suspended zones-frozen client-told-suspended lock-asks-for-state \
             nothing-else-waits lock-refuses-wrong-passphrase passphrase-resumes zones-thawed writer-resumes zones-tick-again \
             slept-and-woke woke-to-state-prompt prompt-outlasts-watchdog resumed-after-sleep zones-thawed-after-sleep \
-            sleep-refusal-told resumed-after-refusal; do
+            sleep-refusal-told resumed-after-refusal \
+            power-key-sleeps power-key-resumes power-key-sleeps-locked power-key-locked-resumes \
+            lock-pid-written lock-up-sleeps lock-up-resumes lock-pid-removed idle-sleeps idle-sleep-resumes; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 

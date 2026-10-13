@@ -664,6 +664,69 @@ static void endpopups(void);
 \t\t\tendpopups();
 \t\t\tclient_notify_enter(selmon->lock_surface->surface,
 """),
+    # The lid: dwl leaves switch devices alone, and a lid is one. Closed, it runs
+    # suspendcmd, the lock that then has the machine sleep, as the power key does;
+    # it runs while the session is locked too, when that lock is asked instead.
+    ("""#include <wlr/types/wlr_subcompositor.h>
+""",
+     """#include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_switch.h>
+"""),
+    ("""static void createpointer(struct wlr_pointer *pointer);
+""",
+     """static void createpointer(struct wlr_pointer *pointer);
+static void createswitch(struct wlr_switch *sw);
+"""),
+    ("""\tcase WLR_INPUT_DEVICE_POINTER:
+\t\tcreatepointer(wlr_pointer_from_input_device(device));
+\t\tbreak;
+""",
+     """\tcase WLR_INPUT_DEVICE_POINTER:
+\t\tcreatepointer(wlr_pointer_from_input_device(device));
+\t\tbreak;
+\tcase WLR_INPUT_DEVICE_SWITCH:
+\t\tcreateswitch(wlr_switch_from_input_device(device));
+\t\tbreak;
+"""),
+    ("""void
+inputdevice(struct wl_listener *listener, void *data)
+{
+""",
+     """/* Kryptik: a switch, the lid's or another's, with its listeners. */
+typedef struct {
+\tstruct wl_listener toggle;
+\tstruct wl_listener destroy;
+} Switch;
+
+static void
+switchtoggle(struct wl_listener *listener, void *data)
+{
+\tstruct wlr_switch_toggle_event *event = data;
+\tif (event->switch_type == WLR_SWITCH_TYPE_LID && event->switch_state == WLR_SWITCH_STATE_ON)
+\t\tspawn(&(Arg){.v = suspendcmd});
+}
+
+static void
+switchdestroy(struct wl_listener *listener, void *data)
+{
+\tSwitch *s = wl_container_of(listener, s, destroy);
+\twl_list_remove(&s->toggle.link);
+\twl_list_remove(&s->destroy.link);
+\tfree(s);
+}
+
+void
+createswitch(struct wlr_switch *sw)
+{
+\tSwitch *s = ecalloc(1, sizeof(*s));
+\tLISTEN(&sw->events.toggle, &s->toggle, switchtoggle);
+\tLISTEN(&sw->base.events.destroy, &s->destroy, switchdestroy);
+}
+
+void
+inputdevice(struct wl_listener *listener, void *data)
+{
+"""),
 ]
 
 

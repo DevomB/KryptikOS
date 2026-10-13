@@ -8,6 +8,10 @@
 #                                    the watchdog's timeout, then wake it; or for
 #                                    GT DID-NOT-SLEEP 1, the kernel's refusal
 #   GT SLEEPING 2                    the same, the refusal expected (GT DID-NOT-SLEEP 2)
+#   GT POWER-KEY 1|2                 press the power button, then as GT SLEEPING (3, 4)
+#   GT KEY-LOCK 3|4                  press Alt+Shift+l
+#   GT SLEEPING 3|4                  as GT SLEEPING 1, a refusal told as GT DID-NOT-SLEEP 5, 6
+#   GT LOCK-TYPE-STATE 4..7          type the second state passphrase and Enter
 #   GT STATE-KEY HEX, GT ZONE-KEY HEX  what the dump must not hold, and what it must
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
@@ -270,6 +274,80 @@ else
     fail "resumed-after-refusal" "flag $(state_flag): $(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
 fi
 wait_for 15 none_frozen || fail "zones-thawed-after-refusal" "$(zones_frozen)"
+
+# --- what else has the machine sleep ---------------------------------------------------------
+# dwl's power key runs kryptik-lock --suspend, the lock and then the sleep. With a lock up, the
+# lock takes the key itself, and kryptik-lock --suspend has the lock that is up ask; the idle
+# watcher has its own lock ask, --sleep after the lock. Each wake waits for the passphrase.
+answers() { grep -c '^kryptik-lock: suspend: ' "$1" 2>/dev/null; }
+answers_past() { [[ "$(answers "$1")" -gt "$2" ]]; }
+unlocks_past() { [[ "$(grep -c '^kryptik-lock: unlocked' "$1" 2>/dev/null)" -gt "$2" ]]; }
+slept() {   # slept LOG BEFORE N NAME: one more answer to a suspend in LOG; a refusal is told as N
+    local a
+    if ! wait_for 120 answers_past "$1" "$2"; then
+        echo "GT DID-NOT-SLEEP $3"
+        fail "$4" "no answer to the suspend: $(grep '^kryptik-lock' "$1" | tail -3 | tr '\n' ' ')"
+        return
+    fi
+    a="$(grep '^kryptik-lock: suspend: ' "$1" | tail -1)"
+    case "$a" in
+        *": ok woke") pass "$4" "slept and woke, the state partition suspended (flag $(state_flag))" ;;
+        *"did not sleep"*) echo "GT DID-NOT-SLEEP $3"; fail "$4" "the kernel refused to sleep: ${a#*did not sleep: }" ;;
+        *) fail "$4" "$a" ;;
+    esac
+    # Keys in the second after the label changes go nowhere.
+    sleep 2
+}
+resumed() {   # resumed LOG BEFORE NAME: unlocked once more, with the partition back and the zones thawed
+    if wait_for 60 unlocks_past "$1" "$2" && state_is 0 && wait_for 15 none_frozen; then
+        pass "$3" "the passphrase brought the partition back and unlocked"
+    else
+        fail "$3" "flag $(state_flag), zones $(zones_frozen): $(grep '^kryptik-lock' "$1" | tail -3 | tr '\n' ' ')"
+    fi
+}
+a0="$(answers "$slog")"; u0="$(said unlocked)"
+echo "GT POWER-KEY 1"
+slept "$slog" "$a0" 3 "power-key-sleeps"
+echo "GT LOCK-TYPE-STATE 4"
+resumed "$slog" "$u0" "power-key-resumes"
+
+locked0="$(said locked)"; a0="$(answers "$slog")"; u0="$(said unlocked)"
+echo "GT KEY-LOCK 3"
+wait_for 30 more locked "$locked0" || fail "locked-for-power-key" "$(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+echo "GT POWER-KEY 2"
+slept "$slog" "$a0" 4 "power-key-sleeps-locked"
+echo "GT LOCK-TYPE-STATE 5"
+resumed "$slog" "$u0" "power-key-locked-resumes"
+
+locked0="$(said locked)"; a0="$(answers "$slog")"; u0="$(said unlocked)"
+echo "GT KEY-LOCK 4"
+wait_for 30 more locked "$locked0" || fail "locked-for-hand-off" "$(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+pf="$RT/kryptik/lock.pid"
+if wait_for 10 test -s "$pf" && [[ "$(stat -c '%u %a' "$pf")" == "${UID_} 600" ]]; then
+    pass "lock-pid-written" "the lock that is up names its supervisor in a file of the user's own, mode 600"
+else
+    fail "lock-pid-written" "$(stat -c '%U %a %s' "$pf" 2>&1)"
+fi
+as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/hand-off.out" 2>&1
+echo "GT SLEEPING 3"
+if grep -q '^kryptik-lock: asked the lock that is up to suspend' "$OUT/hand-off.out"; then
+    slept "$slog" "$a0" 5 "lock-up-sleeps"
+else
+    echo "GT DID-NOT-SLEEP 5"
+    fail "lock-up-sleeps" "kryptik-lock --suspend did not hand over: $(tr '\n' ' ' < "$OUT/hand-off.out")"
+fi
+echo "GT LOCK-TYPE-STATE 6"
+resumed "$slog" "$u0" "lock-up-resumes"
+[[ ! -e "$pf" ]] && pass "lock-pid-removed" "the unlock takes the file away" || fail "lock-pid-removed" "$(cat "$pf")"
+
+# Idle: no key from the host meanwhile, so the watcher locks after 8 s and asks 6 s later.
+as_user "/usr/bin/kryptik-lock --idle 8 --blank 0 --sleep 6" > "$OUT/nap.out" 2>&1 &
+nap_pid=$!
+echo "GT SLEEPING 4"
+slept "$OUT/nap.out" 0 6 "idle-sleeps"
+echo "GT LOCK-TYPE-STATE 7"
+resumed "$OUT/nap.out" 0 "idle-sleep-resumes"
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 0 --sleep 6' 2>/dev/null; wait "$nap_pid" 2>/dev/null
 
 # --- teardown ------------------------------------------------------------------------------
 kill "$writer" 2>/dev/null

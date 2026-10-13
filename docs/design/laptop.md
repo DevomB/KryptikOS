@@ -140,13 +140,14 @@ controller without a radio:
 ### Where things stand
 
 Hibernation is off (`hardening.fragment`). Suspend to RAM comes from
-defconfig, and no fragment turns it off. `kryptik suspend` is the one way
-the machine sleeps: the screen locks, the launch daemon freezes every zone,
-suspends the state partition with its key wiped and puts the machine to
-sleep, and on waking the lock asks for the state passphrase. A running
-zone's volume keeps its key, as its zone is frozen, not stopped; dropping
-those keys too comes next (below). Neither the lid, the power key nor
-idleness suspends the machine yet (power management, below).
+defconfig, and no fragment turns it off. `kryptik suspend`, the power key
+and a closed lid have the machine sleep, and so does idleness after the
+lock when the user asks for it: the screen locks, the launch daemon freezes
+every zone, suspends the state partition with its key wiped and puts the
+machine to sleep, and on waking the lock asks for the state passphrase. A
+running zone's volume keeps its key, as its zone is frozen, not stopped;
+dropping those keys too comes next (below). The lid is untested until the
+tests on physical hardware.
 
 ### Design
 
@@ -155,10 +156,20 @@ dm-crypt can suspend a mapping and wipe its key from kernel memory
 on dm-verity, unencrypted and readable without any key, everything needed
 to resume can run from the root while the state partition is suspended.
 
-1. **Trigger.** `kryptik suspend` runs `kryptik-lock --suspend`; the lid,
-   the power key and an idle timeout are to ask the same way. The launch
-   daemon runs the rest as root (`suspend`), and refuses while a zone is
-   starting or `kryptik-update apply` holds the updater's lock.
+1. **Trigger.** `kryptik suspend`, the power key and a closed lid run
+   `kryptik-lock --suspend`: the power key through dwl's binding, the lid
+   through a switch handler Kryptik adds to dwl. A lock that is up writes
+   its supervisor's pid to `$XDG_RUNTIME_DIR/kryptik/lock.pid`, and
+   `kryptik-lock --suspend` asks that lock instead (SIGUSR1) when the
+   file is the user's own, mode 600, and names a process of this program
+   run by the user. dwl runs no binding while locked, so the lock takes the
+   power key itself. Idleness asks too, `kryptik-lock --idle --sleep`, but
+   only as many minutes after the lock as `~/.config/kryptik/lock-sleep`
+   holds: a sleep that does not wake would cost open work nobody chose to
+   risk, so it stays off until resume is proven on physical hardware, and 20
+   is the value to use then. The launch daemon runs the rest as root
+   (`suspend`), and refuses while a zone is starting or `kryptik-update
+   apply` holds the updater's lock.
 2. **Lock** the screen first: the lock asks for the suspend only once dwl
    has confirmed it, and checks nothing typed while the request is under
    way, so no session sleeps, or wakes, open.
@@ -294,7 +305,12 @@ Then for real, `kryptik-lock --suspend` as the user:
 - the passphrase resumes it, and the zones thaw;
 - asked to sleep again with the partition suspended and a read left waiting
   on its device, the kernel refuses, the refusal is told, and the passphrase
-  still brings the partition back.
+  still brings the partition back;
+- the power button, pressed through QEMU's monitor, has the machine sleep
+  with the session unlocked and with it locked; `kryptik-lock --suspend`
+  with a lock up hands the sleep to that lock, whose pid file is the user's
+  own, mode 600, and goes at the unlock; and an idle watcher with
+  `--sleep` has its lock ask. Each wake waits for the passphrase.
 
 Whether the guest slept or the kernel refused is told either way, so a
 refusal in the first sleep reads as one, not as a hang.
@@ -305,13 +321,14 @@ logind elsewhere handles seats and sessions (seatd does that here), the lid
 and the power key, idle and inhibitors, suspend, and runtime directories
 (the launch daemon creates them). What is left:
 
-- **`kryptik-power`,** a small zone 0 service. It reads the lid switch and
-  the power button from their input devices, and the battery and AC state
-  from `/sys/class/power_supply`. It asks for a suspend as `kryptik
-  suspend` does, through the lock, and the launch daemon holds it off while
-  `kryptik-update apply` writes a slot (the updater's lock). At critically
-  low battery it shuts the machine down in
-  order, zones stopped and volumes closed, since there is no hibernation.
+- **The lid and the power key** are dwl's, as input devices: the power key
+  is a key, which dwl binds to `kryptik-lock --suspend`, and the lid a
+  switch, which Kryptik's dwl patch turns into the same command when it
+  closes (above). Nothing in zone 0 runs as root for them.
+- **`kryptik-power`,** a small zone 0 service, still to come. It reads the
+  battery and AC state from `/sys/class/power_supply`, and at critically low
+  battery shuts the machine down in order, zones stopped and volumes closed,
+  since there is no hibernation.
 - **Policy at boot.** A service writes a fixed policy from the verified
   root: `energy_performance_preference` set to `balance_power` on battery and
   `balance_performance` on AC (amd-pstate and intel_pstate both take it), and
@@ -321,10 +338,10 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 - **Brightness.** An eudev rule gives the `video` group write access to the
   backlight, the session user is in it, and dwl's keys run a small tool.
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
-  zone 0 tool to blank the screen, then lock, then suspend. The lock and
-  blanking are built (`kryptik-lock --idle`, above), in the other order: a
-  screen turned off while unlocked would come back on to an open session at
-  the first touch. Suspending when idle is not built.
+  zone 0 tool to blank the screen, then lock, then suspend. All three are
+  built (`kryptik-lock --idle`, above), lock first: a screen turned off
+  while unlocked would come back on to an open session at the first touch.
+  Suspending when idle is off unless the user asks for it (above).
 - **Holding the screen awake.** A zone playing a video may hold off both the
   lock and the blanking, through the proxy's idle inhibition (the browser
   design), under these conditions. They come with the browser image, the

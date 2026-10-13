@@ -1,10 +1,16 @@
 /* kryptik-lock: lock the session until the login password is typed (docs/design/laptop.md).
  *
  *   kryptik-lock
- *   kryptik-lock --suspend         lock, then have the launch daemon suspend the machine
- *   kryptik-lock --idle SECONDS [--blank SECONDS]
+ *   kryptik-lock --suspend         lock, then have the launch daemon suspend the machine; with
+ *                                  a lock up already, have that one do it
+ *   kryptik-lock --idle SECONDS [--blank SECONDS] [--sleep SECONDS]
  *                                  lock each time the session has had no input that long, and
- *                                  turn the screens off that much later (60 s; 0 never)
+ *                                  after the lock turn the screens off that much later (60 s;
+ *                                  0 never) and have the machine sleep (never unless given)
+ *
+ * A lock that is up writes its supervisor's pid to $XDG_RUNTIME_DIR/kryptik/lock.pid, and
+ * SIGUSR1 to that process has it ask for the machine's sleep, as the power key pressed while
+ * locked does: dwl runs no binding then, and dwl's power key and lid otherwise run --suspend.
  *
  * Through ext-session-lock-v1 the compositor shows nothing but this program's surfaces, one
  * per output, and gives them the keyboard. The lock runs in a child, started again if a
@@ -23,6 +29,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -31,6 +38,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -111,6 +119,14 @@ static int kind = LOGIN;
  * when it was asked. */
 static int suspend_wanted, asleep = -1;
 static struct timespec asked;
+/* $XDG_RUNTIME_DIR/kryptik/lock.pid while a lock is up, and the process it names. */
+static char pidfile[PATH_MAX];
+static pid_t supervisor;
+/* A "suspend now" (SIGUSR1): the supervisor passes it on to the lock it runs, and the lock's
+ * handler writes to a pipe its poll loop watches, so none falls between a check and a poll. */
+static volatile sig_atomic_t child;
+static int wake_fd[2] = { -1, -1 };
+static sigset_t usr1;
 
 static void say(const char *what)
 {
@@ -220,17 +236,43 @@ static void cover(struct output *o)
 
 static int request(const char *text, int fd);
 
+/* Ask for the machine's sleep. Only a locked session is suspended, so before the compositor has
+ * locked it is remembered for then; the answer comes once the machine has woken. */
+static void suspend_now(void)
+{
+	if (!locked) {
+		suspend_wanted = 1;
+		return;
+	}
+	if (asleep >= 0)
+		return;
+	clock_gettime(CLOCK_MONOTONIC, &asked);
+	asleep = request("suspend\n", -1);
+	say(asleep < 0 ? "suspend: the launch daemon cannot be reached" : "suspending");
+}
+
+/* Where a lock that is up says who to ask to suspend: its supervisor, which outlives the lock
+ * child it runs again. Written once the compositor has locked, so a lock it refused, the
+ * second of two, writes nothing over the first's. */
+static void write_pidfile(void)
+{
+	if (!pidfile[0])
+		return;
+	int fd = open(pidfile, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+	if (fd < 0)
+		return;
+	dprintf(fd, "%d\n", (int)supervisor);
+	close(fd);
+}
+
 static void lock_locked(void *data, struct ext_session_lock_v1 *l)
 {
 	(void)data; (void)l;
 	locked = 1;
 	say("locked");
-	/* Only a locked session is suspended; the answer comes once the machine has woken. */
-	if (suspend_wanted) {
-		clock_gettime(CLOCK_MONOTONIC, &asked);
-		asleep = request("suspend\n", -1);
-		say(asleep < 0 ? "suspend: the launch daemon cannot be reached" : "suspending");
-	}
+	write_pidfile();
+	if (suspend_wanted)
+		suspend_now();
 }
 
 static void lock_finished(void *data, struct ext_session_lock_v1 *l)
@@ -475,6 +517,11 @@ static void keyboard_key(void *data, struct wl_keyboard *kb, uint32_t serial, ui
 		return;
 	xkb_keycode_t code = key + 8;
 	xkb_keysym_t sym = xkb_state_key_get_one_sym(xstate, code);
+	/* The power key: dwl runs no binding while locked, so the lock has the machine sleep. */
+	if (sym == XKB_KEY_XF86PowerOff) {
+		suspend_now();
+		return;
+	}
 	if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
 		/* Nothing is checked while the suspend asked for is under way: an unlock in that
 		 * moment would let the machine sleep, and wake, unlocked. */
@@ -594,10 +641,25 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = global_remove,
 };
 
+static void on_suspend_signal(int sig)
+{
+	(void)sig;
+	int saved = errno;
+	ssize_t w = write(wake_fd[1], "s", 1);
+	(void)w;
+	errno = saved;
+}
+
 /* One lock, from asking the compositor to the password taken. */
 static int lock_session(void)
 {
 	wl_list_init(&outputs);
+	if (pipe2(wake_fd, O_CLOEXEC | O_NONBLOCK) == 0) {
+		struct sigaction sa = { .sa_handler = on_suspend_signal };
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGUSR1, &sa, NULL);
+	}
+	sigprocmask(SIG_UNBLOCK, &usr1, NULL);
 	xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 	display = wl_display_connect(NULL);
 	if (!display || !xkb) {
@@ -617,7 +679,8 @@ static int lock_session(void)
 	struct output *o;
 	wl_list_for_each(o, &outputs, link)
 		cover(o);
-	/* The display's events, and with --suspend the daemon's answer once the machine woke. */
+	/* The display's events, a "suspend now", and once asked the daemon's answer when the
+	 * machine woke. */
 	int fd = wl_display_get_fd(display), gone = 0;
 	while (!gone && !done && !unlocked) {
 		if (wl_display_prepare_read(display) != 0) {
@@ -625,8 +688,12 @@ static int lock_session(void)
 			continue;
 		}
 		wl_display_flush(display);
-		struct pollfd p[2] = { { .fd = fd, .events = POLLIN }, { .fd = asleep, .events = POLLIN } };
-		int r = poll(p, asleep >= 0 ? 2 : 1, asleep >= 0 ? suspend_left() : -1);
+		struct pollfd p[3] = {
+			{ .fd = fd, .events = POLLIN },
+			{ .fd = wake_fd[0], .events = POLLIN },
+			{ .fd = asleep, .events = POLLIN },
+		};
+		int r = poll(p, asleep >= 0 ? 3 : 2, asleep >= 0 ? suspend_left() : -1);
 		if (r < 0) {
 			wl_display_cancel_read(display);
 			gone = errno != EINTR;
@@ -637,10 +704,18 @@ static int lock_session(void)
 		else
 			wl_display_cancel_read(display);
 		gone = gone || wl_display_dispatch_pending(display) < 0;
-		if (asleep >= 0 && (r == 0 || p[1].revents))
+		if (p[1].revents) {
+			char b[16];
+			while (read(wake_fd[0], b, sizeof b) > 0)
+				;
+			suspend_now();
+		}
+		if (asleep >= 0 && (r == 0 || p[2].revents))
 			woke(r > 0);
 	}
 	if (unlocked) {
+		if (pidfile[0])
+			unlink(pidfile);
 		ext_session_lock_v1_unlock_and_destroy(lock);
 		/* Screens the idle watcher turned off come on with the unlock, should it be gone:
 		 * the compositor gives one client each screen's power, so while the watcher holds
@@ -793,10 +868,34 @@ static const struct ext_idle_notification_v1_listener blank_listener = {
 	.resumed = blank_resumed,
 };
 
-/* --idle: a lock of its own each time the session has been idle `secs`, and the screens off
- * `blank` later, while the session lasts. No keyboard is bound, so no key reaches it. */
-static int watch_idle(long secs, long blank)
+/* The lock the watcher started last, while it runs. */
+static pid_t locker;
+
+static void nap_idled(void *data, struct ext_idle_notification_v1 *n)
 {
+	(void)data; (void)n;
+	if (locker > 0 && waitpid(locker, NULL, WNOHANG) == 0 && kill(locker, SIGUSR1) == 0)
+		say("idle since the lock: asking it to suspend");
+}
+
+static void nap_resumed(void *data, struct ext_idle_notification_v1 *n)
+{
+	(void)data; (void)n;
+}
+
+static const struct ext_idle_notification_v1_listener nap_listener = {
+	.idled = nap_idled,
+	.resumed = nap_resumed,
+};
+
+/* --idle: a lock of its own each time the session has been idle `secs`, and after it the
+ * screens off `blank` later and the machine asleep `nap` later, while the session lasts. No
+ * keyboard is bound, so no key reaches it. */
+static int watch_idle(long secs, long blank, long nap)
+{
+	/* A "suspend now" is for the lock: the watcher, and the lock it starts until that sets its
+	 * own handler, pass over one meant for it. */
+	signal(SIGUSR1, SIG_IGN);
 	display = wl_display_connect(NULL);
 	if (!display) {
 		say("no Wayland display to watch");
@@ -827,7 +926,13 @@ static int watch_idle(long secs, long blank)
 			ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)(secs + blank) * 1000, seat);
 		ext_idle_notification_v1_add_listener(b, &blank_listener, NULL);
 	}
-	pid_t locker = 0;
+	/* Asleep `nap` after the lock: the lock this watcher started is asked to have the machine
+	 * sleep, as the power key would. */
+	if (nap > 0) {
+		struct ext_idle_notification_v1 *z =
+			ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)(secs + nap) * 1000, seat);
+		ext_idle_notification_v1_add_listener(z, &nap_listener, NULL);
+	}
 	while (wl_display_dispatch(display) != -1) {
 		if (!idled)
 			continue;
@@ -854,32 +959,106 @@ static long seconds(const char *s)
 	return *s && !*end && v >= 0 && v <= 7 * 24 * 3600 ? v : -1;
 }
 
+/* A lock that is up, as its pid file says, or 0. The file must be this user's own and no one
+ * else's to read, and the process this same program, run by this user. */
+static pid_t lock_up(void)
+{
+	char buf[32], path[64], exe[PATH_MAX], self[PATH_MAX];
+	struct stat st;
+	if (!pidfile[0])
+		return 0;
+	int fd = open(pidfile, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	ssize_t n = -1;
+	if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == getuid() && !(st.st_mode & 077))
+		n = read(fd, buf, sizeof buf - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = 0;
+	long pid = strtol(buf, NULL, 10);
+	if (pid <= 1)
+		return 0;
+	snprintf(path, sizeof path, "/proc/%ld", pid);
+	if (stat(path, &st) < 0 || st.st_uid != getuid())
+		return 0;
+	snprintf(path, sizeof path, "/proc/%ld/exe", pid);
+	ssize_t a = readlink(path, exe, sizeof exe), b = readlink("/proc/self/exe", self, sizeof self);
+	if (a <= 0 || a != b || memcmp(exe, self, (size_t)a))
+		return 0;
+	return (pid_t)pid;
+}
+
+static void forward(int sig)
+{
+	(void)sig;
+	if (child > 0)
+		kill(child, SIGUSR1);
+}
+
 int main(int argc, char **argv)
 {
-	if ((argc == 3 || (argc == 5 && !strcmp(argv[3], "--blank"))) && !strcmp(argv[1], "--idle")) {
-		long secs = seconds(argv[2]), blank = argc == 5 ? seconds(argv[4]) : 60;
-		if (secs > 0 && blank >= 0 && secs + blank <= 7 * 24 * 3600) {
+	/* --idle SECONDS, then --blank SECONDS (60 s unless given) and --sleep SECONDS (never
+	 * unless given), each after the lock; a week at most, so the compositor's milliseconds fit. */
+	if (argc >= 3 && argc % 2 == 1 && !strcmp(argv[1], "--idle")) {
+		long secs = seconds(argv[2]), blank = 60, nap = 0;
+		int ok = secs > 0;
+		for (int i = 3; ok && i + 1 < argc; i += 2) {
+			if (!strcmp(argv[i], "--blank"))
+				ok = (blank = seconds(argv[i + 1])) >= 0;
+			else if (!strcmp(argv[i], "--sleep"))
+				ok = (nap = seconds(argv[i + 1])) >= 0;
+			else
+				ok = 0;
+		}
+		if (ok && secs + blank <= 7 * 24 * 3600 && secs + nap <= 7 * 24 * 3600) {
 			signal(SIGPIPE, SIG_IGN);
-			return watch_idle(secs, blank);
+			return watch_idle(secs, blank, nap);
 		}
 	}
 	suspend_wanted = argc == 2 && !strcmp(argv[1], "--suspend");
 	if (argc != 1 && !suspend_wanted) {
-		fputs("usage: kryptik-lock [--suspend | --idle SECONDS [--blank SECONDS]]   (locks the session\n"
-		      "       until the login password is typed; with --suspend, then suspends the machine;\n"
-		      "       with --idle, each time the session has had no input that long, and the screens\n"
-		      "       go off --blank later, 60 s unless given, 0 never)\n", stderr);
+		fputs("usage: kryptik-lock [--suspend | --idle SECONDS [--blank SECONDS] [--sleep SECONDS]]\n"
+		      "       (locks the session until the login password is typed; with --suspend, then\n"
+		      "       suspends the machine, or has the lock that is up do so; with --idle, each time\n"
+		      "       the session has had no input that long, and after the lock the screens go off\n"
+		      "       --blank later, 60 s unless given, 0 never, and the machine sleeps --sleep later,\n"
+		      "       never unless given)\n", stderr);
 		return 2;
+	}
+	const char *rt = getenv("XDG_RUNTIME_DIR");
+	if (rt && rt[0] == '/')
+		snprintf(pidfile, sizeof pidfile, "%s/kryptik/lock.pid", rt);
+	/* A second lock would be refused while one is up: that one is asked instead. */
+	if (suspend_wanted) {
+		pid_t up = lock_up();
+		if (up > 0 && kill(up, SIGUSR1) == 0) {
+			say("asked the lock that is up to suspend");
+			return 0;
+		}
 	}
 	/* A refused pipe write is told by write's return, not a signal. */
 	signal(SIGPIPE, SIG_IGN);
+	supervisor = getpid();
+	sigemptyset(&usr1);
+	sigaddset(&usr1, SIGUSR1);
+	struct sigaction sa = { .sa_handler = forward, .sa_flags = SA_RESTART };
+	sigemptyset(&sa.sa_mask);
+	sigaction(SIGUSR1, &sa, NULL);
 	/* The compositor keeps a session locked when its lock dies and takes no keys while
 	 * locked, so nothing else could unlock it: a lock a signal killed, or one that lost
-	 * the display while locked, locks again, and asks for no second suspend. */
+	 * the display while locked, locks again, and asks for no second suspend. A "suspend
+	 * now" waits while a lock starts: before its pipe exists, there is nowhere for it. */
 	for (;; suspend_wanted = 0) {
+		sigprocmask(SIG_BLOCK, &usr1, NULL);
 		pid_t pid = fork();
-		if (pid <= 0)
+		if (pid <= 0) {
+			child = 0;
 			return lock_session();
+		}
+		child = pid;
+		sigprocmask(SIG_UNBLOCK, &usr1, NULL);
 		int st;
 		while (waitpid(pid, &st, 0) < 0)
 			if (errno != EINTR)
