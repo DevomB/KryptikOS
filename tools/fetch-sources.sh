@@ -11,7 +11,8 @@
 # The software images' sources are pinned in build/images/versions.env and locked in
 # build/images/sources.lock, so a change to them is no input of stage 04. They are kept in
 # sources/images/, which has a cache of its own, each named in sources/ by a link where every
-# reader looks.
+# reader looks. A Rust crate's own Cargo.lock names the crates it is built from, each with its
+# hash: they go to sources/images/crates/, for an offline build in the chroot.
 # --lock trusts whatever downloads: audit sources.lock before committing it (docs/supply-chain.md).
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
@@ -28,7 +29,9 @@ case "${1:-}" in
     *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, or nothing)" ;;
 esac
 
-# Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs.
+# Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs, and crates.io.
+[[ -z "${KRYPTIK_CRATES:-}" || -n "${KRYPTIK_FETCH_MANIFEST:-}" ]] \
+    || die "KRYPTIK_CRATES replaces crates.io for tools/tests/fetch-sources.sh alone"
 if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
     [[ "${KRYPTIK_FETCH_SELFTEST:-0}" == "1" ]] \
         || die "Refusing to fetch or lock against a substituted manifest without KRYPTIK_FETCH_SELFTEST=1"
@@ -279,6 +282,44 @@ fetch_attempt() {
     return 1
 }
 
+# crate_lock CRATE: name, version and hash of each crates.io package the crate's Cargo.lock names.
+crate_lock() {
+    python3 -I - "$1" <<'PY'
+import sys, tarfile, tomllib
+with tarfile.open(sys.argv[1], "r:gz") as t:
+    m = next((m for m in t.getmembers() if m.isfile() and m.name.count("/") == 1 and m.name.endswith("/Cargo.lock")), None)
+    if m is None:
+        sys.exit(f"{sys.argv[1]} holds no Cargo.lock at its top")
+    lock = tomllib.loads(t.extractfile(m).read().decode())
+for p in lock.get("package", []):
+    if p.get("source", "").startswith("registry+") and "checksum" in p:
+        print(p["name"], p["version"], p["checksum"])
+PY
+}
+
+# fetch_crates CRATE: the crates its Cargo.lock names, each held to the hash the lock gives. The
+# crate's own hash, in the images' lock, vouches for its Cargo.lock.
+fetch_crates() {
+    local crate="$1" list name ver sum dest n=0
+    list="$(crate_lock "$crate")" || die "$(basename "$crate"): its Cargo.lock could not be read"
+    mkdir -p "${KRYPTIK_SOURCES}/images/crates"
+    while read -r name ver sum; do
+        [[ -n "$name" ]] || continue
+        dest="${KRYPTIK_SOURCES}/images/crates/${name}-${ver}.crate"
+        if [[ -f "$dest" ]]; then
+            [[ "$(sha256_of "$dest")" == "$sum" ]] \
+                || die "CHECKSUM MISMATCH for crate ${name} ${ver}: it CHANGED after $(basename "$crate")'s Cargo.lock locked it. Do not delete it before finding out why."
+        else
+            fetch_one "${KRYPTIK_CRATES:-https://static.crates.io/crates}/${name}/${name}-${ver}.crate" "$dest" \
+                || die "download failed: crate ${name} ${ver}, which $(basename "$crate") builds from"
+            [[ "$(sha256_of "$dest")" == "$sum" ]] \
+                || die "CHECKSUM MISMATCH for crate ${name} ${ver}, downloaded just now: not the hash $(basename "$crate")'s Cargo.lock gives. Remove ${dest} and retry."
+        fi
+        n=$((n + 1))
+    done <<< "$list"
+    ok "$(basename "$crate"): the ${n} crates its Cargo.lock names, verified"
+}
+
 lookup_hash() {   # lookup_hash FILE LOCK
     [[ -f "$2" ]] || return 1
     awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$2"
@@ -340,6 +381,7 @@ while IFS='|' read -r owner name ver url _; do
             die "It was already on disk, so it CHANGED after it was locked. Do not delete it before finding out why (docs/supply-chain.md)."
         fi
         ok "${name} ${ver}  verified"
+        [[ "$file" != *.crate ]] || fetch_crates "$dest"
     fi
 done < <(all_sources)
 

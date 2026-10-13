@@ -317,6 +317,45 @@ else
     red "the image's source was not moved into sources/images/"
 fi
 
+# --- a crate's own crates ----------------------------------------------------
+
+# The crate's hash is locked; its Cargo.lock gives the hash of each crate it builds from.
+CR="${W}/crates"; mkdir -p "${CR}/dep" "${W}/tool-1.0"
+printf 'dep crate\n' > "${CR}/dep/dep-0.1.0.crate"
+dep_sum="$(sha_of "${CR}/dep/dep-0.1.0.crate")"
+crate_with() {   # crate_with DEP-HASH: tool-1.0.crate whose Cargo.lock locks dep 0.1.0 to DEP-HASH
+    printf '[[package]]\nname = "dep"\nversion = "0.1.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "%s"\n\n[[package]]\nname = "tool"\nversion = "1.0"\n' "$1" > "${W}/tool-1.0/Cargo.lock"
+    tar -czf "${UPSTREAM}/tool-1.0.crate" -C "$W" tool-1.0
+}
+CMANIFEST="${W}/crate-manifest"
+printf 'tool|tool|1.0|file://%s/tool-1.0.crate|none|listing\n' "$UPSTREAM" > "$CMANIFEST"
+crates_root() {
+    build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+    mkdir -p "${FAKE}/build/images"
+    printf '%s  tool-1.0.crate\n' "$(sha_of "${UPSTREAM}/tool-1.0.crate")" > "${FAKE}/build/images/sources.lock"
+}
+run_crates() {
+    KRYPTIK_ROOT="$FAKE" KRYPTIK_FETCH_SELFTEST=1 KRYPTIK_FETCH_MANIFEST="$MANIFEST" \
+        KRYPTIK_FETCH_IMAGE_MANIFEST="$CMANIFEST" KRYPTIK_CRATES="file://${CR}" NO_COLOR=1 bash "$TOOL" "$@" > "$OUT" 2>&1
+    RC=$?
+}
+
+crate_with "$dep_sum"; crates_root
+run_crates
+expect_pass "a crate's Cargo.lock brings the crates it names, each verified" "the 1 crates its Cargo.lock names, verified"
+[[ -f "${FAKE}/sources/images/crates/dep-0.1.0.crate" ]] \
+    && green "they land in sources/images/crates/" || red "the named crate is not in sources/images/crates/"
+
+crate_with 0000000000000000000000000000000000000000000000000000000000000000; crates_root
+run_crates
+expect_fail "a crate whose bytes are not what the Cargo.lock says is refused" "CHECKSUM MISMATCH for crate dep 0.1.0"
+
+if KRYPTIK_ROOT="$FAKE" KRYPTIK_CRATES="file://${CR}" NO_COLOR=1 bash "$TOOL" --list > "$OUT" 2>&1; then
+    red "a crates mirror was taken without the test's manifest"
+else
+    grep -qF "KRYPTIK_CRATES replaces crates.io" "$OUT" && green "a crates mirror is refused outside the test" || { red "the crates mirror refusal did not say why"; show; }
+fi
+
 # --- arguments and the selftest gate ----------------------------------------
 
 run --list
