@@ -108,6 +108,8 @@ in `make sound-test`, all of which it checks but the chrome's part:
 
 - the card registers at boot with its codec bound, every codec driver
   loaded ahead of the controller;
+- a zone's `/proc/asound` is empty: the PCM status there would show when
+  another zone plays or records, and the codec files name the model;
 - a tone played in a zone arrives in the file;
 - two zones playing at once are mixed;
 - `record` without a grant is refused, works after the grant (the

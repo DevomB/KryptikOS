@@ -54,6 +54,16 @@ else
     fail "pcm-nodes" "/dev/snd: $(ls /dev/snd 2>&1 | tr '\n' ' ')"
 fi
 
+# A zone's /proc/asound is empty: its PCM status would show when another zone plays or
+# records, and its codec files name the machine's model.
+asound="$(timeout -k 5 30 /usr/bin/kryptikd run untrusted --zones /usr/lib/kryptik/zones \
+          --rootfs /var/lib/kryptik/zones -- sh -c 'echo "asound:[$(ls -A /proc/asound 2>&1)]"' 2>&1)"
+if [[ "$asound" == *"asound:[]"* && -d /proc/asound/card0 ]]; then
+    pass "zone-proc-asound-empty" "zone 0 has $(ls /proc/asound | tr '\n' ' ')and untrusted has nothing there"
+else
+    fail "zone-proc-asound-empty" "$(tr '\n' ' ' <<<"$asound")"
+fi
+
 # --- zone 0's mixer ------------------------------------------------------------------------
 # The host reads what the first card played: a tone from untrusted alone, then untrusted's
 # and work's together.

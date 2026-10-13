@@ -23,7 +23,9 @@ filter and a Landlock ruleset. Its `/proc` and `/sys` hide the machine-wide
 interrupt, scheduling, load, page-fault and allocation, stall and open-file
 counters, each CPU's idle counts and frequency (`/proc/cpuinfo` is a copy
 taken as the zone starts), which would time keystrokes typed in any zone, and
-the disk tables, which would show which encrypted zones are open; `/proc`
+the disk tables, which would show which encrypted zones are open, and the
+sound cards' files, which would show when another zone plays or records and
+name the machine's model; `/proc`
 gives it a boot ID of its own, and its monotonic and boot clocks start at a
 random point each time the zone starts, so the uptime and boot time that
 crash reports and telemetry send match no other zone's. Still shown: the
