@@ -460,7 +460,9 @@ static int lock_session(void)
 		;
 	if (unlocked) {
 		ext_session_lock_v1_unlock_and_destroy(lock);
-		/* Screens the idle watcher turned off come on with the unlock, should it be gone. */
+		/* Screens the idle watcher turned off come on with the unlock, should it be gone:
+		 * the compositor gives one client each screen's power, so while the watcher holds
+		 * them these requests fail, and the watcher's own resumed turns them on. */
 		wl_list_for_each(o, &outputs, link) {
 			if (!powermgr)
 				break;
@@ -485,7 +487,7 @@ static int lock_session(void)
 }
 
 static struct ext_idle_notifier_v1 *notifier;
-static int idled;
+static int idled, blanking;
 
 /* The screens --idle turns off once the lock has been up a while, each with its power control. */
 struct screen {
@@ -495,6 +497,34 @@ struct screen {
 	struct zwlr_output_power_v1 *power;
 };
 static struct wl_list screens = { &screens, &screens };
+
+/* What the compositor did with a screen's power, in its own words. */
+static void power_mode(void *data, struct zwlr_output_power_v1 *p, uint32_t mode)
+{
+	(void)p;
+	struct screen *sc = data;
+	fprintf(stderr, "kryptik-lock: screen %u power %s\n", sc->name, mode == ZWLR_OUTPUT_POWER_V1_MODE_ON ? "on" : "off");
+}
+
+/* The compositor gives one client each screen's power: another has it, or the screen went. */
+static void power_failed(void *data, struct zwlr_output_power_v1 *p)
+{
+	struct screen *sc = data;
+	fprintf(stderr, "kryptik-lock: screen %u: its power is not this program's to turn off\n", sc->name);
+	zwlr_output_power_v1_destroy(p);
+	sc->power = NULL;
+}
+
+static const struct zwlr_output_power_v1_listener power_listener = {
+	.mode = power_mode,
+	.failed = power_failed,
+};
+
+static void take_power(struct screen *sc)
+{
+	sc->power = zwlr_output_power_manager_v1_get_output_power(powermgr, sc->wl);
+	zwlr_output_power_v1_add_listener(sc->power, &power_listener, sc);
+}
 
 static void watch_global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version)
 {
@@ -512,8 +542,9 @@ static void watch_global(void *data, struct wl_registry *r, uint32_t name, const
 		sc->name = name;
 		sc->wl = wl_registry_bind(r, name, &wl_output_interface, 1);
 		wl_list_insert(&screens, &sc->link);
-		if (powermgr)
-			sc->power = zwlr_output_power_manager_v1_get_output_power(powermgr, sc->wl);
+		/* Only a watcher that blanks takes the screens' power, which then is no one else's. */
+		if (blanking && powermgr)
+			take_power(sc);
 	}
 }
 
@@ -589,6 +620,7 @@ static int watch_idle(long secs, long blank)
 		say("no Wayland display to watch");
 		return 1;
 	}
+	blanking = blank > 0;
 	struct wl_registry *registry = wl_display_get_registry(display);
 	wl_registry_add_listener(registry, &watch_registry_listener, NULL);
 	wl_display_roundtrip(display);
@@ -608,7 +640,7 @@ static int watch_idle(long secs, long blank)
 		struct screen *sc;
 		wl_list_for_each(sc, &screens, link)
 			if (!sc->power)
-				sc->power = zwlr_output_power_manager_v1_get_output_power(powermgr, sc->wl);
+				take_power(sc);
 		struct ext_idle_notification_v1 *b =
 			ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)(secs + blank) * 1000, seat);
 		ext_idle_notification_v1_add_listener(b, &blank_listener, NULL);

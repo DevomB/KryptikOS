@@ -194,8 +194,9 @@ lock it turns the screens off through dwl's
 again; an unlock turns them on as well, should the watcher be gone. It
 counts input alone (the protocol's version 2), so an idle inhibitor, which
 the browser design would let a zone hold to keep the screen awake, never
-keeps the session unlocked or the screens lit. No zone can bind the notifier, which would tell it when
-the user is away. Locking before suspend is still to come.
+keeps the session unlocked or the screens lit. No zone can bind the
+notifier, which would tell it when the user is away. Locking before
+suspend is still to come.
 
 The lock's check, in `make gui-test`:
 
@@ -212,8 +213,8 @@ The lock's check, in `make gui-test`:
 - the login password unlocks, and zone 0's window has the keyboard again;
 - the chrome arms the idle lock at ten minutes, and an idle lock of 8 s
   locks the session, turns the screen off 4 s later as the compositor
-  reports to a zone 0 client, turns it on at the first key, and locks again
-  after the next 8 s once unlocked.
+  reports to it, turns it on at the first key, and locks again after the
+  next 8 s once unlocked.
 
 **The watchdog** must not reset a sleeping machine. The drivers stop their
 timers across suspend; the suite proves it with a sleep longer than the
