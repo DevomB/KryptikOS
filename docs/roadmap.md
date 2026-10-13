@@ -188,11 +188,16 @@ work in zones from a terminal and a text browser, and keep it up to date.
 
 A desktop someone can live in, built the same way.
 
-- **Applications.** A graphical browser and the toolkit stack under it, per
-  zone, with GPU rendering decided zone by zone; a mail client, a document
-  viewer, a file manager that understands transfers between zones.
-- **Software from somewhere.** A package manager and a signed binary
-  repository, or zones that carry their own userland. An ADR first.
+- **Applications.** Built: the GTK toolkit and Firefox ESR over it, in
+  `untrusted`, `personal` and `work`, its PDF viewer the document viewer
+  ([browser and graphics](design/browser-and-graphics.md)). Still to come:
+  GPU rendering decided zone by zone, a mail client, and a file manager that
+  understands transfers between zones.
+- **Software from somewhere.** Built: signed software images (ADR-015),
+  built over the root and signed with each release, carried in its update
+  payload and named by the zones that use them
+  ([software delivery](design/software-delivery.md)). Not decided: a package
+  manager, or images released apart from the root.
 - **The laptop.** Per-zone sound brokered like the clipboard, Bluetooth,
   suspend and resume with volume keys dropped across it, power management,
   hotplug and multiple monitors, input methods and a second keyboard layout
