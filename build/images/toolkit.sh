@@ -16,6 +16,7 @@ image_rows=(
     "cairo"        "s_tk_cairo"
     "pango"        "s_tk_pango"
     "gdk-pixbuf"   "s_tk_gdk_pixbuf"
+    "egl-headers"  "s_tk_egl_headers"
     "libepoxy"     "s_tk_libepoxy"
     "atk"          "s_tk_atk"
     "hicolor"      "s_tk_hicolor"
@@ -96,6 +97,15 @@ s_tk_gdk_pixbuf() {
         -Dpng=enabled -Djpeg=disabled -Dtiff=disabled -Dgif=disabled -Dothers=disabled \
         -Dglycin=disabled -Dandroid=disabled -Dbuiltin_loaders=png -Dgio_sniffing=false \
         -Dthumbnailer=disabled -Dintrospection=disabled -Dman=false -Dtests=false -Dinstalled_tests=false
+}
+
+# The Khronos EGL headers that libepoxy and GTK's Wayland backend compile against, and nothing else of
+# libglvnd: no EGL library comes with them, as a zone has no GPU. Its README holds the licences.
+s_tk_egl_headers() {
+    local src; src="$(unpack "libglvnd-v${V_LIBGLVND}.tar.gz" "libglvnd-v${V_LIBGLVND}")"
+    install -D -m 0644 -t /usr/include/EGL "${src}"/include/EGL/{egl,eglext,eglplatform}.h
+    install -D -m 0644 -t /usr/include/KHR "${src}/include/KHR/khrplatform.h"
+    install -D -m 0644 "${src}/README.md" /usr/share/licenses/libglvnd/README.md
 }
 
 # EGL only, loaded when a program asks for GL; software zones never do.

@@ -56,5 +56,6 @@ gtk3	listing	https://download.gnome.org/sources/gtk/cache.json	gtk-(3\.24\.[0-9]
 # 1.6 is the stable series; the 1.7 tags are betas.
 libpng	listing	https://api.github.com/repos/pnggroup/libpng/tags?per_page=100	"name": "v(1\.6\.[0-9]+)"	-
 fontconfig	api	https://gitlab.freedesktop.org/api/v4/projects/890/releases?per_page=20	tag_name	drop90
+libglvnd	api	https://gitlab.freedesktop.org/api/v4/projects/glvnd%2Flibglvnd/releases?per_page=20	tag_name	-
 # An odd minor is a development snapshot.
 cairo	listing	https://www.cairographics.org/releases/	cairo-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz	even

@@ -6,10 +6,10 @@
 #
 # LOWER is the sysroot, after the trees of the images this one is built over when it has any, nearest
 # first, as overlayfs takes them: a file any of them has is one the image may not replace.
-# Refused: a whiteout or an opaque or redirected directory (a root path removed or hidden), a file the
-# root already has, a directory of the root's under /usr with another mode or owner, a file outside
-# /usr, a link that leads out of /usr, a device node, a setuid or setgid bit, a file capability. The
-# chroot's own scratch, mount points and marks are let be.
+# Refused: a whiteout, a redirected directory, or an opaque one over a directory a layer has (a path
+# removed or hidden), a file the root already has, a directory of the root's under /usr with another
+# mode or owner, a file outside /usr, a link that leads out of /usr, a device node, a setuid or setgid
+# bit, a file capability. The chroot's own scratch, mount points and marks are let be.
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 # The verdict is python's exit status; the ERR trap would abort before it is read.
 trap - ERR
@@ -65,10 +65,12 @@ for d, subdirs, names in os.walk(upper):
             bad.append(f"moves /{rel} within the root")
             continue
         if stat.S_ISDIR(st.st_mode):
-            if xattr(p, "trusted.overlay.opaque") == b"y":
-                bad.append(f"hides what the root has under /{rel}")
-            elif lst is not None and not stat.S_ISDIR(lst.st_mode):
+            # overlayfs marks each directory it makes inside a merged one opaque, to spare later
+            # lookups: over a path no layer has that hides nothing, and the tree's copy drops it.
+            if lst is not None and not stat.S_ISDIR(lst.st_mode):
                 bad.append(f"replaces {what} with a directory")
+            elif lst is not None and xattr(p, "trusted.overlay.opaque") == b"y":
+                bad.append(f"hides what {'an image under it' if under else 'the root'} has under /{rel}")
             elif lst is not None and top == "usr" and (stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid) != (stat.S_IMODE(lst.st_mode), lst.st_uid, lst.st_gid):
                 bad.append(f"changes {dwhat} "
                            f"({oct(stat.S_IMODE(lst.st_mode))} {lst.st_uid}:{lst.st_gid} -> {oct(stat.S_IMODE(st.st_mode))} {st.st_uid}:{st.st_gid})")
