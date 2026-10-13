@@ -144,6 +144,8 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT KEY-MENU-OPEN" "key:alt+p" \
     "type-from:GT OPEN-TYPE 1 ([a-z0-9]+)" "type-from:GT OPEN-TYPE 2 ([a-z0-9]+)" \
     "type-from:GT OPEN-TYPE 3 ([a-z0-9]+)" \
+    "expect:GT KEY-VT-ADMIN" "key:ctrl+alt+f2" "expect:GT KEY-VT-DESKTOP" "key:ctrl+alt+f1" \
+    "expect:GT KEY-MENU-AFTER-VT" "key:alt+p" \
     "expect:GT END" "expect:GCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
@@ -167,6 +169,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
+            vt-admin-login vt-desktop-back vt-desktop-takes-keys \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
