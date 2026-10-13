@@ -12,7 +12,7 @@ wait_for() {   # wait_for SECONDS CMD...
     while [[ "$n" -gt 0 ]]; do "$@" >/dev/null 2>&1 && return 0; n=$((n - 1)); sleep 1; done
     return 1
 }
-klog() { dmesg | grep -iE 'snd|hda|sound' | tail -"${1:-6}" | tr '\n' ' '; }
+klog() { dmesg | grep -iE 'snd|hda|sound' | tail -6 | tr '\n' ' '; }
 
 # --- the cards -----------------------------------------------------------------------------
 # eudev loads snd-hda-intel at coldplug, and a card registers once its codec has bound.
