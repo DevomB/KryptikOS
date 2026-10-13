@@ -306,6 +306,16 @@ else
     red "--root fetched an image's source"
 fi
 
+# --root still moves one a cache left at the top, so the root's set is saved without it.
+images_root
+cp "${UPSTREAM}/delta-4.0.tar.gz" "${FAKE}/sources/delta-4.0.tar.gz"
+run_images --root
+if [[ "$RC" -eq 0 && -L "${FAKE}/sources/delta-4.0.tar.gz" && -f "${FAKE}/sources/images/delta-4.0.tar.gz" ]]; then
+    green "--root moves an image's source left at the top into sources/images/"
+else
+    red "--root left an image's source at the top (exit ${RC})"; show
+fi
+
 # A set cached before images/ existed has the image's file in sources/ itself.
 images_root
 cp "${UPSTREAM}/delta-4.0.tar.gz" "${FAKE}/sources/delta-4.0.tar.gz"
