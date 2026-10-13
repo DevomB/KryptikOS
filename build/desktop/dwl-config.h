@@ -93,6 +93,9 @@ static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "-
 static const char *menucmd[]      = { "havoc", "/usr/bin/kryptik-chrome", "--menu", NULL };
 /* The screen lock, opened by the login password (docs/design/laptop.md). */
 static const char *lockcmd[]      = { "kryptik-lock", NULL };
+/* The power key and a closed lid: the lock, then the machine's sleep; a lock already up is
+ * asked to have it sleep. */
+static const char *suspendcmd[]   = { "kryptik-lock", "--suspend", NULL };
 
 static const Key keys[] = {
 	/* modifier                  key                  function          argument */
@@ -101,6 +104,7 @@ static const Key keys[] = {
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_p,           spawn,            {.v = personalcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_u,           spawn,            {.v = untrustedcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_l,           spawn,            {.v = lockcmd} },
+	{ 0,                         XKB_KEY_XF86PowerOff, spawn,           {.v = suspendcmd} },
 	{ MODKEY,                    XKB_KEY_j,           focusstack,       {.i = +1} },
 	{ MODKEY,                    XKB_KEY_k,           focusstack,       {.i = -1} },
 	{ MODKEY,                    XKB_KEY_i,           incnmaster,       {.i = +1} },

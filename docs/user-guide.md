@@ -315,8 +315,12 @@ for at boot, not the login password, and Enter. Until then everything kept on
 the state partition waits, the zones are frozen, and the lock takes nothing
 else; a wrong passphrase waits as a wrong password does. The zones carry on
 where they were once it is given. An encrypted zone's volume keeps its key
-across the sleep, as its zone is frozen, not stopped. The lid and the power
-key do not suspend the machine yet.
+across the sleep, as its zone is frozen, not stopped. The power key and
+closing the lid do the same as `kryptik suspend`, locked or not. The machine
+can also sleep by itself, as many minutes after the screen locks for being
+idle as `~/.config/kryptik/lock-sleep` holds, from the next login; it is
+off until resume is proven on physical hardware, and 20 is the value to
+write then. Testing on physical hardware is planned for October 2026.
 
 Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then

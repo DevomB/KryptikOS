@@ -41,6 +41,9 @@ Steps (each one argument):
                             serial line, which says it did not; either is a
                             success, and the steps after if-asleep: follow it
     if-asleep:STEP          STEP, if the last asleep-or: saw the guest asleep
+    powerkey                press the machine's power button (QMP
+                            system_powerdown), which the guest's kernel tells
+                            as the power key
     dump:FILE               write the guest's memory to FILE (QMP
                             dump-guest-memory, ELF, no paging)
     wakeup                  wake a suspended guest (QMP system_wakeup)
@@ -375,6 +378,10 @@ def main():
                 if not qmpsock: raise RuntimeError("dump needs --qmp")
                 r = qmp(qmpsock, "dump-guest-memory", {"paging": False, "protocol": "file:" + rest})
                 if "error" in r: raise RuntimeError(f"dump-guest-memory: {r['error']}")
+            elif kind == "powerkey":
+                if not qmpsock: raise RuntimeError("powerkey needs --qmp")
+                r = qmp(qmpsock, "system_powerdown")
+                if "error" in r: raise RuntimeError(f"system_powerdown: {r['error']}")
             elif kind == "wakeup":
                 if not qmpsock: raise RuntimeError("wakeup needs --qmp")
                 r = qmp(qmpsock, "system_wakeup")

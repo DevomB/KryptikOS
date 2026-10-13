@@ -194,10 +194,10 @@ A desktop someone can live in, built the same way.
 - **Software from somewhere.** A package manager and a signed binary
   repository, or zones that carry their own userland. An ADR first.
 - **The laptop.** Per-zone sound brokered like the clipboard, Bluetooth,
-  suspend from the lid, the power key and idleness, with the zone volumes'
-  keys dropped too (`kryptik suspend` drops the state partition's), power
-  management, hotplug and multiple monitors, input methods and a second
-  keyboard layout to switch to.
+  suspend with the zone volumes' keys dropped too (`kryptik suspend`, the
+  power key and the lid drop the state partition's), power management,
+  hotplug and multiple monitors, input methods and a second keyboard layout
+  to switch to.
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so
