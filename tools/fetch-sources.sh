@@ -174,6 +174,10 @@ fi
 
 mkdir -p "$KRYPTIK_SOURCES"
 
+# The last mirror for every source fetched over HTTPS, Gentoo's copies of upstream's own files.
+# Here, not in versions.env: a mirror is no build input, and that file keys stage 04's cache.
+MIRROR_DISTFILES="${MIRROR_DISTFILES-https://distfiles.gentoo.org/distfiles}"
+
 # fetch_one URL DEST: try each mirror in order.
 fetch_one() {
     local url="$1" dest="$2"
