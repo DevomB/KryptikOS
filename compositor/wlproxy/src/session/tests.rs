@@ -87,9 +87,19 @@ fn hidden_globals_invisible_and_unbindable() {
     pump_all(&mut s).unwrap();
     let seen = read_all(&mut c);
     let text = String::from_utf8_lossy(&seen).to_string();
-    assert!(text.contains("wl_compositor") && text.contains("wl_shm") && text.contains("wl_data_device_manager"));
+    assert!(text.contains("wl_compositor") && text.contains("wl_shm"));
     assert!(!text.contains("screencopy"), "{text}");
-    assert_eq!(s.hidden_count, 1);
+    // The one data device the client hears of is the proxy's, by a name of its own.
+    let named: Vec<u32> = split_messages(&seen).iter().filter(|(k, _)| *k == (2, WL_REGISTRY_GLOBAL)).map(|(_, b)| u32::from_ne_bytes(b[..4].try_into().unwrap())).collect();
+    assert_eq!(named, [policy::OWN_GLOBAL_BASE, 1, 4], "{text}");
+    assert_eq!(s.hidden_count, 2);
+    // and the compositor's, bound by its own number, is refused like any hidden global
+    let bind = MessageWriter::new(2, WL_REGISTRY_BIND).u32(3).string("wl_data_device_manager").u32(3).u32(5).finish().unwrap();
+    c.write_all(&bind).unwrap();
+    assert!(matches!(pump_all(&mut s), Err(SessionError::HiddenInterface(_))));
+    let (mut s, mut c, _sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    pump_all(&mut s).unwrap();
     // binding the hidden global by guessing its name is refused
     let bind = MessageWriter::new(2, WL_REGISTRY_BIND).u32(2).string("zwlr_screencopy_manager_v1").u32(3).u32(5).finish().unwrap();
     c.write_all(&bind).unwrap();
@@ -844,11 +854,10 @@ fn with_data_device(id: u64, clip: &mut Clipboard) -> (Session, UnixStream, Unix
     s.id = id;
     c.write_all(&get_registry(2)).unwrap();
     sv.write_all(&global(2, 1, "wl_seat", 9)).unwrap();
-    sv.write_all(&global(2, 2, "wl_data_device_manager", 3)).unwrap();
     pump_with(&mut s, clip).unwrap();
     c.write_all(&bind(2, 1, "wl_seat", 9, 3)).unwrap();
     c.write_all(&MessageWriter::new(3, 1).u32(4).finish().unwrap()).unwrap(); // wl_seat.get_keyboard
-    c.write_all(&bind(2, 2, "wl_data_device_manager", 3, 5)).unwrap();
+    c.write_all(&bind(2, policy::OWN_GLOBAL_BASE, "wl_data_device_manager", 3, 5)).unwrap();
     c.write_all(&MessageWriter::new(5, 1).u32(6).u32(3).finish().unwrap()).unwrap(); // get_data_device
     pump_with(&mut s, clip).unwrap();
     let _ = read_all(&mut sv);
@@ -893,10 +902,9 @@ fn served_objects_reach_the_compositor_as_placeholders() {
     let mut clip = Clipboard::default();
     let (mut s, mut c, mut sv) = make();
     c.write_all(&get_registry(2)).unwrap();
-    sv.write_all(&global(2, 2, "wl_data_device_manager", 3)).unwrap();
     pump_with(&mut s, &mut clip).unwrap();
     assert!(String::from_utf8_lossy(&read_all(&mut c)).contains("wl_data_device_manager"), "the proxy's own is advertised");
-    c.write_all(&bind(2, 2, "wl_data_device_manager", 3, 3)).unwrap();
+    c.write_all(&bind(2, policy::OWN_GLOBAL_BASE, "wl_data_device_manager", 3, 3)).unwrap();
     c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap(); // create_data_source
     c.write_all(&MessageWriter::new(4, 0).string("text/plain").finish().unwrap()).unwrap(); // offer
     pump_with(&mut s, &mut clip).unwrap();
@@ -926,9 +934,8 @@ fn placeholders_are_counted() {
     let mut clip = Clipboard::default();
     let (mut s, mut c, mut sv) = make();
     c.write_all(&get_registry(2)).unwrap();
-    sv.write_all(&global(2, 2, "wl_data_device_manager", 3)).unwrap();
     pump_with(&mut s, &mut clip).unwrap();
-    c.write_all(&bind(2, 2, "wl_data_device_manager", 3, 3)).unwrap();
+    c.write_all(&bind(2, policy::OWN_GLOBAL_BASE, "wl_data_device_manager", 3, 3)).unwrap();
     for _ in 0..2 {
         c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap(); // create_data_source 4
         c.write_all(&MessageWriter::new(4, 1).finish().unwrap()).unwrap(); // and destroy it

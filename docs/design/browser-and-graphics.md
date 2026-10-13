@@ -17,7 +17,8 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
 - **The proxy offers nine globals.** `kryptik-wlproxy` advertises
   `wl_compositor`, `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`,
   `xdg_wm_base`, `zxdg_decoration_manager_v1` and `wp_viewporter`, and
-  serves `wl_data_device_manager` itself (below). It disconnects a client
+  `wl_data_device_manager` as a global of its own, which it serves itself
+  while the compositor's stays hidden (below). It disconnects a client
   that binds anything else, and bounds shared-memory pools at 64 MiB each,
   128 MiB per connection and 256 MiB per zone
   (`compositor/wlproxy/src/policy.rs`).
@@ -244,10 +245,11 @@ Four things are needed, each with its own review. The first two are built.
   screenshot shows it only inside its window's frame, and the menu still
   takes the keyboard and closes it, as does Alt+j to the popup's own window.
 - **Copy and paste inside a zone.** The proxy serves
-  `wl_data_device_manager` itself (`compositor/wlproxy/src/clipboard.rs`):
-  one selection per zone, kept among the zone's own clients and never
-  forwarded to the compositor, so it reaches neither zone 0 nor another
-  zone. Only the client with the keyboard copies, and a client is offered
+  `wl_data_device_manager` itself (`compositor/wlproxy/src/clipboard.rs`),
+  as a global of its own: the compositor's data device stays hidden, and a
+  zone needs none from it. There is one selection per zone, kept among the
+  zone's own clients and never forwarded to the compositor, so it reaches
+  neither zone 0 nor another zone. Only the client with the keyboard copies, and a client is offered
   the selection just before the keyboard enters it, as a compositor offers
   its own; a paste is passed to the copying client with the reader's
   descriptor. The compositor sees a `wl_display.sync` where each served

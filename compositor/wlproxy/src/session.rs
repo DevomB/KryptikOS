@@ -767,7 +767,9 @@ impl Session {
                             (Some((_, n)), Some(v)) => (n, v),
                             _ => return Err(SessionError::Wire(WireError::ArgOverrun)),
                         };
-                        let max = policy::allowed_version(name).ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
+                        let max = policy::allowed_version(name)
+                            .or_else(|| policy::own_version(name))
+                            .ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
                         // The global's number pins one advertised interface and version cap.
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
@@ -1000,6 +1002,14 @@ impl Session {
             // A bind picks the new object's version; any other new object inherits its parent's.
             if let Some((id, name)) = decoded.new_object {
                 self.register(id, name, decoded.bind_version.unwrap_or(version), dir)?;
+                // A new registry hears of the proxy's own globals first, then the compositor's.
+                if name == "wl_registry" {
+                    for (i, &(iface, v)) in policy::OWN_GLOBALS.iter().enumerate() {
+                        let gname = policy::OWN_GLOBAL_BASE + i as u32;
+                        self.globals.insert(gname, (iface, v));
+                        self.emit(MessageWriter::new(id, WL_REGISTRY_GLOBAL).u32(gname).string(iface).u32(v).finish(), Vec::new())?;
+                    }
+                }
                 // A served object's creation reaches the compositor as a placeholder only.
                 if dir == Dir::ClientToServer && !forward {
                     self.placeholder(id)?;

@@ -15,8 +15,6 @@ pub const ALLOWED: &[(&str, u32)] = &[
     ("xdg_wm_base", 6),
     ("zxdg_decoration_manager_v1", 1),
     ("wp_viewporter", 1),
-    // Served by the proxy (SERVED): version 3 is the last a selection needs.
-    ("wl_data_device_manager", 3),
 ];
 
 pub fn allowed_version(interface: &str) -> Option<u32> {
@@ -29,6 +27,18 @@ pub const SERVED: &[&str] = &["wl_data_device_manager", "wl_data_source", "wl_da
 
 pub fn served(interface: &str) -> bool {
     SERVED.contains(&interface)
+}
+
+/// The globals the proxy advertises as its own, on every registry, while the compositor's of the
+/// same interface stays hidden: a zone never needs the compositor to offer them. Version 3 is
+/// the last a selection needs.
+pub const OWN_GLOBALS: &[(&str, u32)] = &[("wl_data_device_manager", 3)];
+/// Their registry names, from the top of the range, which a compositor numbering its globals
+/// from 1 does not reach.
+pub const OWN_GLOBAL_BASE: u32 = 0xFFFF_FF00;
+
+pub fn own_version(interface: &str) -> Option<u32> {
+    OWN_GLOBALS.iter().find(|(n, _)| *n == interface).map(|(_, v)| *v)
 }
 
 /// The most bytes a rewritten title may carry; only one line is ever shown.
