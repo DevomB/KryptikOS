@@ -263,8 +263,6 @@ PACKAGES=(
     "linux-firmware" "s_firmware $(sha256_of "${KRYPTIK_ROOT}/build/config/firmware.list" 2>/dev/null || echo none)"
     # --- sound: the library zone 0's mixer and a zone's programs use (docs/design/laptop.md).
     "alsa-lib"    "s_alsa_lib"
-    # Zone 0's mixer and a zone's plugin to it; the sources' digest rebuilds them.
-    "sound"       "s_sound $(tree_digest "${KRYPTIK_ROOT}"/tools/sound/*)"
     # --- the desktop: build tools, the Wayland stack, compositor, applications.
     "meson"       "s_meson"
     "ninja"       "s_ninja"
@@ -291,6 +289,8 @@ PACKAGES=(
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
     # The desktop's own pieces; the proxy's path and hash are arguments, as for kryptikd.
     "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-lock.c" 2>/dev/null || echo none) ${V_DWL}"
+    # Zone 0's mixer and a zone's plugin to it; the sources' digest rebuilds them.
+    "sound"       "s_sound $(tree_digest "${KRYPTIK_ROOT}"/tools/sound/*)"
 
     # From here the steps configure the system rather than build packages.
     "etc"         "s_etc"
