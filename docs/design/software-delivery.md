@@ -208,6 +208,8 @@ up ADR-001 in the zones where the applications run.
   release: 1.2.0
   base: <the root's dm-verity root hash>
   image: browser 140.4.0 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
+  image: toolkit 3.24.49 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
+  requires: browser toolkit
   needs: browser allow-syscall seccomp
   ```
 
@@ -217,11 +219,12 @@ up ADR-001 in the zones where the applications run.
   from the signed kernel's command line. The verity parameters are the
   root's (SHA-256, 4096-byte blocks, no superblock, the hash tree after
   `data-blocks`), so every value kryptikd passes to dm-verity is signed.
-  Image lines are sorted by name and a needs line uses the policy-file
-  syntax; anything else in the file refuses it. A development build also
-  signs the two lists the guest must refuse, under
-  `images-<release>/controls/`: the same list in `kryptik-release`, and
-  one for another root.
+  Image lines are sorted by name; a requires line, one per image in image
+  order, names the images it is built over, which a zone naming it must
+  name too; a needs line uses the policy-file syntax. Anything else in the
+  file refuses it. A development build also signs the two lists the guest
+  must refuse, under `images-<release>/controls/`: the same list in
+  `kryptik-release`, and one for another root.
 - **On the medium.** The USB image carries the list, its signature and each
   image in a third partition, `kryptik-images`; the ISO carries the same
   files under `/images` in its filesystem. A release without images has
@@ -241,7 +244,13 @@ up ADR-001 in the zones where the applications run.
   that the list is for the root the payload carries, and decompresses each
   image into the store, where the copy is checked against the size and hash
   the list signs before it takes its name. Once the trial is armed, the
-  store drops the release the slot held.
+  store drops the release the slot held. The installer takes the medium's
+  copy (above): it checks the list is for the root it installs before it
+  writes anything, and keeps each image as `apply` does.
+  `kryptik-recover --restore-slot` does not open the state partition, so a
+  slot it restores finds its images only if the store still holds that
+  release's, from the install or a kept update; otherwise a zone that names
+  one is refused until the next update brings them.
 - **Fetched** alone for an image-only fix, by the same verbs as a release.
   The statement of what is current gains one line per image for each base
   it serves; zone 0 fetches only images whose hash it does not hold, never

@@ -46,6 +46,8 @@ pub struct Manifest {
     /// The root hash of the root the images were built over.
     pub base: String,
     pub images: Vec<Image>,
+    /// The images each image is built over (`requires:`), which a zone naming it must name too.
+    pub requires: Vec<(String, Vec<String>)>,
     /// Each image's policy-file lines: what a zone's policy must grant before it gets the image.
     pub needs: Vec<(String, String)>,
 }
@@ -93,11 +95,12 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
         return Err("the image list's base is not a root hash".into());
     }
     let mut images: Vec<Image> = Vec::new();
+    let mut requires: Vec<(String, Vec<String>)> = Vec::new();
     let mut needs: Vec<(String, String)> = Vec::new();
     for line in lines {
         if let Some(rest) = line.strip_prefix("image: ") {
-            if !needs.is_empty() {
-                return Err("an image line follows the needs lines".into());
+            if !requires.is_empty() || !needs.is_empty() {
+                return Err("an image line follows the requires or needs lines".into());
             }
             let img = image_line(rest)?;
             // Sorted, which also keeps one line per image.
@@ -105,6 +108,31 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
                 return Err(format!("image {} is out of order or listed twice", img.name));
             }
             images.push(img);
+        } else if let Some(rest) = line.strip_prefix("requires: ") {
+            if !needs.is_empty() {
+                return Err("a requires line follows the needs lines".into());
+            }
+            let mut words = rest.split(' ');
+            let name = words.next().unwrap_or_default();
+            let reqs: Vec<String> = words.map(str::to_string).collect();
+            let at = images
+                .iter()
+                .position(|i| i.name == name)
+                .ok_or_else(|| format!("a requires line names {name:?}, which the list does not hold"))?;
+            if reqs.is_empty() {
+                return Err(format!("the requires line for {name} names no image"));
+            }
+            for (k, r) in reqs.iter().enumerate() {
+                if r == name || !images.iter().any(|i| &i.name == r) || reqs[..k].contains(r) {
+                    return Err(format!("image {name} requires {r:?}, which is not another image the list holds"));
+                }
+            }
+            // In image order, one line per image.
+            let last = requires.last().and_then(|(n, _)| images.iter().position(|i| &i.name == n));
+            if last.is_some_and(|l| l >= at) {
+                return Err(format!("the requires line for {name} is out of order or repeated"));
+            }
+            requires.push((name.to_string(), reqs));
         } else if let Some(rest) = line.strip_prefix("needs: ") {
             let (name, what) = rest.split_once(' ').ok_or_else(|| format!("{line:?} names no policy line"))?;
             let at = images
@@ -124,7 +152,7 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
     if images.is_empty() {
         return Err("the image list names no image".into());
     }
-    Ok(Manifest { release, base, images, needs })
+    Ok(Manifest { release, base, images, requires, needs })
 }
 
 fn image_line(rest: &str) -> Result<Image, String> {
@@ -188,6 +216,16 @@ pub fn needs_met(m: &Manifest, image: &str, granted: Option<&Policy>) -> Result<
     Ok(())
 }
 
+/// Whether a zone that names `named` also names every image each of them is built over.
+pub fn requires_met(m: &Manifest, named: &[String]) -> Result<(), String> {
+    for (image, reqs) in m.requires.iter().filter(|(i, _)| named.contains(i)) {
+        if let Some(r) = reqs.iter().find(|r| !named.contains(r)) {
+            return Err(format!("image {image:?} is built over {r:?}, which the zone does not name"));
+        }
+    }
+    Ok(())
+}
+
 /// Where a set of images is stacked: one directory per set, whichever zone asks for it.
 pub fn set_dir(images: &[&Image]) -> String {
     let parts: Vec<String> = images.iter().map(|i| format!("{}-{}", i.name, &i.root_hash[..16])).collect();
@@ -212,6 +250,7 @@ pub fn prepare(zone: &Zone, granted: Option<&Policy>) -> Result<String, String> 
         }
         needs_met(&m, name, granted)?;
     }
+    requires_met(&m, &zone.images)?;
     let mut lower: Vec<String> = Vec::new();
     for img in &chosen {
         lower.push(format!("{}/usr", open(img)?));

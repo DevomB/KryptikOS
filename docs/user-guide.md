@@ -203,7 +203,7 @@ It writes four GPT partitions: `kryptik-esp` (the medium's ESP, with the
 slot A kernel as the boot file), `kryptik-a` (the verified root image, read
 back and hashed against the medium's record), `kryptik-b` (empty until the
 first update), and `kryptik-state` (LUKS2 with ext4 inside: users, zone
-volumes, updates). Its plan names the disk's model and what each of its
+volumes, updates, and the medium's software images). Its plan names the disk's model and what each of its
 partitions holds (`holds  gpt: sda1 ntfs "Windows" 237G; ...`): read it, as
 nothing else tells a backup disk from the one you mean. Before its first
 write it asks you to type `ERASE` (`--yes` skips that), then twice for the
