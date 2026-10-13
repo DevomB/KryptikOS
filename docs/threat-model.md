@@ -47,6 +47,11 @@ and `vault` has no sound at all. Of other zones' sound it learns one thing:
 the card stays open five seconds after the last sound, so how soon its own
 first sound is taken tells it whether any zone played in that time, a bit
 two zones could also signal through.
+The camera reaches a zone only while the user has granted it, one zone at a
+time, until the user takes it back, the zone stops or the screen locks; its
+driver is loaded for the grant alone, so no camera's descriptors are parsed
+before the user asks, and the zone holding it reaches Video4Linux and the
+driver through the node it is given. `vault` and the net zone never get it.
 Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 

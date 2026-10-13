@@ -154,7 +154,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
             second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
-            password-check-pauses lock-takes-keyboard lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
+            password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             volume-key lock-passes-volume-keys lock-holds-other-keys \

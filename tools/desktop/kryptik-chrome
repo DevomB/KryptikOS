@@ -32,6 +32,8 @@
 #   kryptik-chrome --microphone ZONE
 #                                  say, for as long as ZONE holds the microphone,
 #                                  that it does and whether it is recording
+#   kryptik-chrome --camera ZONE   say, for as long as ZONE holds the camera, that
+#                                  it does
 #   kryptik-chrome --battery       warn that the battery is low, until on mains
 #   kryptik-chrome --waiting       after a sleep, ask in turn for the passphrase of
 #                                  each zone whose volume lost its key with it
@@ -56,6 +58,9 @@ CONSENT=/run/kryptik-consent
 # The power service's last look (power.sh): the source, the charge and its warning.
 POWER=/run/kryptik-power/state
 SYS_BLOCK=/sys/class/block
+# kryptikd's record of the camera's grant (camera.rs), and its note that the driver stayed loaded.
+CAMERA=/run/kryptik-camera/grant
+CAMERA_STAYED=/run/kryptik-camera/stayed
 
 die() { echo "kryptik-chrome: $*" >&2; exit 1; }
 
@@ -177,13 +182,18 @@ run_status() {
     # as the battery reaches 10% and again 5%, a window warns of the power-off at 3%; and once
     # the state partition is back after a sleep, a window asks for each waiting zone's passphrase.
     (
-        shown="" warned="" waited="" blocks="" seen=""
+        shown="" filming="" warned="" waited="" blocks="" seen=""
         while :; do
             mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
             if [ -n "$mic" ] && [ "$mic" != "$shown" ]; then
                 "$TERMINAL" /usr/bin/kryptik-chrome --microphone "$mic" &
             fi
             shown="$mic"
+            cam="$(camera_zone)"
+            if [ -n "$cam" ] && [ "$cam" != "$filming" ]; then
+                "$TERMINAL" /usr/bin/kryptik-chrome --camera "$cam" &
+            fi
+            filming="$cam"
             w="$(power_field warning)"
             if [ -n "$w" ] && [ "$w" != "$warned" ]; then
                 "$TERMINAL" /usr/bin/kryptik-chrome --battery &
@@ -242,6 +252,25 @@ run_waiting() {
         "$LAUNCH" --resume "$z" || sleep 2
     done
     sleep 1
+}
+
+# The zone that holds the camera, as kryptikd recorded it; nothing when none does.
+camera_zone() { sed -n 's/^zone //p' "$CAMERA" 2>/dev/null; }
+
+# The camera's window: open from the grant to its end.
+run_camera() {
+    z="$1"
+    clear 2>/dev/null
+    echo "================ KRYPTIK - the camera (zone 0) ================"
+    printf 'Zone %s %s %s holds the camera, %s,\n' "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)" \
+        "$(sed -n 's/^name //p' "$CAMERA" 2>/dev/null)"
+    echo "until it stops or the screen locks. Alt+p, then k and Enter, takes it back."
+    while [ "$(camera_zone)" = "$z" ]; do
+        sleep 1
+    done
+    echo "The camera is no longer zone $z's."
+    [ -e "$CAMERA_STAYED" ] && echo "Its driver stays loaded, still held by a program, until the next grant."
+    sleep 2
 }
 
 # The microphone's window: open from the grant to its end, with each change of state on a line.
@@ -358,6 +387,18 @@ menu_sound() {
     echo "Sound: volume ${vol}; the microphone: ${mic:-no zone}"
 }
 
+# The camera on one line: the zone that holds it, or that none does.
+menu_camera() {
+    z="$(camera_zone)"
+    if [ -n "$z" ]; then
+        echo "Camera: zone $z holds it ($(sed -n 's/^name //p' "$CAMERA" 2>/dev/null))"
+    elif [ -e "$CAMERA_STAYED" ]; then
+        echo "Camera: no zone; its driver stays loaded, still held by a program, until the next grant"
+    else
+        echo "Camera: no zone"
+    fi
+}
+
 # The update channel's verbs through the launch daemon, as `kryptik update` has
 # them at the administration login. Installing asks first: it arms a trial of
 # the release at the next boot.
@@ -404,6 +445,7 @@ run_menu() {
         menu_power
         menu_update
         menu_sound
+        menu_camera
         echo
         echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
         echo "Admin: u updates: what the channel names, fetch, forget, install"
@@ -413,6 +455,7 @@ run_menu() {
         echo "       p<N> after a sleep, give zone N the passphrase its volume waits for"
         echo "Sound: c<N> let zone N use the microphone until it stops (c alone takes it back)"
         echo "       v<D> the volume, 0 to 9   v<N><D> zone N's own   x mute or unmute everything"
+        echo "Camera: k<N> let zone N use it until its stop or the screen lock (k alone takes it back)"
         echo
         printf 'choice (e.g. 1t): '
         if ! read -r choice; then break; fi
@@ -430,6 +473,13 @@ run_menu() {
                    echo "no zone window yet"
                fi
                sleep 3; continue ;;
+            k) "$LAUNCH" --camera-revoke > /dev/null && echo "no zone has the camera now"
+               sleep 1; continue ;;
+            k[1-9]) idx="${choice#k}"; eval "z=\"\${Z$idx:-}\""
+                    [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                    # The gesture is the grant: one zone at a time, until k, its stop or the lock.
+                    "$LAUNCH" --camera-grant "$z" > /dev/null && echo "zone $z may use the camera until it stops, the screen locks, or k"
+                    sleep 2; continue ;;
             c) "$SOUND" --control revoke > /dev/null && echo "no zone may record now"
                sleep 1; continue ;;
             c[1-9]) idx="${choice#c}"; eval "z=\"\${Z$idx:-}\""
@@ -745,10 +795,11 @@ case "${1:-}" in
     --confirm) [ -n "${2:-}" ] || die "--confirm needs an id"; run_confirm "$2" ;;
     --menu) run_menu ;;
     --microphone) [ -n "${2:-}" ] || die "--microphone needs a zone"; run_microphone "$2" ;;
+    --camera) [ -n "${2:-}" ] || die "--camera needs a zone"; run_camera "$2" ;;
     --battery) run_battery ;;
     --waiting) run_waiting ;;
     --sticks) run_sticks ;;
     --prompt) shift; run_prompt "$@" ;;
     --focus) cat "$FOCUS" 2>/dev/null || { echo "zone=-"; exit 1; } ;;
-    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus | --microphone ZONE | --battery | --waiting | --sticks]" ;;
+    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus | --microphone ZONE | --camera ZONE | --battery | --waiting | --sticks]" ;;
 esac

@@ -27,6 +27,10 @@ pids_max   = 128
 # room that nothing mediates.
 play = false
 
+[camera]
+# Never granted the camera: secrets have no use for it, and what it sees is the room.
+use = false
+
 [identity]
 # Root inside maps to host uid/gid 393216, nobody to 458750; fixed, never derived from zone order.
 uid_base = 393216

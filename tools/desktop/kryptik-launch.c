@@ -18,6 +18,9 @@
  *   kryptik-launch --sticks             the USB stick partitions a zone may be given: NAME WHAT a line
  *   kryptik-launch --stick-grant ZONE PART ro|rw   give ZONE the partition, to read or to write too
  *   kryptik-launch --stick-eject ZONE   take ZONE's back
+ *   kryptik-launch --camera-grant ZONE  give ZONE the camera until it is taken back, the zone
+ *                                       stops or the screen locks
+ *   kryptik-launch --camera-revoke      take it back; prints the zone that had it, if any
  *   kryptik-launch --check-password    whether the line on stdin is the login password: the
  *                                      screen lock asks, and the daemon pauses after a wrong one
  *
@@ -334,6 +337,7 @@ static void usage(void)
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
 	      "       kryptik-launch --update status|fetch|forget|apply | --update auto on|off\n"
 	      "       kryptik-launch --sticks | --stick-grant ZONE PARTITION ro|rw | --stick-eject ZONE\n"
+	      "       kryptik-launch --camera-grant ZONE | --camera-revoke\n"
 	      "       kryptik-launch --check-password   (the password on standard input)\n", stderr);
 	exit(2);
 }
@@ -479,6 +483,23 @@ static int stick_main(int argc, char **argv)
 			r[n - 4] = 0;
 		fputs(r, stdout);
 	}
+	free(r);
+	return ok ? 0 : 1;
+}
+
+/* The chrome's camera gestures: give it to a zone, or take it back. */
+static int camera_main(int argc, char **argv)
+{
+	char req[64] = "";
+	if (argc == 3 && strcmp(argv[1], "--camera-grant") == 0 && ident_ok(argv[2]))
+		snprintf(req, sizeof req, "camera-grant %s\n", argv[2]);
+	else if (argc == 2 && strcmp(argv[1], "--camera-revoke") == 0)
+		snprintf(req, sizeof req, "camera-revoke\n");
+	else
+		usage();
+	char *r = talk(req, -1);
+	int ok = strncmp(r, "ok ", 3) == 0;
+	fputs(ok ? r + 3 : r, ok ? stdout : stderr);
 	free(r);
 	return ok ? 0 : 1;
 }
@@ -632,6 +653,8 @@ int main(int argc, char **argv)
 		return password_main(argc);
 	if (argc >= 2 && strncmp(argv[1], "--stick", 7) == 0)
 		return stick_main(argc, argv);
+	if (argc >= 2 && strncmp(argv[1], "--camera-", 9) == 0)
+		return camera_main(argc, argv);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();

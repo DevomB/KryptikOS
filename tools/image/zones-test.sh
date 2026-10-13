@@ -14,6 +14,8 @@
 #   step 2b guest-tests/stick-check.sh: a USB stick plugged in while the guest
 #           runs, given to a zone through the launch daemon, read, written,
 #           taken back and pulled out; then the install medium plugged in
+#   step 2c guest-tests/camera-check.sh: the camera granted to one zone at a
+#           time and taken back, with vivid standing in for a camera
 #   step 3  the compartment suites' [vm] rows on the target kernel (not with
 #           --skip-suites)
 #   step 4  reboot; the encrypted zone's data is still there
@@ -122,6 +124,20 @@ grep 'ST FAIL' <<<"$T2B" | sed 's/^/        /'
 # What untrusted put, read off the stick once it was pulled out: the zone's sync reached the image.
 put="$(mtype -i "${STICK}@@1048576" ::/put.txt 2>&1)"
 [[ "$put" == "written in untrusted" ]] && green "what untrusted put is on the stick, read by the host" || red "the stick has no put.txt from untrusted: ${put}"
+
+# ---------------------------------------------------------------- step 2c --
+step "step 2c: the camera granted to one zone at a time, with vivid standing in for one"
+DRIVE_TIMEOUT=600 drive "$(ROOTSH "bash /usr/lib/kryptik/guest-tests/camera-check.sh ${TUSER} 2>&1; echo CTCHECK-DONE")" \
+    "expect:CT END" "expect:CTCHECK-DONE"
+rc=$?
+T2C="$(txt)"
+[[ "$rc" -eq 0 ]] && green "the camera rounds ran to their end" || red "the camera rounds did not run to their end"
+for name in camera-not-by-alias camera-not-granted camera-refused-vault camera-refused-net camera-granted \
+            camera-zone-captures camera-ends-with-zone camera-other-zone-none camera-revoked \
+            camera-revoked-kept-descriptor camera-granted-again-while-running camera-ends-with-zone-again; do
+    grep -q "CT PASS ${name}" <<<"$T2C" && green "guest: ${name}" || red "guest: ${name} (not passed)"
+done
+grep 'CT FAIL' <<<"$T2C" | sed 's/^/        /'
 
 # ----------------------------------------------------------------- step 3 --
 if [[ "$SUITES" -eq 1 ]]; then

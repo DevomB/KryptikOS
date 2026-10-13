@@ -897,6 +897,9 @@ launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 300 grab" > "$LOG/lau
 lock_grabbed() { since_mark lock untrusted | grep -q 'popup committed '; }
 lock_popup_done() { since_mark lock untrusted | grep -q 'popup done'; }
 wait_for 20 lock_grabbed
+# The lock takes the camera back too: vivid stands in for one, granted to untrusted.
+modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid.err"
+cam_given="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
 locked0="$(said locked)"; refused0="$(said refused)"; unlocked0="$(said unlocked)"
 echo "GT KEY-LOCK"
 if wait_for 20 more locked "$locked0" && wait_for 10 lock_popup_done && wait_for 10 grep -q 'keyboard left the window' "$LOG/lock-zone0.out"; then
@@ -904,6 +907,13 @@ if wait_for 20 more locked "$locked0" && wait_for 10 lock_popup_done && wait_for
 else
     fail "lock-takes-keyboard" "lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); zone 0's window: $(tr '\n' ' ' < "$LOG/lock-zone0.out"); the zone's: $(since_mark lock untrusted | tail -3 | tr '\n' ' ')"
 fi
+if wait_for 10 grep -q '^kryptik-lock: the camera was taken back from zone untrusted' "$slog" \
+    && [[ "$("$KD" camera status 2>&1)" == none* && ! -e /run/kryptik-camera/untrusted/video0 ]]; then
+    pass "lock-takes-camera" "granted to untrusted (${cam_given}), the camera went back as the screen locked"
+else
+    fail "lock-takes-camera" "granted: ${cam_given}; $("$KD" camera status 2>&1); lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); vivid: $(tr '\n' ' ' < "$LOG/vivid.err")"
+fi
+modprobe -r vivid uvcvideo 2>/dev/null
 sleep 2
 echo "GT SCREENSHOT-LOCKED"
 sleep 6

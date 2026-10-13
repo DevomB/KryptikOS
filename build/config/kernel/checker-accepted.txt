@@ -23,5 +23,8 @@ kconfig  CONFIG_LSM_MMAP_MIN_ADDR # exists only with SELinux; CONFIG_DEFAULT_MMA
 # --- an oops has to be readable ---------------------------------------------------
 kconfig  CONFIG_KALLSYMS          # a stack trace without symbols cannot be acted on; kernel.kptr_restrict=2 and kernel.dmesg_restrict=1 (build/config/sysctl.d) keep them from users, and KALLSYMS_ALL is off
 
+# --- a stand-in that only a suite loads -----------------------------------------
+kconfig  CONFIG_VIDEO_VIVID       # a module no device or alias loads: the zones suite loads it to stand in for a camera (docs/design/camera.md), as test_power stands in for a battery
+
 # --- the IOMMU is already on and strict by default -------------------------------
 cmdline  iommu                    # INTEL_IOMMU_DEFAULT_ON, AMD_IOMMU and IOMMU_DEFAULT_DMA_STRICT already turn it on, strict, wherever there is one

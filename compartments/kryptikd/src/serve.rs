@@ -19,6 +19,8 @@
 //!                descriptor; `info` says `waiting yes` until it is given
 //!              sticks, the USB stick partitions a zone may be given, a line each
 //!              stick-grant <zone> <partition> ro|rw | stick-eject <zone>
+//!              camera-grant <zone>, answered `ok <camera>` | camera-revoke, answered
+//!                `ok <zone>`, `ok <zone> stayed` (its driver still loaded) or `ok none`
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
@@ -1419,6 +1421,34 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                     "ok\n".to_string()
                 }
                 Ok(false) => format!("error: zone {zone:?} holds no stick\n"),
+                Err(e) => format!("error: {e}\n"),
+            };
+            reply(&conn, &said);
+        }
+        // The chrome's k<N>, and k alone or the screen lock taking it back.
+        "camera-grant" => {
+            let zone = first.split_whitespace().nth(1).unwrap_or("");
+            if !ident_ok(zone) {
+                reply(&conn, "error: bad zone name\n");
+                return None;
+            }
+            let said = match zone_named(cfg, zone).and_then(|z| crate::camera::grant(&z)) {
+                Ok(g) => {
+                    eprintln!("kryptikd serve: uid {uid} gave zone {zone:?} the camera, {}", g.name);
+                    format!("ok {}\n", g.name)
+                }
+                Err(e) => format!("error: {e}\n"),
+            };
+            reply(&conn, &said);
+        }
+        "camera-revoke" => {
+            let said = match crate::camera::revoke() {
+                Ok(Some(e)) => {
+                    eprintln!("kryptikd serve: uid {uid} took the camera back from zone {:?}{}", e.zone,
+                              if e.stayed { "; its driver stays loaded" } else { "" });
+                    format!("ok {}{}\n", e.zone, if e.stayed { " stayed" } else { "" })
+                }
+                Ok(None) => "ok none\n".to_string(),
                 Err(e) => format!("error: {e}\n"),
             };
             reply(&conn, &said);

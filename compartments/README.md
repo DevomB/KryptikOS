@@ -44,6 +44,9 @@ cpu_max    = "200%"    # two CPUs' worth of time; io_max = "20M" bounds bytes pe
 [sound]
 play = false           # no socket to zone 0's mixer; every other zone but the net zone plays
 
+[camera]
+use = false            # never granted the camera; every other zone but the net zone may be
+
 [identity]
 uid_base = 393216      # fixed host uid range, never derived from zone order
 

@@ -369,6 +369,15 @@ back. `v` and a digit sets the volume, 0 to 9, `v`, a zone's number and
 a digit sets that zone's own, and `x` mutes or unmutes everything. Sound
 plays on a USB device when one is plugged in, otherwise on the built-in one.
 
+No zone sees the camera until you let it: `k` and the zone's number in the
+menu gives that zone the camera, one zone at a time, until it stops, the
+screen locks, or `k` alone takes it back, and while it has it a window of the
+chrome's says so. A program the zone left holding the camera loses it then
+as well. Built-in and USB cameras that speak the USB Video Class work, as
+most do; the cameras of recent Intel laptops that need Intel's image
+processing in userspace (MIPI cameras behind the IPU6) and infrared
+face-login cameras do not. `vault` and the net zone never get the camera.
+
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
 `passwd` for root's own. There `kryptik list`, `kryptik status [ZONE]`,
