@@ -174,9 +174,11 @@ static const char *ensure_proxy(const char *zone)
 	join(pidfile, dir, "proxy.pid");
 	join(logfile, dir, "proxy.log");
 	join(oldlog, dir, "proxy.log.old");
-	/* The move gesture's socket, beside the zone's and never bound into it. */
-	char control[PATH_MAX];
+	/* The move gesture's socket, beside the zone's and never bound into it, and the one user
+	 * it answers: this session's. */
+	char control[PATH_MAX], uid[16];
 	join(control, dir, "control");
+	snprintf(uid, sizeof uid, "%u", (unsigned)getuid());
 
 	FILE *f = fopen(pidfile, "r");
 	if (f) {
@@ -206,7 +208,7 @@ static const char *ensure_proxy(const char *zone)
 		if (close_range(3, ~0U, 0) < 0)
 			_exit(127);
 		execl(PROXY_BIN, "kryptik-wlproxy", "--zone", zone, "--listen", sock, "--upstream", upstream,
-		      "--max-clients", "32", "--control", control, (char *)NULL);
+		      "--max-clients", "32", "--control", control, "--control-uid", uid, (char *)NULL);
 		_exit(127);
 	}
 	f = fopen(pidfile, "w");

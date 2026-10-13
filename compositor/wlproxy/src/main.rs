@@ -1,11 +1,13 @@
 //! kryptik-wlproxy: the per-zone Wayland filtering proxy, single-threaded and unprivileged.
 //!
 //!   kryptik-wlproxy --zone NAME --listen PATH --upstream PATH [--max-clients N] [--once]
-//!                   [--control PATH]
+//!                   [--control PATH | --control-fd N] [--control-uid UID]
 //!
 //! Each client of PATH (the zone's /run/kryptik/wayland-0) gets its own Session to --upstream,
 //! and the zone's clients share one selection (clipboard.rs). --control is the zone 0 move
-//! gesture's socket (control.rs), which no zone holds.
+//! gesture's socket (control.rs), which no zone holds, made here or handed over listening as
+//! descriptor N; --control-uid is the one peer it answers, the session's user (by default the
+//! uid the proxy runs as).
 
 mod clipboard;
 mod control;
@@ -16,7 +18,7 @@ mod session;
 mod wire;
 
 use std::io::Write;
-use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -73,7 +75,7 @@ impl Log {
 const HIGH_WATER: usize = policy::MAX_PENDING_BYTES / 2;
 
 fn usage() -> ! {
-    eprintln!("usage: kryptik-wlproxy --zone NAME --listen PATH --upstream PATH [--max-clients N] [--once] [--control PATH]");
+    eprintln!("usage: kryptik-wlproxy --zone NAME --listen PATH --upstream PATH [--max-clients N] [--once] [--control PATH | --control-fd N] [--control-uid UID]");
     std::process::exit(2)
 }
 
@@ -84,10 +86,12 @@ struct Opts {
     max_clients: usize,
     once: bool,
     control: Option<PathBuf>,
+    control_fd: Option<RawFd>,
+    control_uid: Option<u32>,
 }
 
 fn parse(args: &[String]) -> Opts {
-    let mut o = Opts { zone: String::new(), listen: PathBuf::new(), upstream: PathBuf::new(), max_clients: 16, once: false, control: None };
+    let mut o = Opts { zone: String::new(), listen: PathBuf::new(), upstream: PathBuf::new(), max_clients: 16, once: false, control: None, control_fd: None, control_uid: None };
     let mut i = 0;
     while i < args.len() {
         let take = |i: &mut usize| -> String {
@@ -101,11 +105,14 @@ fn parse(args: &[String]) -> Opts {
             "--max-clients" => o.max_clients = take(&mut i).parse().unwrap_or_else(|_| usage()),
             "--once" => o.once = true,
             "--control" => o.control = Some(PathBuf::from(take(&mut i))),
+            "--control-fd" => o.control_fd = Some(take(&mut i).parse().ok().filter(|&fd: &RawFd| fd > 2).unwrap_or_else(|| usage())),
+            "--control-uid" => o.control_uid = Some(take(&mut i).parse().unwrap_or_else(|_| usage())),
             _ => usage(),
         }
         i += 1;
     }
-    if o.zone.is_empty() || o.listen.as_os_str().is_empty() || o.upstream.as_os_str().is_empty() {
+    if o.zone.is_empty() || o.listen.as_os_str().is_empty() || o.upstream.as_os_str().is_empty()
+        || (o.control.is_some() && o.control_fd.is_some()) {
         usage();
     }
     if !zone_ok(&o.zone) {
@@ -180,15 +187,24 @@ fn main() {
     listener.set_nonblocking(true).expect("nonblocking listener");
     eprintln!("kryptik-wlproxy[{}]: listening on {} -> {}", o.zone, o.listen.display(), o.upstream.display());
     // The move gesture's socket: 0600, in the directory whose wayland-0 alone is bound into the
-    // zone, and a connection from any uid but this one is refused.
-    let control = o.control.as_ref().and_then(|p| {
-        let _ = std::fs::remove_file(p);
-        let l = UnixListener::bind(p).map_err(|e| eprintln!("kryptik-wlproxy[{}]: no control socket at {}: {e}", o.zone, p.display())).ok()?;
-        let _ = std::fs::set_permissions(p, std::os::unix::fs::PermissionsExt::from_mode(0o600));
-        l.set_nonblocking(true).ok()?;
-        Some(l)
-    });
-    let me = unsafe { libc::geteuid() };
+    // zone, or handed over already listening; a connection from any uid but the session user's
+    // is refused.
+    let control = match (&o.control, o.control_fd) {
+        (Some(p), _) => {
+            let _ = std::fs::remove_file(p);
+            UnixListener::bind(p)
+                .map_err(|e| eprintln!("kryptik-wlproxy[{}]: no control socket at {}: {e}", o.zone, p.display()))
+                .ok()
+                .inspect(|_| {
+                    let _ = std::fs::set_permissions(p, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+                })
+        }
+        // SAFETY: the descriptor is the caller's to give, and this is its one owner from here.
+        (None, Some(fd)) => Some(unsafe { UnixListener::from_raw_fd(fd) }),
+        (None, None) => None,
+    }
+    .filter(|l| l.set_nonblocking(true).is_ok());
+    let me = o.control_uid.unwrap_or_else(|| unsafe { libc::geteuid() });
     let mut moving: Option<control::Control> = None;
     let mut writers: Vec<control::Writer> = Vec::new();
 
