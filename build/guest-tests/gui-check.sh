@@ -11,6 +11,7 @@
 #   GT KEY-ZOOM-BELOW, GT KEY-ZOOM-AGAIN            press Alt+Return (zoom)
 #   GT KEY-PARENT-FULLSCREEN, GT KEY-LATE-FULLSCREEN press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
+#   GT KEY-FOCUS-CLIP 1..4, GT KEY-FOCUS-CLIP-PERSONAL  press Alt+j
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
@@ -104,10 +105,10 @@ for g in wl_compositor wl_shm wl_seat xdg_wm_base; do
 done
 [[ -z "$needed_missing" ]] && pass "zone-sees-needed" "wl_compositor, wl_shm, wl_seat, xdg_wm_base offered" || fail "zone-sees-needed" "not offered:$needed_missing"
 hidden_seen=""
-for g in zwlr_screencopy_manager_v1 wl_data_device_manager zwlr_data_control_manager_v1 zwlr_layer_shell_v1 zwp_virtual_keyboard_manager_v1 zwlr_virtual_pointer_manager_v1 zwlr_export_dmabuf_manager_v1 zwlr_gamma_control_manager_v1 zwlr_output_manager_v1 ext_session_lock_manager_v1 zwlr_foreign_toplevel_manager_v1; do
+for g in zwlr_screencopy_manager_v1 zwlr_data_control_manager_v1 zwp_primary_selection_device_manager_v1 zwlr_layer_shell_v1 zwp_virtual_keyboard_manager_v1 zwlr_virtual_pointer_manager_v1 zwlr_export_dmabuf_manager_v1 zwlr_gamma_control_manager_v1 zwlr_output_manager_v1 ext_session_lock_manager_v1 zwlr_foreign_toplevel_manager_v1; do
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
 done
-[[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, clipboard, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
+[[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, data-control, primary-selection, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
 # No zone reaches the compositor's socket: of every socket untrusted's user can
 # find, none is the one dwl listens on, and its own is the proxy's. Each file is
 # stat'ed, which sees through a socket bound in over a file. The launcher marks
@@ -551,6 +552,46 @@ second="$(since_mark clip1 personal | sed -n '/GET1-DONE/,$p')"
 wait_for 30 grep -q 'clipboard-empty' /var/log/kryptik/zone-untrusted.log; emptied=$?
 if [[ "$second" == *from-untrusted* && "$emptied" = 0 ]]; then pass "clipboard-moved" "personal holds the one payload the gesture moved, and untrusted's own broker answers empty: moved, not copied"; else fail "clipboard-moved" "personal: $(echo "$second" | tail -2 | tr '\n' ' '); untrusted: $(since_mark clip untrusted | tail -3 | tr '\n' ' ')"; fi
 stop_zone untrusted; stop_zone personal
+
+# --- copy and paste inside a zone -------------------------------------------
+# The proxy serves the zone's selection to the zone's own clients (compositor/wlproxy/src/
+# clipboard.rs): a copy in one of untrusted's windows pastes in another of untrusted's, and
+# reaches neither personal's windows nor zone 0's, whose selection is the compositor's. A
+# client is offered the selection as the keyboard enters it, so Alt+j walks the keyboard
+# round the windows: four presses visit the copying window and then the pasting one, in
+# either order they mapped.
+mark copy untrusted
+launch_plain untrusted "sh -c '/usr/libexec/kryptik/wlprobe copy 90 kryptik4471 & exec /usr/libexec/kryptik/wlprobe paste 90'" > "$LOG/launch-copy.out" 2>&1
+two_drawn() { [[ "$(since_mark copy untrusted | grep -c 'committed ')" -ge 2 ]]; }
+wait_for 20 two_drawn
+for k in 1 2 3 4; do
+    echo "GT KEY-FOCUS-CLIP $k"
+    sleep 3
+done
+if since_mark copy untrusted | grep -q 'copied$' && since_mark copy untrusted | grep -q 'pasted: kryptik4471$'; then
+    pass "zone-copy-pastes-in-zone" "one of untrusted's clients copied, and another pasted the text"
+else
+    fail "zone-copy-pastes-in-zone" "$(since_mark copy untrusted | grep -E 'copied|pasted|no selection|sent to|keyboard|copy cancelled' | tail -8 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-copy.out")"
+fi
+stop_zone untrusted
+mark paste personal
+launch personal "/usr/libexec/kryptik/wlprobe paste 30" > "$LOG/launch-paste.out" 2>&1
+paste_drawn() { since_mark paste personal | grep -q 'committed '; }
+wait_for 20 paste_drawn
+echo "GT KEY-FOCUS-CLIP-PERSONAL"
+pasted_personal() { since_mark paste personal | grep -qE 'no selection|pasted: |a selection'; }
+if wait_for 15 pasted_personal && since_mark paste personal | grep -q 'no selection' && ! since_mark paste personal | grep -q 'pasted: '; then
+    pass "zone-copy-stays-in-zone" "personal's client, given the keyboard, was offered no selection"
+else
+    fail "zone-copy-stays-in-zone" "$(since_mark paste personal | tail -5 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-paste.out")"
+fi
+stop_zone personal
+as_user "/usr/libexec/kryptik/wlprobe paste 6" > "$LOG/paste-zone0.out" 2>&1
+if grep -q '^no selection' "$LOG/paste-zone0.out" && ! grep -q '^pasted: ' "$LOG/paste-zone0.out"; then
+    pass "zone-copy-not-in-zone0" "zone 0's client, on the compositor itself, was offered no selection"
+else
+    fail "zone-copy-not-in-zone0" "$(tr '\n' ' ' < "$LOG/paste-zone0.out")"
+fi
 
 # --- transfers: the user decides --------------------------------------------
 launch work "havoc" > /dev/null 2>&1   # work must be running to receive

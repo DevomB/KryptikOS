@@ -2,8 +2,10 @@
 //!
 //!   kryptik-wlproxy --zone NAME --listen PATH --upstream PATH [--max-clients N] [--once]
 //!
-//! Each client of PATH (the zone's /run/kryptik/wayland-0) gets its own Session to --upstream.
+//! Each client of PATH (the zone's /run/kryptik/wayland-0) gets its own Session to --upstream,
+//! and the zone's clients share one selection (clipboard.rs).
 
+mod clipboard;
 mod policy;
 mod protocol;
 mod protocol_tables;
@@ -173,6 +175,7 @@ fn main() {
     eprintln!("kryptik-wlproxy[{}]: listening on {} -> {}", o.zone, o.listen.display(), o.upstream.display());
 
     let mut sessions: Vec<Live> = Vec::new();
+    let mut clip = clipboard::Clipboard::default();
     let mut next_id = 1u64;
     let mut served = 0u64;
     let mut log = Log::new(&o.zone);
@@ -215,7 +218,7 @@ fn main() {
             let old_pool_bytes = l.s.shm_pool_bytes;
             let old_pool_count = l.s.shm_pool_count;
             let old_toplevels = l.s.toplevels;
-            let step = |s: &mut Session, ce: i16, se: i16| -> Result<(), String> {
+            let mut step = |s: &mut Session, ce: i16, se: i16| -> Result<(), String> {
                 if (ce | se) & libc::POLLNVAL != 0 {
                     return Err("a socket vanished under the proxy".into());
                 }
@@ -233,8 +236,8 @@ fn main() {
                         Err(e) => return Err(format!("compositor read: {e}")),
                     }
                 }
-                s.pump(Dir::ClientToServer).map_err(|e| e.to_string())?;
-                s.pump(Dir::ServerToClient).map_err(|e| e.to_string())?;
+                s.pump(Dir::ClientToServer, &mut clip).map_err(|e| e.to_string())?;
+                s.pump(Dir::ServerToClient, &mut clip).map_err(|e| e.to_string())?;
                 if zone_pool_bytes + s.shm_pool_bytes - old_pool_bytes > policy::MAX_SHM_BYTES_PER_ZONE
                     || zone_pool_count + s.shm_pool_count - old_pool_count > policy::MAX_SHM_POOLS_PER_ZONE
                     || zone_toplevels + s.toplevels - old_toplevels > policy::MAX_TOPLEVELS_PER_ZONE {
@@ -257,13 +260,34 @@ fn main() {
                 zone_toplevels = zone_toplevels - old_toplevels + l.s.toplevels;
             }
         }
-        for idx in closed.into_iter().rev() {
-            sessions.remove(idx);
-            served += 1;
-            if o.once {
-                eprintln!("kryptik-wlproxy[{}]: --once: served {served}, exiting", o.zone);
-                let _ = std::fs::remove_file(&o.listen);
-                return;
+        // What one client's copy or paste asked of another session, now every turn is over;
+        // a session that ends hands back its selection, which may be news to the keyboard's.
+        loop {
+            for a in std::mem::take(&mut clip.actions) {
+                let Some(idx) = sessions.iter().position(|l| l.id == a.session()) else { continue };
+                if closed.contains(&idx) {
+                    continue;
+                }
+                let l = &mut sessions[idx];
+                if let Err(e) = l.s.act(a, &clip) {
+                    log.line(format_args!("client #{} ended: {e}", l.id));
+                    l.s.refuse(&e.to_string());
+                    closed.push(idx);
+                }
+            }
+            if closed.is_empty() {
+                break;
+            }
+            closed.sort_unstable();
+            closed.dedup();
+            for idx in closed.drain(..).rev() {
+                clip.session_gone(sessions.remove(idx).id);
+                served += 1;
+                if o.once {
+                    eprintln!("kryptik-wlproxy[{}]: --once: served {served}, exiting", o.zone);
+                    let _ = std::fs::remove_file(&o.listen);
+                    return;
+                }
             }
         }
         // Accept last, once nothing indexes `fds` by session.
@@ -276,7 +300,9 @@ fn main() {
                         set_nonblocking(cfd);
                         set_nonblocking(sfd);
                         log.line(format_args!("client #{next_id} connected"));
-                        sessions.push(Live { s: Session::new(&o.zone, cfd, sfd), id: next_id });
+                        let mut s = Session::new(&o.zone, cfd, sfd);
+                        s.id = next_id;
+                        sessions.push(Live { s, id: next_id });
                         next_id += 1;
                     }
                     Err(e) => {

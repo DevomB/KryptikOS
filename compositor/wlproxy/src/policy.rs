@@ -1,7 +1,9 @@
 //! What a zone's client may bind, and how its titles and app_ids carry the zone's name.
 //! Nothing else is advertised: no capture, global input, layer shell (nothing may draw over the
-//! chrome), clipboard (the broker is the only cross-zone channel), virtual keyboard, output
-//! management or activation.
+//! chrome), primary selection or data control, virtual keyboard, output management or
+//! activation. The data device a zone's clients bind is the proxy's own (clipboard.rs), never
+//! the compositor's: copy and paste stays inside the zone, and the broker is the only channel
+//! between zones.
 
 /// Bindable interfaces, capped at the tables' versions: a newer request could not be parsed.
 pub const ALLOWED: &[(&str, u32)] = &[
@@ -13,10 +15,20 @@ pub const ALLOWED: &[(&str, u32)] = &[
     ("xdg_wm_base", 6),
     ("zxdg_decoration_manager_v1", 1),
     ("wp_viewporter", 1),
+    // Served by the proxy (SERVED): version 3 is the last a selection needs.
+    ("wl_data_device_manager", 3),
 ];
 
 pub fn allowed_version(interface: &str) -> Option<u32> {
     ALLOWED.iter().find(|(n, _)| *n == interface).map(|(_, v)| *v)
+}
+
+/// What the proxy serves itself: a bind of one, and every request on the objects they make, is
+/// answered here and never reaches the compositor.
+pub const SERVED: &[&str] = &["wl_data_device_manager", "wl_data_source", "wl_data_device", "wl_data_offer"];
+
+pub fn served(interface: &str) -> bool {
+    SERVED.contains(&interface)
 }
 
 /// The most bytes a rewritten title may carry; only one line is ever shown.
@@ -74,6 +86,11 @@ pub const MAX_SHM_BYTES_PER_ZONE: usize = 256 << 20;
 /// A pool a surface may still show stays charged, so these bound what one session can hold.
 pub const MAX_SUBSURFACES_PER_SESSION: usize = 256;
 pub const MAX_HELD_PER_SURFACE: usize = 64;
+/// Copies one session may hold at once: a cancelled one is its client's to destroy.
+pub const MAX_DATA_SOURCES_PER_SESSION: usize = 64;
+/// The types one copy offers, each a short MIME name that other clients of the zone are shown.
+pub const MAX_MIME_TYPES: usize = 32;
+pub const MAX_MIME_BYTES: usize = 256;
 
 #[cfg(test)]
 mod tests;

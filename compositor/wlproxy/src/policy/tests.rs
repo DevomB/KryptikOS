@@ -4,7 +4,6 @@ use super::*;
 fn capture_and_clipboard_are_hidden() {
     for hidden in [
         "zwlr_screencopy_manager_v1",
-        "wl_data_device_manager",
         "zwp_primary_selection_device_manager_v1",
         "zwlr_layer_shell_v1",
         "zwp_virtual_keyboard_manager_v1",
@@ -20,20 +19,24 @@ fn capture_and_clipboard_are_hidden() {
     for shown in ["wl_compositor", "wl_shm", "wl_seat", "xdg_wm_base"] {
         assert!(allowed_version(shown).is_some(), "{shown} is what a window needs");
     }
+    // The data device is the proxy's own: the compositor's never reaches a zone.
+    assert!(allowed_version("wl_data_device_manager").is_some() && served("wl_data_device_manager"));
 }
 
-/// Only delete_id frees objects, and only client-created ones: no reachable event may create one.
+/// Only delete_id frees objects, and only client-created ones: no event the compositor can send
+/// creates one. The server range is then the proxy's own, for the offers it makes (clipboard.rs).
 #[test]
 fn no_compositor_created_objects() {
     use crate::protocol::{find, Arg};
-    let mut reach: Vec<&str> = ALLOWED.iter().map(|(n, _)| *n).chain(["wl_display", "wl_registry"]).collect();
+    let mut reach: Vec<&str> =
+        ALLOWED.iter().map(|(n, _)| *n).filter(|n| !served(n)).chain(["wl_display", "wl_registry"]).collect();
     let mut i = 0;
     while i < reach.len() {
         let iface = find(reach[i]).unwrap();
         for m in iface.requests {
             for &a in m.args {
                 if let Arg::NewId { iface: Some(n) } = a {
-                    if !reach.contains(&n) {
+                    if !reach.contains(&n) && !served(n) {
                         reach.push(n);
                     }
                 }
