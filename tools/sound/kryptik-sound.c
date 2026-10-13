@@ -561,6 +561,9 @@ static void play_out(void)
 			return;
 		mix(buf);
 		snd_pcm_sframes_t w = snd_pcm_writei(out, buf, PERIOD);
+		/* A full card takes the period later: nothing is wrong with it. */
+		if (w == -EAGAIN)
+			return;
 		if (w < 0 && !recovered(&out, (int)w))
 			return;
 	}
