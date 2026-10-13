@@ -454,7 +454,10 @@ static int lock_session(void)
 		;
 	if (unlocked) {
 		ext_session_lock_v1_unlock_and_destroy(lock);
-		wl_display_roundtrip(display);
+		/* An unlock the compositor may not have read is a lost lock: the next one asks
+		 * again should it have been read after all. */
+		if (wl_display_roundtrip(display) < 0)
+			return 3;
 		say("unlocked");
 		return 0;
 	}

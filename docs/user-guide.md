@@ -237,7 +237,8 @@ KRYPTIK-TESTCTL KEY=VALUE...`, carrying `install_target=/dev/vda`, the state
 passphrase as `state_passphrase=...` (required), and optionally
 `preseed_user=`, `preseed_password_hash=` and `preseed_root_hash=` for the
 first accounts; the user's hash must be SHA-512 crypt, as `openssl passwd -6`
-makes it, the only kind besides SHA-256 crypt that the screen lock checks. The file is signed by the release's `kryptik-testctl` key
+makes it, the only kind besides SHA-256 crypt that the screen lock checks.
+The file is signed by the release's `kryptik-testctl` key
 ([release keys](release-keys.md)), and a medium honours only a disk its own
 anchor's key signed: anyone else's is named on the console and ignored, so a
 disk attached to a machine that boots your medium cannot arm an install. An
