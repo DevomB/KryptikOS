@@ -11,6 +11,7 @@
 #   GT KEY-ZOOM-BELOW, GT KEY-ZOOM-AGAIN            press Alt+Return (zoom)
 #   GT KEY-PARENT-FULLSCREEN, GT KEY-LATE-FULLSCREEN press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
+#   GT KEY-FOCUS-NAMED 1..3, back-1..back-3         press Alt+j, then Alt+k
 #   GT KEY-FOCUS-CLIP 1..4, GT KEY-FOCUS-CLIP-PERSONAL  press Alt+j
 #   GT KEY-FOCUS-MOVE 1..4, GT KEY-FOCUS-MOVED 1..4     press Alt+j
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
@@ -190,7 +191,8 @@ refused=""; taken=""
 for g in zwlr_screencopy_manager_v1 zwp_virtual_keyboard_manager_v1 ext_session_lock_manager_v1; do
     num="$(number_of "$g")"
     as_user "WAYLAND_DISPLAY=$zsock /usr/libexec/kryptik/wlprobe bind $g ${num:-0}" > "$LOG/bind-zone-socket-$g.out" 2>&1
-    if [[ -n "$num" ]] && grep -qF "message=invalid global $g ($num)" "$LOG/bind-zone-socket-$g.out" \
+    # libwayland calls a global it hides invalid or, in newer releases, unavailable.
+    if [[ -n "$num" ]] && grep -qE "message=(invalid global $g \($num\)|global $g \($num\) is unavailable)" "$LOG/bind-zone-socket-$g.out" \
        && grep -q '^bind refused' "$LOG/bind-zone-socket-$g.out"; then
         refused+=" $g ($num)"
     else
@@ -672,15 +674,24 @@ launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
 echo "GT KEY-FOCUS-PERSONAL"
 wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' '); $(zone_why personal)"
 # A window is the zone's whose socket its client came through, whatever app_id it
-# claims: a client of personal's socket calling itself vault's takes the keyboard
-# from personal's window, as personal's own would, and the chrome names it personal.
-as_user "WLPROBE_APP_ID=kryptik.vault.forged WAYLAND_DISPLAY=/run/kryptik-compositor/$UID_/personal /usr/libexec/kryptik/wlprobe oversize 0 12 socket-named" > "$LOG/socket-named.out" 2>&1 &
+# claims: a client of personal's socket calling itself vault's is personal's, and given
+# the keyboard, the chrome names it personal.
+as_user "WLPROBE_APP_ID=kryptik.vault.forged WAYLAND_DISPLAY=/run/kryptik-compositor/$UID_/personal /usr/libexec/kryptik/wlprobe oversize 0 40 socket-named" > "$LOG/socket-named.out" 2>&1 &
 named_pid=$!
-if wait_for 15 grep -qx 'title=socket-named' "$RT/kryptik/focus" && grep -qx 'zone=personal' "$RT/kryptik/focus" \
-   && grep -q 'keyboard entered the window' "$LOG/socket-named.out"; then
-    pass "zone-socket-names-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+named_drawn() { grep -q 'committed ' "$LOG/socket-named.out"; }
+wait_for 15 named_drawn
+# A new window does not take the keyboard: Alt+j brings it there, past at most two others,
+# and Alt+k as often hands the keyboard back to personal's window for the rounds after.
+named=""
+for k in 1 2 3 back-1 back-2 back-3; do
+    echo "GT KEY-FOCUS-NAMED $k"
+    sleep 2
+    if [[ -z "$named" ]] && grep -qx 'title=socket-named' "$RT/kryptik/focus"; then named="$(tr '\n' ' ' < "$RT/kryptik/focus")"; fi
+done
+if [[ "$named" == *"zone=personal "* ]] && grep -q 'keyboard entered the window' "$LOG/socket-named.out"; then
+    pass "zone-socket-names-window" "$named"
 else
-    fail "zone-socket-names-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); the probe: $(tail -3 "$LOG/socket-named.out" | tr '\n' ' ')"
+    fail "zone-socket-names-window" "focus with the probe's title: ${named:-never}; now: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); the probe: $(tail -3 "$LOG/socket-named.out" | tr '\n' ' ')"
 fi
 wait "$named_pid" 2>/dev/null
 # --- zone 0 runs no user application (ADR-003) ------------------------------
