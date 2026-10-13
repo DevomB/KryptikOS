@@ -16,6 +16,7 @@
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
 #   GT SCREENSHOT-POPUP                             take a screenshot
 #   GT KEY-MENU-POPUP                               press Alt+p (the chrome menu)
+#   GT KEY-FOCUS-POPUP                              press Alt+j
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
@@ -694,6 +695,22 @@ else
     fail "zone-popup-yields-keyboard" "menu windows: $(menu_windows), ${menus_before} before; focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); probe: $(since_mark popup untrusted | tail -4 | tr '\n' ' ')"
 fi
 pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
+stop_zone untrusted
+# Alt+j to the popup's own window closes it as well: made while the window had no keyboard,
+# its grab would swallow the window's enter, and the keys would go on to zone 0's window
+# under a frame that names the zone's.
+mark popup-own untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 40 grab" > "$LOG/launch-popup-own.out" 2>&1
+own_drawn() { since_mark popup-own untrusted | grep -q '^popup committed '; }
+own_done() { since_mark popup-own untrusted | grep -q '^popup done'; }
+own_keyed() { since_mark popup-own untrusted | grep -q '^keyboard entered the window'; }
+wait_for 20 own_drawn
+echo "GT KEY-FOCUS-POPUP"
+if wait_for 10 own_done && wait_for 10 own_keyed && wait_for 10 grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
+    pass "zone-popup-ends-on-own-focus" "Alt+j gave the window the keyboard and closed the popup that had grabbed it unasked"
+else
+    fail "zone-popup-ends-on-own-focus" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); probe: $(since_mark popup-own untrusted | tail -4 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-popup-own.out")"
+fi
 stop_zone untrusted
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the

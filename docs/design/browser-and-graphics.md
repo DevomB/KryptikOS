@@ -238,12 +238,12 @@ Four things are needed, each with its own review. The first is built.
   there before every frame, since a client may draw a buffer of any size
   wherever its popup is placed. A popup lasts while its window has the
   keyboard: wlroots grants a popup's keyboard grab without checking its
-  serial, and a grab keeps the keyboard where it is, so every other
-  window's popups close before the keyboard moves
+  serial, and a grab keeps the keyboard where it is, so every popup closes
+  before the keyboard moves, the new window's own as well
   (`tools/desktop/dwl-zone-borders.py`). `make gui-test` opens one larger
   than the screen from a window that does not have the keyboard: the
   screenshot shows it only inside its window's frame, and the menu still
-  takes the keyboard and closes it.
+  takes the keyboard and closes it, as does Alt+j to the popup's own window.
 - **Copy and paste inside a zone.** The proxy serves
   `wl_data_device_manager` itself, keeping selections among its own zone's
   clients and never forwarding them to the compositor, and joins it to the

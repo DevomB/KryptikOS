@@ -596,24 +596,25 @@ rendermon(struct wl_listener *listener, void *data)
 \t * this monitor. */
 """),
     # A popup's grab, which wlroots grants without checking its serial, keeps
-    # the keyboard where it is: focusclient ends every other window's popups,
-    # not only the old one's, before the keyboard moves. A session lock and a
-    # keyboard layer call focusclient(NULL) first, so they end them all.
+    # the keyboard where it is: focusclient ends every popup, not only the old
+    # window's, before the keyboard moves. The new window's own go as well: one
+    # made while the window had no keyboard could only grab it unasked, and its
+    # grab would swallow the window's enter while the keys went on to the old
+    # window. A session lock and a keyboard layer call focusclient(NULL) first.
     ("""void
 focusclient(Client *c, int lift)
 {
 """,
-     """/* Kryptik: popups last while their window has the keyboard. */
+     """/* Kryptik: popups last while their window keeps the keyboard. */
 static void
-endpopups(Client *keep)
+endpopups(void)
 {
 \tstruct wlr_xdg_popup *popup, *tmp;
 \tClient *c;
 
 \twl_list_for_each(c, &clients, link)
-\t\tif (c != keep)
-\t\t\twl_list_for_each_safe(popup, tmp, &c->surface.xdg->popups, link)
-\t\t\t\twlr_xdg_popup_destroy(popup);
+\t\twl_list_for_each_safe(popup, tmp, &c->surface.xdg->popups, link)
+\t\t\twlr_xdg_popup_destroy(popup);
 }
 
 void
@@ -627,7 +628,7 @@ focusclient(Client *c, int lift)
 \t}
 """,
      """\told_client_type = toplevel_from_wlr_surface(old, &old_c, &old_l);
-\tendpopups(c);
+\tendpopups();
 """),
     # A lock surface takes the keyboard without focusclient, which does
     # nothing while the session is locked: each such hand-over ends every
@@ -636,13 +637,13 @@ focusclient(Client *c, int lift)
     ("""static void focusclient(Client *c, int lift);
 """,
      """static void focusclient(Client *c, int lift);
-static void endpopups(Client *keep);
+static void endpopups(void);
 """),
     ("""\tif (m == selmon)
 \t\tclient_notify_enter(lock_surface->surface, wlr_seat_get_keyboard(seat));
 """,
      """\tif (m == selmon) {
-\t\tendpopups(NULL);
+\t\tendpopups();
 \t\tclient_notify_enter(lock_surface->surface, wlr_seat_get_keyboard(seat));
 \t}
 """),
@@ -650,14 +651,14 @@ static void endpopups(Client *keep);
 \t\tclient_notify_enter(surface->surface, wlr_seat_get_keyboard(seat));
 """,
      """\t\tsurface = wl_container_of(cur_lock->surfaces.next, surface, link);
-\t\tendpopups(NULL);
+\t\tendpopups();
 \t\tclient_notify_enter(surface->surface, wlr_seat_get_keyboard(seat));
 """),
     ("""\t\tif (selmon->lock_surface) {
 \t\t\tclient_notify_enter(selmon->lock_surface->surface,
 """,
      """\t\tif (selmon->lock_surface) {
-\t\t\tendpopups(NULL);
+\t\t\tendpopups();
 \t\t\tclient_notify_enter(selmon->lock_surface->surface,
 """),
 ]
