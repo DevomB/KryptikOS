@@ -98,7 +98,7 @@ USAGE:
                                       release (the signed manifest in DIR) is the
                                       floor if it is the newest
     kryptikd sound zones              the zones zone 0's mixer serves, a line each,
-                                      "NAME UID": the uid the zone's root maps to,
+                                      NAME and UID: the uid the zone's root maps to,
                                       the only peer its socket takes
     kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
                                       checked as nobody on copies: how kryptik-update
