@@ -1057,6 +1057,25 @@ fn only_the_keyboards_client_copies() {
     assert!(only_placeholders(&mut sa) && only_placeholders(&mut sb));
 }
 
+/// A cursor asked for by name reaches the compositor, which draws it from its own theme.
+#[test]
+fn cursor_shapes_pass_by_name() {
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 1, "wl_seat", 9)).unwrap();
+    sv.write_all(&global(2, 2, "wp_cursor_shape_manager_v1", 1)).unwrap();
+    pump_all(&mut s).unwrap();
+    assert!(String::from_utf8_lossy(&read_all(&mut c)).contains("wp_cursor_shape_manager_v1"));
+    c.write_all(&bind(2, 1, "wl_seat", 9, 3)).unwrap();
+    c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap(); // wl_seat.get_pointer
+    c.write_all(&bind(2, 2, "wp_cursor_shape_manager_v1", 1, 5)).unwrap();
+    c.write_all(&MessageWriter::new(5, 1).u32(6).u32(4).finish().unwrap()).unwrap(); // get_pointer
+    c.write_all(&MessageWriter::new(6, 1).u32(10).u32(9).finish().unwrap()).unwrap(); // set_shape(serial, text)
+    pump_all(&mut s).unwrap();
+    let got = names(&split_messages(&read_all(&mut sv)));
+    assert_eq!(got[got.len() - 3..], [(2, WL_REGISTRY_BIND), (5, 1), (6, 1)], "the bind, the device and the shape reach the compositor: {got:?}");
+}
+
 /// Drag and drop is not served: the drag's source is cancelled at once, and nothing else moves.
 #[test]
 fn a_drag_is_cancelled() {

@@ -23,12 +23,14 @@
  *   as wl_keyboard reports it: where the keys go, not what a record says.
  *   wlprobe charge            map one unwritten 4 MiB shmem buffer for 10 s;
  *                             compare zone and compositor cgroup memory.current
- *   wlprobe cursor SECONDS    as oversize 0, and when the pointer enters, set a
+ *   wlprobe cursor SECONDS [shape]
+ *                             as oversize 0, and when the pointer enters, set a
  *                             cursor image twice the screen's size, hotspot in
  *                             its middle: drawn, it covers the whole screen.
  *                             Says when the window, and when the cursor image,
  *                             enters an output: the second only if the
- *                             compositor took the image
+ *                             compositor took the image. With shape, also ask
+ *                             for the text cursor by name (wp_cursor_shape_v1)
  *   wlprobe animate SECONDS   as oversize 0, and once drawn commit again on
  *                             every frame callback for SECONDS; then say how
  *                             many frames came, how far the compositor's frame
@@ -312,6 +314,9 @@ static const uint32_t cursor_rgb = 0x13f7a5;
 static uint32_t seat_id, pointer_id, cursor_surf;
 static uint32_t keyboard_id;                 /* every held window says where the keyboard is */
 static int cursor;
+/* cursor shape: the pointer's device for cursors by name. */
+static int cursor_shape;
+static uint32_t shape_dev;
 
 /* On every entry, as a client does; the image is made on the first. */
 static void set_cursor(uint32_t serial)
@@ -353,6 +358,12 @@ static void set_cursor(uint32_t serial)
 		send_msg(cursor_surf, 6, b, 0);        /* wl_surface.commit */
 	}
 	printf("set a %dx%d cursor, hotspot %d,%d\n", w, h, w / 2, h / 2);
+	if (shape_dev) {
+		put32(b, serial);
+		put32(b + 4, 9);                       /* text, from the protocol's list */
+		send_msg(shape_dev, 1, b, 8);          /* wp_cursor_shape_device_v1.set_shape */
+		puts("asked for the text cursor by name");
+	}
 	fflush(stdout);
 }
 
@@ -638,6 +649,14 @@ static int hold_oversize(int more, int seconds, const char *title)
 		 * enters it: the window when it is shown, a cursor image when the
 		 * compositor takes it. */
 		if (bind_global("wl_output", next_id++)) return 1;
+		if (cursor_shape) {
+			uint32_t mgr = next_id++;
+			if (bind_global("wp_cursor_shape_manager_v1", mgr)) return 1;
+			shape_dev = next_id++;
+			put32(b, shape_dev);
+			put32(b + 4, pointer_id);
+			send_msg(mgr, 1, b, 8);                /* wp_cursor_shape_manager_v1.get_pointer */
+		}
 	}
 	/* Where the keyboard is, as the compositor tells it: the record the chrome
 	 * writes names the window it believes on top, not always the same one. */
@@ -690,12 +709,12 @@ int main(int argc, char **argv)
 	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "child") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "charge") && argc != 2)
-	    || (!strcmp(argv[1], "cursor") && argc != 3)
+	    || (!strcmp(argv[1], "cursor") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "shape"))))
 	    || (!strcmp(argv[1], "animate") && argc != 3)
 	    || (!strcmp(argv[1], "popup") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "grab"))))
 	    || (!strcmp(argv[1], "copy") && (argc != 4 || strlen(argv[3]) > 200))
 	    || (!strcmp(argv[1], "paste") && argc != 3)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS\n");
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -726,7 +745,7 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "fullscreen")) { askfs = 1; late = argc == 4; return hold_oversize(0, atoi(argv[2]), "fullscreen"); }
 	if (!strcmp(argv[1], "child")) { child = argc == 4 ? 2 : 1; return hold_oversize(0, atoi(argv[2]), "child-parent"); }
 	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
-	if (!strcmp(argv[1], "cursor")) { cursor = 1; return hold_oversize(0, atoi(argv[2]), "cursor"); }
+	if (!strcmp(argv[1], "cursor")) { cursor = 1; cursor_shape = argc == 4; return hold_oversize(0, atoi(argv[2]), "cursor"); }
 	if (!strcmp(argv[1], "popup")) { popup = 1; popup_grab = argc == 4; return hold_oversize(0, atoi(argv[2]), "popup"); }
 	if (!strcmp(argv[1], "copy")) {
 		/* A reader that hangs up early is told by write's return, not a signal. */

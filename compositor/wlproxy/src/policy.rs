@@ -15,6 +15,8 @@ pub const ALLOWED: &[(&str, u32)] = &[
     ("xdg_wm_base", 6),
     ("zxdg_decoration_manager_v1", 1),
     ("wp_viewporter", 1),
+    // A cursor by name from the compositor's own theme; an image a zone draws is never taken.
+    ("wp_cursor_shape_manager_v1", 1),
 ];
 
 pub fn allowed_version(interface: &str) -> Option<u32> {

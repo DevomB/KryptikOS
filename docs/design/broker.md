@@ -181,7 +181,8 @@ launcher binds it into the zone at `/run/kryptik/wayland-0`
 The compositor's own socket is never reachable from a zone, and each proxy
 serves exactly one zone. The proxy advertises only `wl_compositor`,
 `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`, `xdg_wm_base`,
-`zxdg_decoration_manager_v1` and `wp_viewporter`, and a
+`zxdg_decoration_manager_v1`, `wp_viewporter` and
+`wp_cursor_shape_manager_v1`, and a
 `wl_data_device_manager` of its own, which it serves itself, so copy and
 paste stays among the zone's own clients and never reaches the compositor. It disconnects a client that
 binds anything else, bounds objects, pending bytes and descriptors per
