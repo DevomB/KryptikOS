@@ -114,6 +114,38 @@ stage "${W}/p5" "$R1"
 [[ "$RC" -ne 0 && "$OUT" == *"REFUSED: the image list names '../x'"* ]] \
     && green "an image name that is not a plain name is refused" || red "a name with a path was not refused: ${OUT}"
 
+# The reader stops one byte past the signed size, so a file swapped after the manifest's check
+# cannot decompress into the store without end.
+head -c 300000 /dev/zero > "${W}/big"
+zstd -q -f "${W}/big" -o "${W}/p1/huge.img.zst"
+got="$(dir="${W}/p1" bash -c ". '${W}/lib.sh'; payload_image huge 1000" | wc -c)"
+[[ "$got" -eq 1001 ]] && green "the payload's reader stops one byte past the size the list signs" \
+    || red "the payload's reader gave ${got} bytes for an image signed as 1000"
+
+# A refusal partway takes the copies already made with it.
+rm -rf "${W}/p6"; mkdir -p "${W}/p6"
+printf 'first' > "${W}/raw-a"; printf 'second' > "${W}/raw-z"
+zstd -q -f "${W}/raw-a" -o "${W}/p6/alpha.img.zst"; zstd -q -f "${W}/raw-z" -o "${W}/p6/zeta.img.zst"
+{
+    printf 'KRYPTIK-IMAGES-1\nrelease: 1.2.0\nbase: %s\n' "$R1"
+    printf 'image: alpha 1 bytes=5 sha256=%s data-blocks=1 root-hash=%s salt=%s\n' "$(sha256sum "${W}/raw-a" | cut -c1-64)" "$(hex 6)" "$(hex a)"
+    printf 'image: zeta 1 bytes=6 sha256=%s data-blocks=1 root-hash=%s salt=%s\n' "$(hex 0)" "$(hex 7)" "$(hex a)"
+} > "${W}/p6/images.manifest"
+printf 'a signature\n' > "${W}/p6/images.manifest.sig"
+{
+    printf 'KRYPTIK-MANIFEST-1\n--\n'
+    for f in images.manifest images.manifest.sig alpha.img.zst zeta.img.zst; do
+        printf '%s %s %s\n' "$(sha256sum "${W}/p6/$f" | cut -c1-64)" "$(stat -c %s "${W}/p6/$f")" "$f"
+    done
+} > "${W}/p6/manifest"
+stage "${W}/p6" "$R1"
+if [[ "$RC" -ne 0 && "$OUT" == *"REFUSED: image zeta is not the bytes its list signs"* && "$OUT" == *"image alpha: kept and checked"* ]] \
+   && [[ -z "$(find "$STORE" -name '*.new')" && ! -e "${STORE}/alpha/$(hex 6).img" ]]; then
+    green "a refusal partway removes the copies already made, and keeps none of them"
+else
+    red "a refusal partway left copies behind (exit ${RC}): ${OUT}; $(find "$STORE" -name '*.new')"
+fi
+
 # prune: three roots' lists, an image shared by two of them, and a leftover .new.
 payload "${W}/q2" "$R2" probe "the probe image" "$(hex b)"; stage "${W}/q2" "$R2"
 payload "${W}/q3" "$R3" viewer "only the third root's" "$(hex d)"; stage "${W}/q3" "$R3"

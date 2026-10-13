@@ -369,8 +369,9 @@ stage_images() {
     say "the image list for $VERSION kept"
 }
 
-# Image NAME as the payload carries it, decompressed.
-payload_image() { zstd -dcq < "$(payload_path "$1.img.zst")"; }   # payload_image NAME
+# Image NAME as the payload carries it, decompressed, and never past the size its list signs and one
+# byte: the file is read again after the manifest's check, and a changed one must not fill /var.
+payload_image() { zstd -dcq < "$(payload_path "$1.img.zst")" | head -c "$(( $2 + 1 ))"; }   # payload_image NAME BYTES
 
 # Verify everything, then write only the inactive slot, read it back, install
 # its kernel and arm BootNext. BOOTX64.EFI is left to boot-success, which
