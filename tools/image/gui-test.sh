@@ -95,6 +95,9 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT SCREENSHOT-OVERSIZE" "sleep:2" "screendump:${SHOT_OVER}" \
     "expect:GT KEY-FOCUS-FORGED" "key:alt+j" \
     "expect:GT KEY-FOCUS-PERSONAL" "key:alt+j" \
+    "expect:GT KEY-FOCUS-NAMED 1" "key:alt+j" "expect:GT KEY-FOCUS-NAMED 2" "key:alt+j" \
+    "expect:GT KEY-FOCUS-NAMED 3" "key:alt+j" "expect:GT KEY-FOCUS-NAMED back-1" "key:alt+k" \
+    "expect:GT KEY-FOCUS-NAMED back-2" "key:alt+k" "expect:GT KEY-FOCUS-NAMED back-3" "key:alt+k" \
     "expect:GT KEY-FOCUS-CLIP 1" "key:alt+j" "expect:GT KEY-FOCUS-CLIP 2" "key:alt+j" \
     "expect:GT KEY-FOCUS-CLIP 3" "key:alt+j" "expect:GT KEY-FOCUS-CLIP 4" "key:alt+j" \
     "expect:GT KEY-FOCUS-CLIP-PERSONAL" "key:alt+j" \
