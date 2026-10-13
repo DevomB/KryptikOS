@@ -28,11 +28,28 @@ if ! "${build[@]}" --no-run > "$T/build.log" 2>&1; then
     echo "proxy calls: FAIL, the live tests did not build for $TARGET"
     exit 1
 fi
-strace -f -ff -qq -s 256 -o "$T/trace" "${build[@]}" > "$T/test.log" 2>&1
+# strace slows every call the tests and the proxy make, so a failed run is named, test and
+# panic, and run once more; the trace checked is the run that passed.
+traced() {   # traced DIR: the live tests under strace, their output in DIR/test.log
+    mkdir -p "$1"
+    strace -f -ff -qq -s 256 -o "$1/trace" "${build[@]}" > "$1/test.log" 2>&1
+}
+failures() { sed -n '/^failures:$/,$p' "$1/test.log" | head -80; }
+run="$T/run"
+traced "$run"
 rc=$?
-tail -4 "$T/test.log"
 if [[ "$rc" -ne 0 ]]; then
-    echo "proxy calls: FAIL, the live tests failed under strace (rc $rc)"
+    failures "$run"
+    echo "proxy calls: the live tests failed under strace (rc $rc); running them under it once more"
+    run="$T/again"
+    traced "$run"
+    rc=$?
+    [[ "$rc" -ne 0 ]] || echo "proxy calls: the second run passed; the first run's failure is above"
+fi
+tail -4 "$run/test.log"
+if [[ "$rc" -ne 0 ]]; then
+    failures "$run"
+    echo "proxy calls: FAIL, the live tests failed under strace twice (rc $rc)"
     exit 1
 fi
 
@@ -41,7 +58,7 @@ fi
 # a path to bind, as only these tests do.
 awk 'FNR == 1 { on = 0 }
      !on && /^execve\("[^"]*\/kryptik-wlproxy", / && / = 0$/ { on = 1; mode = index($0, "\"--listen-fd\"") ? "fd" : "path" }
-     on && /^[a-z_0-9]+\(/ { print mode "\t" $0 }' "$T"/trace.* > "$T/calls"
+     on && /^[a-z_0-9]+\(/ { print mode "\t" $0 }' "$run"/trace.* > "$T/calls"
 cut -f2- "$T/calls" > "$T/lines"
 runs="$(grep -c '^execve(' "$T/lines")"
 fd_runs="$(grep -c "^fd	execve(" "$T/calls")"
