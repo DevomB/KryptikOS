@@ -21,8 +21,8 @@ ADR-024 in [decisions](../decisions.md).
   export-dmabuf, data-control, primary selection, the virtual keyboard and
   pointer, layer-shell, session lock and the rest, and its own socket in the
   user's runtime directory offers them all. Beside it, in
-  `kryptik-compositor/`, each zone's socket offers only the proxy's eight
-  globals (`tools/desktop/dwl-zone-borders.py`), so the proxy
+  `kryptik-compositor/`, each zone's socket offers only the globals the
+  proxy passes on (`tools/desktop/dwl-zone-borders.py`), so the proxy
   (`compositor/wlproxy/src/policy.rs`) and dwl must both be wrong before a
   zone's client binds a hidden one.
 - **So a proxy bug gives a zone the desktop.** A zone that gains code

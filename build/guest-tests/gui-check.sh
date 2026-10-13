@@ -173,7 +173,7 @@ proxy_cmd="$(tr '\0' ' ' < "/proc/$(cat "$RT/kryptik/untrusted/proxy.pid" 2>/dev
 as_user "WAYLAND_DISPLAY=$zsock /usr/libexec/kryptik/wlprobe list" > "$LOG/probe-zone-socket.out" 2>&1
 offered="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" | sort -u | tr '\n' ' ')"
 beyond="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" \
-    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter' | tr '\n' ' ')"
+    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter|wp_cursor_shape_manager_v1' | tr '\n' ' ')"
 if grep -qxF "connected $zsock" "$LOG/probe-zone-socket.out" && [[ -z "$beyond" && "$offered" == *xdg_wm_base* && "$offered" == *wl_seat* ]]; then
     pass "zone-socket-allowlist" "dwl tells untrusted's socket of ${offered% } alone"
 else
