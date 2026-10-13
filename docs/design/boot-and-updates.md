@@ -33,7 +33,11 @@ The USB image holds `kryptik-esp` and `kryptik-media`; the ISO holds the ESP
 as its El Torito image and the root image at a sector offset (a `linear` dm
 target over `/dev/sr0`, verity on top). The root image is byte-identical on
 the medium, in slot A and in a payload, so the installer copies bytes and
-signs nothing.
+signs nothing. A release with
+[software images](software-delivery.md) also carries them: the USB image in
+a third partition, `kryptik-images`, a FAT32 like the ESP, and the ISO as
+files under `/images` in its own filesystem. Either holds the signed list,
+its signature and each image.
 
 ## The command line
 
