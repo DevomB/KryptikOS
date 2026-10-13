@@ -50,6 +50,7 @@ SHOT="${VMDIR}/gui-untrusted.ppm"
 SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
 SHOT_OVER="${VMDIR}/gui-untrusted-oversize.ppm"
 SHOT_HEAD="${VMDIR}/gui-second-head.ppm"
+SHOT_POPUP="${VMDIR}/gui-untrusted-popup.ppm"
 
 # ----------------------------------------------------------------- step 1 --
 step "step 1: install"
@@ -58,7 +59,7 @@ install_disk gui-install "$USB" --vars clean && green "installed" || { red "inst
 
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"
-rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_HEAD"
+rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_HEAD" "$SHOT_POPUP"
 start_vm gui-p2 --net user --gpu --second-head --mem 3072
 DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
@@ -90,6 +91,9 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
     "expect:GT POINTER-ZONE0" "pointer:-4000,-4000" "pointer:120,120" \
     "expect:GT POINTER-UNTRUSTED" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT SCREENSHOT-POPUP" "sleep:2" "screendump:${SHOT_POPUP}" \
+    "expect:GT KEY-MENU-POPUP" "key:alt+p" \
+    "expect:GT KEY-FOCUS-POPUP" "key:alt+j" \
     "expect:GT HEAD-ON" "head:${HEAD2}:1024x768" \
     "expect:GT KEY-FOCUS-HEAD\r?\n" "key:alt+dot" \
     "expect:GT KEY-FOCUS-HEAD-WINDOW" "key:alt+j" \
@@ -117,6 +121,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             map-keeps-zone0-focus close-keeps-zone0-focus alone-keeps-no-keyboard alone-reached-by-key focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone menu-names-stale-statement menu-names-install-age menu-update-auto menu-names-failed-trial menu-names-armed-trial zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
             second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan \
+            zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
@@ -210,6 +215,28 @@ def bar(name, col):
 
 ok = True
 for spec in want:
+    if spec.startswith("inside:"):
+        # inside:ZONE:RRGGBB - pixels of that colour on screen, all within the zone's frame.
+        _, zone, rgb = spec.split(":")
+        ink = bytes.fromhex(rgb)
+        box, sides = frame(named[zone])
+        if box is None:
+            print(f"  #{rgb} inside {zone}: no frame in #{named[zone].hex()} on screen")
+            ok = False
+            continue
+        x0, y0, x1, y1 = box
+        within = outside = 0
+        for y in range(hgt):
+            for x in range(w):
+                if at(x, y) == ink:
+                    if x0 + bw <= x <= x1 - bw and y0 + bw <= y <= y1 - bw:
+                        within += 1
+                    else:
+                        outside += 1
+        good = within > 0 and outside == 0
+        print(f"  #{rgb} inside {zone}'s frame {x0},{y0}-{x1},{y1}: {within} px within it, {outside} px outside{'' if good else '  <- WRONG'}")
+        ok = ok and good
+        continue
     zone, state = spec.split(":")
     col = named[zone]
     box, sides = frame(col)
@@ -260,7 +287,11 @@ check_shot "$SHOT_FS" "fullscreen" untrusted:fullscreen
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused
 # The second monitor's own picture: the zone's window alone on it.
 check_shot "$SHOT_HEAD" "second head" untrusted:focused
+# wlprobe popup draws a cyan popup from its window's centre, larger than the
+# screen, that may be neither moved nor resized: it must show only inside the
+# window, which keeps its whole frame, and zone 0's window keeps the keyboard.
+check_shot "$SHOT_POPUP" "zone popup" untrusted:unfocused inside:untrusted:00ffff
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
-echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER} ${SHOT_HEAD}"
+echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER} ${SHOT_HEAD} ${SHOT_POPUP}"
 [[ "$FAIL" -eq 0 ]] || exit 1
