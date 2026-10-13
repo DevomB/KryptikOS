@@ -41,6 +41,8 @@
  *                             configure 200 px larger still, in cyan; with grab,
  *                             grab the keyboard for it with a made-up serial.
  *                             Says the popup's configure and when it is done
+ *   wlprobe power SECONDS     say the first output's power mode as the compositor reports
+ *                             each change ("output power on|off"), for SECONDS
  *
  * Exit: 0 listed, bind accepted or window held; 3 refused (wl_display.error,
  * or closed); 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute
@@ -143,6 +145,8 @@ static uint32_t csurface, cxdg, ctoplevel;
 static int popup, popup_grab, pconf_x, pconf_y, pconf_w, pconf_h;
 static uint32_t psurface, pxdg, ppopup;
 static uint32_t next_id = TOPLEVEL + 1;
+/* power: the first output's power control. */
+static uint32_t power_id;
 /* animate: the window's last buffer, its frame callback's id (reused once the
  * server frees it: 1 asked, 2 done, 0 freed), and the first and last frame's
  * times by the compositor's clock and by ours. */
@@ -437,6 +441,9 @@ static int handle_one(void)
 		/* wl_surface.enter(output) */
 		printf("%s entered an output\n", object == SURFACE ? "the window" : "the cursor image");
 		fflush(stdout);
+	} else if (power_id && object == power_id && opcode == 0) {
+		printf("output power %s\n", get32(body) ? "on" : "off");   /* zwlr_output_power_v1.mode */
+		fflush(stdout);
 	} else if (keyboard_id && object == keyboard_id && (opcode == 1 || opcode == 2)) {
 		uint32_t s = get32(body + 4);          /* wl_keyboard.enter|leave(serial, surface, ...) */
 		if (opcode == 2 && s == SURFACE) kb_left = 1;
@@ -484,6 +491,27 @@ static int bind_global(const char *iface, uint32_t id)
 	put32(b + n, 1); n += 4;                    /* version 1 */
 	put32(b + n, id); n += 4;
 	return send_msg(2, 0, b, n);               /* wl_registry.bind */
+}
+
+/* power: no window, so the objects take the ids a window's would; the output's control says
+ * its mode at once and at each change. */
+static int hold_power(int seconds)
+{
+	unsigned char b[8];
+	uint32_t mgr = COMPOSITOR, out = SHM;
+	if (bind_global("zwlr_output_power_manager_v1", mgr) || bind_global("wl_output", out))
+		return 1;
+	power_id = WM_BASE;
+	put32(b, power_id);
+	put32(b + 4, out);
+	send_msg(mgr, 0, b, 8);                    /* zwlr_output_power_manager_v1.get_output_power */
+	time_t end = time(NULL) + seconds;
+	while (time(NULL) < end)
+		if (drain(500) < 0) {
+			puts(errored ? "refused" : "connection closed");
+			return 3;
+		}
+	return 0;
 }
 
 /* Map a window and answer each configure oversized, for `seconds` or until it is closed. */
@@ -552,7 +580,8 @@ int main(int argc, char **argv)
 {
 	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize")
 	                 && strcmp(argv[1], "fullscreen") && strcmp(argv[1], "child") && strcmp(argv[1], "charge")
-	                 && strcmp(argv[1], "cursor") && strcmp(argv[1], "animate") && strcmp(argv[1], "popup"))
+	                 && strcmp(argv[1], "cursor") && strcmp(argv[1], "animate") && strcmp(argv[1], "popup")
+	                 && strcmp(argv[1], "power"))
 	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
 	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
@@ -560,8 +589,9 @@ int main(int argc, char **argv)
 	    || (!strcmp(argv[1], "charge") && argc != 2)
 	    || (!strcmp(argv[1], "cursor") && argc != 3)
 	    || (!strcmp(argv[1], "animate") && argc != 3)
-	    || (!strcmp(argv[1], "popup") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "grab"))))) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS | animate SECONDS | popup SECONDS [grab]\n");
+	    || (!strcmp(argv[1], "popup") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "grab"))))
+	    || (!strcmp(argv[1], "power") && argc != 3)) {
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS | animate SECONDS | popup SECONDS [grab] | power SECONDS\n");
 		return 2;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
@@ -594,6 +624,7 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
 	if (!strcmp(argv[1], "cursor")) { cursor = 1; return hold_oversize(0, atoi(argv[2]), "cursor"); }
 	if (!strcmp(argv[1], "popup")) { popup = 1; popup_grab = argc == 4; return hold_oversize(0, atoi(argv[2]), "popup"); }
+	if (!strcmp(argv[1], "power")) return hold_power(atoi(argv[2]));
 	if (!strcmp(argv[1], "animate")) {
 		animate = 1;
 		int held = hold_oversize(0, atoi(argv[2]), "animate");

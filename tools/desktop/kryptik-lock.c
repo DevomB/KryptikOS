@@ -1,7 +1,9 @@
 /* kryptik-lock: lock the session until the login password is typed (docs/design/laptop.md).
  *
  *   kryptik-lock
- *   kryptik-lock --idle SECONDS    lock each time the session has had no input that long
+ *   kryptik-lock --idle SECONDS [--blank SECONDS]
+ *                                  lock each time the session has had no input that long, and
+ *                                  turn the screens off that much later (60 s; 0 never)
  *
  * Through ext-session-lock-v1 the compositor shows nothing but this program's surfaces, one
  * per output, and gives them the keyboard. The lock runs in a child, started again if a
@@ -29,6 +31,7 @@
 #include <xkbcommon/xkbcommon.h>
 #include "ext-idle-notify-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
+#include "wlr-output-power-management-unstable-v1-client-protocol.h"
 
 /* dwl's root colour behind, a grey no zone has for the marks, and a red for a refusal. */
 static const uint32_t bg = 0x101418, ink = 0xe6e6e6, warn = 0xd04040;
@@ -76,6 +79,7 @@ static struct wl_seat *seat;
 static struct wl_keyboard *keyboard;
 static struct ext_session_lock_manager_v1 *manager;
 static struct ext_session_lock_v1 *lock;
+static struct zwlr_output_power_manager_v1 *powermgr;
 static struct wl_list outputs;
 static struct xkb_context *xkb;
 static struct xkb_keymap *keymap;
@@ -395,6 +399,8 @@ static void global(void *data, struct wl_registry *r, uint32_t name, const char 
 		wl_seat_add_listener(seat, &seat_listener, NULL);
 	} else if (!strcmp(iface, ext_session_lock_manager_v1_interface.name)) {
 		manager = wl_registry_bind(r, name, &ext_session_lock_manager_v1_interface, 1);
+	} else if (!strcmp(iface, zwlr_output_power_manager_v1_interface.name)) {
+		powermgr = wl_registry_bind(r, name, &zwlr_output_power_manager_v1_interface, 1);
 	} else if (!strcmp(iface, wl_output_interface.name)) {
 		struct output *o = calloc(1, sizeof *o);
 		if (!o)
@@ -454,6 +460,14 @@ static int lock_session(void)
 		;
 	if (unlocked) {
 		ext_session_lock_v1_unlock_and_destroy(lock);
+		/* Screens the idle watcher turned off come on with the unlock, should it be gone. */
+		wl_list_for_each(o, &outputs, link) {
+			if (!powermgr)
+				break;
+			struct zwlr_output_power_v1 *p = zwlr_output_power_manager_v1_get_output_power(powermgr, o->wl);
+			zwlr_output_power_v1_set_mode(p, ZWLR_OUTPUT_POWER_V1_MODE_ON);
+			zwlr_output_power_v1_destroy(p);
+		}
 		/* An unlock the compositor may not have read is a lost lock: the next one asks
 		 * again should it have been read after all. */
 		if (wl_display_roundtrip(display) < 0)
@@ -473,18 +487,49 @@ static int lock_session(void)
 static struct ext_idle_notifier_v1 *notifier;
 static int idled;
 
+/* The screens --idle turns off once the lock has been up a while, each with its power control. */
+struct screen {
+	struct wl_list link;
+	uint32_t name;
+	struct wl_output *wl;
+	struct zwlr_output_power_v1 *power;
+};
+static struct wl_list screens = { &screens, &screens };
+
 static void watch_global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version)
 {
 	(void)data;
-	if (!strcmp(iface, wl_seat_interface.name) && !seat)
+	if (!strcmp(iface, wl_seat_interface.name) && !seat) {
 		seat = wl_registry_bind(r, name, &wl_seat_interface, 1);
-	else if (!strcmp(iface, ext_idle_notifier_v1_interface.name) && version >= 2)
+	} else if (!strcmp(iface, ext_idle_notifier_v1_interface.name) && version >= 2) {
 		notifier = wl_registry_bind(r, name, &ext_idle_notifier_v1_interface, 2);
+	} else if (!strcmp(iface, zwlr_output_power_manager_v1_interface.name)) {
+		powermgr = wl_registry_bind(r, name, &zwlr_output_power_manager_v1_interface, 1);
+	} else if (!strcmp(iface, wl_output_interface.name)) {
+		struct screen *sc = calloc(1, sizeof *sc);
+		if (!sc)
+			return;
+		sc->name = name;
+		sc->wl = wl_registry_bind(r, name, &wl_output_interface, 1);
+		wl_list_insert(&screens, &sc->link);
+		if (powermgr)
+			sc->power = zwlr_output_power_manager_v1_get_output_power(powermgr, sc->wl);
+	}
 }
 
 static void watch_global_remove(void *data, struct wl_registry *r, uint32_t name)
 {
-	(void)data; (void)r; (void)name;
+	(void)data; (void)r;
+	struct screen *sc, *tmp;
+	wl_list_for_each_safe(sc, tmp, &screens, link) {
+		if (sc->name != name)
+			continue;
+		if (sc->power)
+			zwlr_output_power_v1_destroy(sc->power);
+		wl_output_destroy(sc->wl);
+		wl_list_remove(&sc->link);
+		free(sc);
+	}
 }
 
 static const struct wl_registry_listener watch_registry_listener = {
@@ -508,9 +553,36 @@ static const struct ext_idle_notification_v1_listener idle_listener = {
 	.resumed = idle_resumed,
 };
 
-/* --idle: a lock of its own each time the session has been idle `secs`, while the session
- * lasts. Only the seat and the notifier are bound: no keyboard, so no key reaches it. */
-static int watch_idle(long secs)
+/* Every screen off, or on again. */
+static void screens_power(uint32_t mode)
+{
+	struct screen *sc;
+	wl_list_for_each(sc, &screens, link)
+		if (sc->power)
+			zwlr_output_power_v1_set_mode(sc->power, mode);
+	say(mode == ZWLR_OUTPUT_POWER_V1_MODE_ON ? "screens on" : "screens off");
+}
+
+static void blank_idled(void *data, struct ext_idle_notification_v1 *n)
+{
+	(void)data; (void)n;
+	screens_power(ZWLR_OUTPUT_POWER_V1_MODE_OFF);
+}
+
+static void blank_resumed(void *data, struct ext_idle_notification_v1 *n)
+{
+	(void)data; (void)n;
+	screens_power(ZWLR_OUTPUT_POWER_V1_MODE_ON);
+}
+
+static const struct ext_idle_notification_v1_listener blank_listener = {
+	.idled = blank_idled,
+	.resumed = blank_resumed,
+};
+
+/* --idle: a lock of its own each time the session has been idle `secs`, and the screens off
+ * `blank` later, while the session lasts. No keyboard is bound, so no key reaches it. */
+static int watch_idle(long secs, long blank)
 {
 	display = wl_display_connect(NULL);
 	if (!display) {
@@ -528,6 +600,19 @@ static int watch_idle(long secs)
 	 * zone say, must never hold the session unlocked. */
 	struct ext_idle_notification_v1 *n = ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)secs * 1000, seat);
 	ext_idle_notification_v1_add_listener(n, &idle_listener, NULL);
+	/* The screens go off `blank` after the lock, and on again at the first input, which the
+	 * lock also takes. */
+	if (blank > 0 && !powermgr)
+		say("the compositor cannot turn screens off");
+	if (blank > 0 && powermgr) {
+		struct screen *sc;
+		wl_list_for_each(sc, &screens, link)
+			if (!sc->power)
+				sc->power = zwlr_output_power_manager_v1_get_output_power(powermgr, sc->wl);
+		struct ext_idle_notification_v1 *b =
+			ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)(secs + blank) * 1000, seat);
+		ext_idle_notification_v1_add_listener(b, &blank_listener, NULL);
+	}
 	pid_t locker = 0;
 	while (wl_display_dispatch(display) != -1) {
 		if (!idled)
@@ -547,20 +632,27 @@ static int watch_idle(long secs)
 	return 1;
 }
 
+/* A count of seconds up to a week, so the compositor's milliseconds fit 32 bits; or -1. */
+static long seconds(const char *s)
+{
+	char *end;
+	long v = strtol(s, &end, 10);
+	return *s && !*end && v >= 0 && v <= 7 * 24 * 3600 ? v : -1;
+}
+
 int main(int argc, char **argv)
 {
-	if (argc == 3 && !strcmp(argv[1], "--idle")) {
-		char *end;
-		long secs = strtol(argv[2], &end, 10);
-		/* Up to a week, so the compositor's milliseconds fit 32 bits. */
-		if (*argv[2] && !*end && secs > 0 && secs <= 7 * 24 * 3600) {
+	if ((argc == 3 || (argc == 5 && !strcmp(argv[3], "--blank"))) && !strcmp(argv[1], "--idle")) {
+		long secs = seconds(argv[2]), blank = argc == 5 ? seconds(argv[4]) : 60;
+		if (secs > 0 && blank >= 0 && secs + blank <= 7 * 24 * 3600) {
 			signal(SIGPIPE, SIG_IGN);
-			return watch_idle(secs);
+			return watch_idle(secs, blank);
 		}
 	}
 	if (argc != 1) {
-		fputs("usage: kryptik-lock [--idle SECONDS]   (locks the session until the login password is typed;\n"
-		      "       with --idle, each time the session has had no input that long)\n", stderr);
+		fputs("usage: kryptik-lock [--idle SECONDS [--blank SECONDS]]   (locks the session until the login\n"
+		      "       password is typed; with --idle, each time the session has had no input that long,\n"
+		      "       and the screens go off --blank later, 60 s unless given, 0 never)\n", stderr);
 		return 2;
 	}
 	/* A refused pipe write is told by write's return, not a signal. */
