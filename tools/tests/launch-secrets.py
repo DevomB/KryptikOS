@@ -20,7 +20,9 @@ def main():
         definition = '#define LAUNCH_SOCKET "/run/kryptik-launch/launch.sock"'
         assert source.count(definition) == 1, "update test path substitution for LAUNCH_SOCKET"
         source = source.replace(definition, f'#define LAUNCH_SOCKET "{launch_socket}"')
-        assert "kryptik-wlproxy" not in source, "the launcher names a proxy to start again"
+        # The daemon starts each proxy: the launcher holds neither its program nor its argv[0].
+        started = "/usr/bin/kryptik-wlproxy" in source or '"kryptik-wlproxy"' in source
+        assert not started, "the launcher names a proxy to start again"
         (work / "launcher.c").write_text(source)
         subprocess.run(["cc", "-O2", "-o", str(work / "launcher"), str(work / "launcher.c")], check=True)
         # A descriptor is a whole number: "3x", "" or "-1" never reaches the daemon.

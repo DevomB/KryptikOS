@@ -236,7 +236,9 @@ it does not need the medium again unless it has to be recovered.
 KRYPTIK-TESTCTL KEY=VALUE...`, carrying `install_target=/dev/vda`, the state
 passphrase as `state_passphrase=...` (required), and optionally
 `preseed_user=`, `preseed_password_hash=` and `preseed_root_hash=` for the
-first accounts. The file is signed by the release's `kryptik-testctl` key
+first accounts; the user's hash must be SHA-512 crypt, as `openssl passwd -6`
+makes it, the only kind besides SHA-256 crypt that the screen lock checks.
+The file is signed by the release's `kryptik-testctl` key
 ([release keys](release-keys.md)), and a medium honours only a disk its own
 anchor's key signed: anyone else's is named on the console and ignored, so a
 disk attached to a machine that boots your medium cannot arm an install. An
@@ -284,6 +286,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |
+| Alt+Shift+l | lock the screen until the login password is typed |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |
@@ -292,6 +295,19 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Ctrl+Alt+F2 / Ctrl+Alt+F1 | the administration login / back to the desktop |
 | Alt+Shift+q | leave the desktop, which logs you out |
 
+Alt+Shift+l locks the screen. Nothing shows but the word LOCKED and a mark
+for each character typed, and every key goes to the lock, so no window, zone
+0's or a zone's, sees the password; Ctrl+Alt+F2 does nothing while locked.
+Type the login password and Enter. After a wrong one the lock shows WRONG,
+and the next try waits 2 seconds, doubling with each wrong one in a row up
+to a minute (the lock shows WAIT and the seconds); Escape clears what was
+typed. If the lock's program dies, the screen stays locked and the lock
+starts again. The screen also locks by itself after ten minutes without a
+key, a click or the pointer moving; to change that, write the minutes to
+`~/.config/kryptik/lock-idle` (0 for never), which the next login reads. A
+minute after it locks, the screens turn off; any key or movement turns them
+on again, and that key goes to the lock.
+
 Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. A zone with encrypted storage asks for its passphrase when it starts,
@@ -299,8 +315,8 @@ in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. Under the zones, a Network line says what
 the net zone reports: whether it is ready, the Wi-Fi network it joined (or
 that Wi-Fi is switched off, by a switch or an airplane-mode key; switched on
-again, it rejoins by itself), its address on the uplink and whether there is
-DNS. The menu also names a
+again, it rejoins by itself, or that a saved network refused its passphrase),
+its address on the uplink and whether there is DNS. The menu also names a
 release that has arrived and waits to be installed, and says when the newest
 update statement is more than 30 days old, or, with none ever accepted, when
 the install is (section 4). With `w` it lists the Wi-Fi networks the net zone may join,
@@ -317,6 +333,8 @@ stop ZONE` stops one. `kryptik shell ZONE` and `kryptik run ZONE -- COMMAND` sta
 zone through the launch service when run as the user, detached: its output
 goes to `/var/log/kryptik/zone-ZONE.log`, which root can read. Run as root,
 they use the terminal, for a zone without encrypted storage only.
+`kryptik status net` gives the menu's Network line too, which says whether a
+network added with `kryptik wifi add` has joined.
 
 Files move between zones only through the broker, from inside the sending
 zone, and only when the zone's policy allows the direction and you allow it:
@@ -331,7 +349,8 @@ from a random address while no network is joined where the radio allows one,
 and otherwise only listens.
 `kryptik wifi add SSID` saves a network and asks for its
 passphrase; the net zone restarts and joins it, by WPA3 where the network
-offers it. A network with no passphrase, a café's or an airport's, is saved
+offers it. If the network refuses the passphrase, the menu's Network line
+says so: add the network again with the right one. A network with no passphrase, a café's or an airport's, is saved
 with `kryptik wifi add SSID --open`: anyone in range can read what crosses it
 unencrypted, so only what a zone encrypts itself, as HTTPS does, stays
 private there. Each saved network sees the machine by an address of its own,
@@ -341,7 +360,11 @@ for a lease. Networks that share a name, a chain's cafés for one, are one
 saved network and see one address. A radio that takes a new address, as most
 do, never uses its own: a scan for networks, before one is joined, goes out
 from a new random address each time, so a scan does not follow the machine
-either.
+either. A network that hides its name, which no scan lists, is
+saved with `kryptik wifi add SSID --hidden` (beside `--open` for one with no
+passphrase): the machine then asks for that name in each scan until it
+joins, wherever it is, so anyone listening nearby learns it knows that
+network. A new passphrase keeps it so; forget the network to stop.
 `kryptik wifi list` names the saved networks, and `kryptik wifi forget SSID`
 removes one.
 

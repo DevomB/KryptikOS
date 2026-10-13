@@ -45,6 +45,12 @@ pub fn log_path(run: &Path, session: u32, zone: &str) -> PathBuf {
     run.join("kryptik-proxy").join(session.to_string()).join(format!("{zone}.log"))
 }
 
+/// The move gesture's socket (kryptik-wlproxy's control.rs): the session's alone, beside the
+/// zone's directory and so never bound into the zone.
+pub fn control_path(run: &Path, session: u32, zone: &str) -> PathBuf {
+    run.join("kryptik-proxy").join(session.to_string()).join(format!("{zone}.control"))
+}
+
 /// Where dwl serves `zone` for `session`: the proxy's upstream.
 pub fn upstream_path(run: &Path, session: u32, zone: &str) -> PathBuf {
     run.join("kryptik-compositor").join(session.to_string()).join(zone)
@@ -99,6 +105,15 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
     let listener = UnixListener::bind(&sock).map_err(|e| format!("{}: {e}", sock.display()))?;
     // Whichever of the zone's uids a program runs as connects through the bind.
     fs::set_permissions(&sock, fs::Permissions::from_mode(0o666)).map_err(|e| format!("{}: {e}", sock.display()))?;
+    // The session's launcher alone connects to the gesture's socket, and the proxy answers no
+    // other uid there either.
+    let control = control_path(run, session, &zone.name);
+    let _ = fs::remove_file(&control);
+    let ctl = UnixListener::bind(&control).map_err(|e| format!("{}: {e}", control.display()))?;
+    fs::set_permissions(&control, fs::Permissions::from_mode(0o600)).map_err(|e| format!("{}: {e}", control.display()))?;
+    if root {
+        std::os::unix::fs::lchown(&control, Some(session), None).map_err(|e| format!("{}: {e}", control.display()))?;
+    }
     let log_path = log_path(run, session, &zone.name);
     let log = fs::OpenOptions::new()
         .write(true)
@@ -137,7 +152,11 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
         None
     };
     // The upstream goes by descriptor: a connect through the link reaches the socket checked here.
-    let words = ["kryptik-wlproxy", "--zone", zone.name.as_str(), "--listen-fd", "3", "--upstream", "/proc/self/fd/4", "--max-clients", MAX_CLIENTS];
+    let uid_s = session.to_string();
+    let words = [
+        "kryptik-wlproxy", "--zone", zone.name.as_str(), "--listen-fd", "3", "--upstream", "/proc/self/fd/4",
+        "--control-fd", "5", "--control-uid", uid_s.as_str(), "--max-clients", MAX_CLIENTS,
+    ];
     let argv = words.iter().map(|w| CString::new(*w).map_err(|_| format!("{w:?} holds a NUL"))).collect::<Result<Vec<_>, _>>()?;
     let cexe = CString::new(exe.as_os_str().as_bytes()).map_err(|_| "the proxy's path holds a NUL".to_string())?;
     let exe_s = exe.to_str().ok_or("the proxy's path is not UTF-8")?;
@@ -148,7 +167,7 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
         return Err(format!("fork: {}", std::io::Error::last_os_error()));
     }
     if pid == 0 {
-        let why = become_proxy([listener.as_raw_fd(), up.as_raw_fd()], log.as_raw_fd(), procs.as_deref(), uid, exe_s, &cexe, &argv);
+        let why = become_proxy([listener.as_raw_fd(), up.as_raw_fd(), ctl.as_raw_fd()], log.as_raw_fd(), procs.as_deref(), uid, exe_s, &cexe, &argv);
         let _ = writeln!(std::io::stderr(), "kryptikd: zone {}'s proxy: {why}", zone.name);
         unsafe { libc::_exit(126) }
     }
@@ -166,10 +185,18 @@ pub fn kill_leftovers() {
     }
 }
 
-/// In the forked child: the proxy's descriptors (the listener as 3, dwl's socket as 4), cgroup,
-/// namespaces, limits, ids and confinement, then the exec. Returns only why it could not.
+/// Whether two descriptors are the same file.
+fn same_file(a: RawFd, b: RawFd) -> bool {
+    let mut sa: libc::stat = unsafe { std::mem::zeroed() };
+    let mut sb: libc::stat = unsafe { std::mem::zeroed() };
+    unsafe { libc::fstat(a, &mut sa) == 0 && libc::fstat(b, &mut sb) == 0 } && (sa.st_dev, sa.st_ino) == (sb.st_dev, sb.st_ino)
+}
+
+/// In the forked child: the proxy's descriptors (the listener as 3, dwl's socket as 4, the move
+/// gesture's socket as 5), cgroup, namespaces, limits, ids and confinement, then the exec.
+/// Returns only why it could not.
 fn become_proxy(
-    keep: [RawFd; 2],
+    keep: [RawFd; 3],
     log: RawFd,
     procs: Option<&Path>,
     uid: Option<u32>,
@@ -184,12 +211,16 @@ fn become_proxy(
         if null < 0 || libc::dup2(null, 0) < 0 || libc::dup2(log, 1) < 0 || libc::dup2(log, 2) < 0 {
             return os("stdio");
         }
-        // Copies above 9 first, so placing one cannot overwrite the other; dup2 clears close-on-exec.
+        // Copies above 9 first, so placing one cannot overwrite another; dup2 clears close-on-exec.
         let high = keep.map(|fd| libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10));
-        if high.iter().any(|&fd| fd < 0) || libc::dup2(high[0], 3) < 0 || libc::dup2(high[1], 4) < 0 {
-            return os("the listener and the upstream");
+        if high.iter().any(|&fd| fd < 0) || (0..3).any(|i| libc::dup2(high[i], 3 + i as RawFd) < 0) {
+            return os("the proxy's descriptors");
         }
-        if libc::syscall(libc::SYS_close_range, 5 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint) < 0 {
+        // The argument line names 3, 4 and 5: each is the file it says, before the rest close.
+        if (0..3).any(|i| !same_file(high[i], 3 + i as RawFd)) {
+            return "3, 4 and 5 are not the listener, the upstream and the gesture's socket".into();
+        }
+        if libc::syscall(libc::SYS_close_range, 6 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint) < 0 {
             return os("close_range");
         }
         let nofile = libc::rlimit { rlim_cur: NOFILE, rlim_max: NOFILE };

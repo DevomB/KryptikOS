@@ -13,7 +13,8 @@
 #                                  dwl's status stream on stdin, records the
 #                                  focused zone in $XDG_RUNTIME_DIR/kryptik/
 #                                  focus as text (and the last zone window's
-#                                  in focus.zone), and opens the launcher
+#                                  in focus.zone), opens the launcher and
+#                                  starts the idle lock
 #   kryptik-chrome --menu          the launcher: zones, their state, apps,
 #                                  the network as the net zone reports it, a
 #                                  release that waits to be installed, a
@@ -95,6 +96,11 @@ run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
     # The menu window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
+    # The screen locks after ten minutes without input, or the minutes the user's
+    # lock-idle file holds; 0 never. expr reads 08 as eight, where $((...)) fails.
+    idle="$(tr -cd 0-9 2>/dev/null < "${XDG_CONFIG_HOME:-$HOME/.config}/kryptik/lock-idle" | cut -c1-4)"
+    idle="$(expr "${idle:-10}" \* 60)"
+    [ "$idle" -gt 0 ] && /usr/bin/kryptik-lock --idle "$idle" &
     # The consent watcher. Holding watcher.lock tells the broker someone is here
     # to ask: consent.rs refuses at once if it can take the lock shared. The
     # kernel drops it with this subshell, and a second session's watcher exits

@@ -15,6 +15,7 @@ fn sockets_are_named_by_session_and_zone() {
     let run = Path::new("/run");
     assert_eq!(socket_path(run, 1000, "work"), Path::new("/run/kryptik-proxy/1000/work/wayland-0"));
     assert_eq!(log_path(run, 1000, "work"), Path::new("/run/kryptik-proxy/1000/work.log"));
+    assert_eq!(control_path(run, 1000, "work"), Path::new("/run/kryptik-proxy/1000/work.control"));
     assert_eq!(upstream_path(run, 1000, "work"), Path::new("/run/kryptik-compositor/1000/work"));
 }
 

@@ -237,6 +237,7 @@ usr/bin/kmod
 usr/bin/kryptik
 usr/bin/kryptik-chrome
 usr/bin/kryptik-launch
+usr/bin/kryptik-lock
 usr/bin/kryptik-session
 usr/bin/kryptik-wlproxy
 usr/bin/kryptikd

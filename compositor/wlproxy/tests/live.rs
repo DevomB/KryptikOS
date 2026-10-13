@@ -294,7 +294,11 @@ fn serves_clients_through_churn() {
     assert_eq!(read_exact_or_panic(&mut u1, 12, "client 1's get_registry at the upstream"), get_registry(2));
     p.assert_alive("after its first client's first request");
 
-    // Events come back filtered: the hidden global between two allowed ones never arrives.
+    // The proxy's own data device comes first, named from the top of the range
+    // (policy::OWN_GLOBAL_BASE); then the compositor's, filtered: the hidden global between two
+    // allowed ones never arrives.
+    let own = global(2, 0xFFFF_FF00, "wl_data_device_manager", 3);
+    assert_eq!(read_exact_or_panic(&mut c1, own.len(), "the proxy's own data device at client 1"), own);
     u1.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
     let want = global(2, 1, "wl_compositor", 6);
     assert_eq!(read_exact_or_panic(&mut c1, want.len(), "wl_compositor global at client 1"), want);
@@ -459,7 +463,7 @@ fn long_unicode_titles_are_rewritten() {
     let _ = read_exact_or_panic(&mut u, 12, "get_registry");
     u.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
     u.write_all(&global(2, 2, "xdg_wm_base", 6)).unwrap();
-    let _ = read_until(&mut c, |b| holds_messages(b, 2), "both globals at the client");
+    let _ = read_until(&mut c, |b| holds_messages(b, 3), "the proxy's data device and both globals at the client");
 
     c.write_all(&bind(2, 1, "wl_compositor", 6, 3)).unwrap();
     c.write_all(&bind(2, 2, "xdg_wm_base", 6, 4)).unwrap();

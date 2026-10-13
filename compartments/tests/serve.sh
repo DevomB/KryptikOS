@@ -342,7 +342,7 @@ else
 fi
 
 if [[ ! -x "$WLPROXY" ]]; then
-    skip "S8d-S8j need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
+    skip "S8d-S8k need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
 else
     UP="$CDIR/alpha"
     python3 "$WORK/upstream.py" "$UP" & BG_PIDS+=("$!")
@@ -362,6 +362,22 @@ else
             pass "S8f the proxy runs with no_new_privs, under seccomp"
         else
             fail "S8f proxy pid ${PP:-none}: $(grep -E '^(NoNewPrivs|Seccomp):' "/proc/${PP:-none}/status" 2>&1 | tr '\n' ' ')"
+        fi
+        CTL="$LOGDIR/kryptik-proxy/$EUID/alpha.control"
+        said="$(python3 - "$CTL" 2>&1 <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(5)
+s.connect(sys.argv[1])
+s.sendall(b"take\n")
+s.shutdown(socket.SHUT_WR)
+print(s.recv(200).decode(errors="replace").strip())
+PY
+)"
+        if [[ "$(stat -c %a "$CTL" 2>/dev/null)" == 600 && "$said" == empty ]] && tr '\0' ' ' < "/proc/${PP:-none}/cmdline" 2>/dev/null | grep -q -- "--control-fd 5 --control-uid $EUID "; then
+            pass "S8k the move gesture's socket is the session's alone, handed to the proxy listening, and answered"
+        else
+            fail "S8k $CTL: $(stat -c '%a %F' "$CTL" 2>&1); the proxy said: ${said:-nothing}"
         fi
     else
         fail "S8d run with a display: $r; proxy log: $(tr '\n' ' ' < "$PLOG" 2>&1)"
@@ -440,7 +456,7 @@ fi
 r="$(ask 'wifi-forget\nssid Home\nend\n')"
 if [[ "$r" == "ok forgot network \"Home\";"* ]] && ! grep -qF Home "$WCONF" && grep -qxF $'\tssid="Cafe Wifi"' "$WCONF" \
    && grep -qxF 'ctrl_interface=/run/wpa_supplicant' "$WCONF" && grep -qxF 'update_config=0' "$WCONF" \
-   && grep -qxF 'scan_res_valid_for_connect=0' "$WCONF"; then
+   && grep -qxF 'scan_res_valid_for_connect=0' "$WCONF" && grep -qxF 'sae_pwe=2' "$WCONF"; then
     pass "S9m wifi-forget removes only its block; the header and the other network stay"
 else
     fail "S9m: $r"; sed 's/^/        /' "$WCONF"
