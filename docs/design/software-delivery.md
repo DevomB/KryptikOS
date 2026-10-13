@@ -194,10 +194,11 @@ up ADR-001 in the zones where the applications run.
   `/usr`, no device node, setuid or setgid bit, or file capability. The
   probe image (`build/images/probe.sh`), one small program that locks its
   memory, proves the stage and the zones suite's checks; it ships to no one.
-- **Packed.** Stage 06 makes `images/<name>.img` the way it makes the root
-  (ext4 without a journal, then the verity tree, with a salt and UUID
-  derived from the content), runs the root's artifact audit and the image's
-  own program list over it, and writes a manifest, `images/images.manifest`:
+- **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
+  makes the root (ext4 without a journal, then the verity tree, with a
+  salt and UUID derived from the content), runs the root's artifact audit
+  and the image's own program list over it, and writes a manifest,
+  `images-<release>/images.manifest`:
 
   ```text
   KRYPTIK-IMAGES-1
@@ -215,8 +216,9 @@ up ADR-001 in the zones where the applications run.
   `data-blocks`), so every value kryptikd passes to dm-verity is signed.
   Image lines are sorted by name and a needs line uses the policy-file
   syntax; anything else in the file refuses it. A development build also
-  signs the two lists the guest must refuse, under `images/controls/`: the
-  same list in `kryptik-release`, and one for another root.
+  signs the two lists the guest must refuse, under
+  `images-<release>/controls/`: the same list in `kryptik-release`, and
+  one for another root.
 - **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
   the list for each root as `<base>.manifest` and `.manifest.sig`, root
   only. Zone 0 keeps the generation the committed root uses and, during a

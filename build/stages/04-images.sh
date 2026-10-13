@@ -9,43 +9,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
 
 DEFS="${KRYPTIK_ROOT}/build/images"
-
-# --- in the chroot: one image's rows ----------------------------------------
-
-if [[ "${1:-}" == --inside ]]; then
-    name="${2:?--inside needs an image name}"
-    require_inside_chroot "the image stage"
-    load_hardening
-    validate_hardening_exceptions
-    stage_contract "${BASH_SOURCE[0]}" "image-${name}-" gcc
-    # shellcheck disable=SC2034  # consumed by step() and the recipes
-    STAMPS="${KRYPTIK_WORK}/.stamps" LOGS="${KRYPTIK_WORK}/logs" BUILDDIR="${KRYPTIK_WORK}/build"
-    KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
-    # As stage 04 builds: gnulib refuses root without this, and every make runs in parallel.
-    export FORCE_UNSAFE_CONFIGURE=1 MAKEFLAGS="-j${KRYPTIK_JOBS}"
-    # The root's index of info manuals is the root's; automake leaves it alone. And a Python tool the
-    # build runs leaves no bytecode for the root's modules in the image.
-    export AM_UPDATE_INFO_DIR=no PYTHONDONTWRITEBYTECODE=1
-    umask 022
-    source "${KRYPTIK_ROOT}/build/lib/recipes.sh"
-    # shellcheck source=/dev/null
-    source "${DEFS}/${name}.sh"
-    # Stage 04's last build step: a rebuilt base system rebuilds every image.
-    stage_depends_on "bs-" licences
-    for ((i = 0; i < ${#image_rows[@]}; i += 2)); do
-        # shellcheck disable=SC2086  # a recipe is a word-split command, as in stage 04
-        step "${image_rows[i]}" ${image_rows[i+1]}
-    done
-    exit 0
-fi
-
-# --- on the host: an overlay per image, its rows run inside it ---------------
-
-[[ "$EUID" -eq 0 ]] || die "the image stage mounts an overlay over the sysroot: run it as root (make images)"
-require_outside_chroot "the image stage"
 SYSROOT="${KRYPTIK_WORK}/sysroot"
 CHROOTD="${KRYPTIK_ROOT}/build/stages/03-chroot-prep.sh"
-[[ -f "${KRYPTIK_WORK}/.stamps/bs-licences" ]] || die "stage 04 has not finished: make system first"
+
+# --- on the host: an overlay per image, its rows run inside it ---------------
 
 # What an image is built from: its definition and files, the recipes and flags, the pins, and the base system.
 image_inputs() {   # image_inputs NAME
@@ -67,7 +34,6 @@ unmount_image() {   # unmount_image TOP
     # Not grep -q: under pipefail its early exit could fail findmnt and hide a mount.
     if findmnt -rn -o TARGET | grep -F "$1/" >&2; then die "still mounted under $1 (above): nothing there is removed"; fi
 }
-trap '[[ -z "$MOUNTED" ]] || unmount_image "$MOUNTED"' EXIT
 
 build_image() {   # build_image NAME
     local name="$1" top="${KRYPTIK_WORK}/image-build/${1}" version want d
@@ -104,14 +70,51 @@ build_image() {   # build_image NAME
     ok "image ${name} ${version}: $(find "${top}/tree" ! -type d | wc -l) files and links"
 }
 
-names=("$@")
-if [[ "${#names[@]}" -eq 0 ]]; then
-    for d in "${DEFS}"/*.sh; do names+=("$(basename "$d" .sh)"); done
+build_images() {   # build_images [NAME...]
+    [[ "$EUID" -eq 0 ]] || die "the image stage mounts an overlay over the sysroot: run it as root (make images)"
+    require_outside_chroot "the image stage"
+    [[ -f "${KRYPTIK_WORK}/.stamps/bs-licences" ]] || die "stage 04 has not finished: make system first"
+    trap '[[ -z "$MOUNTED" ]] || unmount_image "$MOUNTED"' EXIT
+    local names=("$@") d n
+    if [[ "${#names[@]}" -eq 0 ]]; then
+        for d in "${DEFS}"/*.sh; do names+=("$(basename "$d" .sh)"); done
+    fi
+    log "Kryptik software images: ${names[*]}"
+    for n in "${names[@]}"; do
+        [[ -f "${DEFS}/${n}.sh" ]] || die "no image ${n}: nothing at ${DEFS}/${n}.sh"
+        build_image "$n"
+    done
+    ok "software images built: ${names[*]}"
+    dim "Next: make media packs each one beside the root (stage 06)"
+}
+
+if [[ "${1:-}" != --inside ]]; then
+    build_images "$@"
+    exit 0
 fi
-log "Kryptik software images: ${names[*]}"
-for n in "${names[@]}"; do
-    [[ -f "${DEFS}/${n}.sh" ]] || die "no image ${n}: nothing at ${DEFS}/${n}.sh"
-    build_image "$n"
+
+# --- in the chroot: one image's rows, as stage 04 runs its own ---------------
+
+name="${2:?--inside needs an image name}"
+require_inside_chroot "the image stage"
+load_hardening
+validate_hardening_exceptions
+stage_contract "${BASH_SOURCE[0]}" "image-${name}-" gcc
+# shellcheck disable=SC2034  # consumed by step() and the recipes
+STAMPS="${KRYPTIK_WORK}/.stamps" LOGS="${KRYPTIK_WORK}/logs" BUILDDIR="${KRYPTIK_WORK}/build"
+KRYPTIK_JOBS="${KRYPTIK_JOBS:-$(kryptik_default_jobs)}"
+# As stage 04 builds: gnulib refuses root without this, and every make runs in parallel.
+export FORCE_UNSAFE_CONFIGURE=1 MAKEFLAGS="-j${KRYPTIK_JOBS}"
+# The root's index of info manuals is the root's; automake leaves it alone. And a Python tool the
+# build runs leaves no bytecode for the root's modules in the image.
+export AM_UPDATE_INFO_DIR=no PYTHONDONTWRITEBYTECODE=1
+umask 022
+source "${KRYPTIK_ROOT}/build/lib/recipes.sh"
+# shellcheck source=/dev/null
+source "${DEFS}/${name}.sh"
+# Stage 04's last build step: a rebuilt base system rebuilds every image.
+stage_depends_on "bs-" licences
+for ((i = 0; i < ${#image_rows[@]}; i += 2)); do
+    # shellcheck disable=SC2086  # a recipe is a word-split command, as in stage 04
+    step "${image_rows[i]}" ${image_rows[i+1]}
 done
-ok "software images built: ${names[*]}"
-dim "Next: make media packs each one beside the root (stage 06)"

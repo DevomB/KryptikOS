@@ -48,6 +48,8 @@ KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory=
 COMMIT="$(git -c safe.directory="$TOP" -C "$TOP" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
 ESP_MIB=512
 export KRYPTIK_VERSION
+# This release's software images, beside its payload and channel: two releases' media can share IMG.
+IMAGES="${IMG}/images-${KRYPTIK_VERSION}"
 # Where the image's net zone asks for releases (docs/design/update-channel.md).
 # Empty, the image names no channel and fetches nothing.
 KRYPTIK_CHANNEL="${KRYPTIK_CHANNEL:-}"
@@ -354,7 +356,7 @@ pack_image() {
     local bytes; bytes="$(du -sb "$stage" | cut -f1)"
     local fs_bytes=$(( bytes + bytes / 8 + 16 * 1024 * 1024 ))
     fs_bytes=$(( (fs_bytes + 4095) / 4096 * 4096 ))
-    local img="${IMG}/images/${name}.img" id
+    local img="${IMAGES}/${name}.img" id
     # The UUID and directory hash seed, from what the image is and the root it is built for.
     id="$(printf 'kryptik-image %s %s %s' "$name" "$version" "$base" | sha256_of_stdin)"
     id="${id:0:8}-${id:8:4}-${id:12:4}-${id:16:4}-${id:20:12}"
@@ -380,13 +382,13 @@ pack_image() {
         "$name" "$version" "$(stat -c %s "$img")" "$(sha256_of "$img")" "$data_blocks" "$root_hash" "$salt"
 }
 
-# Each software image the image stage built (build/stages/04-images.sh), in IMG/images/ with
+# Each software image the image stage built (build/stages/04-images.sh), in IMAGES with
 # images.manifest naming them for this root: the release, the root's hash as their base, an image line
 # each by name, then each image's policy lines (build/images/NAME.needs). sign-images signs it.
 s_images() {
     local version="$1" base; base="$(root_json root_hash)"
     local rec name ver line needs=() images=()
-    rm -rf "${IMG}/images"; mkdir -p "${IMG}/images"
+    rm -rf "$IMAGES"; mkdir -p "$IMAGES"
     for rec in "${KRYPTIK_WORK}"/image-build/*/record; do
         [[ -f "$rec" ]] || continue
         name="$(sed -n 's/^name: //p' "$rec")"; ver="$(sed -n 's/^version: //p' "$rec")"
@@ -402,9 +404,9 @@ s_images() {
         printf 'KRYPTIK-IMAGES-1\nrelease: %s\nbase: %s\n' "$version" "$base"
         if [[ "${#images[@]}" -gt 0 ]]; then printf '%s\n' "${images[@]}" | LC_ALL=C sort; fi
         if [[ "${#needs[@]}" -gt 0 ]]; then printf '%s\n' "${needs[@]}"; fi
-    } > "${IMG}/images/images.manifest"
+    } > "${IMAGES}/images.manifest"
     echo "--- images.manifest ---"
-    cat "${IMG}/images/images.manifest"
+    cat "${IMAGES}/images.manifest"
 }
 
 # images.manifest signed by the release key in kryptik-image, and checked as the guest checks it. A
@@ -412,7 +414,7 @@ s_images() {
 # release manifests' namespace, and other-base, a list for another root.
 s_sign_images() {
     echo "inputs digest: $1"
-    local dir="${IMG}/images" m="${IMG}/images/images.manifest"
+    local dir="$IMAGES" m="${IMAGES}/images.manifest"
     [[ -f "$m" ]] || { echo "no images.manifest: the images step packed none"; return 1; }
     rm -rf "${m}.sig" "${dir}/controls"
     # As s_sums: a security key asks on stderr to be touched, and the terminal, when there is one, gets it.
@@ -799,13 +801,13 @@ check_bound() {
         grep -q -a -F -e "$(root_json root_hash)" "${IMG}/kernels/${v}.efi" || die "${v}.efi is not bound to this root"
     done
     ok "the bound root trusts ${ANCHOR}, and its four kernels are bound to it"
-    if [[ -f "${IMG}/images/images.manifest" ]]; then
-        [[ "$(sed -n 's/^base: //p' "${IMG}/images/images.manifest")" == "$(root_json root_hash)" ]] || die "images.manifest is for another root"
+    if [[ -f "${IMAGES}/images.manifest" ]]; then
+        [[ "$(sed -n 's/^base: //p' "${IMAGES}/images.manifest")" == "$(root_json root_hash)" ]] || die "images.manifest is for another root"
         local name sha
         while read -r _ name _ _ sha _; do
             sha="${sha#sha256=}"
-            [[ "$(sha256_of "${IMG}/images/${name}.img")" == "$sha" ]] || die "image ${name} changed since images.manifest named it"
-        done < <(grep '^image: ' "${IMG}/images/images.manifest")
+            [[ "$(sha256_of "${IMAGES}/${name}.img")" == "$sha" ]] || die "image ${name} changed since images.manifest named it"
+        done < <(grep '^image: ' "${IMAGES}/images.manifest")
         ok "the bound images are the ones images.manifest names"
     fi
 }
@@ -822,7 +824,7 @@ if [[ "$PHASE" == bind ]]; then
     ok "Stage 06 bound ${KRYPTIK_VERSION} in ${IMG}: KRYPTIK_MEDIA_PHASE=sign signs it"
     exit 0
 fi
-step sign-images    s_sign_images "$(_hash_file "${IMG}/images/images.manifest")$(_hash_file "$ANCHOR")"
+step sign-images    s_sign_images "$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "$ANCHOR")"
 step sign-kernels   s_sign_kernels "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.efi | sha256_of_stdin)$(_hash_file "$SB_CERT")"
 step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.signed.efi "${IMG}/root.json" | sha256_of_stdin)"
 step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)"
