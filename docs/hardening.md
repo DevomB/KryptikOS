@@ -41,9 +41,10 @@ and checking code (its `elf`, `dlfcn`, `csu` and `debug` directories), whose
 programs `pldd`, `sprof`, `pcprofiledump` and `sotruss-lib.so` the audit
 accepts by name. And Firefox's `-fno-delete-null-pointer-checks`, in the
 browser image: under it GCC 14 cannot evaluate SpiderMonkey's compile-time
-checks, which compare an object's address with null, and with
-`CONFIG_DEFAULT_MMAP_MIN_ADDR=65536` no process can map page 0, so a null check
-the compiler deletes gains an attacker nothing.
+checks, which compare an object's address with null. With
+`CONFIG_DEFAULT_MMAP_MIN_ADDR=65536` no process can map the first 64 KiB, which
+covers a null pointer dereferenced at a small offset, and Mozilla's own builds
+delete these checks as well.
 
 ### What the audit finds
 
