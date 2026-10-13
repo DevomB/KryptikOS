@@ -202,7 +202,9 @@ up ADR-001 in the zones where the applications run.
 - **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
   makes the root (ext4 without a journal, then the verity tree, with a
   salt and UUID derived from the content), runs the root's artifact audit
-  and the image's own program list over it, and writes a manifest,
+  over it with the image's own accepted findings
+  (`build/images/NAME.accepted`, each with its reason) or none, and the
+  image's own program list, and writes a manifest,
   `images-<release>/images.manifest`:
 
   ```text

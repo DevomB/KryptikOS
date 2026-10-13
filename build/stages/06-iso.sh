@@ -351,7 +351,11 @@ pack_image() {
     rsync -aH --numeric-ids "${tree}/" "${stage}/"
     strip_root "$stage" >&2
     if find "$stage" -perm /6000 -print | grep . >&2; then echo "FAIL: a setuid or setgid file in image ${name}" >&2; return 1; fi
-    "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict "$stage" >&2
+    # Against the image's own accepted findings, each with its reason, or none: the root's list
+    # names the root's objects, and --strict refuses an entry that matches nothing.
+    local accepted="${KRYPTIK_ROOT}/build/images/${name}.accepted"
+    if [[ ! -f "$accepted" ]]; then accepted="${stage}.accepted"; : > "$accepted"; fi
+    "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict --accepted "$accepted" "$stage" >&2
     "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "$stage" --list "${KRYPTIK_ROOT}/build/images/${name}.programs" >&2
     "${KRYPTIK_ROOT}/tools/check-image-licences.sh" --image "$name" "$stage" >&2
     local bytes; bytes="$(du -sb "$stage" | cut -f1)"
@@ -378,7 +382,7 @@ pack_image() {
     [[ ${#root_hash} -eq 64 ]] || { echo "image ${name}: bad root hash ${root_hash}" >&2; return 1; }
     veritysetup verify --no-superblock --hash=sha256 --data-block-size=4096 --hash-block-size=4096 \
         --data-blocks="$data_blocks" --hash-offset="$fs_bytes" --salt="$salt" "$img" "$img" "$root_hash" >&2
-    rm -rf "$stage" "${stage}.hash"
+    rm -rf "$stage" "${stage}.hash" "${stage}.accepted"
     printf 'image: %s %s bytes=%s sha256=%s data-blocks=%s root-hash=%s salt=%s\n' \
         "$name" "$version" "$(stat -c %s "$img")" "$(sha256_of "$img")" "$data_blocks" "$root_hash" "$salt"
 }
