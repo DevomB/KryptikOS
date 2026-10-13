@@ -114,6 +114,9 @@ browser image is built over:
   fontconfig, cairo (pixman is the root's), gdk-pixbuf with libpng, libepoxy
   and ATK from at-spi2-core, built alone with a patch that drops its
   unused libxml2;
+- the Khronos EGL headers from libglvnd, which libepoxy and GTK's Wayland
+  backend compile against. No EGL library comes with them: a zone has no
+  GPU, so GL stays unavailable there;
 - gdk-pixbuf reads PNG alone, built in: GTK's theme and icons are PNG, and
   each other loader is a parser more. JPEG, GIF and the rest come only if a
   program the image carries needs them; Firefox decodes its own;
