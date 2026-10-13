@@ -119,12 +119,12 @@ fn the_compositor_directory_is_made_traversable_and_never_through_a_link() {
         developer: true,
     };
     compositor_dir(&cfg, 1000).unwrap();
-    let md = std::fs::metadata(dir.join("compositor/1000")).unwrap();
+    let md = std::fs::metadata(dir.join("kryptik-compositor/1000")).unwrap();
     assert!(md.is_dir());
     assert_eq!(md.permissions().mode() & 0o777, 0o711);
     compositor_dir(&cfg, 1000).expect("one already there is kept");
-    std::fs::remove_dir(dir.join("compositor/1000")).unwrap();
-    std::os::unix::fs::symlink(&dir, dir.join("compositor/1000")).unwrap();
+    std::fs::remove_dir(dir.join("kryptik-compositor/1000")).unwrap();
+    std::os::unix::fs::symlink(&dir, dir.join("kryptik-compositor/1000")).unwrap();
     assert!(compositor_dir(&cfg, 1000).is_err(), "a link in its place is refused");
     let _ = std::fs::remove_dir_all(&dir);
 }

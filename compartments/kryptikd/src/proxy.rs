@@ -72,7 +72,7 @@ pub fn upstream_of(run: &Path, session: u32, zone: &str) -> Result<(OwnedFd, Ino
         return Err(none(format!("fstat: {}", std::io::Error::last_os_error())));
     }
     if st.st_uid != session {
-        return Err(none(format!("{} is uid {}'s socket", path.display(), st.st_uid)));
+        return Err(none(format!("{} is not the session's socket", path.display())));
     }
     Ok((fd, InodeId::of(&st)))
 }
