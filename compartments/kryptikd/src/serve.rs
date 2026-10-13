@@ -431,13 +431,13 @@ pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<OwnedFd, String> 
     Ok(dir)
 }
 
-/// Where the proxies listen and dwl serves each zone: /run/kryptik, or a developer instance's own
-/// directory.
+/// Where kryptik-proxy/ and kryptik-compositor/ are: /run, or a developer instance's own
+/// directory. Never /run/kryptik, which the zone registry keeps root's alone.
 fn run_dir(cfg: &ServeConfig) -> PathBuf {
     if cfg.developer {
         cfg.log_dir.clone()
     } else {
-        PathBuf::from("/run/kryptik")
+        PathBuf::from("/run")
     }
 }
 
@@ -445,13 +445,24 @@ fn run_dir(cfg: &ServeConfig) -> PathBuf {
 /// inode for the launcher. A zone's proxy has one uid whoever the session is, so while it serves
 /// one session's desktop another's is refused.
 fn proxy_socket(cfg: &ServeConfig, uid: u32, zone: &crate::zone::Zone, proxies: &mut Vec<Proxy>) -> Result<ProxySocket, String> {
-    let i = match proxies.iter().position(|p| p.zone == zone.name) {
-        Some(i) if proxies[i].session != uid => {
-            return Err(format!("zone {:?} shows its windows on uid {}'s desktop, one desktop at a time", zone.name, proxies[i].session));
+    let run = run_dir(cfg);
+    if let Some(i) = proxies.iter().position(|p| p.zone == zone.name) {
+        let p = &proxies[i];
+        let alive = running(p.pid);
+        if alive && p.session != uid {
+            return Err(format!("zone {:?} shows its windows on uid {}'s desktop, one desktop at a time", zone.name, p.session));
         }
+        // One that has ended, or serves a dwl that has started again since, gives way.
+        let same = crate::proxy::upstream_of(&run, uid, &zone.name).is_ok_and(|(_, id)| id == p.upstream);
+        if !alive || !same {
+            unsafe { libc::kill(p.pid, libc::SIGTERM) };
+            proxies.remove(i);
+        }
+    }
+    let i = match proxies.iter().position(|p| p.zone == zone.name) {
         Some(i) => i,
         None => {
-            let p = crate::proxy::start(&run_dir(cfg), &cfg.proxy_exe, uid, zone, !cfg.developer)?;
+            let p = crate::proxy::start(&run, &cfg.proxy_exe, uid, zone, !cfg.developer)?;
             eprintln!("kryptikd serve: zone {:?}: proxy {} started", zone.name, p.pid);
             proxies.push(p);
             proxies.len() - 1
@@ -463,10 +474,16 @@ fn proxy_socket(cfg: &ServeConfig, uid: u32, zone: &crate::zone::Zone, proxies: 
     Ok(ProxySocket { _fd: fd, path, inode: InodeId::of(&st) })
 }
 
-/// Create /run/kryptik/compositor/<uid>, where dwl serves each zone a socket: root's above it, the
+/// Whether `pid`, a child of this daemon, still runs: a waitpid that reaps it says it does not.
+fn running(pid: libc::pid_t) -> bool {
+    let mut st = 0;
+    unsafe { libc::waitpid(pid, &mut st, libc::WNOHANG) == 0 }
+}
+
+/// Create /run/kryptik-compositor/<uid>, where dwl serves each zone a socket: root's above it, the
 /// session's own and 0711, so a zone's proxy reaches only the socket it is given.
 fn compositor_dir(cfg: &ServeConfig, uid: u32) -> Result<(), String> {
-    let top = run_dir(cfg).join("compositor");
+    let top = run_dir(cfg).join("kryptik-compositor");
     std::fs::create_dir_all(&top).map_err(|e| format!("{}: {e}", top.display()))?;
     if !cfg.developer {
         std::fs::set_permissions(&top, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("{}: {e}", top.display()))?;
@@ -796,7 +813,7 @@ fn reap(pending: &mut [Pending], jobs: &mut [Job], proxies: &mut Vec<Proxy>) {
         }
         match pending.iter_mut().find(|x| x.launch.pid == p) {
             Some(x) => x.exited = Some(st),
-            None => eprintln!("kryptikd serve: launcher {p} {}", exit_text(st)),
+            None => eprintln!("kryptikd serve: child {p} {}", exit_text(st)),
         }
     }
 }
@@ -1103,8 +1120,9 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, proxies: &mu
                 return None;
             }
             // A stopped zone shows no window: its proxy goes with it, and the next start makes one.
-            if let Some(p) = proxies.iter().find(|p| p.zone == zone) {
-                unsafe { libc::kill(p.pid, libc::SIGTERM) };
+            if let Some(i) = proxies.iter().position(|p| p.zone == zone) {
+                unsafe { libc::kill(proxies[i].pid, libc::SIGTERM) };
+                proxies.remove(i);
             }
             let what = JobKind::Stop { uid, zone: zone.to_string() };
             match start_job(conn, what, std::process::Command::new("/proc/self/exe").args(["stop", zone])) {

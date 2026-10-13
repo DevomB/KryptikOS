@@ -36,7 +36,7 @@ fn zone_names_bounded() {
 #[test]
 fn a_passed_listener_is_taken_in_place_of_a_path() {
     let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let o = parse(&args(&["--zone", "work", "--listen-fd", "3", "--upstream", "/run/kryptik/compositor/1000/work"]));
+    let o = parse(&args(&["--zone", "work", "--listen-fd", "3", "--upstream", "/proc/self/fd/4"]));
     assert_eq!(o.listen_fd, Some(3));
     assert!(o.listen.as_os_str().is_empty());
     let o = parse(&args(&["--zone", "work", "--listen", "/tmp/w", "--upstream", "/u"]));

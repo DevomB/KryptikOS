@@ -12,10 +12,10 @@ fn a_proxy_uid_is_the_top_of_its_zones_block_which_no_zone_maps() {
 
 #[test]
 fn sockets_are_named_by_session_and_zone() {
-    let run = Path::new("/run/kryptik");
-    assert_eq!(socket_path(run, 1000, "work"), Path::new("/run/kryptik/proxy/1000/work/wayland-0"));
-    assert_eq!(log_path(run, 1000, "work"), Path::new("/run/kryptik/proxy/1000/work.log"));
-    assert_eq!(upstream_path(run, 1000, "work"), Path::new("/run/kryptik/compositor/1000/work"));
+    let run = Path::new("/run");
+    assert_eq!(socket_path(run, 1000, "work"), Path::new("/run/kryptik-proxy/1000/work/wayland-0"));
+    assert_eq!(log_path(run, 1000, "work"), Path::new("/run/kryptik-proxy/1000/work.log"));
+    assert_eq!(upstream_path(run, 1000, "work"), Path::new("/run/kryptik-compositor/1000/work"));
 }
 
 #[test]
@@ -28,6 +28,27 @@ fn no_proxy_starts_without_a_compositor_socket() {
     let e = start(&dir, Path::new("/usr/bin/kryptik-wlproxy"), 1000, &z, false).err().expect("refused");
     assert!(e.contains("no compositor serves zone \"work\""), "{e}");
     assert!(!socket_path(&dir, 1000, "work").exists(), "nothing was made for it");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The session owns the directory dwl's sockets are in: a link there, or a socket another uid
+/// owns, is no upstream.
+#[test]
+fn the_upstream_is_a_socket_the_session_owns_and_no_link() {
+    let me = unsafe { libc::geteuid() };
+    let dir = std::env::temp_dir().join(format!("kryptik-proxy-upstream-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let up = upstream_path(&dir, me, "work");
+    fs::create_dir_all(up.parent().unwrap()).unwrap();
+    let real = up.with_file_name("elsewhere");
+    let _keep = std::os::unix::net::UnixListener::bind(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &up).unwrap();
+    let e = upstream_of(&dir, me, "work").err().expect("a link is refused");
+    assert!(e.contains("no compositor serves zone \"work\""), "{e}");
+    fs::remove_file(&up).unwrap();
+    fs::rename(&real, &up).unwrap();
+    let (_fd, id) = upstream_of(&dir, me, "work").expect("the session's own socket");
+    assert_eq!(upstream_of(&dir, me, "work").unwrap().1, id, "the same socket, the same inode");
     let _ = fs::remove_dir_all(&dir);
 }
 

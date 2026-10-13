@@ -46,8 +46,8 @@ chmod 0755 "$WORK" "$ROOTFS"
 declare -a BG_PIDS=()
 cleanup() {
     for p in "${BG_PIDS[@]:-}"; do [[ -n "$p" ]] && kill -9 "$p" 2>/dev/null; done
-    # A proxy the daemon started outlives it: its upstream is under $WORK.
-    pkill -f -- "--upstream $WORK/" 2>/dev/null
+    # A proxy the daemon started outlives it.
+    pkill -u "$EUID" -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' 2>/dev/null
     rm -rf "$WORK" 2>/dev/null
 }
 trap cleanup EXIT
@@ -334,7 +334,7 @@ if [[ "$r" == "error: run: unknown option"* ]]; then pass "S8a a socket path fro
 r="$(ask 'run alpha wayland\narg /bin/true\nend\n')"
 if [[ "$r" == "error: no compositor serves zone \"alpha\" for uid $EUID"* ]]; then pass "S8b with no compositor socket for the zone, no proxy starts"; else fail "S8b: $r"; fi
 r="$(ask 'runtime\n')"
-CDIR="$LOGDIR/compositor/$EUID"
+CDIR="$LOGDIR/kryptik-compositor/$EUID"
 if [[ "$r" == ok\ * && -d "$CDIR" && ! -L "$CDIR" && "$(stat -c %a "$CDIR")" == 711 ]]; then
     pass "S8c runtime also makes the session's compositor directory, 0711"
 else
@@ -342,19 +342,19 @@ else
 fi
 
 if [[ ! -x "$WLPROXY" ]]; then
-    skip "S8d-S8h need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
+    skip "S8d-S8j need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
 else
     UP="$CDIR/alpha"
     python3 "$WORK/upstream.py" "$UP" & BG_PIDS+=("$!")
     for _ in $(seq 1 50); do [[ -S "$UP" ]] && break; sleep 0.05; done
-    PLOG="$LOGDIR/proxy/$EUID/alpha.log"
+    PLOG="$LOGDIR/kryptik-proxy/$EUID/alpha.log"
     r="$(ask "run alpha wayland\narg /bin/sh\narg -c\narg test -S /run/kryptik/wayland-0 && echo WL_$MARK; sleep 1\nend\n")"
     PP="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
     if [[ "$r" == ok\ [0-9]* ]]; then
         ok=0; for _ in $(seq 1 40); do grep -q "WL_$MARK" "$ZLOG" 2>/dev/null && { ok=1; break; }; sleep 0.1; done
         if [[ "$ok" -eq 1 ]]; then pass "S8d the daemon starts the zone's proxy, whose socket reaches the zone"; else fail "S8d zone did not see /run/kryptik/wayland-0"; fi
-        if grep -q "listening on descriptor 3 -> $UP" "$PLOG" 2>/dev/null; then
-            pass "S8e the proxy took its listener from the daemon, upstream the zone's compositor socket"
+        if grep -q "listening on descriptor 3 -> /proc/self/fd/4" "$PLOG" 2>/dev/null && [[ "$(readlink "/proc/${PP:-none}/fd/4")" == "$UP" ]]; then
+            pass "S8e the proxy took its listener and the zone's compositor socket from the daemon, as descriptors"
         else
             fail "S8e proxy log $PLOG: $(tr '\n' ' ' < "$PLOG" 2>&1)"
         fi
@@ -371,9 +371,25 @@ else
     PP2="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
     if [[ "$r" == ok\ [0-9]* && -n "$PP" && "$PP2" == "$PP" ]]; then pass "S8g a second run uses the same proxy"; else fail "S8g: $r; proxy ${PP:-none} then ${PP2:-none}"; fi
     for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+    # dwl started again: another socket at the path, so the next run gets a proxy for it.
+    pkill -f "upstream.py $UP" 2>/dev/null; rm -f "$UP"
+    python3 "$WORK/upstream.py" "$UP" & BG_PIDS+=("$!")
+    for _ in $(seq 1 50); do [[ -S "$UP" ]] && break; sleep 0.05; done
+    r="$(ask "run alpha wayland\narg /bin/true\nend\n")"
+    PP3="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
+    if [[ "$r" == ok\ [0-9]* && -n "$PP3" && "$PP3" != "$PP" ]]; then pass "S8i a compositor socket made again gets a new proxy"; else fail "S8i: $r; proxy ${PP:-none} then ${PP3:-none}"; fi
+    for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+    # The session owns that directory: a link in place of the socket is no upstream.
+    mv "$UP" "$UP.real"; ln -s "$UP.real" "$UP"
+    r="$(ask "run alpha wayland\narg /bin/true\nend\n")"
+    if [[ "$r" == "error: no compositor serves zone \"alpha\""* ]]; then pass "S8j a link in place of the compositor's socket is refused"; else fail "S8j: $r"; fi
+    rm -f "$UP"; mv "$UP.real" "$UP"
+    r="$(ask "run alpha wayland\narg /bin/true\nend\n")"
+    PP4="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
+    for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
     ask 'stop alpha\n' > /dev/null
-    gone=0; for _ in $(seq 1 50); do kill -0 "${PP:-0}" 2>/dev/null || { gone=1; break; }; sleep 0.1; done
-    if [[ -n "$PP" && "$gone" -eq 1 ]]; then pass "S8h stopping the zone ends its proxy"; else fail "S8h proxy ${PP:-none} after stop"; fi
+    gone=0; for _ in $(seq 1 50); do kill -0 "${PP4:-0}" 2>/dev/null || { gone=1; break; }; sleep 0.1; done
+    if [[ "$r" == ok\ [0-9]* && -n "$PP4" && "$gone" -eq 1 ]]; then pass "S8h stopping the zone ends its proxy"; else fail "S8h: $r; proxy ${PP4:-none} after stop"; fi
 fi
 
 # --- the net zone's Wi-Fi credentials ----------------------------------------

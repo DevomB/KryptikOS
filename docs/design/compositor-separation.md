@@ -20,7 +20,7 @@ ADR-024 in [decisions](../decisions.md).
   export-dmabuf, data-control, primary selection, the virtual keyboard and
   pointer, layer-shell, session lock and the rest, and its own socket in the
   user's runtime directory offers them all. Each zone's socket, in
-  `/run/kryptik/compositor/<uid>/`, offers only the proxy's eight globals
+  `/run/kryptik-compositor/<uid>/`, offers only the proxy's eight globals
   (`tools/desktop/dwl-zone-borders.py`) and takes only the session and that
   zone's proxy, so the proxy (`compositor/wlproxy/src/policy.rs`) and dwl
   must both be wrong before a zone's client binds a hidden one.
@@ -56,7 +56,7 @@ thing a zone attacks. It is Rust, bounded, and fuzzed with a corpus
 ### A socket per zone, filtered by the compositor
 
 Built. dwl serves one more socket per zone, in
-`/run/kryptik/compositor/<uid>/`, for each zone in its colour table, which
+`/run/kryptik-compositor/<uid>/`, for each zone in its colour table, which
 are the root's zones. It filters every client on those sockets with
 libwayland's global filter (`wl_display_set_global_filter`) to the same
 list the proxy allows, and binding another global by its number ends the
@@ -82,21 +82,29 @@ since the session user cannot switch uid:
 - as the top uid of the zone's block, `uid_base + 65535`, which no zone
   maps, with no supplementary group. No account names it, as an account a
   release adds never reaches an installed system's `/etc/passwd`;
-- in an empty network namespace and a cgroup of its own, with 128 MiB of
-  memory, which its clients' queues fit, and room for one process;
+- in empty network and IPC namespaces and a cgroup of its own, with 128 MiB
+  of memory, which its clients' queues fit, room for one process, and
+  descriptors for its 32 clients and no more;
 - with `no_new_privs`, under the zones' seccomp filter for now, and with a
   Landlock ruleset that grants only reading and executing its own program,
   which exec needs, so once it runs it opens no other file. A filter cut to
   its own loop follows once a run has traced the calls it makes;
 - with its listening socket made by the daemon at
-  `/run/kryptik/proxy/<uid>/<zone>/wayland-0` and passed as `--listen-fd`.
+  `/run/kryptik-proxy/<uid>/<zone>/wayland-0` and passed as `--listen-fd`.
   The zone's directory is root's alone, so the socket is reached only
   through the launcher's bind into the zone; the log is beside the
-  directory, the session's to read.
+  directory, the session's to read. Neither tree is under `/run/kryptik`,
+  which the zone registry keeps root's alone;
+- with dwl's socket for the zone passed as a descriptor, opened by the
+  daemon without following a link and taken only if the session owns it:
+  the session owns that directory, and could otherwise point the proxy at
+  another user's compositor. A new socket there, as when dwl starts again,
+  gets a new proxy at the next start.
 
 `connect(2)` to the zone's compositor socket is not a Landlock access, so
 new clients still reach dwl, which takes a client on a zone's socket only
-from the session's uid or that zone's proxy uid (`SO_PEERCRED`). A
+from the session's uid or that zone's proxy uid (`SO_PEERCRED`), and no
+more than 64 at once, so not even the proxy fills dwl's descriptors. A
 zone's proxy uid is one whoever the session is, so while one session's
 desktop shows a zone, the daemon refuses another session a display for
 it. Stopping the zone ends its proxy.

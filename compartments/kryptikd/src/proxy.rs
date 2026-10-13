@@ -1,25 +1,29 @@
 //! A zone's Wayland proxy as a user of its own (docs/design/compositor-separation.md). The launch
 //! daemon starts it for a session: as the uid at the top of the zone's block, which no zone maps,
-//! in an empty network namespace and a cgroup of its own, under the zones' seccomp filter, and
+//! in network and IPC namespaces and a cgroup of its own, under the zones' seccomp filter, and
 //! with Landlock leaving it no file but its own program. A developer instance keeps its own uid
-//! and makes neither the namespace nor the cgroup.
+//! and makes neither the namespaces nor the cgroup.
 
 use std::ffi::CString;
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{FileTypeExt as _, OpenOptionsExt as _, PermissionsExt as _};
-use std::os::unix::io::{AsRawFd as _, RawFd};
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::io::{AsRawFd as _, OwnedFd, RawFd};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
 use crate::cgroup::Cgroup;
+use crate::serve::InodeId;
 use crate::zone::Zone;
 
 /// The most memory one proxy holds: its clients' queues both ways, their objects and descriptors.
 const MEMORY_MAX: &str = "128M";
 /// Clients one proxy serves at once.
 const MAX_CLIENTS: &str = "32";
+/// Its descriptors: 32 clients' sockets and queued descriptors (wlproxy's FDS_PER_SESSION, 130
+/// each) and its own few, so it cannot hold its zone's dwl socket open thousands of times.
+const NOFILE: libc::rlim_t = 32 * 130 + 40;
 
 /// The proxy's uid and gid for a zone whose root maps to `uid_base`: the top of its block, which
 /// no zone maps (a zone maps 0 and 65534 of its block, the nic zone 100 and 101 too).
@@ -27,21 +31,22 @@ pub fn uid_for(uid_base: u32) -> u32 {
     uid_base + 65535
 }
 
-/// Where `session`'s proxy for `zone` listens, under `run` (/run/kryptik, or a developer
-/// instance's directory): in a directory of the zone's that only root enters, so the zone reaches
-/// the socket through the bind into its tree, and nothing else reaches it at all.
+/// Where `session`'s proxy for `zone` listens, under `run` (/run, or a developer instance's
+/// directory): in a directory of the zone's that only root enters, so the zone reaches the socket
+/// through the bind into its tree, and nothing else reaches it at all. Not under /run/kryptik,
+/// which the zone registry keeps root's alone.
 pub fn socket_path(run: &Path, session: u32, zone: &str) -> PathBuf {
-    run.join("proxy").join(session.to_string()).join(zone).join("wayland-0")
+    run.join("kryptik-proxy").join(session.to_string()).join(zone).join("wayland-0")
 }
 
 /// The proxy's log, which the session reads.
 pub fn log_path(run: &Path, session: u32, zone: &str) -> PathBuf {
-    run.join("proxy").join(session.to_string()).join(format!("{zone}.log"))
+    run.join("kryptik-proxy").join(session.to_string()).join(format!("{zone}.log"))
 }
 
 /// Where dwl serves `zone` for `session`: the proxy's upstream.
 pub fn upstream_path(run: &Path, session: u32, zone: &str) -> PathBuf {
-    run.join("compositor").join(session.to_string()).join(zone)
+    run.join("kryptik-compositor").join(session.to_string()).join(zone)
 }
 
 /// A running proxy. Its cgroup goes, with anything left in it, when this is dropped.
@@ -50,20 +55,32 @@ pub struct Proxy {
     pub zone: String,
     pub pid: libc::pid_t,
     pub socket: PathBuf,
+    /// The dwl socket it was given; another there now means dwl has started again since.
+    pub upstream: InodeId,
     _cgroup: Option<Cgroup>,
 }
 
-fn is_socket(p: &Path) -> bool {
-    fs::symlink_metadata(p).map(|m| m.file_type().is_socket()).unwrap_or(false)
+/// dwl's socket for `zone`, opened without following a link and taken only if it is a socket the
+/// session owns: the session owns the directory, and could otherwise point the proxy at another
+/// user's compositor.
+pub fn upstream_of(run: &Path, session: u32, zone: &str) -> Result<(OwnedFd, InodeId), String> {
+    let path = upstream_path(run, session, zone);
+    let none = |e: String| format!("no compositor serves zone {zone:?} for uid {session}: {e}");
+    let fd = crate::serve::open_nofollow(&path, true).map_err(none)?;
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
+        return Err(none(format!("fstat: {}", std::io::Error::last_os_error())));
+    }
+    if st.st_uid != session {
+        return Err(none(format!("{} is uid {}'s socket", path.display(), st.st_uid)));
+    }
+    Ok((fd, InodeId::of(&st)))
 }
 
 /// Start `zone`'s proxy, the program `exe`, for `session`'s compositor. As `root`, the child
-/// becomes the zone's proxy uid in an empty network namespace and a cgroup of its own.
+/// becomes the zone's proxy uid in namespaces and a cgroup of its own.
 pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> Result<Proxy, String> {
-    let upstream = upstream_path(run, session, &zone.name);
-    if !is_socket(&upstream) {
-        return Err(format!("no compositor serves zone {:?} for uid {session}: {} is no socket", zone.name, upstream.display()));
-    }
+    let (up, upstream) = upstream_of(run, session, &zone.name)?;
     let uid = match (root, zone.uid_base) {
         (false, _) => None,
         (true, Some(base)) => Some(uid_for(base)),
@@ -96,14 +113,20 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
     }
     let cgroup = if root {
         let base = crate::cgroup::available().map_err(|e| e.to_string())?;
-        let name = format!("proxy-{}", zone.name);
-        let cg = match Cgroup::create(&base, &name, session as i32) {
+        // No zone's name holds a dot, so no zone's leaf (`<zone>.<pid>`) is ever a proxy's.
+        let name = format!("proxy.{}", zone.name);
+        let me = std::process::id() as i32;
+        let cg = match Cgroup::create(&base, &name, me) {
             Ok(cg) => cg,
             Err(_) => {
-                // A proxy a daemon that died left behind holds the leaf (`<name>.<session>`): it goes.
-                let _ = fs::write(base.join(format!("{name}.{session}")).join("cgroup.kill"), "1");
+                // A proxy an earlier daemon left behind holds a leaf of this zone's: it goes.
+                for e in fs::read_dir(&base).into_iter().flatten().flatten() {
+                    if e.file_name().to_string_lossy().starts_with(&format!("{name}.")) {
+                        let _ = fs::write(e.path().join("cgroup.kill"), "1");
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_millis(200));
-                Cgroup::create(&base, &name, session as i32).map_err(|e| e.to_string())?
+                Cgroup::create(&base, &name, me).map_err(|e| e.to_string())?
             }
         };
         // One process, which starts none, in no more memory than its clients' queues need.
@@ -112,8 +135,8 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
     } else {
         None
     };
-    let up = upstream.to_string_lossy().into_owned();
-    let words = ["kryptik-wlproxy", "--zone", zone.name.as_str(), "--listen-fd", "3", "--upstream", up.as_str(), "--max-clients", MAX_CLIENTS];
+    // The upstream goes by descriptor: a connect through the link reaches the socket checked here.
+    let words = ["kryptik-wlproxy", "--zone", zone.name.as_str(), "--listen-fd", "3", "--upstream", "/proc/self/fd/4", "--max-clients", MAX_CLIENTS];
     let argv = words.iter().map(|w| CString::new(*w).map_err(|_| format!("{w:?} holds a NUL"))).collect::<Result<Vec<_>, _>>()?;
     let cexe = CString::new(exe.as_os_str().as_bytes()).map_err(|_| "the proxy's path holds a NUL".to_string())?;
     let exe_s = exe.to_str().ok_or("the proxy's path is not UTF-8")?;
@@ -124,17 +147,17 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
         return Err(format!("fork: {}", std::io::Error::last_os_error()));
     }
     if pid == 0 {
-        let why = become_proxy(listener.as_raw_fd(), log.as_raw_fd(), procs.as_deref(), uid, exe_s, &cexe, &argv);
+        let why = become_proxy([listener.as_raw_fd(), up.as_raw_fd()], log.as_raw_fd(), procs.as_deref(), uid, exe_s, &cexe, &argv);
         let _ = writeln!(std::io::stderr(), "kryptikd: zone {}'s proxy: {why}", zone.name);
         unsafe { libc::_exit(126) }
     }
-    Ok(Proxy { session, zone: zone.name.clone(), pid, socket: sock, _cgroup: cgroup })
+    Ok(Proxy { session, zone: zone.name.clone(), pid, socket: sock, upstream, _cgroup: cgroup })
 }
 
-/// In the forked child: the proxy's descriptors, cgroup, namespace, ids and confinement, then the
-/// exec. Returns only why it could not.
+/// In the forked child: the proxy's descriptors (the listener as 3, dwl's socket as 4), cgroup,
+/// namespaces, limits, ids and confinement, then the exec. Returns only why it could not.
 fn become_proxy(
-    listener: RawFd,
+    keep: [RawFd; 2],
     log: RawFd,
     procs: Option<&Path>,
     uid: Option<u32>,
@@ -149,12 +172,17 @@ fn become_proxy(
         if null < 0 || libc::dup2(null, 0) < 0 || libc::dup2(log, 1) < 0 || libc::dup2(log, 2) < 0 {
             return os("stdio");
         }
-        // The listener is descriptor 3; dup2 onto itself would leave close-on-exec set.
-        if (listener != 3 && libc::dup2(listener, 3) < 0) || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
-            return os("the listener");
+        // Copies above 9 first, so placing one cannot overwrite the other; dup2 clears close-on-exec.
+        let high = keep.map(|fd| libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 10));
+        if high.iter().any(|&fd| fd < 0) || libc::dup2(high[0], 3) < 0 || libc::dup2(high[1], 4) < 0 {
+            return os("the listener and the upstream");
         }
-        if libc::syscall(libc::SYS_close_range, 4 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint) < 0 {
+        if libc::syscall(libc::SYS_close_range, 5 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint) < 0 {
             return os("close_range");
+        }
+        let nofile = libc::rlimit { rlim_cur: NOFILE, rlim_max: NOFILE };
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &nofile) < 0 {
+            return os("RLIMIT_NOFILE");
         }
     }
     if let Some(p) = procs {
@@ -165,8 +193,9 @@ fn become_proxy(
     }
     if let Some(u) = uid {
         unsafe {
-            if libc::unshare(libc::CLONE_NEWNET) < 0 {
-                return os("unshare(CLONE_NEWNET)");
+            // No network, and no SysV or POSIX IPC shared with another proxy.
+            if libc::unshare(libc::CLONE_NEWNET | libc::CLONE_NEWIPC) < 0 {
+                return os("unshare(CLONE_NEWNET | CLONE_NEWIPC)");
             }
             if libc::setgroups(0, std::ptr::null()) < 0 || libc::setresgid(u, u, u) < 0 || libc::setresuid(u, u, u) < 0 {
                 return os("taking the proxy's ids");

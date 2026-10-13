@@ -166,7 +166,7 @@ and `mount` and points at the broker.
 The launch daemon starts one `kryptik-wlproxy --zone NAME` per desktop zone
 for the session, as a user of its own, confined
 ([compositor separation](compositor-separation.md)), on a socket it makes
-at `/run/kryptik/proxy/<uid>/<zone>/wayland-0`, in a directory only root
+at `/run/kryptik-proxy/<uid>/<zone>/wayland-0`, in a directory only root
 enters; the launcher binds that socket into the zone at
 `/run/kryptik/wayland-0` (`--wayland-socket`, with `--wayland-inode` naming
 the inode it must be).

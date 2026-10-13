@@ -137,7 +137,7 @@ EDITS = [
 } Rule;
 
 typedef struct {
-	const char *zone;     /* its socket's name under /run/kryptik/compositor/<uid> */
+	const char *zone;     /* its socket's name under /run/kryptik-compositor/<uid> */
 	const float border[4];
 	unsigned int proxy;   /* its proxy's uid: with the session's, the one peer its socket takes */
 } ZoneColor;
@@ -219,12 +219,35 @@ zoneglobal(const struct wl_client *client, const struct wl_global *global, void 
 \treturn false;
 }
 
+/* Kryptik: a zone socket's clients at once (its proxy holds at most 32), and per zone the
+ * live clients and the refused connections. */
+static const unsigned int zoneclientsmax = 64;
+static unsigned int zoneclients[LENGTH(zonecolors_table)], zonerefused[LENGTH(zonecolors_table)];
+
+struct zoneclient {
+\tstruct wl_listener destroy;
+\tsize_t zone;
+};
+
+static void
+zoneclientgone(struct wl_listener *listener, void *data)
+{
+\tstruct zoneclient *zc = wl_container_of(listener, zc, destroy);
+
+\tzoneclients[zc->zone]--;
+\twl_list_remove(&zc->destroy.link);
+\tfree(zc);
+}
+
 /* Kryptik: a client accepted on a zone's socket is that zone's while it is connected. Anyone
- * reaches the socket; the session's own programs and the zone's proxy alone are taken. */
+ * reaches the socket; the session's own programs and the zone's proxy alone are taken, and no
+ * more at once than zoneclientsmax, so not even the proxy fills dwl's descriptors. */
 static int
 zoneaccept(int fd, uint32_t mask, void *data)
 {
 \tconst ZoneColor *z = data;
+\tsize_t i = (size_t)(z - zonecolors_table);
+\tstruct zoneclient *zc = NULL;
 \tstruct wl_client *client;
 \tstruct ucred cr = {0};
 \tsocklen_t len = sizeof(cr);
@@ -233,20 +256,30 @@ zoneaccept(int fd, uint32_t mask, void *data)
 \tif (cfd < 0)
 \t\treturn 0;
 \tif (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cr, &len) < 0
-\t\t\t|| (cr.uid != getuid() && cr.uid != z->proxy)) {
-\t\tfprintf(stderr, "dwl: zone %s refused a client of uid %u\\n", z->zone, (unsigned int)cr.uid);
+\t\t\t|| (cr.uid != getuid() && cr.uid != z->proxy) || zoneclients[i] >= zoneclientsmax) {
+\t\t/* Said at the 1st, 2nd, 4th, 8th... refusal, so no flood of them fills the log. */
+\t\tzonerefused[i]++;
+\t\tif ((zonerefused[i] & (zonerefused[i] - 1)) == 0)
+\t\t\tfprintf(stderr, "dwl: zone %s refused a client of uid %u (%u refused)\\n",
+\t\t\t\t\tz->zone, (unsigned int)cr.uid, zonerefused[i]);
 \t\tclose(cfd);
 \t\treturn 0;
 \t}
-\tif (fcntl(cfd, F_SETFD, FD_CLOEXEC) < 0 || !(client = wl_client_create(dpy, cfd))) {
+\tif (fcntl(cfd, F_SETFD, FD_CLOEXEC) < 0 || !(zc = calloc(1, sizeof(*zc)))
+\t\t\t|| !(client = wl_client_create(dpy, cfd))) {
+\t\tfree(zc);
 \t\tclose(cfd);
 \t\treturn 0;
 \t}
 \twl_client_set_user_data(client, data, NULL);
+\tzc->zone = i;
+\tzc->destroy.notify = zoneclientgone;
+\twl_client_add_destroy_listener(client, &zc->destroy);
+\tzoneclients[i]++;
 \treturn 0;
 }
 
-/* Kryptik: a socket for each zone, /run/kryptik/compositor/<uid>/<zone>, in the directory
+/* Kryptik: a socket for each zone, /run/kryptik-compositor/<uid>/<zone>, in the directory
  * kryptikd makes for the session; kryptikd gives it the zone's proxy as its upstream. */
 static void
 zonesockets(void)
@@ -258,7 +291,7 @@ zonesockets(void)
 \tint fd;
 
 \twl_display_set_global_filter(dpy, zoneglobal, NULL);
-\tsnprintf(dir, sizeof(dir), "/run/kryptik/compositor/%u", (unsigned int)getuid());
+\tsnprintf(dir, sizeof(dir), "/run/kryptik-compositor/%u", (unsigned int)getuid());
 \tif (stat(dir, &st) < 0)
 \t\tdie("startup: %s, which kryptikd makes for the session:", dir);
 \t/* A zone whose socket fails opens no window; the others' still do. */
