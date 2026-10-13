@@ -737,6 +737,7 @@ usr/lib/kryptik/guest-tests/broker-client.py
 usr/lib/kryptik/guest-tests/gui-check.sh
 usr/lib/kryptik/guest-tests/icmp-echo.py
 usr/lib/kryptik/guest-tests/probe-sources.py
+usr/lib/kryptik/guest-tests/suspend-check.sh
 usr/lib/kryptik/guest-tests/zones-check.sh
 usr/lib/kryptik/s6-rc/compiled/servicedirs/eudev/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/getty-tty1/run
