@@ -154,6 +154,7 @@ fn the_compositor_directory_is_made_traversable_and_never_through_a_link() {
         proxy_exe: PathBuf::from(PROXY_EXE),
         wifi_dir: dir.clone(),
         developer: true,
+        shadow: dir.join("shadow"),
     };
     compositor_dir(&cfg, 1000).unwrap();
     let md = std::fs::metadata(dir.join("kryptik-compositor/1000")).unwrap();
