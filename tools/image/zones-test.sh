@@ -37,7 +37,7 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 [[ -f "$USB" ]] || die "--usb IMG is required"
-for t in python3 sfdisk truncate mkfs.vfat mcopy mtype; do have "$t" || die "required tool not found: $t"; done
+for t in python3 sfdisk truncate mkfs.vfat mcopy mtype mkfs.exfat fsck.exfat; do have "$t" || die "required tool not found: $t"; done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/zones.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
@@ -104,12 +104,27 @@ mcopy -i "$SPART" "${VMDIR}/hello.bin" ::/hello.bin
 dd if="$SPART" of="$STICK" bs=512 seek=2048 conv=notrunc status=none
 rm -f "$SPART"
 SHA="$(sha256sum "${VMDIR}/hello.bin" | cut -d' ' -f1)"
+# An SD card as a camera leaves it: exFAT, made by mkfs.exfat, a photo in a directory of its own.
+CARD="${VMDIR}/card.img"; CPART="${VMDIR}/card-part.img"
+rm -f "$CARD" "$CPART"
+truncate -s 64M "$CARD"
+printf 'label: gpt\nstart=2048, size=126976, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="CARD"\n' | sfdisk -q "$CARD"
+truncate -s $((126976 * 512)) "$CPART"
+mkfs.exfat -L KCARD "$CPART" > /dev/null
+head -c 300000 /dev/urandom > "${VMDIR}/photo.bin"
+python3 "${SELF}/exfat-add.py" "$CPART" "${VMDIR}/photo.bin:DCIM/100CANON/IMG_0001.JPG"
+fsck.exfat -n "$CPART" > "${VMDIR}/card-fsck.out" 2>&1 && green "the card the host made is sound by fsck.exfat" \
+    || red "the card the host made is not sound by fsck.exfat: $(tr '\n' ' ' < "${VMDIR}/card-fsck.out")"
+dd if="$CPART" of="$CARD" bs=512 seek=2048 conv=notrunc status=none
+rm -f "$CPART"
+CSHA="$(sha256sum "${VMDIR}/photo.bin" | cut -d' ' -f1)"
 SC() { ROOTSH "bash /usr/lib/kryptik/guest-tests/stick-check.sh $* 2>&1; echo STCHECK-DONE"; }
 DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
     "plug:stick1:${STICK}" "$(SC plugged "$TUSER" "$SHA")" "expect:STCHECK-DONE" \
     "$(SC hold "$TUSER")" "expect:ST HOLDING" "expect:STCHECK-DONE" \
     "unplug:stick1" "$(SC pulled "$TUSER")" "expect:STCHECK-DONE" \
-    "plug:medium:${USB}:ro" "$(SC medium "$TUSER")" "expect:STCHECK-DONE" "unplug:medium"
+    "plug:medium:${USB}:ro" "$(SC medium "$TUSER")" "expect:STCHECK-DONE" "unplug:medium" \
+    "plug:card1:${CARD}" "$(SC card "$TUSER" "$CSHA")" "expect:STCHECK-DONE" "unplug:card1"
 rc=$?
 T2B="$(txt)"
 [[ "$rc" -eq 0 ]] && green "the stick rounds ran to their end" || red "the stick rounds did not run to their end"
@@ -117,7 +132,8 @@ for name in stick-seen stick-untouched stick-listed stick-refused-vault stick-re
             stick-zone-lists stick-zone-copies stick-ro-refuses-write stick-no-node stick-ends-with-zone \
             stick-other-zone-refused stick-eject-frees stick-eject-kept-descriptor stick-mapping-gone stick-written \
             stick-holding stick-pulled-reads-fail stick-pulled-grant-ended stick-pulled-mapping-gone stick-no-oops \
-            medium-esp-offered medium-not-the-system medium-esp-read medium-root-refused; do
+            medium-esp-offered medium-not-the-system medium-esp-read medium-root-refused \
+            card-exfat-lists card-exfat-copies card-exfat-not-written card-ends-with-zone; do
     grep -q "ST PASS ${name}" <<<"$T2B" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 grep 'ST FAIL' <<<"$T2B" | sed 's/^/        /'

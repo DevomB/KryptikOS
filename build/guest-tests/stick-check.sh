@@ -9,6 +9,8 @@
 #   stick-check.sh hold USER         untrusted given it again, a program there holding it
 #   stick-check.sh pulled USER       the stick pulled out under that program, never ejected
 #   stick-check.sh medium USER       the install medium plugged in
+#   stick-check.sh card USER SHA     an exFAT card plugged in: partition 1 named CARD, the photo
+#                                    DCIM/100CANON/IMG_0001.JPG on it with the sha256 SHA
 #
 # USER is the session's user, who gives sticks through the launch daemon as the chrome does.
 # Output: "ST PASS|FAIL name - detail"; a check that cannot run fails.
@@ -182,7 +184,21 @@ medium)
     zrun untrusted -- kryptik-stick list /
     if [[ "$ZRC" -ne 0 && "$ZOUT" == *"no FAT filesystem"* ]]; then pass "medium-root-refused" "$(oneline <<<"$ZOUT")"; else fail "medium-root-refused" "rc ${ZRC}: $(oneline <<<"$ZOUT")"; fi
     ;;
+card)
+    # Given to write, as a user might, an exFAT card is still only read: the reader writes FAT alone.
+    P="$(usb_part CARD)" || { fail "card-exfat-lists" "no USB partition named CARD after 30 s: $(ls /sys/class/block | oneline)"; exit 0; }
+    as_user "kryptik-launch --stick-grant untrusted $P rw" > "$LOG/card-grant.out" 2>&1
+    zrun untrusted -- sh -c 'kryptik-stick; kryptik-stick list /dcim/100canon; cd /tmp && kryptik-stick get /DCIM/100CANON/img_0001.jpg . && echo "SHA:$(sha256sum img_0001.jpg | cut -d" " -f1)"; echo w > /tmp/w && kryptik-stick put /tmp/w /; echo "PUT-RC=$?"'
+    if grep -q 'exFAT, read-only' <<<"$ZOUT" && grep -qE ' IMG_0001\.JPG$' <<<"$ZOUT"; then pass "card-exfat-lists" "$(grep -m1 'exFAT' <<<"$ZOUT")"; else fail "card-exfat-lists" "rc ${ZRC}: $(oneline <<<"$ZOUT") grant: $(oneline < "$LOG/card-grant.out")"; fi
+    if [[ -n "$SHA" ]] && grep -qx "SHA:${SHA}" <<<"$ZOUT"; then pass "card-exfat-copies" "the photo came off whole"; else fail "card-exfat-copies" "want SHA:${SHA}: $(grep '^SHA:' <<<"$ZOUT")"; fi
+    if grep -q '^PUT-RC=[1-9]' <<<"$ZOUT" && grep -q 'exFAT is read here, not written' <<<"$ZOUT"; then pass "card-exfat-not-written" "the write was refused, though the grant allowed one"; else fail "card-exfat-not-written" "$(oneline <<<"$ZOUT")"; fi
+    if [[ "$(stick_of untrusted)" == none && -z "$(held_by "$P")" ]] && unmapped untrusted; then
+        pass "card-ends-with-zone" "untrusted stopped, so its grant of the card ended and the mapping went"
+    else
+        fail "card-ends-with-zone" "info stick $(stick_of untrusted); holders $(held_by "$P"); mapping $(mapped untrusted && echo kept || echo gone)"
+    fi
+    ;;
 *)
-    fail "phase" "usage: stick-check.sh plugged|hold|pulled|medium USER [SHA]"
+    fail "phase" "usage: stick-check.sh plugged|hold|pulled|medium|card USER [SHA]"
     ;;
 esac
