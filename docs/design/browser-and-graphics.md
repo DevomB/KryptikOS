@@ -184,6 +184,19 @@ floors are given with each layer.
 - **Updates.** ESR has a security release every four weeks. Its pins are the
   images' (`build/images/versions.env`), so a bump rebuilds the browser and
   leaves stage 04 and its cache alone.
+- **Choices still open.**
+  - **Getting the Rust tarballs into the chroot.** The `rust` layer needs
+    the tarballs `build/config/rust.lock` pins. Today the Distro workflow
+    fetches them outside the chroot for kryptikd and nothing else sees
+    them. Listed as image sources instead, they come under the signature
+    and currency gates, which then cover kryptikd's compiler too. That is
+    a bump every six weeks, and a test must hold both locks to one hash.
+  - **cbindgen built the way kryptikd is.** The option is static for
+    musl, outside the chroot, by the pinned compiler, its crates checked
+    by its own lock. That needs stage 03's runner to bind one more binary
+    into the chroot, and the runner is in stage 04's cache key. The
+    alternative is an offline build inside the chroot from crates fetched
+    beforehand.
 
 ## GPU rendering, zone by zone
 
