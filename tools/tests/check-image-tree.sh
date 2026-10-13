@@ -69,6 +69,28 @@ out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"installed nothing under /usr"* ]] \
     && ok "an image with nothing under /usr fails" || bad "empty image: rc=$rc: $out"
 
+# Built over another image, whose tree lies between: neither its files nor the root's may be replaced.
+M="$T/under"; mkdir -p "$M/usr/lib/toolkit" "$M/usr/bin"
+printf 'lib\n' > "$M/usr/lib/toolkit/libtk.so"
+chmod --reference="$L/usr/bin" "$M/usr/bin"
+lcheck() { NO_COLOR=1 bash "$CHECK" "$M:$L" "$U" 2>&1; }
+fresh
+out="$(lcheck)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"3 files and links"* ]] && ok "an image built over another adds its own files" || bad "layered clean: rc=$rc: $out"
+fresh; mkdir -p "$U/usr/lib/toolkit"; chmod --reference="$M/usr/lib/toolkit" "$U/usr/lib/toolkit"
+printf 'other\n' > "$U/usr/lib/toolkit/libtk.so"
+out="$(lcheck)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"replaces /usr/lib/toolkit/libtk.so of an image under it"* ]] \
+    && ok "a file of the image it is built over, rewritten, fails" || bad "layered replace: rc=$rc: $out"
+fresh; mkdir -p "$U/usr/share/info"; printf 'changed\n' > "$U/usr/share/info/dir"
+out="$(lcheck)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"replaces the root's /usr/share/info/dir"* ]] \
+    && ok "the root's files stay protected under another image" || bad "layered root replace: rc=$rc: $out"
+fresh; mkdir -p "$U/usr/lib/toolkit"; chmod 0700 "$U/usr/lib/toolkit"
+out="$(lcheck)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"changes the directory /usr/lib/toolkit of an image under it"* ]] \
+    && ok "a directory of the image under it with another mode fails" || bad "layered directory mode: rc=$rc: $out"
+
 # A whiteout is a character device 0/0, which only root can make.
 fresh
 if mknod "$U/usr/bin/bash" c 0 0 2>/dev/null; then

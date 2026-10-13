@@ -385,17 +385,28 @@ pack_image() {
 
 # Each software image the image stage built (build/stages/04-images.sh), in IMAGES with
 # images.manifest naming them for this root: the release, the root's hash as their base, an image line
-# each by name, then each image's policy lines (build/images/NAME.needs). sign-images signs it. With no
-# image built there is no list, as kryptikd refuses one that names none.
+# each by name, a requires line for each built over others that ship, then each image's policy lines
+# (build/images/NAME.needs). sign-images signs it. A layer that does not ship, a toolchain, is left out.
+# With no image built there is no list, as kryptikd refuses one that names none.
 s_images() {
     local version="$1" base; base="$(root_json root_hash)"
-    local rec name ver line needs=() images=()
+    local rec name ver line dep reqs needs=() images=() requires=()
     rm -rf "$IMAGES"; mkdir -p "$IMAGES"
-    for rec in "${KRYPTIK_WORK}"/image-build/*/record; do
+    # In the list's own order, which its requires and needs lines follow.
+    for rec in $(printf '%s\n' "${KRYPTIK_WORK}"/image-build/*/record | LC_ALL=C sort); do
         [[ -f "$rec" ]] || continue
         name="$(sed -n 's/^name: //p' "$rec")"; ver="$(sed -n 's/^version: //p' "$rec")"
+        if [[ "$(sed -n 's/^ships: //p' "$rec")" == no ]]; then
+            echo "--- image ${name} ${ver}: a layer others are built over, not shipped ---"
+            continue
+        fi
         echo "--- image ${name} ${ver} ---"
         images+=("$(pack_image "$name" "$ver" "$(dirname "$rec")/tree" "$base")")
+        reqs=""
+        for dep in $(sed -n 's/^over: //p' "$rec"); do
+            [[ "$(sed -n 's/^ships: //p' "${KRYPTIK_WORK}/image-build/${dep}/record")" == no ]] || reqs+=" ${dep}"
+        done
+        [[ -z "$reqs" ]] || requires+=("requires: ${name}${reqs}")
         if [[ -f "${KRYPTIK_ROOT}/build/images/${name}.needs" ]]; then
             while IFS= read -r line; do
                 [[ -z "$line" || "$line" == \#* ]] || needs+=("needs: ${name} ${line}")
@@ -410,6 +421,7 @@ s_images() {
     {
         printf 'KRYPTIK-IMAGES-1\nrelease: %s\nbase: %s\n' "$version" "$base"
         printf '%s\n' "${images[@]}" | LC_ALL=C sort
+        if [[ "${#requires[@]}" -gt 0 ]]; then printf '%s\n' "${requires[@]}"; fi
         if [[ "${#needs[@]}" -gt 0 ]]; then printf '%s\n' "${needs[@]}"; fi
     } > "${IMAGES}/images.manifest"
     echo "--- images.manifest ---"

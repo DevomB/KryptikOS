@@ -4,6 +4,10 @@
 # packs each tree as it packs the root.
 # usage: make images   (as root, for the overlay; or 04-images.sh NAME... for some of build/images)
 #        04-images.sh --inside NAME   in the chroot: one image's rows, as stage 04 runs its own
+#
+# A definition sets image_version and image_rows, and may set image_over, the images it is built over:
+# their trees lie under it, above the sysroot, while its rows run. image_ships=no makes a layer that
+# only images built over it use, a toolchain, which stage 06 never packs.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/common.sh"
 load_config
@@ -14,9 +18,16 @@ CHROOTD="${KRYPTIK_ROOT}/build/stages/03-chroot-prep.sh"
 
 # --- on the host: an overlay per image, its rows run inside it ---------------
 
-# What an image is built from: its definition and files, the recipes and flags, the pins, and the base system.
+# image_setting NAME VAR: VAR in NAME's definition, an array's words joined by spaces.
+image_setting() {
+    # shellcheck source=/dev/null
+    ( source "${DEFS}/${1}.sh"; declare -n v="$2"; printf '%s' "${v[*]:-}" )
+}
+
+# What an image is built from: its definition and files, the recipes and flags, the pins, the base
+# system, and the images it is built over.
 image_inputs() {   # image_inputs NAME
-    local f
+    local f dep
     for f in "${DEFS}/${1}.sh" "${DEFS}/${1}"/* "${KRYPTIK_ROOT}/build/lib/recipes.sh" "${KRYPTIK_ROOT}"/build/recipes/*.sh \
              "${BASH_SOURCE[0]}" "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "${KRYPTIK_ROOT}/build/config/hardening.env" \
              "${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt" "${KRYPTIK_ROOT}/build/config/versions.env" \
@@ -24,6 +35,9 @@ image_inputs() {   # image_inputs NAME
         if [[ -f "$f" ]]; then printf '%s %s\n' "${f#"${KRYPTIK_ROOT}/"}" "$(sha256_of "$f")"; fi
     done
     printf 'base %s\n' "$(_stamp_read "${KRYPTIK_WORK}/.stamps/bs-licences")"
+    for dep in $(image_setting "$1" image_over); do
+        printf 'over %s %s\n' "$dep" "$(sed -n 's/^fingerprint: //p' "${KRYPTIK_WORK}/image-build/${dep}/record")"
+    done
 }
 
 # The image that is being built, so an exit takes its mounts down with it.
@@ -35,12 +49,26 @@ unmount_image() {   # unmount_image TOP
     if findmnt -rn -o TARGET | grep -F "$1/" >&2; then die "still mounted under $1 (above): nothing there is removed"; fi
 }
 
+# The images being built, innermost last, so one built over itself is refused.
+BUILDING=""
 build_image() {   # build_image NAME
-    local name="$1" top="${KRYPTIK_WORK}/image-build/${1}" version want d
+    local name="$1" top="${KRYPTIK_WORK}/image-build/${1}" version want d ships dep lowers=""
+    local -a over
     [[ "$name" =~ ^[a-z0-9-]{1,32}$ ]] || die "image name ${name}: a-z, 0-9 and -, at most 32"
-    # shellcheck source=/dev/null
-    version="$(source "${DEFS}/${name}.sh"; printf '%s' "${image_version:-}")"
+    [[ -f "${DEFS}/${name}.sh" ]] || die "no image ${name}: nothing at ${DEFS}/${name}.sh"
+    [[ " ${BUILDING} " != *" ${name} "* ]] || die "image ${name} is built over itself:${BUILDING} ${name}"
+    version="$(image_setting "$name" image_version)"
     [[ "$version" =~ ^[!-~]{1,64}$ ]] || die "image ${name}: version '${version}' is not 1-64 printable characters without a space"
+    ships="$(image_setting "$name" image_ships)"; ships="${ships:-yes}"
+    [[ "$ships" == yes || "$ships" == no ]] || die "image ${name}: image_ships is yes or no, not '${ships}'"
+    read -ra over <<< "$(image_setting "$name" image_over)"
+    # What it is built over comes first; the nearest layer is named first, as overlayfs takes it.
+    BUILDING="${BUILDING} ${name}"
+    for dep in "${over[@]}"; do
+        build_image "$dep"
+        lowers+="${KRYPTIK_WORK}/image-build/${dep}/tree:"
+    done
+    BUILDING="${BUILDING% "${name}"}"
     want="$(image_inputs "$name" | sha256_of_stdin)"
     if [[ -d "${top}/tree/usr" ]] && grep -qx "fingerprint: ${want}" "${top}/record" 2>/dev/null; then
         dim "  skip ${name} ${version} (already built, inputs unchanged)"
@@ -56,17 +84,18 @@ build_image() {   # build_image NAME
     # and the real work tree's stamps, logs, build and images are bound into it as usual.
     for d in .stamps logs build images; do ln -s "${KRYPTIK_WORK}/${d}" "${top}/${d}"; done
     MOUNTED="$top"
-    mount -t overlay overlay -o "lowerdir=${SYSROOT},upperdir=${top}/upper,workdir=${top}/overlay-work" "${top}/sysroot"
+    mount -t overlay overlay -o "lowerdir=${lowers}${SYSROOT},upperdir=${top}/upper,workdir=${top}/overlay-work" "${top}/sysroot"
     env KRYPTIK_WORK="$top" KRYPTIK_KRYPTIKD_BIN= KRYPTIK_WLPROXY_BIN= \
         "$CHROOTD" run /kryptik/build/stages/04-images.sh --inside "$name"
     unmount_image "$top"
     MOUNTED=""
-    "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "$SYSROOT" "${top}/upper"
+    "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "${lowers}${SYSROOT}" "${top}/upper"
     # Without extended attributes: overlayfs keeps its own on the upper directory.
     mkdir -p "${top}/tree"
     rsync -aH --numeric-ids "${top}/upper/usr" "${top}/tree/"
     rm -rf "${top}/upper" "${top}/overlay-work"
-    printf 'name: %s\nversion: %s\nfingerprint: %s\n' "$name" "$version" "$want" > "${top}/record"
+    printf 'name: %s\nversion: %s\nships: %s\nover: %s\nfingerprint: %s\n' \
+        "$name" "$version" "$ships" "${over[*]}" "$want" > "${top}/record"
     ok "image ${name} ${version}: $(find "${top}/tree" ! -type d | wc -l) files and links"
 }
 
@@ -81,7 +110,6 @@ build_images() {   # build_images [NAME...]
     fi
     log "Kryptik software images: ${names[*]}"
     for n in "${names[@]}"; do
-        [[ -f "${DEFS}/${n}.sh" ]] || die "no image ${n}: nothing at ${DEFS}/${n}.sh"
         build_image "$n"
     done
     ok "software images built: ${names[*]}"

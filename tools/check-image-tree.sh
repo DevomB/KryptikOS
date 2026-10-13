@@ -2,8 +2,10 @@
 # Fail on what an image's recipes did to the root instead of adding to /usr: the upper directory of the
 # overlay they ran on, against the sysroot under it (docs/design/software-delivery.md).
 #
-#   tools/check-image-tree.sh LOWER UPPER
+#   tools/check-image-tree.sh LOWER[:LOWER...] UPPER
 #
+# LOWER is the sysroot, after the trees of the images this one is built over when it has any, nearest
+# first, as overlayfs takes them: a file any of them has is one the image may not replace.
 # Refused: a whiteout or an opaque or redirected directory (a root path removed or hidden), a file the
 # root already has, a directory of the root's under /usr with another mode or owner, a file outside
 # /usr, a link that leads out of /usr, a device node, a setuid or setgid bit, a file capability. The
@@ -12,12 +14,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 # The verdict is python's exit status; the ERR trap would abort before it is read.
 trap - ERR
 set +e
-[[ "$#" -eq 2 ]] || die "usage: check-image-tree.sh LOWER UPPER"
-[[ -d "$1" && -d "$2" ]] || die "not directories: $1 $2"
+[[ "$#" -eq 2 ]] || die "usage: check-image-tree.sh LOWER[:LOWER...] UPPER"
+IFS=: read -ra lowers <<< "$1"
+for d in "${lowers[@]}" "$2"; do [[ -d "$d" ]] || die "not a directory: $d"; done
 log "What the image's recipes left in $2, against $1"
 python3 - "$1" "$2" <<'EOF'
 import os, stat, sys
-lower, upper = sys.argv[1:3]
+lowers, upper = sys.argv[1].split(":"), sys.argv[2]
 # Written by the chroot itself (stage 03), or left by builds; none of it is the image's.
 SCRATCH = ("tmp/", "var/tmp/", "root/", "run/", "dev/", "proc/", "sys/")
 MOUNTS = {"kryptik", "kryptik-sources", "kryptik-work", "kryptik-kryptikd", "kryptik-wlproxy"}
@@ -44,13 +47,19 @@ for d, subdirs, names in os.walk(upper):
         if (rel + "/").startswith(SCRATCH) or top in MOUNTS or rel in MARKS:
             continue
         st = os.lstat(p)
-        lp = os.path.join(lower, rel)
-        try:
-            lst = os.lstat(lp)
-        except FileNotFoundError:
-            lst = None
+        # The nearest layer that has the path: the last is the root, the others images it is built over.
+        lst, under = None, False
+        for i, lower in enumerate(lowers):
+            try:
+                lst = os.lstat(os.path.join(lower, rel))
+            except FileNotFoundError:
+                continue
+            under = i < len(lowers) - 1
+            break
+        what = f"/{rel} of an image under it" if under else f"the root's /{rel}"
+        dwhat = f"the directory /{rel} of an image under it" if under else f"the root's directory /{rel}"
         if stat.S_ISCHR(st.st_mode) and st.st_rdev == 0 or xattr(p, "trusted.overlay.whiteout") is not None:
-            bad.append(f"removes the root's /{rel}")
+            bad.append(f"removes {what}")
             continue
         if xattr(p, "trusted.overlay.redirect") is not None:
             bad.append(f"moves /{rel} within the root")
@@ -59,9 +68,9 @@ for d, subdirs, names in os.walk(upper):
             if xattr(p, "trusted.overlay.opaque") == b"y":
                 bad.append(f"hides what the root has under /{rel}")
             elif lst is not None and not stat.S_ISDIR(lst.st_mode):
-                bad.append(f"replaces the root's /{rel} with a directory")
+                bad.append(f"replaces {what} with a directory")
             elif lst is not None and top == "usr" and (stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid) != (stat.S_IMODE(lst.st_mode), lst.st_uid, lst.st_gid):
-                bad.append(f"changes the root's directory /{rel} "
+                bad.append(f"changes {dwhat} "
                            f"({oct(stat.S_IMODE(lst.st_mode))} {lst.st_uid}:{lst.st_gid} -> {oct(stat.S_IMODE(st.st_mode))} {st.st_uid}:{st.st_gid})")
             elif lst is None and top != "usr":
                 bad.append(f"makes /{rel} outside /usr")
@@ -69,7 +78,7 @@ for d, subdirs, names in os.walk(upper):
                 dirs += 1
             continue
         if lst is not None:
-            bad.append(f"replaces the root's /{rel}")
+            bad.append(f"replaces {what}")
         elif top != "usr":
             bad.append(f"installs /{rel} outside /usr")
         elif not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):

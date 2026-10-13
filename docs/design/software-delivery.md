@@ -198,7 +198,11 @@ up ADR-001 in the zones where the applications run.
   An image's sources are pinned in `build/images/versions.env` and locked in
   `build/images/sources.lock`, so a change to them leaves stage 04 alone,
   and the image installs their licence files itself, as stage 04 does the
-  root's; stage 06 refuses an image missing one.
+  root's; stage 06 refuses an image missing one. An image can be built over
+  others (`image_over`): their trees lie under it, above the root, while its
+  rows run, the tree check refuses a file any of them has, and the list's
+  `requires:` line names those that ship. A layer marked `image_ships=no`, a
+  toolchain only builds use, is never packed or listed.
 - **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
   makes the root (ext4 without a journal, then the verity tree, with a
   salt and UUID derived from the content), runs the root's artifact audit
