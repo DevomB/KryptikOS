@@ -737,6 +737,7 @@ usr/lib/kryptik/compartments/tests/serve.sh
 usr/lib/kryptik/guest-tests/broker-client.py
 usr/lib/kryptik/guest-tests/gui-check.sh
 usr/lib/kryptik/guest-tests/icmp-echo.py
+usr/lib/kryptik/guest-tests/power-check.sh
 usr/lib/kryptik/guest-tests/probe-sources.py
 usr/lib/kryptik/guest-tests/sound-check.sh
 usr/lib/kryptik/guest-tests/zones-check.sh
@@ -746,6 +747,7 @@ usr/lib/kryptik/s6-rc/compiled/servicedirs/getty-tty2/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/kryptik-sound/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/kryptikd-serve/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/net-zone/run
+usr/lib/kryptik/s6-rc/compiled/servicedirs/power/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/s6rc-fdholder/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/s6rc-oneshot-runner/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/seatd/run
@@ -1115,6 +1117,7 @@ usr/libexec/kryptik/medium-banner.sh
 usr/libexec/kryptik/medium-root.sh
 usr/libexec/kryptik/microcode-notice.sh
 usr/libexec/kryptik/netzone-init.sh
+usr/libexec/kryptik/power.sh
 usr/libexec/kryptik/sntp-offset.py
 usr/libexec/kryptik/soundprobe
 usr/libexec/kryptik/sysinit.sh

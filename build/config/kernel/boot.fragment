@@ -256,6 +256,9 @@ CONFIG_BRCMFMAC_PCIE=y
 # CONFIG_BRCMFMAC_SDIO is not set
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
+# A battery and a mains supply the power suite sets by hand, as hwsim is a radio; it
+# binds no device, so nothing loads it otherwise.
+CONFIG_TEST_POWER=m
 # Airplane-mode keys that come through the platform's ACPI device rather than
 # the keyboard: Intel's HID event filter, the AMD, HP and Xiaomi wireless
 # button, and ASUS's radio control. rfkill-input acts on the key.

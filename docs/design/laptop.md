@@ -308,18 +308,20 @@ logind elsewhere handles seats and sessions (seatd does that here), the lid
 and the power key, idle and inhibitors, suspend, and runtime directories
 (the launch daemon creates them). What is left:
 
-- **`kryptik-power`,** a small zone 0 service. It reads the lid switch and
-  the power button from their input devices, and the battery and AC state
-  from `/sys/class/power_supply`. It asks the launch daemon to suspend, and
-  holds suspend off while `kryptik-update apply` writes a slot (the
-  updater's lock). At critically low battery it shuts the machine down in
-  order, zones stopped and volumes closed, since there is no hibernation.
-- **Policy at boot.** A service writes a fixed policy from the verified
-  root: `energy_performance_preference` set to `balance_power` on battery and
-  `balance_performance` on AC (amd-pstate and intel_pstate both take it), and
-  the kernel's defaults for PCIe link power and NVMe power states. No rule
-  turns on USB autosuspend for input devices, which too often misbehave
-  with it.
+- **The power service** (`build/service-scripts/power.sh`, the `power`
+  service), in zone 0, reads the battery and the mains adapter or USB
+  charger from `/sys/class/power_supply` every 30 s; a mouse's battery
+  (scope `Device`) does not count, and of two batteries the fuller does. On
+  battery at 3% or under, seen twice running, it stops every zone as
+  `kryptikd stop` does, each launcher closing its volume, and powers the
+  machine off, since there is no hibernation.
+- **The energy preference.** The same service sets
+  `energy_performance_preference` to `balance_power` on battery and
+  `balance_performance` on mains whenever the source changes, on each
+  processor policy that offers it (amd-pstate and intel_pstate both do).
+  PCIe link power and NVMe power states keep the kernel's defaults, and no
+  rule turns on USB autosuspend for input devices, which too often
+  misbehave with it.
 - **Brightness.** An eudev rule gives the `video` group write access to the
   backlight, the session user is in it, and dwl's keys run a small tool.
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
@@ -343,7 +345,8 @@ and the power key, idle and inhibitors, suspend, and runtime directories
     zone holds the screen awake for as long as it does.
   - The moment no hold qualifies, the lock and the blanking count input
     alone again.
-- The chrome shows the battery and AC state.
+- The chrome's menu has a Power line: on mains or on battery, the charge,
+  and on battery what happens at 3%.
 
 ### Check
 
@@ -352,6 +355,14 @@ uinput, and the kernel's test power supply (`test_power`, a test module like
 `mac80211_hwsim`) reports a battery the suite can drain. Closing the lid
 suspends, the update's lock holds that off, and a critical battery shuts the
 machine down with every volume closed.
+
+`make power-test` does the battery's part with `test_power`: the service
+follows the adapter both ways, the menu's Power line names the source and
+the charge, and with the battery at 2% unplugged the service stops the
+zones and powers off; the host then finds on the state partition that it
+said so and that a running zone's volume was closed first. The energy
+preference, which QEMU's processors do not offer, is checked against
+stand-in `/sys` trees (`tools/tests/power.sh`).
 
 ## Keyboard layouts and input methods
 

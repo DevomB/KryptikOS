@@ -19,8 +19,9 @@
 #                                  the network as the net zone reports it, a
 #                                  release that waits to be installed, a
 #                                  channel with nothing new for 30 days, the
-#                                  net zone's Wi-Fi networks (w), and sound:
-#                                  the volume, and which zone may record
+#                                  net zone's Wi-Fi networks (w), the battery,
+#                                  and sound: the volume, and which zone may
+#                                  record
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
 #                                  ask for the zone's passphrase in a trusted
 #                                  window, then launch (kryptik-launch hands
@@ -211,6 +212,27 @@ menu_network() {
     done
 }
 
+# The battery and whether the machine runs on it, as /sys has them; nothing without a battery.
+# The power service shuts the machine down at 3% (power.sh).
+menu_power() {
+    bat="" mains=""
+    for d in /sys/class/power_supply/*; do
+        [ -r "$d/type" ] || continue
+        case "$(cat "$d/type")" in
+            Mains|USB) [ "$(cat "$d/online" 2>/dev/null)" = 1 ] && mains=yes ;;
+            Battery) [ "$(cat "$d/scope" 2>/dev/null)" = Device ] && continue
+                     bat="$(cat "$d/capacity" 2>/dev/null)%, $(tr 'A-Z' 'a-z' < "$d/status" 2>/dev/null)" ;;
+        esac
+    done
+    [ -n "$bat" ] || return 0
+    echo
+    if [ -n "$mains" ]; then
+        echo "Power: on mains, the battery at $bat"
+    else
+        echo "Power: on battery, at $bat; at 3% the zones stop and the machine powers off"
+    fi
+}
+
 # A release that has arrived whole waits for the user, so the launcher says so.
 # So does a channel gone quiet: statements are re-signed on a schedule, and a
 # net zone that withholds them leaves only their age to show it.
@@ -287,6 +309,7 @@ run_menu() {
         echo "Zones:"
         menu_zones
         menu_network
+        menu_power
         menu_update
         menu_sound
         echo

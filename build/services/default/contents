@@ -8,6 +8,7 @@ kryptikd-serve
 firstboot
 seatd
 kryptik-sound
+power
 net-zone
 getty-tty1
 getty-tty2

@@ -313,8 +313,12 @@ Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
-never appears on a command line. Under the zones, a Network line says what
-the net zone reports: whether it is ready, the Wi-Fi network it joined (or
+never appears on a command line. On a machine with a battery, a Power
+line under the zones gives its charge and whether the machine runs on it;
+on battery at 3% the zones are stopped, each closing its volume, and the
+machine powers off, so save work before then. Under the zones, a
+Network line says what the net zone reports: whether it is ready, the
+Wi-Fi network it joined (or
 that Wi-Fi is switched off, by a switch or an airplane-mode key; switched on
 again, it rejoins by itself, or that a saved network refused its passphrase),
 its address on the uplink and whether there is DNS. The menu also names a
