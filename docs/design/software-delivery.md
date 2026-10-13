@@ -206,6 +206,8 @@ up ADR-001 in the zones where the applications run.
   release: 1.2.0
   base: <the root's dm-verity root hash>
   image: browser 140.4.0 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
+  image: toolkit 3.24.49 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
+  requires: browser toolkit
   needs: browser allow-syscall seccomp
   ```
 
@@ -215,11 +217,12 @@ up ADR-001 in the zones where the applications run.
   from the signed kernel's command line. The verity parameters are the
   root's (SHA-256, 4096-byte blocks, no superblock, the hash tree after
   `data-blocks`), so every value kryptikd passes to dm-verity is signed.
-  Image lines are sorted by name and a needs line uses the policy-file
-  syntax; anything else in the file refuses it. A development build also
-  signs the two lists the guest must refuse, under
-  `images-<release>/controls/`: the same list in `kryptik-release`, and
-  one for another root.
+  Image lines are sorted by name; a requires line, one per image in image
+  order, names the images it is built over, which a zone naming it must
+  name too; a needs line uses the policy-file syntax. Anything else in the
+  file refuses it. A development build also signs the two lists the guest
+  must refuse, under `images-<release>/controls/`: the same list in
+  `kryptik-release`, and one for another root.
 - **On the medium.** The USB image carries the list, its signature and each
   image in a third partition, `kryptik-images`; the ISO carries the same
   files under `/images` in its filesystem. A release without images has
