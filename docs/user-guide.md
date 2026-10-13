@@ -368,6 +368,9 @@ when it does; it closes when the zone stops or the microphone is taken
 back. `v` and a digit sets the volume, 0 to 9, `v`, a zone's number and
 a digit sets that zone's own, and `x` mutes or unmutes everything. Sound
 plays on a USB device when one is plugged in, otherwise on the built-in one.
+This release has no Bluetooth: for calls, use a USB or wired headset, or a
+Bluetooth headset that comes with a USB dongle, which works as a USB sound
+card.
 
 No zone sees the camera until you let it: `k` and the zone's number in the
 menu gives that zone the camera, one zone at a time, until it stops, the
