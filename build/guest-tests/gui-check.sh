@@ -270,7 +270,9 @@ else
     fail "zone-socket-refuses-other-proxy" "the probe as uid $P_PERSONAL: $(tr '\n' ' ' <<<"$other"); dwl: $(grep 'refused a client' "$slog" 2>/dev/null | tail -2 | tr '\n' ' ')"
 fi
 # Every socket that uid can reach, found under / (not /proc or /sys), as it would
-# connect to one: only dwl's sockets for the session's zones may take it.
+# connect to one: only dwl's sockets for the session's zones may serve it. A server whose
+# rules refuse the uid (an s6-ipcserver's, dwl's for another zone) may take the connection
+# and end it at once, unread: that is closed, not served.
 swept="$(python3 - "$P_UNTRUSTED" "$zsock" <<'PY'
 import os, socket, stat, sys
 uid, own = int(sys.argv[1]), sys.argv[2]
@@ -280,9 +282,17 @@ def reaches(path):
     s.settimeout(2)
     try:
         s.connect(path)
-        return True
     except OSError:
-        return False
+        s.close()
+        return None
+    # Served: the far end waits for this uid to speak, or speaks; closed: it hung up unasked.
+    try:
+        s.settimeout(1)
+        return "closed" if s.recv(1) == b"" else "served"
+    except socket.timeout:
+        return "served"
+    except OSError:
+        return "closed"
     finally:
         s.close()
 for top, dirs, files in os.walk("/"):
@@ -291,19 +301,54 @@ for top, dirs, files in os.walk("/"):
     for name in files:
         path = os.path.join(top, name)
         try:
-            if stat.S_ISSOCK(os.lstat(path).st_mode) and reaches(path):
-                print(f"REACHED {path}")
+            if stat.S_ISSOCK(os.lstat(path).st_mode):
+                r = reaches(path)
+                if r:
+                    print(f"{'REACHED' if r == 'served' else 'CLOSED'} {path}")
         except OSError:
             pass
 # The control: its own zone's socket, by the name it is given (it cannot list the directory).
-print("SWEPT" + (" CONTROL" if reaches(own) else ""))
+print("SWEPT" + (" CONTROL" if reaches(own) == "served" else ""))
 PY
 )"
 beyond="$(grep '^REACHED ' <<<"$swept" | grep -v "^REACHED /run/kryptik-compositor/$UID_/" | tr '\n' ';')"
+closed="$(grep '^CLOSED ' <<<"$swept" | cut -d' ' -f2- | tr '\n' ' ')"
 if [[ "$swept" == *"SWEPT CONTROL"* && -z "$beyond" ]]; then
-    pass "proxy-uid-socket-sweep" "as uid $P_UNTRUSTED no socket under / takes a connection but its zone's own, by its name"
+    pass "proxy-uid-socket-sweep" "as uid $P_UNTRUSTED no socket under / serves it but its zone's own, by its name; closed on it unread: ${closed:-none}"
 else
-    fail "proxy-uid-socket-sweep" "as uid $P_UNTRUSTED, beyond dwl's zone sockets: ${beyond:-none}; $(tail -3 <<<"$swept" | tr '\n' ' ')"
+    fail "proxy-uid-socket-sweep" "as uid $P_UNTRUSTED, served beyond dwl's zone sockets: ${beyond:-none}; closed: ${closed:-none}; $(grep '^SWEPT' <<<"$swept")"
+fi
+# s6-rc's oneshot runner serves root alone (s6-rc-init's rules): the proxy's uid, and the
+# session's user with its groups, are closed on at once, before any request is read.
+runner_to() {   # runner_to UID [USER]: served, closed or unreached
+    python3 - "$1" "${2:-}" /run/s6-rc/servicedirs/s6rc-oneshot-runner/s <<'PY'
+import os, pwd, socket, sys
+uid, user, path = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+if user:
+    os.initgroups(user, pwd.getpwnam(user).pw_gid); os.setgid(pwd.getpwnam(user).pw_gid)
+else:
+    os.setgroups([]); os.setgid(uid)
+os.setuid(uid)
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(2)
+try:
+    s.connect(path)
+except OSError as e:
+    print(f"unreached ({e.strerror})"); sys.exit()
+s.settimeout(1)
+try:
+    print("closed" if s.recv(1) == b"" else "served")
+except socket.timeout:
+    print("served")
+except OSError:
+    print("closed")
+PY
+}
+r_proxy="$(runner_to "$P_UNTRUSTED")"; r_user="$(runner_to "$UID_" "$USER_NAME")"
+if [[ -S /run/s6-rc/servicedirs/s6rc-oneshot-runner/s && "$r_proxy" != served && "$r_user" != served ]]; then
+    pass "oneshot-runner-serves-root-alone" "s6-rc's oneshot runner, to the proxy's uid: ${r_proxy}; to the session's user: ${r_user}"
+else
+    fail "oneshot-runner-serves-root-alone" "the runner's socket: $(ls -l /run/s6-rc/servicedirs/s6rc-oneshot-runner/s 2>&1); proxy uid: ${r_proxy:-none}; session user: ${r_user:-none}"
 fi
 
 # --- a zone window goes fullscreen only by the user's key ----------------
