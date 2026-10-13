@@ -251,6 +251,13 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl
           cargo test --target x86_64-unknown-linux-musl
 
+      # The zone's reader of USB sticks (ADR-025), as it ships: static musl, its crates as locked.
+      - name: kryptik-stick tests
+        run: |
+          cd tools/stick
+          cargo test --locked
+          cargo build --locked --release --target x86_64-unknown-linux-musl
+
       - name: Isolation exit test (the primitives)
         run: |
           cd compartments/kryptikd && cargo build --quiet
