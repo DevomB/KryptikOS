@@ -174,6 +174,11 @@ fi
 
 mkdir -p "$KRYPTIK_SOURCES"
 
+# The last mirror for every source fetched over HTTPS, Gentoo's copies of upstream's own files,
+# kept while an ebuild names the version: a fallback for current pins, not an archive. Here, not in
+# versions.env: a mirror is no build input, and that file keys stage 04's cache.
+MIRROR_DISTFILES="${MIRROR_DISTFILES-https://distfiles.gentoo.org/distfiles}"
+
 # fetch_one URL DEST: try each mirror in order.
 fetch_one() {
     local url="$1" dest="$2"
@@ -182,6 +187,13 @@ fetch_one() {
     # GNU tarballs get a second mirror.
     if [[ -n "${MIRROR_GNU_FALLBACK:-}" && "$url" == "${MIRROR_GNU}/"* ]]; then
         urls+=("${MIRROR_GNU_FALLBACK}/${url#"${MIRROR_GNU}/"}")
+    fi
+    # Every source has a last one: Gentoo's distfiles keep upstream's own files under a directory
+    # named by the BLAKE2b of the file's name, and the lock holds the hash wherever the bytes came
+    # from. www.freedesktop.org answers scripts with 418, which leaves libevdev's tarball there alone.
+    if [[ -n "${MIRROR_DISTFILES:-}" && "$url" == https://* ]]; then
+        local f="${url##*/}"
+        urls+=("${MIRROR_DISTFILES}/$(printf '%s' "$f" | b2sum | cut -c1-2)/${f}")
     fi
 
     # Resume, else start over: an over-long .part fails every resume (curl 33 or 36, HTTP 416).
