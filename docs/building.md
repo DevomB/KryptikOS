@@ -48,10 +48,11 @@ make media      # stage 06: USB image, ISO, signed release payload
 ```
 
 `untrusted`, `personal` and `work` name the browser and toolkit images, and a
-zone whose images its root's signed list lacks does not start, so a medium for
-use needs `make images` before `make media`. Firefox alone takes some three
-hours on four cores; a rebuilt stage 04 rebuilds it only when a step up to
-`wlroots` changed ([software delivery](design/software-delivery.md)).
+zone naming an image does not start unless its root has a signed list that
+holds it, so a medium for use needs `make images` before `make media`. Firefox
+alone takes some three hours on four cores; a rebuilt stage 04 rebuilds it
+only when a step up to `wlroots` changed, or the headers and libraries a build
+can find ([software delivery](design/software-delivery.md)).
 
 `make paths` prints where everything goes; `KRYPTIK_WORK` moves the work tree.
 Each step is stamped, so a rerun resumes where it stopped and a changed
