@@ -40,6 +40,20 @@ fn move_types_are_the_brokers() {
     assert_eq!(MOVE_TYPES[0], "text/plain;charset=utf-8", "text with its charset is taken first");
 }
 
+/// dwl's zone sockets offer this list too (tools/desktop/dwl-zone-borders.py): the two never drift.
+#[test]
+fn dwl_zone_sockets_offer_the_same_list() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/desktop/dwl-zone-borders.py");
+    let patch = std::fs::read_to_string(&path).expect("dwl-zone-borders.py");
+    let start = patch.find("zoneglobals[] = {").expect("the zones' list in the dwl patch");
+    let end = start + patch[start..].find("};").expect("the end of that list");
+    let mut dwl: Vec<&str> = patch[start..end].split('"').skip(1).step_by(2).collect();
+    let mut proxy: Vec<&str> = ALLOWED.iter().map(|(n, _)| *n).collect();
+    dwl.sort_unstable();
+    proxy.sort_unstable();
+    assert_eq!(dwl, proxy);
+}
+
 /// Only delete_id frees objects, and only client-created ones: no event the compositor can send
 /// creates one. The server range is then the proxy's own, for the offers it makes (clipboard.rs);
 /// a global let through whose events create objects fails here before its ids could collide.
