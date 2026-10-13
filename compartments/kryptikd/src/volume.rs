@@ -442,6 +442,14 @@ pub fn destroy(zone: &str, volume: &str) -> Result<(), VolumeError> {
     fs::remove_file(p).map_err(|e| VolumeError::Io(format!("{volume}: {e}")))
 }
 
+/// Suspend a mapping and wipe its key from the kernel (`cryptsetup luksSuspend`); its filesystem
+/// is flushed and frozen first, and its I/O waits until a key is given again.
+pub fn suspend_mapping(mapper: &str) -> Result<(), VolumeError> {
+    run("cryptsetup luksSuspend", "cryptsetup", &["luksSuspend", mapper], None)
+        .map(drop)
+        .map_err(|e| tool_err("cryptsetup luksSuspend", e))
+}
+
 /// Zones with a mapping under /dev/mapper, for `gc`.
 pub fn mappings() -> Vec<String> {
     let names = fs::read_dir("/dev/mapper")

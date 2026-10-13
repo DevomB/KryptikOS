@@ -1,16 +1,21 @@
 /* kryptik-lock: lock the session until the login password is typed (docs/design/laptop.md).
  *
  *   kryptik-lock
+ *   kryptik-lock --suspend         lock, then have the launch daemon suspend the machine
  *   kryptik-lock --idle SECONDS [--blank SECONDS]
  *                                  lock each time the session has had no input that long, and
  *                                  turn the screens off that much later (60 s; 0 never)
  *
  * Through ext-session-lock-v1 the compositor shows nothing but this program's surfaces, one
  * per output, and gives them the keyboard. The lock runs in a child, started again if a
- * signal kills it, as the session stays locked without one. What is typed goes to
- * `kryptik-launch --check-password` on a pipe, and the launch daemon answers: this process
- * never reads a password hash. It says "kryptik-lock: locked", "kryptik-lock: refused: WHY"
- * and "kryptik-lock: unlocked" on stderr, the session log.
+ * signal kills it, as the session stays locked without one. What is typed goes to the launch
+ * daemon, which answers: this process never reads a password hash. The daemon also says what
+ * unlocks: the login password, or once a suspend has dropped the state partition's key, that
+ * partition's passphrase, which the label shows (LOCKED, STATE PASSPHRASE). It is asked at
+ * the start, at the first key of each entry and before each answer is sent, and what was
+ * typed under a label that no longer holds is dropped, so neither secret reaches the other's
+ * check. It says "kryptik-lock: locked", "kryptik-lock: refused: WHY" and
+ * "kryptik-lock: unlocked" on stderr, the session log.
  * With --idle it waits on the compositor's idle notification (ext-idle-notify-v1), which no
  * zone can bind, and runs itself as the lock when it comes, until the session ends.
  * Exit: 0 unlocked; 1 the compositor would not lock, or there is no display; 2 usage.
@@ -25,13 +30,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 #include "ext-idle-notify-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
 #include "wlr-output-power-management-unstable-v1-client-protocol.h"
+
+/* Reached without starting a program: while the state partition is suspended, a program's
+ * loader would look in /etc, whose upper layer is on that partition. */
+#define LAUNCH_SOCKET "/run/kryptik-launch/launch.sock"
 
 /* dwl's root colour behind, a grey no zone has for the marks, and a red for a refusal. */
 static const uint32_t bg = 0x101418, ink = 0xe6e6e6, warn = 0xd04040;
@@ -43,12 +55,15 @@ static const struct { char c; unsigned char rows[7]; } font[] = {
 	{'D', {0x1c, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1c}},
 	{'E', {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f}},
 	{'G', {0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f}},
+	{'H', {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}},
 	{'I', {0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e}},
 	{'K', {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}},
 	{'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f}},
 	{'N', {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11}},
 	{'O', {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}},
+	{'P', {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10}},
 	{'R', {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11}},
+	{'S', {0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e}},
 	{'T', {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
 	{'W', {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a}},
 	{'0', {0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e}},
@@ -89,10 +104,23 @@ static char typed[256];
 static size_t ntyped;
 static char status[24] = "LOCKED";
 static int refused;
+/* What unlocks, and the label for it. */
+enum { LOGIN, STATE };
+static int kind = LOGIN;
+/* --suspend: asked once locked, then the connection that answers when the machine woke and
+ * when it was asked. */
+static int suspend_wanted, asleep = -1;
+static struct timespec asked;
 
 static void say(const char *what)
 {
 	fprintf(stderr, "kryptik-lock: %s\n", what);
+}
+
+static void show_kind(void)
+{
+	snprintf(status, sizeof status, "%s", kind == STATE ? "STATE PASSPHRASE" : "LOCKED");
+	refused = 0;
 }
 
 /* A w x h rectangle at x, y on a bw x bh picture, cut to the picture. */
@@ -190,11 +218,19 @@ static void cover(struct output *o)
 	ext_session_lock_surface_v1_add_listener(o->lock_surface, &lock_surface_listener, o);
 }
 
+static int request(const char *text, int fd);
+
 static void lock_locked(void *data, struct ext_session_lock_v1 *l)
 {
 	(void)data; (void)l;
 	locked = 1;
 	say("locked");
+	/* Only a locked session is suspended; the answer comes once the machine has woken. */
+	if (suspend_wanted) {
+		clock_gettime(CLOCK_MONOTONIC, &asked);
+		asleep = request("suspend\n", -1);
+		say(asleep < 0 ? "suspend: the launch daemon cannot be reached" : "suspending");
+	}
 }
 
 static void lock_finished(void *data, struct ext_session_lock_v1 *l)
@@ -209,60 +245,133 @@ static const struct ext_session_lock_v1_listener lock_listener = {
 	.finished = lock_finished,
 };
 
-/* Ask the launch daemon through kryptik-launch, the password on its stdin. Its answer on
- * failure goes to `why`; true if it took the password. While it is asked the lock reads no
- * events, so an answer that does not come is given up on: the compositor's buffer of keys
- * for the lock would fill, and end its connection. */
-static int check(const char *password, char *why, size_t n)
+/* One request to the launch daemon, with `fd` beside its first bytes when >= 0: the connection
+ * with its writing side shut, or -1 if the daemon cannot be reached. */
+static int request(const char *text, int fd)
 {
-	int in[2], out[2], st = 0;
-	if (pipe2(in, O_CLOEXEC) < 0) {
-		snprintf(why, n, "pipe: %s", strerror(errno));
-		return 0;
+	struct sockaddr_un sa = { .sun_family = AF_UNIX };
+	strncpy(sa.sun_path, LAUNCH_SOCKET, sizeof sa.sun_path - 1);
+	int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (s < 0)
+		return -1;
+	if (connect(s, (struct sockaddr *)&sa, sizeof sa) < 0) {
+		close(s);
+		return -1;
 	}
-	if (pipe2(out, O_CLOEXEC) < 0) {
-		snprintf(why, n, "pipe: %s", strerror(errno));
-		close(in[0]);
-		close(in[1]);
-		return 0;
+	struct iovec iov = { .iov_base = (void *)text, .iov_len = strlen(text) };
+	struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
+	union { char buf[CMSG_SPACE(sizeof(int))]; struct cmsghdr align; } u;
+	if (fd >= 0) {
+		memset(&u, 0, sizeof u);
+		msg.msg_control = u.buf;
+		msg.msg_controllen = sizeof u.buf;
+		struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+		c->cmsg_level = SOL_SOCKET;
+		c->cmsg_type = SCM_RIGHTS;
+		c->cmsg_len = CMSG_LEN(sizeof(int));
+		memcpy(CMSG_DATA(c), &fd, sizeof(int));
 	}
-	pid_t pid = fork();
-	if (pid == 0) {
-		dup2(in[0], 0);
-		dup2(out[1], 1);
-		dup2(out[1], 2);
-		execl("/usr/bin/kryptik-launch", "kryptik-launch", "--check-password", (char *)NULL);
-		_exit(127);
+	if (sendmsg(s, &msg, MSG_NOSIGNAL) != (ssize_t)iov.iov_len) {
+		close(s);
+		return -1;
 	}
-	close(in[0]);
-	close(out[1]);
-	if (pid < 0) {
-		snprintf(why, n, "fork: %s", strerror(errno));
-		close(in[1]);
-		close(out[0]);
-		return 0;
+	shutdown(s, SHUT_WR);
+	return s;
+}
+
+/* The daemon's answer on `s`, which is closed: its first line in `why`, and true if that is
+ * "ok". While it is awaited the lock reads no events, so one that does not come is given up
+ * on: the compositor's buffer of keys for the lock would fill, and end its connection. */
+static int answer(int s, char *why, size_t n)
+{
+	size_t got = 0;
+	for (;;) {
+		struct pollfd p = { .fd = s, .events = POLLIN };
+		int r = poll(&p, 1, 15000);
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r <= 0) {
+			got = 0;
+			break;
+		}
+		ssize_t k = read(s, why + got, n - 1 - got);
+		if (k < 0 && errno == EINTR)
+			continue;
+		if (k <= 0)
+			break;
+		got += (size_t)k;
+		if (got == n - 1)
+			break;
 	}
-	size_t len = strlen(password);
-	int sent = write(in[1], password, len) == (ssize_t)len && write(in[1], "\n", 1) == 1;
-	close(in[1]);
-	struct pollfd p = { .fd = out[0], .events = POLLIN };
-	ssize_t got = poll(&p, 1, 15000) == 1 ? read(out[0], why, n - 1) : -1;
-	close(out[0]);
-	why[got > 0 ? got : 0] = 0;
+	close(s);
+	why[got] = 0;
 	why[strcspn(why, "\n")] = 0;
-	if (got < 0) {
-		kill(pid, SIGKILL);
+	if (!got)
 		snprintf(why, n, "no answer from the launch daemon");
-	}
-	if (waitpid(pid, &st, 0) < 0 || !sent || got < 0)
+	return !strncmp(why, "ok", 2) && (why[2] == 0 || why[2] == ' ');
+}
+
+/* What unlocks now, as the daemon says, or -1 if it cannot say. */
+static int kind_now(void)
+{
+	char why[64];
+	int s = request("unlock-kind\n", -1);
+	if (s < 0 || !answer(s, why, sizeof why))
+		return -1;
+	return !strcmp(why, "ok state") ? STATE : !strcmp(why, "ok login") ? LOGIN : -1;
+}
+
+/* A label that no longer says what unlocks: what was typed under it is dropped, as it was the
+ * other secret, and the right question is shown. True if the label changed. */
+static int relabel(int now)
+{
+	if (now < 0 || now == kind)
 		return 0;
-	return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+	explicit_bzero(typed, sizeof typed);
+	ntyped = 0;
+	kind = now;
+	show_kind();
+	say(kind == STATE ? "the state partition is suspended: its passphrase unlocks"
+	                  : "the state partition is back: the login password unlocks");
+	return 1;
+}
+
+/* What was typed, to the check for the label shown: the login password in check-password's
+ * body, or the state partition's passphrase in a pipe beside resume-state, the descriptor it
+ * takes. True if it was taken; the daemon's words go to `why` otherwise. */
+static int give(char *why, size_t n)
+{
+	int s;
+	if (kind == STATE) {
+		int p[2];
+		if (pipe2(p, O_CLOEXEC) < 0) {
+			snprintf(why, n, "pipe: %s", strerror(errno));
+			return 0;
+		}
+		/* Far less than a pipe holds, so the write cannot wait on the reader. */
+		int full = write(p[1], typed, ntyped) == (ssize_t)ntyped;
+		close(p[1]);
+		s = full ? request("resume-state\n", p[0]) : -1;
+		close(p[0]);
+	} else {
+		char req[sizeof typed + 32];
+		snprintf(req, sizeof req, "check-password\npassword %s\nend\n", typed);
+		s = request(req, -1);
+		explicit_bzero(req, sizeof req);
+	}
+	if (s < 0) {
+		snprintf(why, n, "the launch daemon cannot be reached");
+		return 0;
+	}
+	return answer(s, why, n);
 }
 
 static void submit(void)
 {
 	char why[256] = "";
-	int ok = check(typed, why, sizeof why);
+	if (relabel(kind_now()))
+		return;
+	int ok = give(why, sizeof why);
 	explicit_bzero(typed, sizeof typed);
 	ntyped = 0;
 	if (ok) {
@@ -270,15 +379,49 @@ static void submit(void)
 		return;
 	}
 	char line[300];
-	snprintf(line, sizeof line, "refused: %s", why[0] ? why : "no answer");
+	snprintf(line, sizeof line, "refused: %s", why);
 	say(line);
-	/* The daemon's own words: "error: wait N s" while a wrong one is paused for. */
+	/* The daemon's own words: "error: suspended: ..." or "error: not suspended: ..." when what
+	 * unlocks changed between the question and the answer, "error: wait N s" while a wrong one
+	 * is paused for. */
+	if (!strncmp(why, "error: suspended:", 17) || !strncmp(why, "error: not suspended:", 21)) {
+		relabel(kind_now());
+		return;
+	}
 	const char *w = strstr(why, "wait ");
 	if (w)
 		snprintf(status, sizeof status, "WAIT %d", atoi(w + 5));
 	else
 		snprintf(status, sizeof status, "WRONG");
 	refused = 1;
+}
+
+/* How long the daemon may take to suspend the machine and, once it woke, to say so, counted
+ * on the monotonic clock, which stops while the machine sleeps. */
+#define SUSPEND_ANSWER_MS 60000
+
+static int suspend_left(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	long ms = (now.tv_sec - asked.tv_sec) * 1000 + (now.tv_nsec - asked.tv_nsec) / 1000000;
+	return ms >= SUSPEND_ANSWER_MS ? 0 : (int)(SUSPEND_ANSWER_MS - ms);
+}
+
+/* The suspend --suspend asked for has ended: the machine woke, the daemon refused, or no
+ * answer came in time. */
+static void woke(int answered)
+{
+	char why[256] = "no answer from the launch daemon", line[300];
+	if (answered)
+		answer(asleep, why, sizeof why);
+	else
+		close(asleep);
+	asleep = -1;
+	snprintf(line, sizeof line, "suspend: %s", why);
+	say(line);
+	relabel(kind_now());
+	redraw();
 }
 
 static void keyboard_keymap(void *data, struct wl_keyboard *kb, uint32_t format, int32_t fd, uint32_t size)
@@ -320,7 +463,9 @@ static void keyboard_key(void *data, struct wl_keyboard *kb, uint32_t serial, ui
 	xkb_keycode_t code = key + 8;
 	xkb_keysym_t sym = xkb_state_key_get_one_sym(xstate, code);
 	if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
-		if (ntyped)
+		/* Nothing is checked while the suspend asked for is under way: an unlock in that
+		 * moment would let the machine sleep, and wake, unlocked. */
+		if (ntyped && asleep < 0)
 			submit();
 	} else if (sym == XKB_KEY_BackSpace) {
 		while (ntyped && (typed[ntyped - 1] & 0xc0) == 0x80)
@@ -333,15 +478,17 @@ static void keyboard_key(void *data, struct wl_keyboard *kb, uint32_t serial, ui
 	} else {
 		char buf[8];
 		int n = xkb_state_key_get_utf8(xstate, code, buf, sizeof buf);
+		/* The first character of an entry asks what unlocks, so nothing is typed under a
+		 * label that no longer holds; one that finds it changed is dropped with it. */
+		if (n > 0 && !ntyped && relabel(kind_now()))
+			n = 0;
 		if (n > 0 && n < (int)sizeof buf && (unsigned char)buf[0] >= 0x20 && buf[0] != 0x7f && ntyped + (size_t)n < sizeof typed) {
 			memcpy(typed + ntyped, buf, (size_t)n);
 			ntyped += (size_t)n;
-			explicit_bzero(buf, sizeof buf);
 		}
-		if (refused && !strncmp(status, "WRONG", 5)) {
-			snprintf(status, sizeof status, "LOCKED");
-			refused = 0;
-		}
+		explicit_bzero(buf, sizeof buf);
+		if (refused && !strncmp(status, "WRONG", 5))
+			show_kind();
 	}
 	redraw();
 }
@@ -451,13 +598,35 @@ static int lock_session(void)
 		say("the compositor offers no session lock");
 		return 1;
 	}
+	relabel(kind_now());
 	lock = ext_session_lock_manager_v1_lock(manager);
 	ext_session_lock_v1_add_listener(lock, &lock_listener, NULL);
 	struct output *o;
 	wl_list_for_each(o, &outputs, link)
 		cover(o);
-	while (!done && !unlocked && wl_display_dispatch(display) != -1)
-		;
+	/* The display's events, and with --suspend the daemon's answer once the machine woke. */
+	int fd = wl_display_get_fd(display), gone = 0;
+	while (!gone && !done && !unlocked) {
+		if (wl_display_prepare_read(display) != 0) {
+			gone = wl_display_dispatch_pending(display) < 0;
+			continue;
+		}
+		wl_display_flush(display);
+		struct pollfd p[2] = { { .fd = fd, .events = POLLIN }, { .fd = asleep, .events = POLLIN } };
+		int r = poll(p, asleep >= 0 ? 2 : 1, asleep >= 0 ? suspend_left() : -1);
+		if (r < 0) {
+			wl_display_cancel_read(display);
+			gone = errno != EINTR;
+			continue;
+		}
+		if (p[0].revents)
+			gone = wl_display_read_events(display) < 0;
+		else
+			wl_display_cancel_read(display);
+		gone = gone || wl_display_dispatch_pending(display) < 0;
+		if (asleep >= 0 && (r == 0 || p[1].revents))
+			woke(r > 0);
+	}
 	if (unlocked) {
 		ext_session_lock_v1_unlock_and_destroy(lock);
 		/* Screens the idle watcher turned off come on with the unlock, should it be gone:
@@ -681,18 +850,20 @@ int main(int argc, char **argv)
 			return watch_idle(secs, blank);
 		}
 	}
-	if (argc != 1) {
-		fputs("usage: kryptik-lock [--idle SECONDS [--blank SECONDS]]   (locks the session until the login\n"
-		      "       password is typed; with --idle, each time the session has had no input that long,\n"
-		      "       and the screens go off --blank later, 60 s unless given, 0 never)\n", stderr);
+	suspend_wanted = argc == 2 && !strcmp(argv[1], "--suspend");
+	if (argc != 1 && !suspend_wanted) {
+		fputs("usage: kryptik-lock [--suspend | --idle SECONDS [--blank SECONDS]]   (locks the session\n"
+		      "       until the login password is typed; with --suspend, then suspends the machine;\n"
+		      "       with --idle, each time the session has had no input that long, and the screens\n"
+		      "       go off --blank later, 60 s unless given, 0 never)\n", stderr);
 		return 2;
 	}
 	/* A refused pipe write is told by write's return, not a signal. */
 	signal(SIGPIPE, SIG_IGN);
 	/* The compositor keeps a session locked when its lock dies and takes no keys while
 	 * locked, so nothing else could unlock it: a lock a signal killed, or one that lost
-	 * the display while locked, locks again. */
-	for (;;) {
+	 * the display while locked, locks again, and asks for no second suspend. */
+	for (;; suspend_wanted = 0) {
 		pid_t pid = fork();
 		if (pid <= 0)
 			return lock_session();

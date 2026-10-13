@@ -282,3 +282,25 @@ fn failed_job_says_why() {
     client.read_to_string(&mut got).unwrap();
     assert_eq!(got, "error: stop exited 3: zone \"alpha\" did not stop\n");
 }
+
+/// While the state partition is suspended: what unlocks is the state passphrase, everything else
+/// is refused, and the passphrase comes on a descriptor, under its own pause.
+#[test]
+fn a_suspended_state_answers_the_lock_alone() {
+    let mut pause = crate::password::Attempts::default();
+    assert_eq!(while_suspended(1000, "unlock-kind", None, &mut pause), "ok state\n");
+    for other in ["check-password", "run work", "status", "suspend", "stop work", ""] {
+        assert!(
+            while_suspended(1000, other, None, &mut pause).starts_with("error: suspended: "),
+            "{other:?} is refused, as the lock's check for a stale label expects"
+        );
+    }
+    assert_eq!(
+        while_suspended(1000, "resume-state", None, &mut pause),
+        "error: resume-state: the passphrase comes on a descriptor\n"
+    );
+    // Within the pause after a wrong one, nothing is read from the descriptor.
+    pause.failed(Instant::now());
+    let (r, _w) = pipe().unwrap();
+    assert_eq!(while_suspended(1000, "resume-state", Some(r), &mut pause), "error: wait 2 s\n");
+}

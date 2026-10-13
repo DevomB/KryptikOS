@@ -9,10 +9,18 @@
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              wifi-scan, answered once the nic zone has scanned
 //!              check-password, `password <password>`, `end` (the screen lock's)
+//!              unlock-kind, answered `ok login`, or `ok state` while the state
+//!                partition is suspended (the screen lock's)
+//!              suspend, answered `ok woke` once the machine has slept and woken
+//!              resume-state, the state partition's passphrase on one descriptor
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
 //!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
+//!
+//! While the state partition is suspended, unlock-kind and resume-state alone are answered,
+//! to whoever reached the socket: who may ask is checked in /etc/group, whose overlay keeps
+//! its copy on that partition, and the passphrase is what resume-state checks.
 //!
 //! `run` replies `ok <launcher pid>` once the zone's pid 1 exists and the
 //! launcher has not failed within SETTLE. One request is read at a time, for at
@@ -22,7 +30,7 @@
 use std::ffi::{CStr, CString};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -918,8 +926,10 @@ fn authorised(cfg: &ServeConfig, uid: u32) -> bool {
     }
 }
 
-/// Bind the socket and set its ownership and mode.
-fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
+/// Bind the socket and set its ownership and mode. `asleep`: the state partition is suspended,
+/// so /etc/group and /var wait for it; the group is then the one the socket's directory has,
+/// as the instance before this one left it, and the log directory is left alone.
+fn bind(cfg: &ServeConfig, asleep: bool) -> Result<UnixListener, String> {
     if cfg.developer {
         if let Some(d) = cfg.socket.parent() {
             let _ = std::fs::create_dir_all(d);
@@ -929,8 +939,14 @@ fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
         let _ = std::fs::set_permissions(&cfg.socket, std::fs::Permissions::from_mode(0o600));
         return Ok(l);
     }
-    let gid = gid_of_group(&cfg.group).ok_or_else(|| format!("no group {:?}; nobody could connect", cfg.group))?;
     let dir = cfg.socket.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(SOCKET_DIR));
+    let gid = if asleep {
+        std::fs::metadata(&dir)
+            .map(|m| std::os::unix::fs::MetadataExt::gid(&m))
+            .map_err(|e| format!("{}: {e}; the state partition is suspended, so its group cannot be looked up", dir.display()))?
+    } else {
+        gid_of_group(&cfg.group).ok_or_else(|| format!("no group {:?}; nobody could connect", cfg.group))?
+    };
     // Only the default directory becomes root:kryptik 0750, so the group alone reaches the socket;
     // a --socket one is left as found.
     if dir == Path::new(SOCKET_DIR) {
@@ -944,7 +960,9 @@ fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
     let csock = CString::new(cfg.socket.display().to_string()).unwrap();
     unsafe { libc::chown(csock.as_ptr(), 0, gid) };
     let _ = std::fs::set_permissions(&cfg.socket, std::fs::Permissions::from_mode(0o660));
-    let _ = std::fs::create_dir_all(&cfg.log_dir);
+    if !asleep {
+        let _ = std::fs::create_dir_all(&cfg.log_dir);
+    }
     Ok(l)
 }
 
@@ -1045,6 +1063,14 @@ fn net_summary(line: &str) -> Option<String> {
     })
 }
 
+/// Wrong secrets in a row, each with its own pause: the login password at the screen lock, and
+/// the state partition's passphrase at resume.
+#[derive(Default)]
+struct Pauses {
+    login: crate::password::Attempts,
+    state: crate::password::Attempts,
+}
+
 /// `check-password`, the screen lock's: the password on a line of its own, checked against the
 /// peer's own login entry. The reply never repeats it.
 fn check_password(cfg: &ServeConfig, uid: u32, text: &str, attempts: &mut crate::password::Attempts) -> String {
@@ -1065,14 +1091,66 @@ fn check_password(cfg: &ServeConfig, uid: u32, text: &str, attempts: &mut crate:
     }
 }
 
+/// The request's first line asks about the state partition while it is suspended, the passphrase
+/// on `carried` for resume-state. Nothing here reads a file on that partition.
+fn while_suspended(uid: u32, first: &str, carried: Option<OwnedFd>, pause: &mut crate::password::Attempts) -> String {
+    match first {
+        "unlock-kind" => "ok state\n".into(),
+        "resume-state" => {
+            let now = Instant::now();
+            if let Some(w) = pause.paused(now) {
+                return format!("error: {w}\n");
+            }
+            let Some(fd) = carried else {
+                return "error: resume-state: the passphrase comes on a descriptor\n".into();
+            };
+            let pass = match crate::volume::Passphrase::from_fd(fd.into_raw_fd()) {
+                Ok(p) => p,
+                Err(e) => return format!("error: {e}\n"),
+            };
+            match crate::suspend::resume_state(&pass) {
+                Ok(thawed) => {
+                    pause.passed();
+                    eprintln!("kryptikd serve: uid {uid}: the state partition has its key again; thawed {thawed:?}");
+                    "ok\n".into()
+                }
+                Err(crate::suspend::ResumeError::Wrong) => {
+                    pause.failed(now);
+                    eprintln!("kryptikd serve: uid {uid}: a wrong passphrase for the state partition");
+                    "error: wrong passphrase\n".into()
+                }
+                Err(crate::suspend::ResumeError::Failed(e)) => {
+                    eprintln!("kryptikd serve: uid {uid}: the state partition's resume failed: {e}");
+                    format!("error: {e}\n")
+                }
+            }
+        }
+        _ => "error: suspended: the state partition waits for its passphrase at the screen lock\n".into(),
+    }
+}
+
 /// Serve one connection; a started launch is returned and a slow command pushed to `jobs`.
-fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, attempts: &mut crate::password::Attempts) -> Option<Pending> {
+/// `launching`: a launch awaits its zone, which a suspend must not freeze half made.
+fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut Pauses, launching: bool) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let Ok(peer) = peer_cred(fd) else {
         reply(&conn, "error: unidentified peer\n");
         return None;
     };
     let uid = peer.uid;
+    if crate::suspend::state_suspended() {
+        let said = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
+            Ok((mut raw, carried)) => {
+                let first = String::from_utf8_lossy(raw.split(|&b| b == b'\n').next().unwrap_or_default()).into_owned();
+                // The rest may hold a password: wiped, never read.
+                raw.fill(0);
+                while_suspended(uid, &first, carried, &mut pauses.state)
+            }
+            Err(e) => format!("error: {e}\n"),
+        };
+        reply(&conn, &said);
+        return None;
+    }
     if !authorised(cfg, uid) {
         reply(&conn, &format!("error: uid {uid} is not in group {}\n", cfg.group));
         eprintln!("kryptikd serve: refused uid {uid} (pid {})", peer.pid);
@@ -1090,7 +1168,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, attempts: &m
     // The bytes as read are wiped once copied: a request may carry a password or a passphrase.
     raw.fill(0);
     if text.lines().next() == Some("check-password") {
-        let said = check_password(cfg, uid, &text, attempts);
+        let said = check_password(cfg, uid, &text, &mut pauses.login);
         let mut text = text;
         // SAFETY: zero bytes are valid UTF-8.
         unsafe { text.as_bytes_mut() }.fill(0);
@@ -1153,6 +1231,42 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, attempts: &m
                     reply(&conn, &format!("ok {line}\n"));
                 }
                 Err(why) => reply(&conn, &format!("error: {why}\n")),
+            }
+        }
+        "unlock-kind" => reply(&conn, "ok login\n"),
+        "resume-state" => reply(&conn, "error: not suspended: the state partition has its key\n"),
+        "suspend" => {
+            let refused = if cfg.developer {
+                Some("a developer instance suspends nothing")
+            } else if launching {
+                Some("a zone is starting")
+            } else if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
+                Some("an update is being installed")
+            } else {
+                None
+            };
+            if let Some(why) = refused {
+                reply(&conn, &format!("error: {why}\n"));
+                return None;
+            }
+            match crate::suspend::seal() {
+                Err(e) => {
+                    eprintln!("kryptikd serve: uid {uid} asked to suspend: {e}");
+                    reply(&conn, &format!("error: {e}\n"));
+                }
+                Ok(zones) => {
+                    eprintln!("kryptikd serve: uid {uid} asked to suspend: froze {zones:?}; dropped the state partition's key");
+                    match crate::suspend::sleep() {
+                        Ok(()) => {
+                            eprintln!("kryptikd serve: woke; the state partition waits for its passphrase");
+                            reply(&conn, "ok woke\n");
+                        }
+                        Err(e) => {
+                            eprintln!("kryptikd serve: the machine did not sleep: {e}");
+                            reply(&conn, &format!("error: the machine did not sleep: {e}; the state partition waits for its passphrase\n"));
+                        }
+                    }
+                }
             }
         }
         "stop" => {
@@ -1375,6 +1489,9 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, attempts: &m
 const NOTICE_EVERY: Duration = Duration::from_secs(3600);
 
 pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
+    // First, before anything that could read /etc or /var: a daemon started again while the state
+    // partition is suspended must not wait on it, as it is what gives the partition its key.
+    let asleep = crate::suspend::state_suspended();
     let cfg = match config_from(zones_dir, args) {
         Ok(c) => c,
         Err(e) => {
@@ -1382,7 +1499,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let listener = match bind(&cfg) {
+    let listener = match bind(&cfg, asleep) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("kryptikd serve: {e}");
@@ -1410,18 +1527,21 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
-    // Wrong passwords at the screen lock, kept across connections.
-    let mut attempts = crate::password::Attempts::default();
+    let mut pauses = Pauses::default();
     // The login prompt carries what `kryptik update status` says of a stale statement, on the
     // installed system's instance: checked as it starts, then hourly, as days are what count.
     let mut notice_due = (!cfg.developer).then(Instant::now);
     loop {
         if notice_due.is_some_and(|due| Instant::now() >= due) {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-            let notice = Path::new(crate::update::LOGIN_NOTICE);
-            let since = crate::update::expecting_since();
-            if let Err(e) = crate::update::refresh_login_notice(Path::new(crate::update::STATE_DIR), notice, now, since) {
-                eprintln!("kryptikd serve: {e}");
+            // The update state is on the state partition: while that is suspended the notice
+            // keeps, and the daemon stays free to answer the screen lock.
+            if !crate::suspend::state_suspended() {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                let notice = Path::new(crate::update::LOGIN_NOTICE);
+                let since = crate::update::expecting_since();
+                if let Err(e) = crate::update::refresh_login_notice(Path::new(crate::update::STATE_DIR), notice, now, since) {
+                    eprintln!("kryptikd serve: {e}");
+                }
             }
             notice_due = Some(Instant::now() + NOTICE_EVERY);
         }
@@ -1532,7 +1652,8 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             match listener.accept() {
                 Ok((conn, _)) => {
                     let _ = conn.set_nonblocking(false);
-                    if let Some(p) = handle(&cfg, conn, &mut jobs, &mut attempts) {
+                    let launching = !pending.is_empty();
+                    if let Some(p) = handle(&cfg, conn, &mut jobs, &mut pauses, launching) {
                         pending.push(p);
                     }
                 }

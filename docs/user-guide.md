@@ -308,6 +308,16 @@ key, a click or the pointer moving; to change that, write the minutes to
 minute after it locks, the screens turn off; any key or movement turns them
 on again, and that key goes to the lock.
 
+`kryptik suspend`, from a terminal of zone 0's, locks the screen and puts
+the machine to sleep with the state partition's key wiped from memory. On
+waking the lock shows STATE PASSPHRASE: type the passphrase the machine asks
+for at boot, not the login password, and Enter. Until then everything kept on
+the state partition waits, the zones are frozen, and the lock takes nothing
+else; a wrong passphrase waits as a wrong password does. The zones carry on
+where they were once it is given. An encrypted zone's volume keeps its key
+across the sleep, as its zone is frozen, not stopped. The lid and the power
+key do not suspend the machine yet.
+
 Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. A zone with encrypted storage asks for its passphrase when it starts,

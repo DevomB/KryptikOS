@@ -179,7 +179,8 @@ most a card's option ROM by its hash), with a firmware password that clearing
 the firmware's settings does not remove, closes that
 ([user guide](user-guide.md#1-boot-the-medium)).
 
-**Not defended while running or suspended.** Keys are in RAM; see
+**Not defended while running; while suspended, the state partition's key is
+gone and memory is not.** See
 [coercion, and access to a running or suspended machine](#coercion-and-access-to-a-running-or-suspended-machine).
 
 ### User error across zones
@@ -211,8 +212,12 @@ ship as vendor binaries (ADR-012).
 
 ### Coercion, and access to a running or suspended machine
 
-Keys are in RAM while zones run. Cold-boot and DMA attacks on a running or
-suspended machine are out of scope, and no software helps against coercion.
+Keys are in RAM while zones run. A machine suspended by `kryptik suspend`
+has wiped the state partition's key, and resumes only with its passphrase;
+the TPM does not unlock it. A running zone's volume keeps its key across
+the suspend, as its zone is frozen, not stopped. What zone 0 and the zones
+held in memory is still there, and cold-boot and DMA attacks on a running
+or suspended machine stay out of scope. No software helps against coercion.
 The screen lock (Alt+Shift+l) keeps whoever is at the keyboard without the
 login password from every window, but takes no key out of RAM.
 

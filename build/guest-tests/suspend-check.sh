@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# Suspend suite, run as root in the installed guest by tools/image/suspend-test.sh. The host boots
+# it with S3 on, a virtual GPU and keyboard, and acts on these lines:
+#   GT KEY-LOCK                      press Alt+Shift+l (the screen lock)
+#   GT LOCK-TYPE-STATE-WRONG         type a wrong passphrase and Enter
+#   GT LOCK-TYPE-STATE 1|2           type the second state passphrase and Enter
+#   GT SLEEPING                      wait for the guest to sleep, dump its memory, wait past
+#                                    the watchdog's timeout, then wake it
+#   GT STATE-KEY HEX, GT ZONE-KEY HEX  what the dump must not hold, and what it must
+#   GT END
+# Verdicts: "GT PASS|FAIL|INFO name - detail".
+#
+# While the state partition is suspended, whatever reaches /var, /home, /root or /etc's upper
+# layer waits for it, this script included: in those stretches it reads only /run, /proc and
+# /sys, and starts nothing that looks a user up (su, id) or reads the clock's zone (date).
+set -u
+# The root login's home is on the state partition.
+cd / || exit 1
+KD=/usr/bin/kryptikd
+R=/var/lib/kryptik/zones
+USER_NAME="${1:-tester}"
+STATE_PW="${2:-}"
+# The host types the second passphrase, the seed reversed: only the seed crosses the serial line,
+# so a copy of the passphrase in the guest's memory came from its way to the lock and back.
+SEED="${3:-}"
+UID_="$(id -u "$USER_NAME")"
+RT="/run/user/$UID_"
+OUT=/run/kryptik-suspend-check
+mkdir -p "$OUT"; chmod 700 "$OUT"
+PASS=0; FAIL=0
+pass() { echo "GT PASS $1${2:+ - $2}"; PASS=$((PASS + 1)); }
+fail() { echo "GT FAIL $1${2:+ - $2}"; FAIL=$((FAIL + 1)); }
+info() { echo "GT INFO $*"; }
+as_user() { su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 $*"; }
+wait_for() {   # wait_for SECONDS CMD...
+    local n="$1"; shift
+    while [[ "$n" -gt 0 ]]; do "$@" >/dev/null 2>&1 && return 0; n=$((n - 1)); sleep 1; done
+    return 1
+}
+slog="$RT/kryptik/session.log"
+said() { grep -c "^kryptik-lock: $1" "$slog" 2>/dev/null; }
+more() { [[ "$(said "$1")" -gt "$2" ]]; }
+# The state partition's dm flag, from sysfs alone: 1 suspended, 0 not.
+state_flag() {
+    local d
+    for d in /sys/block/dm-*; do
+        [[ "$(< "$d/dm/name")" == kryptik-state ]] && { echo "$(< "$d/dm/suspended")"; return; }
+    done
+    echo none
+}
+state_is() { [[ "$(state_flag)" == "$1" ]]; }
+# Each running zone and whether its cgroup says it is frozen, from /run and cgroupfs.
+zones_frozen() {
+    local z cg out=""
+    for z in /run/kryptik/zones/*/; do
+        z="${z%/}"; cg="$(< "$z/cgroup")" 2>/dev/null || continue
+        [[ -f "$cg/cgroup.events" ]] || continue
+        out+="${z##*/}=$(grep -c '^frozen 1$' "$cg/cgroup.events") "
+    done
+    echo "${out% }"
+}
+all_frozen() { local f; f="$(zones_frozen)"; [[ -n "$f" && "$f" != *=0* ]]; }
+none_frozen() { local f; f="$(zones_frozen)"; [[ -n "$f" && "$f" != *=1* ]]; }
+# Processes waiting on a disk (state D) in two looks 3 s apart, but the writer, which must.
+blocked() {
+    local p s second="" first=()
+    for p in /proc/[0-9]*; do s="$(< "$p/stat")" 2>/dev/null || continue; [[ "${s##*) }" == D* ]] && first+=("${p#/proc/}"); done
+    sleep 3
+    for p in "${first[@]}"; do
+        [[ "$p" == "$writer" ]] && continue
+        s="$(< "/proc/$p/stat")" 2>/dev/null || continue
+        [[ "${s##*) }" == D* ]] && second+=" $p:$(< "/proc/$p/comm")"
+    done
+    echo "${second# }"
+}
+boot_id="$(< /proc/sys/kernel/random/boot_id)"
+
+echo "GT BEGIN"
+[[ "$(id -u)" = 0 ]] || { fail "root" "this must run as root"; echo "GT END"; exit 1; }
+state_dev="$(sed -n 's/^state_dev=//p' /run/kryptik/boot-identity 2>/dev/null)"
+[[ -b "$state_dev" && -n "$STATE_PW" && "$SEED" =~ ^[0-9a-f]{12}$ ]] || { fail "setup" "state device '${state_dev}', a passphrase and a 12-digit seed are needed"; echo "GT END"; exit 1; }
+
+# --- the second passphrase and the keys -------------------------------------------------------
+# Files on /run, removed once read: tmpfs frees, and the kernel zeroes, the pages they held.
+printf '%s' "$STATE_PW" > "$OUT/old"
+printf '%s' "$(rev <<<"$SEED")" > "$OUT/new"
+if cryptsetup luksAddKey --batch-mode --pbkdf argon2id --pbkdf-force-iterations 4 --pbkdf-memory 65536 \
+        --key-file "$OUT/old" "$state_dev" "$OUT/new" > "$OUT/addkey.out" 2>&1; then
+    pass "second-passphrase" "a keyslot for the passphrase the host types"
+else
+    fail "second-passphrase" "$(tail -2 "$OUT/addkey.out" | tr '\n' ' ')"
+fi
+rm -f "$OUT/new"
+# A volume key, as hex: the dump is searched for its bytes. The file holding it goes at once.
+vkey() {   # vkey DEVICE PASSPHRASE-FILE
+    cryptsetup luksDump --dump-volume-key --batch-mode --key-file "$2" --volume-key-file "$OUT/vk" "$1" > /dev/null 2>&1
+    od -An -v -tx1 "$OUT/vk" 2>/dev/null | tr -dc '0-9a-f'
+    rm -f "$OUT/vk"
+}
+skey="$(vkey "$state_dev" "$OUT/old")"
+rm -f "$OUT/old"
+[[ "${#skey}" -ge 64 ]] && echo "GT STATE-KEY $skey" || fail "state-key-read" "cryptsetup luksDump gave ${#skey} hex digits"
+
+# --- the session, a zone with a volume, one without, and a writer on /var -----------------------
+su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/dev/null 2>&1 &'
+wait_for 30 test -S "$RT/wayland-0" && pass "session-up" || fail "session-up" "$(tail -3 "$slog" 2>/dev/null | tr '\n' ' ')"
+# The chrome's idle lock would lock the session under the suite.
+wait_for 20 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 600'
+PP="$OUT/zone-pass"; printf 'zone-pass\n' > "$PP"; chmod 600 "$PP"
+UPP="$RT/zone-pass"; cp "$PP" "$UPP"; chown "$USER_NAME" "$UPP"; chmod 600 "$UPP"
+"$KD" volume init work --size 64M --passphrase-file "$PP" > "$OUT/vol.out" 2>&1 || fail "volume-init" "$(tail -1 "$OUT/vol.out")"
+# A tick a second into the zone's home, /home/ZONE inside it: on its volume for work, on the
+# state partition for untrusted.
+tick() { echo "sh -c \"while :; do date +%s >> /home/$1/ticks; sleep 1; done\""; }
+as_user "kryptik-launch --no-display --passphrase-fd 3 work -- $(tick work) 3<$UPP" > "$OUT/launch-work.out" 2>&1 &
+as_user "kryptik-launch --no-display untrusted -- $(tick untrusted)" > "$OUT/launch-untrusted.out" 2>&1 &
+ticks() { wc -l < "$R/$1/ticks" 2>/dev/null || echo 0; }
+if wait_for 60 test -s "$R/work/ticks" && wait_for 60 test -s "$R/untrusted/ticks"; then
+    pass "zones-ticking" "work (its own volume) and untrusted count a tick a second"
+else
+    fail "zones-ticking" "work: $(tail -1 "$OUT/launch-work.out" 2>/dev/null); untrusted: $(tail -1 "$OUT/launch-untrusted.out" 2>/dev/null)"
+fi
+zkey="$(vkey /var/lib/kryptik/volumes/work.luks "$PP")"
+[[ "${#zkey}" -ge 64 ]] && echo "GT ZONE-KEY $zkey" || fail "zone-key-read" "cryptsetup luksDump gave ${#zkey} hex digits"
+WLOG=/var/log/kryptik/suspend-writer
+: > "$WLOG"
+( n=0; while :; do n=$((n + 1)); echo "$n" >> "$WLOG" || exit; sleep 1; done ) &
+writer=$!
+wait_for 10 test -s "$WLOG"
+
+# --- the way back, proven awake ---------------------------------------------------------------
+# The key dropped and the zones frozen with the machine up, then every cache of dentries and
+# inodes dropped: a lookup or a read that reaches the partition now waits for it.
+if "$KD" suspend --awake > "$OUT/awake.out" 2>&1 && state_is 1; then
+    pass "state-suspended" "$(tr '\n' ' ' < "$OUT/awake.out")"
+else
+    fail "state-suspended" "flag $(state_flag): $(tr '\n' ' ' < "$OUT/awake.out")"
+fi
+echo 2 > /proc/sys/vm/drop_caches
+all_frozen && pass "zones-frozen" "$(zones_frozen)" || fail "zones-frozen" "$(zones_frozen)"
+sleep 3
+w="$(< "/proc/$writer/stat")"
+[[ "${w##*) }" == D* ]] && pass "writer-waits" "the writer on /var waits for the partition" || info "writer-waits: the writer's state is ${w##*) }"
+# A client's request is refused at once, not left waiting: the daemon reads nothing on the
+# partition to answer. Root asks here, as the suspended daemon answers whoever reached its socket.
+said_now="$(timeout 10 /usr/bin/kryptik-launch --info work 2>&1)"; rc=$?
+if [[ "$rc" -eq 1 && "$said_now" == *"error: suspended"* ]]; then
+    pass "client-told-suspended" "$said_now"
+else
+    fail "client-told-suspended" "exit ${rc}: ${said_now}"
+fi
+locked0="$(said locked)"; refused0="$(said refused)"; unlocked0="$(said unlocked)"
+echo "GT KEY-LOCK"
+# Started now by the compositor's key, the lock asks the daemon what unlocks and is told.
+if wait_for 30 more locked "$locked0" && grep -q '^kryptik-lock: the state partition is suspended: its passphrase unlocks' "$slog"; then
+    pass "lock-asks-for-state" "the lock started with the state partition suspended, and asks for its passphrase"
+else
+    fail "lock-asks-for-state" "$(grep '^kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
+stuck="$(blocked)"
+[[ -z "$stuck" ]] && pass "nothing-else-waits" "only the writer waits on the partition: the lock, dwl, the chrome, the daemon, the watchdog feeder and s6 run on" || fail "nothing-else-waits" "$stuck"
+echo "GT LOCK-TYPE-STATE-WRONG"
+if wait_for 60 more refused "$refused0" && grep '^kryptik-lock: refused' "$slog" | tail -1 | grep -q 'wrong passphrase$' && state_is 1; then
+    pass "lock-refuses-wrong-passphrase" "$(grep '^kryptik-lock: refused' "$slog" | tail -1); the partition stays suspended"
+else
+    fail "lock-refuses-wrong-passphrase" "flag $(state_flag): $(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+fi
+# Past the pause a wrong one starts.
+sleep 3
+echo "GT LOCK-TYPE-STATE 1"
+if wait_for 60 more unlocked "$unlocked0" && state_is 0; then
+    pass "passphrase-resumes" "the passphrase typed at the lock gave the partition its key, and unlocked"
+else
+    fail "passphrase-resumes" "flag $(state_flag): $(grep '^kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
+wait_for 15 none_frozen && pass "zones-thawed" "$(zones_frozen)" || fail "zones-thawed" "$(zones_frozen)"
+# Its file is read only now: in the window, reading it would have waited too.
+n_before="$(wc -l < "$WLOG")"
+if wait_for 15 test "$(wc -l < "$WLOG")" -gt "$n_before"; then
+    pass "writer-resumes" "the writer goes on, past line ${n_before}"
+else
+    fail "writer-resumes" "still ${n_before} lines"
+fi
+t_work="$(ticks work)"; t_untrusted="$(ticks untrusted)"
+if wait_for 15 test "$(ticks work)" -gt "$t_work" && wait_for 15 test "$(ticks untrusted)" -gt "$t_untrusted"; then
+    pass "zones-tick-again" "work and untrusted count on"
+else
+    fail "zones-tick-again" "work $(ticks work) after ${t_work}, untrusted $(ticks untrusted) after ${t_untrusted}"
+fi
+
+# --- a real sleep ----------------------------------------------------------------------------
+# The user's own way: the lock, then the daemon. The host sees the guest sleep, dumps its memory,
+# waits past the watchdog's timeout and wakes it.
+unlocked0="$(said unlocked)"
+as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/lock-suspend.out" 2>&1 &
+if wait_for 30 grep -q '^kryptik-lock: suspending' "$OUT/lock-suspend.out"; then
+    echo "GT SLEEPING"
+else
+    fail "suspend-asked" "$(tr '\n' ' ' < "$OUT/lock-suspend.out")"
+fi
+# The lock tells the daemon's answer once the machine is back.
+if wait_for 300 grep -q '^kryptik-lock: suspend: ok woke' "$OUT/lock-suspend.out" && state_is 1; then
+    pass "slept-and-woke" "the machine slept and woke with the state partition suspended"
+else
+    fail "slept-and-woke" "flag $(state_flag): $(tr '\n' ' ' < "$OUT/lock-suspend.out")"
+fi
+grep -q '^kryptik-lock: the state partition is suspended: its passphrase unlocks' "$OUT/lock-suspend.out" \
+    && pass "woke-to-state-prompt" "the lock asks for the state passphrase as soon as the machine is back" \
+    || fail "woke-to-state-prompt" "$(tr '\n' ' ' < "$OUT/lock-suspend.out")"
+# Minutes at the prompt, the caches dropped again: the feeder must go on feeding the watchdog,
+# whose 60 s would otherwise reset the machine under the prompt.
+echo 2 > /proc/sys/vm/drop_caches
+sleep 180
+if [[ "$(< /proc/sys/kernel/random/boot_id)" == "$boot_id" ]] && pgrep -f /usr/libexec/kryptik/watchdog.sh > /dev/null; then
+    pass "prompt-outlasts-watchdog" "three minutes at the state prompt after waking, the same boot, the feeder running"
+else
+    fail "prompt-outlasts-watchdog" "boot_id $(< /proc/sys/kernel/random/boot_id), was ${boot_id}"
+fi
+echo "GT LOCK-TYPE-STATE 2"
+if wait_for 60 grep -q '^kryptik-lock: unlocked' "$OUT/lock-suspend.out" && state_is 0; then
+    pass "resumed-after-sleep" "the passphrase gave the partition its key after the sleep, and unlocked"
+else
+    fail "resumed-after-sleep" "flag $(state_flag): $(tail -3 "$OUT/lock-suspend.out" | tr '\n' ' ')"
+fi
+wait_for 15 none_frozen && pass "zones-thawed-after-sleep" "$(zones_frozen)" || fail "zones-thawed-after-sleep" "$(zones_frozen)"
+
+# --- teardown ------------------------------------------------------------------------------
+kill "$writer" 2>/dev/null
+for z in untrusted work; do "$KD" stop "$z" > /dev/null 2>&1; done
+pkill -u "$USER_NAME" -x dwl 2>/dev/null
+echo "GT SUMMARY passed=${PASS} failed=${FAIL}"
+echo "GT END"

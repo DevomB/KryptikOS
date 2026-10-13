@@ -52,6 +52,9 @@ USAGE:
                                     announced, or only when asked (the default)
     $PROG update apply              install what has arrived; the next boot
                                     tries it once and falls back if it fails
+    $PROG suspend                   lock the screen, then sleep with the state
+                                    partition's key dropped; on waking, the lock
+                                    asks for the state passphrase (in the session)
     $PROG state passphrase          change the passphrase the state partition
                                     asks for at boot (root; the old one first,
                                     then a new one of 8 characters or more)
@@ -391,6 +394,14 @@ cmd_state() {
     echo "the state passphrase is changed; the next boot asks for the new one"
 }
 
+# The lock comes first, and asks the launch daemon once the screen is locked: no session sleeps
+# open. On waking it asks for the state passphrase, as the partition's key is gone.
+cmd_suspend() {
+    [[ $# -eq 0 ]] || die "$PROG suspend takes nothing" 2
+    [[ -n "${WAYLAND_DISPLAY:-}" ]] || die "suspend locks the desktop's screen first: run it in the session, from a zone 0 terminal"
+    exec kryptik-lock --suspend
+}
+
 # The layout's name is kept in the firmware and its keymaps on the verified
 # root (docs/design/keyboard-layout.md).
 cmd_keyboard() {
@@ -448,6 +459,7 @@ case "$cmd" in
     wifi)    cmd_wifi "$@" ;;
     update)  cmd_update "$@" ;;
     state)   cmd_state "$@" ;;
+    suspend) cmd_suspend "$@" ;;
     keyboard) cmd_keyboard "$@" ;;
     ""|help) usage ;;
     # Commands users will expect, answered with why they do not exist.

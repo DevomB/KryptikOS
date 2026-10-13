@@ -22,6 +22,7 @@ mod seccomp;
 mod serve;
 mod spawn;
 mod supplicant;
+mod suspend;
 mod time;
 mod update;
 mod volume;
@@ -66,6 +67,11 @@ USAGE:
                                       close volumes no running zone holds
     kryptikd clipboard move FROM TO   the zone 0 gesture: move FROM's clipboard
                                       payload to TO, emptying FROM (both running)
+    kryptikd suspend [--awake]        freeze every zone, suspend the state partition
+                                      with its key wiped, and sleep (root; the
+                                      session asks the launch daemon, after its
+                                      screen lock); --awake keeps the machine up,
+                                      its state partition waiting for the passphrase
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
@@ -275,6 +281,7 @@ fn main() -> ExitCode {
             }
         },
         "clipboard" => cmd_clipboard(&args),
+        "suspend" => cmd_suspend(&args),
         "transfer" => {
             eprintln!(
                 "kryptikd: 'transfer' is a zone verb on the broker socket, sent by the zone\n\
@@ -1014,6 +1021,47 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
 
 fn wifi_dir_from(args: &[String]) -> PathBuf {
     PathBuf::from(value(args, "--wifi-dir").unwrap_or(wifi::DEFAULT_DIR))
+}
+
+/// `kryptikd suspend [--awake]`: the launch daemon's suspend, for root. With --awake the key is
+/// dropped and the zones frozen, and the machine stays up: the way back is the same.
+fn cmd_suspend(args: &[String]) -> ExitCode {
+    let awake = match args {
+        [_] => false,
+        [_, flag] if flag == "--awake" => true,
+        _ => {
+            eprintln!("usage: kryptikd suspend [--awake]");
+            return ExitCode::from(2);
+        }
+    };
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!("kryptikd suspend: must run as root; the session asks through kryptik-lock --suspend");
+        return ExitCode::from(2);
+    }
+    if suspend::state_suspended() {
+        eprintln!("kryptikd suspend: the state partition is suspended already");
+        return ExitCode::FAILURE;
+    }
+    match suspend::seal() {
+        Ok(zones) => println!("kryptikd suspend: froze {zones:?}; the state partition's key is dropped"),
+        Err(e) => {
+            eprintln!("kryptikd suspend: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    if awake {
+        return ExitCode::SUCCESS;
+    }
+    match suspend::sleep() {
+        Ok(()) => {
+            println!("kryptikd suspend: woke; the state partition waits for its passphrase at the screen lock");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd suspend: the machine did not sleep: {e}; the state partition waits for its passphrase all the same");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `kryptikd time floor | status | committed DIR` (docs/design/time.md). The
