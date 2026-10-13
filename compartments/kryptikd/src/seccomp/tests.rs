@@ -632,13 +632,14 @@ fn the_proxy_makes_its_calls_alone() {
             libc::SYS_socket => [1, 1 | 0x8_0000, 0, 0, 0, 0],
             libc::SYS_ioctl => [4, 0x5421, 0, 0, 0, 0],
             libc::SYS_mmap | libc::SYS_mprotect => [0, 4096, 3, 0, 0, 0],
+            libc::SYS_sendto => [5, 0x1000, 12, 0x4000, 0, 0],
             _ => [0; 6],
         };
         assert_eq!(call(nr, args), SECCOMP_RET_ALLOW, "{}", name_of(nr).unwrap_or("?"));
     }
     for nr in [
         libc::SYS_openat, libc::SYS_open, libc::SYS_clone, libc::SYS_clone3, libc::SYS_fork,
-        libc::SYS_execveat, libc::SYS_bind, libc::SYS_listen, libc::SYS_sendto, libc::SYS_kill,
+        libc::SYS_execveat, libc::SYS_bind, libc::SYS_listen, libc::SYS_kill,
         libc::SYS_memfd_create, libc::SYS_splice, libc::SYS_unshare, libc::SYS_ptrace, libc::SYS_seccomp,
     ] {
         assert_eq!(call(nr, [0; 6]), SECCOMP_RET_KILL_PROCESS, "{}", name_of(nr).unwrap_or("?"));
@@ -651,6 +652,8 @@ fn the_proxy_makes_its_calls_alone() {
     for (cmd, why) in [(0x5412, "TIOCSTI"), (0x5451, "FIOCLEX"), (0x8946, "SIOCETHTOOL"), (0x541B, "FIONREAD")] {
         assert_eq!(call(libc::SYS_ioctl, [4, cmd, 0, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "{why}");
     }
+    // A datagram to an address it names: another socket on the machine, not its peer.
+    assert_eq!(call(libc::SYS_sendto, [5, 0x1000, 12, 0, 0x2000, 16]), SECCOMP_RET_KILL_PROCESS);
     for nr in [libc::SYS_mmap, libc::SYS_mprotect] {
         assert_eq!(call(nr, [0, 4096, 0, 0, 0, 0]), SECCOMP_RET_ALLOW, "PROT_NONE, the stack guard");
         assert_eq!(call(nr, [0, 4096, 4, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "PROT_EXEC");

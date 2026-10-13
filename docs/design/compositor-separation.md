@@ -86,8 +86,9 @@ since the session user cannot switch uid:
   of memory, which its clients' queues fit, room for one process, and
   descriptors for its 32 clients and no more;
 - with `no_new_privs`, under a seccomp filter of its own calls, about
-  thirty of a zone's, with sockets only `AF_UNIX`, `ioctl` only to make a
-  descriptor nonblocking and no memory made executable; CI runs the static
+  thirty of a zone's, with sockets only `AF_UNIX`, `sendto` only to the
+  connected peer, `ioctl` only to make a descriptor nonblocking and no
+  memory made executable; CI runs the static
   proxy through its live tests under strace and fails on a call the list
   lacks (`tools/tests/proxy-calls.sh`). A Landlock ruleset grants only
   reading and executing its own program, which exec needs, so once it runs
