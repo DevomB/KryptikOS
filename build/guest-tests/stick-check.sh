@@ -100,6 +100,10 @@ plugged)
     else
         fail "stick-given-ro" "rc ${rc}: ${said}; holders ${dm:-none}; ro $(cat "/sys/block/$dm/ro" 2>/dev/null); info stick $(stick_of untrusted)"
     fi
+    # Nothing in zone 0 reads the stick through the mapping either (12-kryptik-stick.rules).
+    udevadm settle -t 10 2>/dev/null
+    probed="$(udevadm info --query=property --name="/dev/$dm" 2>/dev/null | grep '^ID_FS_')$(udevadm info --query=property --name="/dev/$P" 2>/dev/null | grep '^ID_FS_')"
+    if [[ "$dm" == dm-* && -z "$probed" ]]; then pass "stick-mapping-unprobed" "eudev read no filesystem through ${dm}, nor on ${P}"; else fail "stick-mapping-unprobed" "${dm:-no mapping}: $(oneline <<<"$probed")"; fi
     zrun untrusted -- sh -c 'kryptik-stick; kryptik-stick list /; cd /tmp && kryptik-stick get /hello.bin . && echo "SHA:$(sha256sum hello.bin | cut -d" " -f1)"; echo w > /tmp/w && kryptik-stick put /tmp/w /; echo "PUT-RC=$?"; echo "DEV:" /dev/*'
     if grep -q 'read-only' <<<"$ZOUT" && grep -qE ' hello\.bin$' <<<"$ZOUT"; then pass "stick-zone-lists" "$(grep -m1 'FAT' <<<"$ZOUT")"; else fail "stick-zone-lists" "rc ${ZRC}: $(oneline <<<"$ZOUT")"; fi
     if [[ -n "$SHA" ]] && grep -qx "SHA:${SHA}" <<<"$ZOUT"; then pass "stick-zone-copies" "hello.bin copied off whole"; else fail "stick-zone-copies" "want SHA:${SHA}: $(grep '^SHA:' <<<"$ZOUT")"; fi

@@ -111,7 +111,7 @@ DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
 rc=$?
 T2B="$(txt)"
 [[ "$rc" -eq 0 ]] && green "the stick rounds ran to their end" || red "the stick rounds did not run to their end"
-for name in stick-seen stick-untouched stick-listed stick-refused-vault stick-refused-net stick-given-ro \
+for name in stick-seen stick-untouched stick-listed stick-refused-vault stick-refused-net stick-given-ro stick-mapping-unprobed \
             stick-zone-lists stick-zone-copies stick-ro-refuses-write stick-no-node stick-ends-with-zone \
             stick-other-zone-refused stick-eject-frees stick-eject-kept-descriptor stick-mapping-gone stick-written \
             stick-holding stick-pulled-reads-fail stick-pulled-grant-ended stick-pulled-mapping-gone stick-no-oops \
