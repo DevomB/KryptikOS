@@ -208,9 +208,11 @@ floors are given with each layer.
     directory, and `cargo build --offline --locked` uses the `rust` layer.
     Stage 03's runner and stage 04's cache key stay as they are.
   - **The images' sources have a cache of their own.** They go under
-    `sources/images/`, keyed by `build/images/sources.lock`. The root's set
-    stays keyed by `sources.lock` alone, so a browser bump copies neither set
-    into the other's entry.
+    `sources/images/`, keyed by `build/images/sources.lock`, each named in
+    `sources/` by a link, so every tool finds it where it always has. The
+    root's set stays keyed by `sources.lock` alone, so a browser bump copies
+    neither set into the other's entry. A job that builds no image fetches
+    the root's alone (`fetch-sources.sh --root`).
   - **Mozilla's key comes from Mozilla.** The fingerprint is pinned like
     every other, confirmed by Mozilla's security blog post of August 2026.
     The key material is taken from the `KEY` file beside the release rather

@@ -2,26 +2,30 @@
 # Fetch and verify upstream source tarballs.
 #
 #   ./tools/fetch-sources.sh                    download and verify against sources.lock
+#   ./tools/fetch-sources.sh --root             only the root's, for a job that builds no image
 #   ./tools/fetch-sources.sh --lock             download and WRITE sources.lock
 #   ./tools/fetch-sources.sh --list             print the resolved manifest, download nothing
 #   ./tools/fetch-sources.sh --list-root        only the sources the root is built from
 #   ./tools/fetch-sources.sh --list-image NAME  only those software image NAME is built from
 #
 # The software images' sources are pinned in build/images/versions.env and locked in
-# build/images/sources.lock, so a change to them is no input of stage 04.
+# build/images/sources.lock, so a change to them is no input of stage 04. They are kept in
+# sources/images/, which has a cache of its own, each named in sources/ by a link where every
+# reader looks.
 # --lock trusts whatever downloads: audit sources.lock before committing it (docs/supply-chain.md).
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
 
-MODE="verify"; IMAGE=""
+MODE="verify"; IMAGE=""; ROOT_ONLY=0
 case "${1:-}" in
+    --root) ROOT_ONLY=1 ;;
     --lock) MODE="lock" ;;
     --list) MODE="list" ;;
     --list-root) MODE="list-root" ;;
     --list-image) MODE="list-image"; IMAGE="${2:?--list-image needs an image name}" ;;
     "")     ;;
-    *)      die "unknown argument: $1 (expected --lock, --list, --list-root, --list-image NAME, or nothing)" ;;
+    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, or nothing)" ;;
 esac
 
 # Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs.
@@ -176,7 +180,11 @@ MANIFEST
 # The software images' sources (build/images/versions.env), never installed in the root: the image
 # each is built into, then the row as above. Their checksums are in build/images/sources.lock.
 image_manifest() {
-    [[ -z "${KRYPTIK_FETCH_MANIFEST:-}" ]] || return 0
+    if [[ -n "${KRYPTIK_FETCH_MANIFEST:-}" ]]; then
+        # A test's images, when it gives any.
+        [[ -z "${KRYPTIK_FETCH_IMAGE_MANIFEST:-}" ]] || cat "$KRYPTIK_FETCH_IMAGE_MANIFEST"
+        return 0
+    fi
     local gnome="$MIRROR_GNOME"
     cat <<MANIFEST
 toolkit|pcre2|${V_PCRE2}|${MIRROR_GITHUB}/PCRE2Project/pcre2/releases/download/pcre2-${V_PCRE2}/pcre2-${V_PCRE2}.tar.bz2|sig|rule
@@ -280,10 +288,18 @@ fi
 total=0; fetched=0; cached=0
 while IFS='|' read -r owner name ver url _; do
     [[ -z "$name" ]] && continue
+    [[ "$ROOT_ONLY" -eq 0 || "$owner" == . ]] || continue
     total=$((total + 1))
     file="$(basename "$url")"
     dest="${KRYPTIK_SOURCES}/${file}"
     lock="$KRYPTIK_LOCK"; [[ "$owner" == . ]] || lock="$KRYPTIK_IMAGES_LOCK"
+    if [[ "$owner" != . ]]; then
+        mkdir -p "${KRYPTIK_SOURCES}/images"
+        # One fetched before images/ was made moves in.
+        if [[ -f "$dest" && ! -L "$dest" ]]; then mv -- "$dest" "${KRYPTIK_SOURCES}/images/${file}"; fi
+        ln -sfn "images/${file}" "$dest"
+        dest="${KRYPTIK_SOURCES}/images/${file}"
+    fi
 
     was_fetched=no
     if [[ -f "$dest" ]]; then

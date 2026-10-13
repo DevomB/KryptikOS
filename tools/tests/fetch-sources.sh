@@ -270,6 +270,53 @@ else
     red "--lock did not state that it records whatever is present"; show
 fi
 
+# --- a software image's sources ---------------------------------------------
+
+# Kept in sources/images/, the images' own cache, and named in sources/ by a link.
+printf 'upstream payload for delta-4.0\n' > "${UPSTREAM}/delta-4.0.tar.gz"
+IMANIFEST="${W}/image-manifest"
+printf 'toolkit|delta|4.0|file://%s/delta-4.0.tar.gz|probe|listing\n' "$UPSTREAM" > "$IMANIFEST"
+images_root() {
+    build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+    mkdir -p "${FAKE}/build/images"
+    printf '%s  delta-4.0.tar.gz\n' "$(sha_of "${UPSTREAM}/delta-4.0.tar.gz")" > "${FAKE}/build/images/sources.lock"
+}
+run_images() {
+    KRYPTIK_ROOT="$FAKE" KRYPTIK_FETCH_SELFTEST=1 KRYPTIK_FETCH_MANIFEST="$MANIFEST" \
+        KRYPTIK_FETCH_IMAGE_MANIFEST="$IMANIFEST" NO_COLOR=1 bash "$TOOL" "$@" > "$OUT" 2>&1
+    RC=$?
+}
+
+images_root
+run_images
+expect_pass "an image's source is fetched and verified against the images' lock" "4 package(s) verified"
+if [[ -f "${FAKE}/sources/images/delta-4.0.tar.gz" && ! -L "${FAKE}/sources/images/delta-4.0.tar.gz" \
+      && "$(readlink "${FAKE}/sources/delta-4.0.tar.gz")" == images/delta-4.0.tar.gz ]]; then
+    green "it is kept in sources/images/ and named in sources/ by a relative link"
+else
+    red "the image's source is not in sources/images/ behind a link"; ls -la "${FAKE}/sources" "${FAKE}/sources/images" 2>&1 | sed 's/^/        /'
+fi
+
+images_root
+run_images --root
+expect_pass "--root fetches the root's sources alone" "3 package(s) verified"
+if [[ ! -e "${FAKE}/sources/images/delta-4.0.tar.gz" ]]; then
+    green "--root leaves the images' sources alone"
+else
+    red "--root fetched an image's source"
+fi
+
+# A set cached before images/ existed has the image's file in sources/ itself.
+images_root
+cp "${UPSTREAM}/delta-4.0.tar.gz" "${FAKE}/sources/delta-4.0.tar.gz"
+run_images
+expect_pass "an image's source cached in sources/ itself still verifies" "1 cached"
+if [[ -L "${FAKE}/sources/delta-4.0.tar.gz" && -f "${FAKE}/sources/images/delta-4.0.tar.gz" ]]; then
+    green "it moves into sources/images/, a link left in its place"
+else
+    red "the image's source was not moved into sources/images/"
+fi
+
 # --- arguments and the selftest gate ----------------------------------------
 
 run --list

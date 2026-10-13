@@ -76,6 +76,7 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           sources: fetch
+          image-sources: ${{ github.ref_type == 'tag' && 'fetch' || '' }}
 
       # CI's gates once more, so a tag never outruns them.
       - name: The release's sources are signed, and their provenance holds
@@ -194,6 +195,7 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           sources: fetch
+          image-sources: fetch
 
       # One root-made tarball, keyed on the toolchain, the pins and stage 03; a change to any restarts stage 04 (about 45 minutes).
       - name: Stage 04-05 sysroot and kernel (cached)
@@ -616,6 +618,8 @@ jobs:
         with:
           vm: 'true'
           sources: restore
+          # The inputs suite checks every source against both locks; the other parts read only the root's.
+          image-sources: ${{ contains(matrix.suites, 'inputs') && 'restore' || '' }}
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -760,6 +764,7 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           sources: fetch
+          image-sources: fetch
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: kryptik-release

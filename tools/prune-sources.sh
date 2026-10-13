@@ -4,7 +4,8 @@
 #   ./tools/prune-sources.sh            remove them
 #   ./tools/prune-sources.sh --dry-run  say what would go
 #
-# Keeps CI's source cache from growing by a tarball per version bump; subdirectories are left alone.
+# Keeps CI's source caches from growing by a tarball per version bump. images/, the software images'
+# own, is pruned the same way, with the links naming its files; other subdirectories are left alone.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -25,8 +26,9 @@ done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
 [[ "${#keep[@]}" -gt 0 ]] || die "the manifest is empty; refusing to prune against it"
 
 removed=0
-for f in "${KRYPTIK_SOURCES}"/*; do
-    [[ -f "$f" ]] || continue
+for f in "${KRYPTIK_SOURCES}"/* "${KRYPTIK_SOURCES}"/images/*; do
+    # A link stays while the manifest names it, whether or not the images' cache was restored.
+    [[ -f "$f" || -L "$f" ]] || continue
     name="$(basename "$f")"
     [[ -n "${keep[$name]:-}" ]] && continue
     if [[ "$DRY" -eq 1 ]]; then
