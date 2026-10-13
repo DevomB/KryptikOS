@@ -753,8 +753,8 @@ pub const PROXY_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_poll, libc::SYS_restart_syscall, libc::SYS_accept4, libc::SYS_socket, libc::SYS_connect,
     libc::SYS_getsockopt, libc::SYS_recvmsg, libc::SYS_sendmsg, libc::SYS_recvfrom, libc::SYS_read,
     libc::SYS_write, libc::SYS_pipe2, libc::SYS_fcntl, libc::SYS_ioctl, libc::SYS_close,
-    // A HashMap's keys, and the clock where the vDSO gives none.
-    libc::SYS_getrandom, libc::SYS_clock_gettime,
+    // A HashMap's keys, the clock where the vDSO gives none, its own uid for a gesture's peer.
+    libc::SYS_getrandom, libc::SYS_clock_gettime, libc::SYS_geteuid,
 ];
 
 const FIONBIO: u32 = 0x5421;
