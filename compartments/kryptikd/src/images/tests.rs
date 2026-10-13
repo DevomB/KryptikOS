@@ -160,6 +160,22 @@ fn a_set_is_named_by_its_images_and_their_hashes() {
 }
 
 #[test]
+fn a_set_is_used_again_only_where_it_stacks_these_very_images() {
+    let at = format!("/run/kryptik/usr/browser-{}", &hex('b')[..16]);
+    let want = format!("lowerdir=/run/kryptik/images/browser/{}/usr:/usr", hex('b'));
+    let other = format!("lowerdir=/run/kryptik/images/browser/{}{}/usr:/usr", &hex('b')[..16], &hex('c')[16..]);
+    let line = |lowerdir: &str| format!("kryptik-usr {at} overlay ro,nosuid,nodev,relatime,{lowerdir},redirect_dir=nofollow 0 0\n");
+    let root = "/dev/vda2 / ext4 ro,relatime 0 0\n";
+    assert_eq!(stacked(root, &at, &want), Ok(false), "not mounted: stack it");
+    assert_eq!(stacked(&format!("{root}{}", line(&want)), &at, &want), Ok(true), "these very images: use it");
+    let refused = stacked(&format!("{root}{}", line(&other)), &at, &want).unwrap_err();
+    assert!(refused.contains("other images"), "{refused}");
+    // The topmost mount at the path is the one that counts.
+    assert_eq!(stacked(&format!("{}{}", line(&other), line(&want)), &at, &want), Ok(true));
+    assert!(stacked(&format!("{}{}", line(&want), line(&other)), &at, &want).is_err());
+}
+
+#[test]
 fn names_are_what_a_path_and_a_zone_file_take() {
     for ok in ["browser", "pdf-viewer", "a", "x1"] {
         assert!(valid_name(ok), "{ok}");
