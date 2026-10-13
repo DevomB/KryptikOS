@@ -1,13 +1,15 @@
 //! kryptik-wlproxy: the per-zone Wayland filtering proxy, single-threaded and unprivileged.
 //!
-//!   kryptik-wlproxy --zone NAME --listen PATH --upstream PATH [--max-clients N] [--once]
+//!   kryptik-wlproxy --zone NAME (--listen PATH | --listen-fd N) --upstream PATH
+//!                   [--max-clients N] [--once]
 //!                   [--control PATH | --control-fd N] [--control-uid UID]
 //!
-//! Each client of PATH (the zone's /run/kryptik/wayland-0) gets its own Session to --upstream,
-//! and the zone's clients share one selection (clipboard.rs). --control is the zone 0 move
-//! gesture's socket (control.rs), which no zone holds, made here or handed over listening as
-//! descriptor N; --control-uid is the one peer it answers, the session's user (by default the
-//! uid the proxy runs as).
+//! Each client of the listening socket (the zone's /run/kryptik/wayland-0) gets its own Session
+//! to --upstream, and the zone's clients share one selection (clipboard.rs). With --listen-fd the
+//! launch daemon made the socket and passed it listening. --control is the zone 0 move gesture's
+//! socket (control.rs), which no zone holds, made here or handed over listening as descriptor N;
+//! --control-uid is the one peer it answers, the session's user (by default the uid the proxy
+//! runs as).
 
 mod clipboard;
 mod control;
@@ -75,13 +77,14 @@ impl Log {
 const HIGH_WATER: usize = policy::MAX_PENDING_BYTES / 2;
 
 fn usage() -> ! {
-    eprintln!("usage: kryptik-wlproxy --zone NAME --listen PATH --upstream PATH [--max-clients N] [--once] [--control PATH | --control-fd N] [--control-uid UID]");
+    eprintln!("usage: kryptik-wlproxy --zone NAME (--listen PATH | --listen-fd N) --upstream PATH [--max-clients N] [--once] [--control PATH | --control-fd N] [--control-uid UID]");
     std::process::exit(2)
 }
 
 struct Opts {
     zone: String,
     listen: PathBuf,
+    listen_fd: Option<RawFd>,
     upstream: PathBuf,
     max_clients: usize,
     once: bool,
@@ -91,7 +94,7 @@ struct Opts {
 }
 
 fn parse(args: &[String]) -> Opts {
-    let mut o = Opts { zone: String::new(), listen: PathBuf::new(), upstream: PathBuf::new(), max_clients: 16, once: false, control: None, control_fd: None, control_uid: None };
+    let mut o = Opts { zone: String::new(), listen: PathBuf::new(), listen_fd: None, upstream: PathBuf::new(), max_clients: 16, once: false, control: None, control_fd: None, control_uid: None };
     let mut i = 0;
     while i < args.len() {
         let take = |i: &mut usize| -> String {
@@ -101,6 +104,7 @@ fn parse(args: &[String]) -> Opts {
         match args[i].as_str() {
             "--zone" => o.zone = take(&mut i),
             "--listen" => o.listen = PathBuf::from(take(&mut i)),
+            "--listen-fd" => o.listen_fd = Some(take(&mut i).parse().ok().filter(|&fd: &RawFd| fd > 2).unwrap_or_else(|| usage())),
             "--upstream" => o.upstream = PathBuf::from(take(&mut i)),
             "--max-clients" => o.max_clients = take(&mut i).parse().unwrap_or_else(|_| usage()),
             "--once" => o.once = true,
@@ -111,8 +115,9 @@ fn parse(args: &[String]) -> Opts {
         }
         i += 1;
     }
-    if o.zone.is_empty() || o.listen.as_os_str().is_empty() || o.upstream.as_os_str().is_empty()
-        || (o.control.is_some() && o.control_fd.is_some()) {
+    // One listening socket, a path or a descriptor, and one control socket at most, never the same.
+    if o.zone.is_empty() || o.listen.as_os_str().is_empty() == o.listen_fd.is_none() || o.upstream.as_os_str().is_empty()
+        || (o.control.is_some() && o.control_fd.is_some()) || (o.listen_fd.is_some() && o.listen_fd == o.control_fd) {
         usage();
     }
     if !zone_ok(&o.zone) {
@@ -158,6 +163,25 @@ fn fit_descriptors(o: &mut Opts) {
     }
 }
 
+/// Whether `fd` is a socket that listen() was called on.
+fn listening(fd: RawFd) -> bool {
+    let mut on: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let r = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ACCEPTCONN, (&mut on as *mut libc::c_int).cast(), &mut len) };
+    r == 0 && on == 1
+}
+
+/// A descriptor handed over listening, or the end of the proxy: one that is not would be polled
+/// for ever.
+fn handed_over(zone: &str, fd: RawFd) -> UnixListener {
+    if !listening(fd) {
+        eprintln!("kryptik-wlproxy[{zone}]: descriptor {fd} is no listening socket");
+        std::process::exit(1);
+    }
+    // SAFETY: the descriptor is the caller's to give, and this is its one owner from here.
+    unsafe { UnixListener::from_raw_fd(fd) }
+}
+
 fn set_nonblocking(fd: RawFd) {
     unsafe {
         let fl = libc::fcntl(fd, libc::F_GETFL);
@@ -174,18 +198,24 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut o = parse(&args);
     fit_descriptors(&mut o);
-    let _ = std::fs::remove_file(&o.listen);
-    let listener = match UnixListener::bind(&o.listen) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("kryptik-wlproxy[{}]: cannot listen on {}: {e}", o.zone, o.listen.display());
-            std::process::exit(1);
+    let (listener, at) = match o.listen_fd {
+        Some(fd) => (handed_over(&o.zone, fd), format!("descriptor {fd}")),
+        None => {
+            let _ = std::fs::remove_file(&o.listen);
+            let l = match UnixListener::bind(&o.listen) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("kryptik-wlproxy[{}]: cannot listen on {}: {e}", o.zone, o.listen.display());
+                    std::process::exit(1);
+                }
+            };
+            // 0666 so the zone's uid can connect through the bind mount; the directory keeps others out.
+            let _ = std::fs::set_permissions(&o.listen, std::os::unix::fs::PermissionsExt::from_mode(0o666));
+            (l, o.listen.display().to_string())
         }
     };
-    // 0666 so the zone's uid can connect through the bind mount; the directory keeps others out.
-    let _ = std::fs::set_permissions(&o.listen, std::os::unix::fs::PermissionsExt::from_mode(0o666));
     listener.set_nonblocking(true).expect("nonblocking listener");
-    eprintln!("kryptik-wlproxy[{}]: listening on {} -> {}", o.zone, o.listen.display(), o.upstream.display());
+    eprintln!("kryptik-wlproxy[{}]: listening on {at} -> {}", o.zone, o.upstream.display());
     // The move gesture's socket: 0600, in the directory whose wayland-0 alone is bound into the
     // zone, or handed over already listening; a connection from any uid but the session user's
     // is refused.
@@ -199,8 +229,7 @@ fn main() {
                     let _ = std::fs::set_permissions(p, std::os::unix::fs::PermissionsExt::from_mode(0o600));
                 })
         }
-        // SAFETY: the descriptor is the caller's to give, and this is its one owner from here.
-        (None, Some(fd)) => Some(unsafe { UnixListener::from_raw_fd(fd) }),
+        (None, Some(fd)) => Some(handed_over(&o.zone, fd)),
         (None, None) => None,
     }
     .filter(|l| l.set_nonblocking(true).is_ok());
@@ -382,7 +411,9 @@ fn main() {
                 served += 1;
                 if o.once {
                     eprintln!("kryptik-wlproxy[{}]: --once: served {served}, exiting", o.zone);
-                    let _ = std::fs::remove_file(&o.listen);
+                    if o.listen_fd.is_none() {
+                        let _ = std::fs::remove_file(&o.listen);
+                    }
                     return;
                 }
             }
