@@ -351,7 +351,8 @@ starts no program, so it goes on feeding while the partition is suspended.
 A suspended machine has wiped the state partition's key and every zone
 volume's, and resumes only with their passphrases; the TPM does not unlock
 it. The clean page cache went before the sleep, but what zone 0 and the
-zones' processes hold in their own memory is still there
+zones' processes hold in their own memory, the files they have mapped
+included, is still there
 ([threat model](../threat-model.md#coercion-and-access-to-a-running-or-suspended-machine)).
 
 ### Check

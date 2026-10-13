@@ -171,7 +171,10 @@ pub fn seal() -> Result<Vec<String>, String> {
         thaw();
         return Err(format!("{SYNC_ON_SUSPEND}: {e}: the kernel's own sync before it sleeps would wait on the suspended partition"));
     }
-    // One asleep since an earlier sleep, its passphrase not given yet, stays as it is.
+    // luksSuspend freezes the filesystem before the key goes (device-mapper's lockfs: cryptsetup
+    // asks for neither skip_lockfs nor noflush), so no zone and no kernel thread, ext4's lazy
+    // init or its journal, writes to a volume without its key; the resume thaws it. One asleep
+    // since an earlier sleep, its passphrase not given yet, stays as it is.
     for zone in crate::volume::mappings() {
         if suspended(&crate::volume::mapper_name(&zone)) {
             continue;

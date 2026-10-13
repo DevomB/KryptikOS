@@ -484,7 +484,7 @@ stays frozen until its own passphrase. Everything on the resume path runs
 from the verified root, `/run`, `/dev`, `/proc` and `/sys`. Hibernation
 stays off. The threat model changes: a suspended machine holds no disk key
 and no cached page of a zone volume's files, though memory still holds what
-the zones' processes held ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
+the zones' processes held, the files they had mapped included ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
 
 **Why:** a laptop is suspended far more often than it is off, and with the
 key in RAM, whoever gets past the lock of a suspended machine, or into its
