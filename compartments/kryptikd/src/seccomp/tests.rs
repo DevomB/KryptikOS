@@ -619,6 +619,51 @@ fn each_call_named_once() {
 }
 
 #[test]
+fn the_proxy_makes_its_calls_alone() {
+    let p = proxy_program();
+    assert!(p.len() <= 4096);
+    let call = |nr: libc::c_long, args: [u64; 6]| evaluate_args(&p, AUDIT_ARCH_X86_64, nr as u32, args);
+    let mut seen = HashSet::new();
+    for &nr in PROXY_ALLOWLIST {
+        assert!(seen.insert(nr), "{} listed twice", name_of(nr).unwrap_or("?"));
+        assert!(BASE_ALLOWLIST.contains(&nr), "{} is not a zone's call either", name_of(nr).unwrap_or("?"));
+        // Each with the arguments the proxy passes: a Unix socket, FIONBIO, readable memory.
+        let args = match nr {
+            libc::SYS_socket => [1, 1 | 0x8_0000, 0, 0, 0, 0],
+            libc::SYS_ioctl => [4, 0x5421, 0, 0, 0, 0],
+            libc::SYS_mmap | libc::SYS_mprotect => [0, 4096, 3, 0, 0, 0],
+            libc::SYS_sendto => [5, 0x1000, 12, 0x4000, 0, 0],
+            _ => [0; 6],
+        };
+        assert_eq!(call(nr, args), SECCOMP_RET_ALLOW, "{}", name_of(nr).unwrap_or("?"));
+    }
+    for nr in [
+        libc::SYS_openat, libc::SYS_open, libc::SYS_clone, libc::SYS_clone3, libc::SYS_fork,
+        libc::SYS_execveat, libc::SYS_bind, libc::SYS_listen, libc::SYS_kill,
+        libc::SYS_memfd_create, libc::SYS_splice, libc::SYS_unshare, libc::SYS_ptrace, libc::SYS_seccomp,
+    ] {
+        assert_eq!(call(nr, [0; 6]), SECCOMP_RET_KILL_PROCESS, "{}", name_of(nr).unwrap_or("?"));
+    }
+    for (family, why) in [(2, "IPv4"), (10, "IPv6"), (16, "netlink"), (17, "packet"), (40, "vsock")] {
+        assert_eq!(call(libc::SYS_socket, [family, 1, 0, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "{why}");
+    }
+    // The command is 32 bits to the kernel, so the high half is no way past the rule.
+    assert_eq!(call(libc::SYS_ioctl, [4, 0x1_0000_5421, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
+    for (cmd, why) in [(0x5412, "TIOCSTI"), (0x5451, "FIOCLEX"), (0x8946, "SIOCETHTOOL"), (0x541B, "FIONREAD")] {
+        assert_eq!(call(libc::SYS_ioctl, [4, cmd, 0, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "{why}");
+    }
+    // A datagram to an address it names: another socket on the machine, not its peer.
+    assert_eq!(call(libc::SYS_sendto, [5, 0x1000, 12, 0, 0x2000, 16]), SECCOMP_RET_KILL_PROCESS);
+    for nr in [libc::SYS_mmap, libc::SYS_mprotect] {
+        assert_eq!(call(nr, [0, 4096, 0, 0, 0, 0]), SECCOMP_RET_ALLOW, "PROT_NONE, the stack guard");
+        assert_eq!(call(nr, [0, 4096, 4, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "PROT_EXEC");
+        assert_eq!(call(nr, [0, 4096, 7, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "read, write and execute");
+    }
+    assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, X32_SYSCALL_BIT | libc::SYS_read as u32), SECCOMP_RET_KILL_PROCESS, "x32");
+    assert_eq!(evaluate(&p, 0x4000_0003, libc::SYS_read as u32), SECCOMP_RET_KILL_PROCESS, "another arch");
+}
+
+#[test]
 fn supplicant_sockets_only_as_it_opens_them() {
     let p = supplicant_program();
     let socket = |family: u64, kind: u64, protocol: u64| {

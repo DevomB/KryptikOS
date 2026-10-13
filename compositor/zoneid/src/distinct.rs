@@ -20,10 +20,9 @@ pub fn backgrounds() -> Vec<(&'static str, Srgb)> {
     BACKGROUNDS.iter().filter_map(|&(name, hex)| Some((name, Srgb::from_hex(hex).ok()?))).collect()
 }
 
-/// The compositor's own colours (unzoned, unknown zone, urgent), also in gen-zone-colours.py;
-/// held to the floor but not the contrast rule, as the unzoned grey is light.
-pub const COMPOSITOR_COLOURS: [(&str, &str); 3] =
-    [("unzoned", "#d8d8d8"), ("unknown", "#a2c9ff"), ("urgent", "#ffd000")];
+/// The compositor's own colours (unzoned, urgent), also in gen-zone-colours.py; held to the
+/// floor but not the contrast rule, as the unzoned grey is light.
+pub const COMPOSITOR_COLOURS: [(&str, &str); 2] = [("unzoned", "#d8d8d8"), ("urgent", "#ffd000")];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Thresholds {

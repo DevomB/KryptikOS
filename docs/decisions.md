@@ -542,10 +542,11 @@ confines itself after start-up, with commands run by a fixed spawner. Last,
 Wayland parsing moves into the zones, and only pixels and input cross
 ([compositor separation](design/compositor-separation.md)).
 
-**Why:** today every proxy runs as the login user and connects to dwl's own
-socket, which offers screencopy, the virtual keyboard and layer-shell. A bug
-in the parser zones reach first gives a zone the whole desktop, the consent
-directory and the launch daemon, and lets it draw another zone's border.
+**Why:** a proxy running as the login user can connect to dwl's own
+socket, which offers screencopy, the virtual keyboard and layer-shell. A
+bug in the parser zones reach first then gives a zone the whole desktop,
+the consent directory and the launch daemon, and lets it draw another
+zone's border.
 
 **Cost:** changes to dwl (sockets per zone, the filter, then the sandbox
 and a spawner); the launch daemon starts proxies and the compositor; uids
