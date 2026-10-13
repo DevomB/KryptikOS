@@ -194,8 +194,9 @@ A desktop someone can live in, built the same way.
   GPU rendering decided zone by zone, a mail client, and a file manager that
   understands transfers between zones.
 - **Software from somewhere.** Built: signed software images (ADR-015),
-  built over the root and signed with each release, carried in its update
-  payload and named by the zones that use them
+  built over the root and signed with each release, carried on its install
+  media and in its update payload, and opened with dm-verity and stacked
+  read-only over the `/usr` of the zones that name them
   ([software delivery](design/software-delivery.md)). Not decided: a package
   manager, or images released apart from the root.
 - **The laptop.** Per-zone sound brokered like the clipboard, Bluetooth,
