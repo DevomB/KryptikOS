@@ -60,21 +60,32 @@ static const uint32_t bg = 0x101418, ink = 0xe6e6e6, warn = 0xd04040;
 /* The words the lock shows, 5x7, bit 4 leftmost: dwl's zone bar font. */
 static const struct { char c; unsigned char rows[7]; } font[] = {
 	{'A', {0x0e, 0x11, 0x11, 0x11, 0x1f, 0x11, 0x11}},
+	{'B', {0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e}},
 	{'C', {0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e}},
 	{'D', {0x1c, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1c}},
 	{'E', {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f}},
+	{'F', {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10}},
 	{'G', {0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f}},
 	{'H', {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}},
 	{'I', {0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e}},
+	{'J', {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0c}},
 	{'K', {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}},
 	{'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f}},
+	{'M', {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11}},
 	{'N', {0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11}},
 	{'O', {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}},
 	{'P', {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10}},
+	{'Q', {0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d}},
 	{'R', {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11}},
 	{'S', {0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e}},
 	{'T', {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
+	{'U', {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}},
+	{'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04}},
 	{'W', {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a}},
+	{'X', {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11}},
+	{'Y', {0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04}},
+	{'Z', {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f}},
+	{'-', {0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00}},
 	{'0', {0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e}},
 	{'1', {0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e}},
 	{'2', {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f}},
@@ -112,6 +123,10 @@ static int locked, done, unlocked;
 static char typed[256];
 static size_t ntyped;
 static char status[24] = "LOCKED";
+/* The session's layouts by name, as kryptik-session lists them (KRYPTIK_LAYOUTS), and the one in
+ * force: with several, the lock names it, since a password typed in the other fails. */
+static char layouts[4][33];
+static int nlayouts, layout_now = -1;
 static int refused;
 /* What unlocks, and the label for it. */
 enum { LOGIN, STATE };
@@ -148,10 +163,10 @@ static void fill(uint32_t *px, int bw, int bh, int x, int y, int w, int h, uint3
 			px[j * bw + i] = rgb;
 }
 
-/* The status word, centred above the middle, s px to a font pixel. */
-static void text(uint32_t *px, int w, int h, int s, const char *word, uint32_t rgb)
+/* A word centred across at height y, s px to a font pixel. */
+static void text(uint32_t *px, int w, int h, int s, int y, const char *word, uint32_t rgb)
 {
-	int len = (int)strlen(word), x = (w - (6 * len - 1) * s) / 2, y = h / 2 - 12 * s;
+	int len = (int)strlen(word), x = (w - (6 * len - 1) * s) / 2;
 	for (int k = 0; k < len; k++, x += 6 * s)
 		for (size_t g = 0; g < sizeof font / sizeof font[0]; g++)
 			if (font[g].c == word[k])
@@ -188,11 +203,14 @@ static void draw(struct output *o)
 		return;
 	}
 	fill(px, o->w, o->h, 0, 0, o->w, o->h, bg);
-	text(px, o->w, o->h, s, status, refused ? warn : ink);
+	/* The status word above the middle, the marks below it, and the layout under them. */
+	text(px, o->w, o->h, s, o->h / 2 - 12 * s, status, refused ? warn : ink);
 	int shown = ntyped < 32 ? (int)ntyped : 32, dot = 2 * s;
 	int x = (o->w - shown * 2 * dot) / 2, y = o->h / 2 + 2 * s;
 	for (int i = 0; i < shown; i++)
 		fill(px, o->w, o->h, x + i * 2 * dot, y, dot, dot, ink);
+	if (nlayouts > 1 && layout_now >= 0)
+		text(px, o->w, o->h, s, y + dot + 6 * s, layouts[layout_now], ink);
 	munmap(px, size);
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
 	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, o->w, o->h, stride, WL_SHM_FORMAT_XRGB8888);
@@ -569,8 +587,33 @@ static void keyboard_modifiers(void *data, struct wl_keyboard *kb, uint32_t seri
 		uint32_t depressed, uint32_t latched, uint32_t locked_mods, uint32_t group)
 {
 	(void)data; (void)kb; (void)serial;
-	if (xstate)
-		xkb_state_update_mask(xstate, depressed, latched, locked_mods, 0, 0, group);
+	if (!xstate)
+		return;
+	xkb_state_update_mask(xstate, depressed, latched, locked_mods, 0, 0, group);
+	xkb_layout_index_t now = xkb_state_serialize_layout(xstate, XKB_STATE_LAYOUT_EFFECTIVE);
+	if (nlayouts > 1 && now < (xkb_layout_index_t)nlayouts && (int)now != layout_now) {
+		layout_now = (int)now;
+		fprintf(stderr, "kryptik-lock: layout %s\n", layouts[layout_now]);
+		redraw();
+	}
+}
+
+/* KRYPTIK_LAYOUTS, the session's layout names, in capitals for the lock's font; a name that is
+ * not one of the table's shape ends the list there. */
+static void read_layouts(void)
+{
+	const char *list = getenv("KRYPTIK_LAYOUTS");
+	char copy[160], *save = NULL;
+	if (!list || strlen(list) >= sizeof copy)
+		return;
+	strcpy(copy, list);
+	for (char *n = strtok_r(copy, " ", &save); n && nlayouts < 4; n = strtok_r(NULL, " ", &save)) {
+		if (strlen(n) >= sizeof layouts[0] || strspn(n, "abcdefghijklmnopqrstuvwxyz0123456789-") != strlen(n))
+			break;
+		for (size_t i = 0; n[i]; i++)
+			layouts[nlayouts][i] = (char)(n[i] >= 'a' && n[i] <= 'z' ? n[i] - 'a' + 'A' : n[i]);
+		nlayouts++;
+	}
 }
 
 static void keyboard_repeat(void *data, struct wl_keyboard *kb, int32_t rate, int32_t delay)
@@ -1039,6 +1082,7 @@ int main(int argc, char **argv)
 		}
 	}
 	suspend_wanted = argc == 2 && !strcmp(argv[1], "--suspend");
+	read_layouts();
 	if (argc != 1 && !suspend_wanted) {
 		fputs("usage: kryptik-lock [--suspend | --idle SECONDS [--blank SECONDS] [--sleep SECONDS]]\n"
 		      "       (locks the session until the login password is typed; with --suspend, then\n"

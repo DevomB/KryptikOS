@@ -180,7 +180,12 @@ On a keyboard that is not a US one, `kryptik keyboard` lists the layouts and
 `kryptik-install --keyboard NAME` installs with one: `ERASE` and the
 passphrase are then typed under it, here and at every boot, and the desktop
 uses it too. `kryptik keyboard NAME`, as root, changes it later
-([keyboard layout](design/keyboard-layout.md)).
+([keyboard layout](design/keyboard-layout.md)). For the desktop alone,
+`kryptik keyboard desktop us de`, as the user, gives it up to four layouts
+from the next login, the first in force and Super+Space to switch; the
+screen lock names the one in force, as a password typed in the other one
+fails. The state passphrase at boot is always asked under the machine's one
+layout.
 
 The installer refuses the disk the medium is on; anything with a mounted
 partition, active swap, or a partition held open (an unlocked LUKS volume,
@@ -287,6 +292,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+Shift+p | a terminal in the personal zone |
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |
 | Alt+Shift+l | lock the screen until the login password is typed |
+| Super+Space | the next of your desktop's layouts, when you have more than one |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |

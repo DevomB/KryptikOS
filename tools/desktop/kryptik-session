@@ -36,6 +36,8 @@ unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
 # clients are handed the compositor's.
 . /usr/libexec/kryptik/keyboard.sh
 kb_export_xkb
+# The user's own layouts, to switch among with Super+Space, in place of the machine's one.
+kb_export_desktop "$XDG_CONFIG_HOME/kryptik/keyboard"
 # pixman is the only renderer built (s_wlroots), and wlroots picks it by itself
 # only for a GPU without a render node.
 export WLR_RENDERER=pixman

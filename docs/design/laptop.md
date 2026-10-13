@@ -383,11 +383,12 @@ machine down with every volume closed.
   its default, `us`. The compositor compiles the keymap and sends it to
   each client as a descriptor in `wl_keyboard.keymap`, which the proxy
   passes on, so a zone receives a keymap zone 0 made and cannot change it.
-- **The session's layout.** `kryptik-session` reads the user's layouts from
-  their home (`~/.config/kryptik/keyboard`: layout, variant, options, and a
-  list to switch between) and exports them to dwl. Switching is a
-  compositor key. A keymap is not a privilege, so the state partition is a
-  fine place for it.
+- **The session's layouts.** `kryptik-session` reads the user's list from
+  their home (`~/.config/kryptik/keyboard`, which `kryptik keyboard
+  desktop` writes: up to four of the table's names) and exports them to
+  dwl as one keymap's groups with Super+Space to switch, the screen lock
+  naming the one in force ([keyboard layout](keyboard-layout.md)). A keymap
+  is not a privilege, so the state partition is a fine place for it.
 - **The boot prompt's layout.** The state passphrase is typed before any
   state exists, on the console's keymap. The installer asks for a keymap
   and writes its name to the ESP; `sysinit` loads it with `loadkeys`, but
@@ -433,7 +434,10 @@ virtual keyboard is checked before either is chosen.
 - it gets nothing while a `personal` window or the chrome has focus;
 - binding `zwp_virtual_keyboard_manager_v1` through any proxy disconnects
   the client;
-- a layout set in the session reaches a zone's client in its keymap.
+- a layout set in the session reaches a zone's client in its keymap;
+- with two layouts, Super+Space switches them at the lock, which names the
+  one in force, and a password typed in the other fails (built; this is
+  in `make gui-test`).
 
 ## Hotplug and several monitors
 
