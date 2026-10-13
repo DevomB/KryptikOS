@@ -352,18 +352,21 @@ run(char *startup_cmd)
 	client_set_fullscreen(c, fullscreen);
 """),
     # Mapping a different zone must not move it ahead of the active window,
-    # nor right behind it, where it would get the keyboard when that one closes.
+    # nor right behind it, where it would get the keyboard when that one closes;
+    # nor ahead of everything while the session is locked, or it would get the
+    # keyboard at the unlock.
     ("""\twl_list_insert(&clients, &c->link);
 \twl_list_insert(&fstack, &c->flink);
 """,
      """\twl_list_insert(&clients, &c->link);
 \t/* Compare with the actual keyboard focus, which may be on another monitor.
 \t * Another zone's window goes to the back of the focus order: right behind
-\t * the focused window it would take the keyboard when that one closes. */
+\t * the focused window it would take the keyboard when that one closes.
+\t * While locked the lock has it, and nobody picked a window mapped then. */
 \tw = NULL;
 \ttoplevel_from_wlr_surface(seat->keyboard_state.focused_surface, &w, NULL);
-\tif (c->zoneborder != unzonedcolor && w && !client_is_unmanaged(w)
-\t\t\t&& w->zoneborder != c->zoneborder) {
+\tif (c->zoneborder != unzonedcolor && (locked || (w && !client_is_unmanaged(w)
+\t\t\t&& w->zoneborder != c->zoneborder))) {
 \t\twl_list_insert(fstack.prev, &c->flink);
 \t\tc->unasked = 1;
 \t} else

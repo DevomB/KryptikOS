@@ -892,6 +892,14 @@ if [[ "$line" == *" wifi=$AP_SSID "* && "${kills:-0}" = 0 ]]; then
 else
     fail "wifi-associated" "newest READY line: ${line:-none}; filter kills of wpa_supplicant: ${kills:-0}; $(netzone_said wifi | tail -3 | tr '\n' ' ')"
 fi
+# At the text login, `kryptik status net` gives the menu's Network line, which kryptikd reads
+# from the net zone for root.
+status_net="$("$KD" status net --zones "$Z" 2>&1)"
+if [[ "$status_net" == *$'\n'"network  ready: Wi-Fi \"$AP_SSID\", "* ]]; then
+    pass "status-network-line" "$(grep '^network' <<<"$status_net")"
+else
+    fail "status-network-line" "kryptikd status net: $(tr '\n' ' ' <<<"$status_net" | cut -c1-300)"
+fi
 net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 lease=""
 for _ in $(seq 1 40); do
@@ -1101,6 +1109,42 @@ if [[ "$wpa2_keys" == *"AKMSuiteSelector=00-0f-ac-2 "* && "$wpa2_keys" != *"[MFP
 else
     fail "wifi-wpa2-plain" "the station at the WPA2 access point: ${wpa2_keys:-none}"
 fi
+# SAE by hash-to-element alone, as every 6 GHz access point and some others take it: the access
+# point says so in its rates, and a station on wpa_supplicant's default passes it over.
+h2e_up=0
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+    cat > /root/zt/ap-h2e.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$AP_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=SAE
+    sae_pwe=1
+    ieee80211w=2
+    proto=RSN
+    pairwise=CCMP
+    psk="$AP_PASS"
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-h2e.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-h2e-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { h2e_up=1; break; }; sleep 1; done
+fi
+h2e_keys=""
+for _ in $(seq 1 90); do
+    h2e_keys="$(sta_keys)"
+    [[ "$h2e_up" = 1 && "$h2e_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* ]] && break
+    sleep 1
+done
+if [[ "$h2e_up" = 1 && "$h2e_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* ]]; then
+    pass "wifi-sae-h2e" "offered SAE by hash-to-element alone, the access point was joined by SAE: ${h2e_keys}"
+else
+    fail "wifi-sae-h2e" "access point up: ${h2e_up}; the station at it: ${h2e_keys:-none}; $(sta_wpa status | cut -c1-200); $(tail -3 "$LOG/ap-h2e-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
 sae_up=0
 if [[ "$ap_up" = 1 ]]; then
     ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
@@ -1133,6 +1177,65 @@ if [[ "$sae_up" = 1 && "$sae_keys" == *"AKMSuiteSelector=00-0f-ac-8 "* && "$sae_
     pass "wifi-sae" "offered SAE alone with protection required, the same SSID took the saved passphrase by SAE, with protected management frames: ${sae_keys}"
 else
     fail "wifi-sae" "access point up: ${sae_up}; the station at it: ${sae_keys:-none}; $(tail -3 "$LOG/ap-sae-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
+# A passphrase the network refuses is said on the status line, after WPA2's handshake and after
+# SAE's, and not once a network is joined. The access point keeps its name and takes another
+# passphrase, so the saved one is wrong, and no other saved network is in range. It gets its own
+# back after each, so what follows finds it as wifi-sae left it.
+REFUSING_PASS=not-the-saved-passphrase
+ap_anew() {   # ap_anew KEY_MGMT PASSPHRASE NAME: the access point again, so; 0 once it beacons
+    local pid pmf=""
+    pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    [[ "$1" == SAE ]] && pmf="ieee80211w=2"
+    cat > "/root/zt/ap-$3.conf" <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$AP_SSID"
+    mode=2
+    frequency=2412
+    key_mgmt=$1
+    $pmf
+    proto=RSN
+    pairwise=CCMP
+    psk="$2"
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c "/root/zt/ap-$3.conf" -P /run/zt-ap-wpa.pid -f "$LOG/ap-$3-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && return 0; sleep 1; done
+    return 1
+}
+# The listener's file, which the zone's root reads by name, and the zone's own words on Wi-Fi.
+refused_kept() { nsenter -t "$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)" -m cat "/run/wpa_supplicant/$(sta_if).refused" 2>/dev/null; }
+refused_said() { echo "kept: $(refused_kept | head -1); $(netzone_said 'wifi' | tail -3 | tr '\n' ' '); the listener: $(uncaught | grep -a 'supplicant --watch' | tail -2 | tr '\n' ' '); the station: $(sta_wpa status | cut -c1-200)"; }
+refused_wpa2=""; refused_cleared=""; refused_sae=""; sae_back=""; kept_after=""
+if [[ "$sae_up" = 1 ]]; then
+    before="$(ready_count)"
+    ap_anew WPA-PSK "$REFUSING_PASS" refusing-wpa2 && refused_wpa2="$(ready_after "$before" " wifi=refused:$AP_SSID " 90)"
+    before="$(ready_count)"
+    ap_anew WPA-PSK "$AP_PASS" wpa2-again && refused_cleared="$(ready_after "$before" " wifi=$AP_SSID " 90)"
+    kept_after="$(refused_kept)"
+    before="$(ready_count)"
+    ap_anew SAE "$REFUSING_PASS" refusing-sae && refused_sae="$(ready_after "$before" " wifi=refused:$AP_SSID " 90)"
+    before="$(ready_count)"
+    ap_anew SAE "$AP_PASS" sae-again && sae_back="$(ready_after "$before" " wifi=$AP_SSID " 120)"
+fi
+if [[ "$refused_wpa2" == *" wifi=refused:$AP_SSID "* ]]; then
+    pass "wifi-refused-wpa2" "the access point took another passphrase, WPA2's handshake failed, and the status line names the network that refused the saved one: ${refused_wpa2#*netzone: }"
+else
+    fail "wifi-refused-wpa2" "access point up: ${sae_up}; newest READY: ${refused_wpa2:-none}; $(refused_said); $(tail -3 "$LOG/ap-refusing-wpa2-wpa.log" 2>/dev/null | tr '\n' ' ')"
+fi
+if [[ "$refused_cleared" == *" wifi=$AP_SSID "* && -z "$kept_after" ]]; then
+    pass "wifi-refused-cleared" "given its own passphrase back, the access point was joined, the listener's file went, and the status line names the network again: ${refused_cleared#*netzone: }"
+else
+    fail "wifi-refused-cleared" "newest READY: ${refused_cleared:-none}; still kept after the join: ${kept_after:-nothing}; $(refused_said)"
+fi
+if [[ "$refused_sae" == *" wifi=refused:$AP_SSID "* && "$sae_back" == *" wifi=$AP_SSID "* ]]; then
+    pass "wifi-refused-sae" "under SAE the access point refused the station's confirm, the status line said so, and with its own passphrase back it was joined again: ${refused_sae#*netzone: }"
+else
+    fail "wifi-refused-sae" "refused: ${refused_sae:-none}; again: ${sae_back:-none}; $(refused_said); $(tail -3 "$LOG/ap-refusing-sae-wpa.log" 2>/dev/null | tr '\n' ' ')"
 fi
 # A second saved network is joined once it appears, after the first one's access point went.
 # The restarted net zone's supplicant tries the departed one first, as the kernel keeps its scan
@@ -1237,6 +1340,59 @@ if [[ -n "$scans" && -n "$STA_PERM" && -z "$known" ]]; then
     pass "wifi-scan-address" "$(wc -l <<<"$scans") probe requests went out from $(sort -u <<<"$scans" | wc -l) addresses, none the radio's own ($STA_PERM) or a network's (${own_mac:-none}, ${open_mac:-none}); $(netzone_said 'wifi: .*scan' | tail -1)"
 else
     fail "wifi-scan-address" "probe requests heard: $(wc -l < "$LOG/probes.txt" 2>/dev/null); scans from a known address:${known:- none}; by source: $(sort <<<"$scans" | uniq -c | tr -s ' \n' '  ' | cut -c1-300); $(netzone_said 'wifi: .*scan' | tail -1); $(tail -2 "$LOG/hwsim.err" | tr '\n' ' ')"
+fi
+# A network that hides its name is joined once saved with --hidden: its access point beacons with
+# no SSID and answers only a probe request that names it, which the station then sends.
+HIDDEN_SSID=kryptik-hwsim-hidden
+hidden_up=0; heard_nameless=""
+if [[ "$ap_up" = 1 ]]; then
+    ap_pid="$(cat /run/zt-ap-wpa.pid 2>/dev/null)"
+    [[ -n "$ap_pid" ]] && kill "$ap_pid" 2>/dev/null
+    for _ in $(seq 1 20); do [[ -n "$ap_pid" ]] && kill -0 "$ap_pid" 2>/dev/null || break; sleep 0.5; done
+    ap ip link set dev "$AP_IF" down
+    ap ip link set dev "$AP_IF" address 02:00:00:00:01:03 >> "$LOG/ap.err" 2>&1
+    cat > /root/zt/ap-hidden.conf <<EOF
+ctrl_interface=/run/zt-ap-ctrl
+ap_scan=2
+network={
+    ssid="$HIDDEN_SSID"
+    mode=2
+    frequency=2412
+    ignore_broadcast_ssid=1
+    key_mgmt=WPA-PSK
+    proto=RSN
+    pairwise=CCMP
+    psk="$AP_PASS"
+}
+EOF
+    ap wpa_supplicant -B -i "$AP_IF" -c /root/zt/ap-hidden.conf -P /run/zt-ap-wpa.pid -f "$LOG/ap-hidden-wpa.log" >> "$LOG/ap.err" 2>&1
+    for _ in $(seq 1 30); do ap_wpa status | grep -q '^wpa_state=COMPLETED' && { hidden_up=1; break; }; sleep 1; done
+    # Its beacons name nothing, as hwsim's monitor (hwsim0) hears every frame on the air. The
+    # station is no witness: its supplicant, which lost its access point a moment ago, holds the
+    # radio for its own scans and joins, and a scan of the station's own gets EBUSY.
+    heard_nameless="$(timeout 10 python3 - 2>> "$LOG/hwsim.err" <<'PY'
+import socket
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3))
+s.bind(("hwsim0", 0))
+while True:
+    f = s.recv(4096)
+    h = f[int.from_bytes(f[2:4], "little"):]
+    # A beacon from 02:00:00:00:01:03, whose first element, after 24 bytes of header and 12 of
+    # fixed fields, is the SSID.
+    if len(h) >= 38 and h[0] == 0x80 and h[10:16] == bytes.fromhex("020000000103") and h[36] == 0:
+        print("SSID %r" % h[38:38 + h[37]] if h[37] else "an SSID element of length 0", flush=True)
+        break
+PY
+)"
+fi
+before="$(ready_count)"
+printf '%s\n' "$AP_PASS" | "$KD" wifi add "$HIDDEN_SSID" --hidden --wifi-dir "$WIFI_DIR" --zones "$Z" > "$LOG/wifi-add-hidden.out" 2>&1
+line="$(ready_after "$before" " wifi=$HIDDEN_SSID " 90)"
+if [[ "$hidden_up" = 1 && "$heard_nameless" == "an SSID element of length 0" && "$line" == *" wifi=$HIDDEN_SSID "* ]] \
+   && grep -q "added hidden network \"$HIDDEN_SSID\"" "$LOG/wifi-add-hidden.out"; then
+    pass "wifi-hidden" "its beacons name nothing (${heard_nameless}, as hwsim0 heard them), and saved with --hidden it was joined: ${line#*netzone: }"
+else
+    fail "wifi-hidden" "access point up: ${hidden_up}; its beacons on hwsim0: ${heard_nameless:-none heard in 10 s ($(tail -1 "$LOG/hwsim.err"))}; $(tr '\n' ' ' < "$LOG/wifi-add-hidden.out"); newest READY: ${line:-none}; $(tail -2 "$LOG/ap-hidden-wpa.log" 2>/dev/null | tr '\n' ' ')"
 fi
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done

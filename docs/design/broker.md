@@ -152,11 +152,22 @@ own. The MIME type must be one of `text/plain`, `text/plain;charset=utf-8`,
 channel.
 
 A cross-zone paste is a user gesture in zone 0: the chrome's `m<N><M>` (move
-zone N's clipboard to zone M) runs `kryptik-launch --clipboard-move FROM TO`,
-which the launch daemon carries out (as root, `kryptikd clipboard move FROM
-TO` does the same). Both zones must be running. The payload leaves the source
-and replaces the destination's: one payload crosses, once, and a second
-gesture finds nothing to move. No zone can fetch another's payload or trigger
+zone N's clipboard to zone M) runs `kryptik-launch --clipboard-move FROM TO`.
+It moves what FROM's windows copied, as that is what a user means by the
+clipboard, and only when they copied nothing does it move FROM's broker
+payload, which the launch daemon carries out (as root, `kryptikd clipboard
+move FROM TO` does the same). A window's copy never passes through root:
+kryptik-launch asks FROM's proxy for the selection on its control socket
+(`compositor/wlproxy/src/control.rs`), in one type from the list above and
+1 MiB and 2 s at most, gives it to TO's proxy, which holds it and serves its
+windows' pastes itself, and only then has FROM's proxy clear it, if nothing
+was copied there since. A stall, an overrun or a type off the list moves
+nothing. The control socket is 0600 beside the zone's own, in the directory
+whose `wayland-0` alone is bound into the zone, and a proxy refuses any peer
+but the session's user; it takes one move at a time, and its log names the
+type and the length, never the bytes. Both zones must be running. The
+payload leaves the source and replaces the destination's: one payload
+crosses, once, and a second gesture finds nothing to move. No zone can fetch another's payload or trigger
 a move: the verb does not exist on the zone-facing socket. Zone 0 has no
 transfer command either; the `kryptik` tool refuses `transfer`, `clipboard`
 and `mount` and points at the broker.
@@ -170,7 +181,10 @@ launcher binds it into the zone at `/run/kryptik/wayland-0`
 The compositor's own socket is never reachable from a zone, and each proxy
 serves exactly one zone. The proxy advertises only `wl_compositor`,
 `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`, `xdg_wm_base`,
-`zxdg_decoration_manager_v1` and `wp_viewporter`, disconnects a client that
+`zxdg_decoration_manager_v1`, `wp_viewporter` and
+`wp_cursor_shape_manager_v1`, and a
+`wl_data_device_manager` of its own, which it serves itself, so copy and
+paste stays among the zone's own clients and never reaches the compositor. It disconnects a client that
 binds anything else, bounds objects, pending bytes and descriptors per
 client, and rewrites every window's title to `[zone] ...` and its app_id to
 `kryptik.<zone>.<claimed>`. It reaches dwl through the zone's own socket,

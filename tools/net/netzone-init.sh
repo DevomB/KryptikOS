@@ -2,7 +2,7 @@
 # The net zone's command (docs/design/net-zone.md): firewall, Wi-Fi, DHCP, DNS, time and updates.
 # Fails closed: forwarding stays off until the nft policy is loaded and read back. Reports:
 #
-#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|off|none>
+#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|refused:ssid|connecting|unconfigured|off|none>
 #                  time=<offset|no-answer|no-uplink|...> ...
 #   netzone: NOT READY <reason>            (forwarding is off)
 set -u
@@ -224,6 +224,10 @@ start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     # Not as root: kryptikd gives it its own user, CAP_NET_ADMIN and CAP_NET_RAW, and no nf_tables.
     if kryptikd supplicant -- wpa_supplicant -B -i "$n" -c "$WPA_CONF" -C "$WPA_CTRL" -P "$WPA_CTRL/$n.pid" 2>/tmp/wpa.err; then
         say "wifi: wpa_supplicant on ${n} (pid $(wpa_pid "$n"))"
+        # Why a join fails is said only to a listener on the supplicant's socket: this one, as
+        # its user, names the network that refused the passphrase until one is joined. It ends
+        # with the supplicant, and a supplicant started again gets one of its own.
+        kryptikd supplicant --watch "$n" &
         # A scan while no network is joined goes out from a new random address each time, not
         # the last network's. A driver that offers none scans from the station's address: the
         # one kryptikd made for this start, or the last network's after one. The socket is the
@@ -247,7 +251,8 @@ radio_off() {
     return 1
 }
 # The status line's wifi=: none (no radio), off (every radio switched off), unconfigured (no
-# credentials), connecting, or the SSID. Read from the kernel, as the supplicant's control socket
+# credentials), connecting, refused:SSID while nothing is joined and that network refused the
+# passphrase last (its listener's file), or the SSID. Read from the kernel, as the supplicant's control socket
 # is its own user's: a link the supplicant holds dormant until it has the keys, then up, and the
 # SSID it is associated with.
 wifi_state() {
@@ -264,6 +269,12 @@ wifi_state() {
         [ -n "$st" ] || st=associated
         break
     done
+    if [ "$st" = connecting ]; then
+        for n in $WIRELESS; do
+            r="$(cat "$WPA_CTRL/$n.refused" 2>/dev/null)"
+            [ -n "$r" ] && { st="refused:$r"; break; }
+        done
+    fi
     echo "$st"
 }
 # A radio switched off already gets no supplicant, which fails to bring its link up and ends:
@@ -596,7 +607,7 @@ while :; do
     if [ "$wifi_now" != "$wifi_last" ]; then
         wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"
         # A radio that just associated: ask the time now.
-        case "$wifi_now" in none|unconfigured|connecting) ;; *) time_ticks=999999 ;; esac
+        case "$wifi_now" in none|unconfigured|connecting|refused:*) ;; *) time_ticks=999999 ;; esac
     fi
     # 10 s ticks: the time hourly once measured, else every 5 min (zone 0 takes a claim per 10 min).
     # A scan's signal ends a wait early, so each scan brings what follows forward by up to 10 s.

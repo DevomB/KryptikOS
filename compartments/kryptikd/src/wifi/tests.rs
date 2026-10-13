@@ -11,15 +11,15 @@ fn tmpdir(tag: &str) -> PathBuf {
 fn add_list_forget_round_trip() {
     let dir = tmpdir("roundtrip");
     assert_eq!(list(&dir).unwrap(), Vec::<String>::new(), "no file is no networks");
-    assert_eq!(add(&dir, None, "Home", Some("correct horse battery")).unwrap(), Added::New);
-    assert_eq!(add(&dir, None, "Cafe Wifi", Some("0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef")).unwrap(), Added::New);
+    assert_eq!(add(&dir, None, "Home", Some("correct horse battery"), false).unwrap().0, Added::New);
+    assert_eq!(add(&dir, None, "Cafe Wifi", Some("0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef"), false).unwrap().0, Added::New);
     assert_eq!(list(&dir).unwrap(), vec!["Home", "Cafe Wifi"]);
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
     // Each block also ends in its own address, which `each_network_has_an_address_of_its_own` reads.
     let without_addresses: String = text.lines().filter(|l| !l.starts_with("\tmac_")).map(|l| format!("{l}\n")).collect();
     assert_eq!(
         without_addresses,
-        "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\nscan_res_valid_for_connect=0\n\
+        "ctrl_interface=/run/wpa_supplicant\nupdate_config=0\nscan_res_valid_for_connect=0\nsae_pwe=2\n\
              \nnetwork={\n\tssid=\"Home\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n\tpsk=\"correct horse battery\"\n}\n\
              \nnetwork={\n\tssid=\"Cafe Wifi\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256\n\tieee80211w=1\n\tpsk=0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef\n}\n"
     );
@@ -41,13 +41,13 @@ fn add_list_forget_round_trip() {
 fn each_network_has_an_address_of_its_own() {
     let dir = tmpdir("addresses");
     let address = |ssid: &str| load(&dir).unwrap().into_iter().find(|n| n.ssid == ssid).and_then(|n| n.mac).unwrap();
-    add(&dir, None, "Home", Some("correct horse battery")).unwrap();
-    add(&dir, None, "Cafe", None).unwrap();
+    add(&dir, None, "Home", Some("correct horse battery"), false).unwrap();
+    add(&dir, None, "Cafe", None, false).unwrap();
     let (home, cafe) = (address("Home"), address("Cafe"));
     assert!(check_mac(&home).is_ok() && check_mac(&cafe).is_ok(), "{home} {cafe}");
     assert_ne!(home, cafe, "two networks never see one address");
     // Kept through a new passphrase and another network's removal.
-    add(&dir, None, "Home", Some("a different one")).unwrap();
+    add(&dir, None, "Home", Some("a different one"), false).unwrap();
     forget(&dir, None, "Cafe").unwrap();
     assert_eq!(address("Home"), home);
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
@@ -92,18 +92,43 @@ fn an_address_is_local_unicast_and_paired_with_its_policy() {
 #[test]
 fn open_network_saved_without_key_or_protection() {
     let dir = tmpdir("open");
-    assert_eq!(add(&dir, None, "Cafe", None).unwrap(), Added::New);
-    add(&dir, None, "Home", Some("correct horse battery")).unwrap();
+    assert_eq!(add(&dir, None, "Cafe", None, false).unwrap().0, Added::New);
+    add(&dir, None, "Home", Some("correct horse battery"), false).unwrap();
     let text = fs::read_to_string(conf_path(&dir)).unwrap();
     assert!(text.contains("\nnetwork={\n\tssid=\"Cafe\"\n\tkey_mgmt=NONE\n\tmac_addr=3\n\tmac_value="), "{text}");
     assert_eq!(list(&dir).unwrap(), vec!["Cafe", "Home"]);
     // A passphrase given later replaces the open block, and saving it open again drops it.
-    assert_eq!(add(&dir, None, "Cafe", Some("now it has one")).unwrap(), Added::Replaced);
+    assert_eq!(add(&dir, None, "Cafe", Some("now it has one"), false).unwrap().0, Added::Replaced);
     assert!(fs::read_to_string(conf_path(&dir)).unwrap().contains("\tssid=\"Cafe\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n"));
-    assert_eq!(add(&dir, None, "Home", None).unwrap(), Added::Replaced);
+    assert_eq!(add(&dir, None, "Home", None, false).unwrap().0, Added::Replaced);
     let home = &load(&dir).unwrap()[1];
     assert_eq!((home.ssid.as_str(), &home.psk), ("Home", &Psk::Open));
     assert!(!fs::read_to_string(conf_path(&dir)).unwrap().contains("correct horse battery"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hidden_network_asked_for_by_name() {
+    let dir = tmpdir("hidden");
+    assert_eq!(add(&dir, None, "Attic", Some("correct horse battery"), true).unwrap().0, Added::New);
+    add(&dir, None, "Cafe", None, true).unwrap();
+    add(&dir, None, "Home", Some("long enough"), false).unwrap();
+    let text = fs::read_to_string(conf_path(&dir)).unwrap();
+    assert!(text.contains("\tssid=\"Attic\"\n\tscan_ssid=1\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n"), "{text}");
+    assert!(text.contains("\tssid=\"Cafe\"\n\tscan_ssid=1\n\tkey_mgmt=NONE\n"), "{text}");
+    assert_eq!(text.matches("scan_ssid").count(), 2, "{text}");
+    let hidden: Vec<bool> = load(&dir).unwrap().iter().map(|n| n.hidden).collect();
+    assert_eq!(hidden, vec![true, true, false]);
+    // A new passphrase keeps it asked for by name: without, it would not be found again.
+    assert_eq!(add(&dir, None, "Attic", Some("a new passphrase"), false).unwrap(), (Added::Replaced, true));
+    assert!(load(&dir).unwrap()[0].hidden);
+    forget(&dir, None, "Attic").unwrap();
+    add(&dir, None, "Attic", Some("a new passphrase"), false).unwrap();
+    assert!(!load(&dir).unwrap().iter().find(|n| n.ssid == "Attic").unwrap().hidden, "forgotten, it starts over");
+    assert_eq!(said("Attic", Added::New, false, true), "added hidden network \"Attic\"");
+    assert_eq!(said("Cafe", Added::Replaced, true, true), "hidden network \"Cafe\" is now open, joined without a passphrase");
+    let twice = "network={\n\tssid=\"a\"\n\tscan_ssid=1\n\tscan_ssid=1\n\tkey_mgmt=NONE\n}\n";
+    assert!(parse(twice).unwrap_err().contains("a second scan_ssid"));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -126,8 +151,8 @@ fn passphrase_quoted_raw_psk_bare() {
     let hex = "f".repeat(64);
     assert_eq!(check_passphrase(&hex).unwrap(), Psk::Hex(hex.clone()));
     let nets = vec![
-        Network { ssid: "a".into(), psk: Psk::Passphrase("pass word".into()), mac: None },
-        Network { ssid: "b".into(), psk: Psk::Hex(hex.clone()), mac: None },
+        Network { ssid: "a".into(), psk: Psk::Passphrase("pass word".into()), mac: None, hidden: false },
+        Network { ssid: "b".into(), psk: Psk::Hex(hex.clone()), mac: None, hidden: false },
     ];
     let text = render(&nets);
     assert!(text.contains("\tpsk=\"pass word\"\n"));
@@ -174,12 +199,12 @@ fn ssid_and_passphrase_rules() {
 
     // A refusal writes nothing and leaves an existing file as it was.
     let dir = tmpdir("refusals");
-    assert!(add(&dir, None, "bad\"ssid", Some("long enough")).is_err());
+    assert!(add(&dir, None, "bad\"ssid", Some("long enough"), false).is_err());
     assert!(!conf_path(&dir).exists(), "nothing written on refusal");
-    add(&dir, None, "Home", Some("long enough")).unwrap();
+    add(&dir, None, "Home", Some("long enough"), false).unwrap();
     let before = fs::read(conf_path(&dir)).unwrap();
     let ino = fs::metadata(conf_path(&dir)).unwrap().ino();
-    assert!(add(&dir, None, "Home", Some("short")).is_err());
+    assert!(add(&dir, None, "Home", Some("short"), false).is_err());
     assert!(forget(&dir, None, "Nowhere").unwrap_err().contains("no network named"));
     assert_eq!(fs::read(conf_path(&dir)).unwrap(), before);
     assert_eq!(fs::metadata(conf_path(&dir)).unwrap().ino(), ino, "a refusal does not rewrite the file");
@@ -189,9 +214,9 @@ fn ssid_and_passphrase_rules() {
 #[test]
 fn readd_replaces_block_in_place() {
     let dir = tmpdir("replace");
-    add(&dir, None, "First", Some("first pass")).unwrap();
-    add(&dir, None, "Second", Some("second pass")).unwrap();
-    assert_eq!(add(&dir, None, "First", Some("changed pass")).unwrap(), Added::Replaced);
+    add(&dir, None, "First", Some("first pass"), false).unwrap();
+    add(&dir, None, "Second", Some("second pass"), false).unwrap();
+    assert_eq!(add(&dir, None, "First", Some("changed pass"), false).unwrap().0, Added::Replaced);
     let nets = load(&dir).unwrap();
     assert_eq!(nets.len(), 2, "replaced, not appended");
     assert_eq!((nets[0].ssid.as_str(), &nets[0].psk), ("First", &Psk::Passphrase("changed pass".into())));
@@ -203,11 +228,11 @@ fn readd_replaces_block_in_place() {
 #[test]
 fn write_is_atomic_rename() {
     let dir = tmpdir("atomic");
-    add(&dir, None, "Home", Some("long enough")).unwrap();
+    add(&dir, None, "Home", Some("long enough"), false).unwrap();
     let ino = fs::metadata(conf_path(&dir)).unwrap().ino();
     // A temporary left by a writer that died before its rename is removed.
     fs::write(dir.join(format!(".{FILE_NAME}.4294967295")), "psk=\"secret\"").unwrap();
-    add(&dir, None, "Other", Some("long enough")).unwrap();
+    add(&dir, None, "Other", Some("long enough"), false).unwrap();
     assert_ne!(fs::metadata(conf_path(&dir)).unwrap().ino(), ino, "a new inode replaced the old file");
     let names: Vec<String> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(names, vec![FILE_NAME], "only the file itself is in the directory");
@@ -233,7 +258,7 @@ fn foreign_file_refused() {
     let dir = tmpdir("foreign");
     fs::create_dir_all(&dir).unwrap();
     fs::write(conf_path(&dir), "ap_scan=1\n").unwrap();
-    let e = add(&dir, None, "Home", Some("long enough")).unwrap_err();
+    let e = add(&dir, None, "Home", Some("long enough"), false).unwrap_err();
     assert!(e.contains("something else edited"), "{e}");
     assert_eq!(fs::read_to_string(conf_path(&dir)).unwrap(), "ap_scan=1\n");
     let _ = fs::remove_dir_all(&dir);
@@ -243,8 +268,8 @@ fn foreign_file_refused() {
 fn key_management_follows_what_was_saved() {
     let hex = "f".repeat(64);
     let text = render(&[
-        Network { ssid: "a".into(), psk: Psk::Passphrase("pass word".into()), mac: None },
-        Network { ssid: "b".into(), psk: Psk::Hex(hex.clone()), mac: None },
+        Network { ssid: "a".into(), psk: Psk::Passphrase("pass word".into()), mac: None, hidden: false },
+        Network { ssid: "b".into(), psk: Psk::Hex(hex.clone()), mac: None, hidden: false },
     ]);
     // A passphrase allows SAE, a raw key cannot; neither ever names 802.1X.
     assert!(text.contains("\tssid=\"a\"\n\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n\tpsk=\"pass word\"\n"), "{text}");
@@ -276,8 +301,9 @@ fn older_file_rewritten_with_key_management() {
     assert!(refresh(&dir, None).unwrap());
     let now = fs::read_to_string(conf_path(&dir)).unwrap();
     assert!(now.contains("\tkey_mgmt=WPA-PSK WPA-PSK-SHA256 SAE\n\tieee80211w=1\n"), "{now}");
-    // And the header's line that keeps the supplicant scanning after a failed join.
-    assert!(now.starts_with(HEADER) && HEADER.contains("\nscan_res_valid_for_connect=0\n"), "{now}");
+    // And the header's lines that keep the supplicant scanning after a failed join and take
+    // SAE's hash-to-element where it is offered.
+    assert!(now.starts_with(HEADER) && HEADER.contains("\nscan_res_valid_for_connect=0\nsae_pwe=2\n"), "{now}");
     assert_eq!(fs::metadata(conf_path(&dir)).unwrap().mode() & 0o7777, 0o440);
     assert!(!refresh(&dir, None).unwrap(), "a current file is left alone");
     // An older kryptikd's mode, which the supplicant's own user cannot read through its group.
