@@ -56,6 +56,18 @@ fn net_summary_reads_an_ssid_back_from_iw() {
 }
 
 #[test]
+fn net_summary_names_the_network_that_refused_the_passphrase() {
+    let line = |wifi: &str| format!("READY uplink=none nat=yes dns=no wifi={wifi} time=no-uplink");
+    let refused = line("refused:Home net");
+    assert_eq!(net_summary(&refused).as_deref(), Some("ready: Wi-Fi \"Home net\" refused the passphrase, no uplink address, no DNS"));
+    let cafe = line("refused:Caf\\xc3\\xa9");
+    assert_eq!(net_summary(&cafe).as_deref(), Some("ready: Wi-Fi \"Café\" refused the passphrase, no uplink address, no DNS"));
+    for bad in ["refused:", "refused:\\q", "refused:an SSID of thirty-three bytes!!!!"] {
+        assert_eq!(net_summary(&line(bad)), None, "{bad:?}");
+    }
+}
+
+#[test]
 fn parse_run_refuses_bad_requests() {
     let r = parse_run("run work wayland=/run/user/1000/kryptik/work/wayland-0 pass=fd\narg havoc\narg -e\narg sh\nend\n").unwrap();
     assert_eq!(r.zone, "work");

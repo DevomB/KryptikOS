@@ -57,6 +57,10 @@ USAGE:
                                       wpa_supplicant) as user 101 with CAP_NET_ADMIN
                                       and CAP_NET_RAW alone, no nf_tables socket, and
                                       writes only under /run/wpa_supplicant
+    kryptikd supplicant --watch RADIO as that user, so confined, with no capability:
+                                      listen to RADIO's wpa_supplicant and keep
+                                      /run/wpa_supplicant/RADIO.refused naming the
+                                      network that refused its passphrase
     kryptikd run NAME -- CMD [ARGS]   create the zone and run CMD inside it
     kryptikd stop NAME [--now]        stop a running zone (--now = SIGKILL)
     kryptikd status NAME              running, stale or absent
@@ -207,8 +211,15 @@ fn main() -> ExitCode {
                 eprintln!("kryptikd supplicant: {}", supplicant::exec(&args[2..]));
                 ExitCode::FAILURE
             }
+            Some("--watch") if args.len() == 3 => match supplicant::watch(&args[2]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("kryptikd supplicant --watch: {e}");
+                    ExitCode::FAILURE
+                }
+            },
             _ => {
-                eprintln!("supplicant: expected `-- COMMAND`");
+                eprintln!("supplicant: expected `-- COMMAND` or `--watch RADIO`");
                 ExitCode::from(2)
             }
         },

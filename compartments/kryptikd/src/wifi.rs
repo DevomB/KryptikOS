@@ -558,6 +558,21 @@ fn unescape_iw(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// An SSID printed as iw prints one, for `unescape_iw` to read back: a space at either end, a
+/// backslash and every byte that is not printable ASCII as \xHH.
+pub fn as_iw_prints(ssid: &[u8]) -> String {
+    let last = ssid.len().saturating_sub(1);
+    let mut out = String::new();
+    for (i, &c) in ssid.iter().enumerate() {
+        if (c.is_ascii_graphic() && c != b'\\') || (c == b' ' && i != 0 && i != last) {
+            out.push(char::from(c));
+        } else {
+            out.push_str(&format!("\\x{c:02x}"));
+        }
+    }
+    out
+}
+
 /// An SSID for a terminal: quoted as Rust quotes a string where it is UTF-8, so nothing
 /// unprintable reaches the screen, else with \xHH for each byte that is not printable ASCII.
 pub fn shown(ssid: &[u8]) -> String {

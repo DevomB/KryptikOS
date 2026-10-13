@@ -299,8 +299,8 @@ in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. Under the zones, a Network line says what
 the net zone reports: whether it is ready, the Wi-Fi network it joined (or
 that Wi-Fi is switched off, by a switch or an airplane-mode key; switched on
-again, it rejoins by itself), its address on the uplink and whether there is
-DNS. The menu also names a
+again, it rejoins by itself, or that a saved network refused its passphrase),
+its address on the uplink and whether there is DNS. The menu also names a
 release that has arrived and waits to be installed, and says when the newest
 update statement is more than 30 days old, or, with none ever accepted, when
 the install is (section 4). With `w` it lists the Wi-Fi networks the net zone may join,
@@ -331,7 +331,8 @@ from a random address while no network is joined where the radio allows one,
 and otherwise only listens.
 `kryptik wifi add SSID` saves a network and asks for its
 passphrase; the net zone restarts and joins it, by WPA3 where the network
-offers it. A network with no passphrase, a café's or an airport's, is saved
+offers it. If the network refuses the passphrase, the menu's Network line
+says so: add the network again with the right one. A network with no passphrase, a café's or an airport's, is saved
 with `kryptik wifi add SSID --open`: anyone in range can read what crosses it
 unencrypted, so only what a zone encrypts itself, as HTTPS does, stays
 private there. Each saved network sees the machine by an address of its own,
