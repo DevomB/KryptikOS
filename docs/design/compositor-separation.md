@@ -85,9 +85,9 @@ since the session user cannot switch uid:
 - in an empty network namespace and a cgroup of its own, with 128 MiB of
   memory, which its clients' queues fit, and room for one process;
 - with `no_new_privs`, under the zones' seccomp filter for now, and with a
-  Landlock ruleset that grants only executing its own program, so once it
-  runs it opens no file at all. A filter cut to its own loop follows once
-  a run has traced the calls it makes;
+  Landlock ruleset that grants only reading and executing its own program,
+  which exec needs, so once it runs it opens no other file. A filter cut to
+  its own loop follows once a run has traced the calls it makes;
 - with its listening socket made by the daemon at
   `/run/kryptik/proxy/<uid>/<zone>/wayland-0` and passed as `--listen-fd`.
   The zone's directory is root's alone, so the socket is reached only

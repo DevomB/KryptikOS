@@ -177,7 +177,7 @@ fn become_proxy(
         }
     }
     let ruled = crate::landlock::Ruleset::new().and_then(|mut r| {
-        r.allow(exe, crate::landlock::ACCESS_EXEC)?;
+        r.allow(exe, crate::landlock::ACCESS_EXEC | crate::landlock::ACCESS_READ_FILE)?;
         /* The installed proxy is static, so it needs nothing more. A developer's is built against
          * the host's libraries, which its loader reads: the system directories that are not links
          * (a link resolves into /usr, which is one). */

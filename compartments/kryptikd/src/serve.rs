@@ -452,7 +452,7 @@ fn proxy_socket(cfg: &ServeConfig, uid: u32, zone: &crate::zone::Zone, proxies: 
         Some(i) => i,
         None => {
             let p = crate::proxy::start(&run_dir(cfg), &cfg.proxy_exe, uid, zone, !cfg.developer)?;
-            eprintln!("kryptikd serve: uid {uid} zone {:?}: proxy {} started", zone.name, p.pid);
+            eprintln!("kryptikd serve: zone {:?}: proxy {} started", zone.name, p.pid);
             proxies.push(p);
             proxies.len() - 1
         }

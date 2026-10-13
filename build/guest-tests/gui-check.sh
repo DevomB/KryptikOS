@@ -186,7 +186,7 @@ puid() { echo $(( $(sed -n 's/^uid_base[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).
 P_UNTRUSTED="$(puid untrusted)"; P_PERSONAL="$(puid personal)"
 ppid_="$(pgrep -f '^kryptik-wlproxy --zone untrusted ' | head -1)"
 st="/proc/${ppid_:-none}/status"
-ids="$P_UNTRUSTED[[:space:]]*$P_UNTRUSTED[[:space:]]*$P_UNTRUSTED[[:space:]]*$P_UNTRUSTED"
+ids="${P_UNTRUSTED}[[:space:]]*${P_UNTRUSTED}[[:space:]]*${P_UNTRUSTED}[[:space:]]*${P_UNTRUSTED}"
 if [[ -n "$ppid_" ]] && grep -qx "Uid:[[:space:]]*$ids" "$st" && grep -qx "Gid:[[:space:]]*$ids" "$st" \
    && grep -qx 'Groups:[[:space:]]*' "$st" && grep -qx 'NoNewPrivs:[[:space:]]*1' "$st" && grep -qx 'Seccomp:[[:space:]]*2' "$st" \
    && [[ "$(readlink "/proc/$ppid_/ns/net")" != "$(readlink /proc/1/ns/net)" ]]; then
