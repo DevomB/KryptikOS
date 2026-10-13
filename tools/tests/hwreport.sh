@@ -27,6 +27,13 @@ put sys/class/dmi/id/product_version 'ThinkPad X1 Carbon Gen 9'
 put sys/class/dmi/id/product_serial PF-SECRET-1
 put sys/class/dmi/id/product_uuid 4c4c4544-0042-3010-8051-b4c04f595931
 put sys/class/dmi/id/board_serial L1-SECRET-2
+put sys/class/dmi/id/chassis_serial CH-SECRET-3
+put sys/class/dmi/id/chassis_asset_tag AT-SECRET-4
+put sys/class/dmi/id/board_asset_tag BA-SECRET-5
+# A panel whose EDID carries its serial, as a monitor's does: the report reads its state and modes.
+put sys/class/drm/card0-eDP-1/status connected
+put sys/class/drm/card0-eDP-1/modes 2256x1504
+{ printf '\000\377\377\377\377\377\377\000'; printf 'EDIDSER-6'; head -c 111 /dev/zero; } > "$W/sys/class/drm/card0-eDP-1/edid"
 put sys/firmware/efi/fw_platform_size 64
 mkdir -p "$W/sys/firmware/efi/efivars"
 printf '\006\000\000\000\001' > "$W/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
@@ -152,6 +159,8 @@ deny "no hardware address"                  '8c:16:45|00:11:22:33:44:55|66:77:88
 want "each struck where it stood"           'eth0: \(PCI Express:2\.5GT/s:Width x1\) xx:xx:xx:xx:xx:xx$'
 want "two on one line, both"                'authenticate with xx:xx:xx:xx:xx:xx \(local address=xx:xx:xx:xx:xx:xx\)$'
 deny "no serial number from the log or sysfs" '4C530001230506115281|PF-SECRET-1|L1-SECRET-2'
+deny "no chassis serial, asset tag or EDID serial" 'CH-SECRET-3|AT-SECRET-4|BA-SECRET-5|EDIDSER-6'
+want "the panel by its connector, state and mode" 'card0-eDP-1 connected 2256x1504'
 want "the log line kept, the number gone"   'usb 1-2: SerialNumber: <removed>$'
 deny "no UUID"                              '0a1b2c3d-1111|4c4c4544-0042'
 want "the filesystem line kept"             'mounted filesystem <uuid> ro'
