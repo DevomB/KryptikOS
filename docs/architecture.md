@@ -67,9 +67,9 @@ D-Bus or shared `/tmp`: every channel is a confused-deputy risk.
 ## GUI
 
 No zone can reach the compositor's socket. A zone started from the desktop
-gets its own `kryptik-wlproxy`, which hides the capture, clipboard,
-input-injection and similar Wayland globals and stamps each window with its
-zone; the compositor draws the zone's border and title prefix from that. A
+gets its own `kryptik-wlproxy`, which hides the capture, input-injection
+and similar Wayland globals, keeps copy and paste among the zone's own
+clients, and stamps each window with its zone; the compositor draws the zone's border and title prefix from that. A
 window it could not stamp is refused, never left to be drawn as zone 0's.
 Over a zone's window the pointer is the compositor's own cursor: an image
 the zone set would be drawn above every window, wherever it chose. Of the

@@ -14,14 +14,14 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
   with no GPU renderer and no Xwayland (`-Drenderers=[] -Dxwayland=disabled`
   in `build/recipes/wlroots.sh`); its DRM backend scans out dumb buffers, and
   `kryptik-session` sets `WLR_RENDERER=pixman`.
-- **The proxy offers eight globals.** `kryptik-wlproxy` advertises
+- **The proxy offers nine globals.** `kryptik-wlproxy` advertises
   `wl_compositor`, `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`,
-  `xdg_wm_base`, `zxdg_decoration_manager_v1` and `wp_viewporter`,
-  disconnects a client that binds anything else, and bounds shared-memory
-  pools at 64 MiB each, 128 MiB per connection and 256 MiB per zone
-  (`compositor/wlproxy/src/policy.rs`). The clipboard global is not among
-  them: the broker carries clipboards between zones, and nothing carries one
-  between two windows of the same zone.
+  `xdg_wm_base`, `zxdg_decoration_manager_v1` and `wp_viewporter`, and
+  `wl_data_device_manager` as a global of its own, which it serves itself
+  while the compositor's stays hidden (below). It disconnects a client
+  that binds anything else, and bounds shared-memory pools at 64 MiB each,
+  128 MiB per connection and 256 MiB per zone
+  (`compositor/wlproxy/src/policy.rs`).
 - **A zone has no GPU device.** Its `/dev` holds `null`, `zero`, `full`,
   `random`, `urandom`, `tty`, its own `/dev/shm` and a devpts instance
   (`DEVICES` in `compartments/kryptikd/src/rootfs.rs`).
@@ -229,7 +229,7 @@ yet; ADR-004's cost text says so.
 
 ## What the proxy must offer for a usable browser
 
-Four things are needed, each with its own review. The first is built.
+Four things are needed, each with its own review. The first two are built.
 
 - **Popups.** Every GTK menu, dropdown and tooltip is one, a surface with
   no border of its own, so a zone's is held to its window. The proxy lets
@@ -245,10 +245,21 @@ Four things are needed, each with its own review. The first is built.
   screenshot shows it only inside its window's frame, and the menu still
   takes the keyboard and closes it, as does Alt+j to the popup's own window.
 - **Copy and paste inside a zone.** The proxy serves
-  `wl_data_device_manager` itself, keeping selections among its own zone's
-  clients and never forwarding them to the compositor, and joins it to the
-  broker's per-zone clipboard so the zone 0 move gesture still carries a
-  payload between zones.
+  `wl_data_device_manager` itself (`compositor/wlproxy/src/clipboard.rs`),
+  as a global of its own: the compositor's data device stays hidden, and a
+  zone needs none from it. There is one selection per zone, kept among the
+  zone's own clients and never forwarded to the compositor, so it reaches
+  neither zone 0 nor another zone. Only the client with the keyboard copies, and a client is offered
+  the selection just before the keyboard enters it, as a compositor offers
+  its own; a paste is passed to the copying client with the reader's
+  descriptor. The compositor sees a `wl_display.sync` where each served
+  object is made, which keeps its object ids dense. Drag and drop is not
+  served: a drag's source is cancelled at once. `make gui-test` copies in
+  one of a zone's windows and pastes in another; neither another zone's
+  window nor zone 0's is offered it. Joining it to the broker's per-zone
+  clipboard, so the zone 0 move gesture carries a payload between zones,
+  comes next: which of the two clipboards the gesture moves is the
+  decision it needs.
 - **`wp_fractional_scale_v1`**, for sharp text on high-density screens.
 - **`zwp_idle_inhibit_manager_v1`**, so video keeps the screen awake; the
   chrome shows which zone holds it.

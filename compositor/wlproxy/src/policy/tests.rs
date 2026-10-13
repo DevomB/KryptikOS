@@ -20,9 +20,13 @@ fn capture_and_clipboard_are_hidden() {
     for shown in ["wl_compositor", "wl_shm", "wl_seat", "xdg_wm_base"] {
         assert!(allowed_version(shown).is_some(), "{shown} is what a window needs");
     }
+    // The data device a zone binds is the proxy's own, never the compositor's.
+    assert!(own_version("wl_data_device_manager").is_some() && served("wl_data_device_manager"));
 }
 
-/// Only delete_id frees objects, and only client-created ones: no reachable event may create one.
+/// Only delete_id frees objects, and only client-created ones: no event the compositor can send
+/// creates one. The server range is then the proxy's own, for the offers it makes (clipboard.rs);
+/// a global let through whose events create objects fails here before its ids could collide.
 #[test]
 fn no_compositor_created_objects() {
     use crate::protocol::{find, Arg};
