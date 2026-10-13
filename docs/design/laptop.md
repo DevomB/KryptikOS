@@ -1,15 +1,15 @@
 # The laptop
 
 The [roadmap](../roadmap.md)'s laptop item asks for per-zone sound brokered
-like the clipboard, Bluetooth, suspend and resume with the volume keys
-dropped across it, power management, hotplug and several monitors, and
-keyboard layouts and input methods. Each part meets a rule the architecture
-already set: [ADR-013](../decisions.md) builds no sound, the architecture
-allows no shared D-Bus, the threat model gives up on a suspended machine,
-there is no logind, and nothing reaches a zone except through its proxy and
-its broker. One section each, with its options, its recommendation and its
-check. The proposed decisions are ADR-021 and ADR-022 in
-[decisions](../decisions.md).
+like the clipboard, Bluetooth, suspend from the lid, the power key and
+idleness with the zone volumes' keys dropped too, power management, hotplug
+and several monitors, and keyboard layouts and input methods. Each part
+meets a rule the architecture already set: [ADR-013](../decisions.md) builds
+no sound, the architecture allows no shared D-Bus, the threat model gives up
+on a suspended machine's memory, there is no logind, and nothing reaches a
+zone except through its proxy and its broker. One section each, with its
+options, its recommendation and its check. In [decisions](../decisions.md),
+ADR-021 is proposed and ADR-022, for suspend, accepted.
 
 ## Sound
 
