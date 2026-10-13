@@ -1,9 +1,9 @@
 # Camera
 
 A video call in a zone's Firefox has the microphone, granted to one zone at a
-time from the chrome ([the laptop](laptop.md#sound)), and no camera: the
-kernel builds no video support at all. This design weighs adding one against
-the kernel code it brings into every zone's kernel. It keeps the rules the
+time from the chrome ([the laptop](laptop.md#sound)), and needs the camera
+too. This design weighs adding one against the kernel code it brings into
+every zone's kernel. It keeps the rules the
 microphone set: one zone at a time, the user's gesture in zone 0 the only way
 to grant it, and the grant visible for as long as it lasts.
 [ADR-026](../decisions.md) decides it: the grant.

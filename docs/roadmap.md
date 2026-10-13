@@ -200,11 +200,11 @@ A desktop someone can live in, built the same way.
   source, a low battery and brightness; up to four keyboard layouts to
   switch between; and each monitor at the scale the user picks, a built-in
   high-resolution panel at 2 by itself ([status](status.md)).
-- **USB sticks.** Decided (ADR-025): read in the zone the user gives one
-  to, through a descriptor and a reader of Kryptik's own, never mounted;
-  FAT first, exFAT a named gap, FUSE a later decision of its own
+- **USB sticks.** Built (ADR-025): read in the zone the user gives one to,
+  through a descriptor and a reader of Kryptik's own, never mounted; FAT
+  read, exFAT a named gap, FUSE a later decision of its own
   ([removable storage](design/removable-storage.md)).
-- **A camera.** Decided (ADR-026): granted to one zone at a time, as the
+- **A camera.** Built (ADR-026): granted to one zone at a time, as the
   microphone is, its driver loaded only for the grant
   ([camera](design/camera.md)).
 - **Bluetooth.** Decided (ADR-027): none for 1.0, where calls use USB or
