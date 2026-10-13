@@ -189,6 +189,7 @@ toolkit|fribidi|${V_FRIBIDI}|${MIRROR_GITHUB}/fribidi/fribidi/releases/download/
 toolkit|cairo|${V_CAIRO}|${MIRROR_CAIRO}/cairo-${V_CAIRO}.tar.xz|sums:cairo-${V_CAIRO}.tar.xz.sha256sum.asc|rule
 toolkit|pango|${V_PANGO}|${gnome}/pango/${V_PANGO%.*}/pango-${V_PANGO}.tar.xz|stem.sha256sum|rule
 toolkit|gdk-pixbuf|${V_GDK_PIXBUF}|${gnome}/gdk-pixbuf/${V_GDK_PIXBUF%.*}/gdk-pixbuf-${V_GDK_PIXBUF}.tar.xz|stem.sha256sum|rule
+toolkit|libglvnd|${V_LIBGLVND}|${MIRROR_FDO_GITLAB}/glvnd/libglvnd/-/archive/v${V_LIBGLVND}/libglvnd-v${V_LIBGLVND}.tar.gz|none|rule
 toolkit|libepoxy|${V_LIBEPOXY}|${MIRROR_GITHUB}/anholt/libepoxy/archive/${V_LIBEPOXY}/libepoxy-${V_LIBEPOXY}.tar.gz|none|github
 toolkit|at-spi2-core|${V_AT_SPI2_CORE}|${gnome}/at-spi2-core/${V_AT_SPI2_CORE%.*}/at-spi2-core-${V_AT_SPI2_CORE}.tar.xz|stem.sha256sum|rule
 toolkit|hicolor-icon-theme|${V_HICOLOR_ICON_THEME}|${MIRROR_ICON_THEME}/hicolor-icon-theme-${V_HICOLOR_ICON_THEME}.tar.xz|asc|listing
