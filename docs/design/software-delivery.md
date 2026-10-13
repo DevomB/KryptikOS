@@ -184,8 +184,24 @@ up ADR-001 in the zones where the applications run.
   or a path the root already has fails the step, so the root's files stay
   the ones verified at boot. The build also writes, per image, the policy
   lines its programs need, found with `kryptikd seccomp-trace`.
-- **Packed.** Stage 06 makes `image-<name>.img` the way it makes the root
-  (ext4 without a journal, then the verity tree) and a manifest:
+
+  The stage is `build/stages/04-images.sh` (`make images`). An image is a
+  file under `build/images/` naming its version and its rows, which run
+  through the same `step()` and hardening flags as stage 04's
+  (`build/lib/recipes.sh`). `tools/check-image-tree.sh` checks the upper
+  directory: no whiteout or opaque directory, no file the root has, no
+  directory of the root's `/usr` with another mode or owner, nothing outside
+  `/usr` and no link that leads out of it, no device node, setuid or setgid
+  bit, or file capability. The
+  probe image (`build/images/probe.sh`), one small program that locks its
+  memory, proves the stage and the zones suite's checks; it ships to no one.
+- **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
+  makes the root (ext4 without a journal, then the verity tree, with a
+  salt and UUID derived from the content), runs the root's artifact audit
+  over it with the image's own accepted findings
+  (`build/images/NAME.accepted`, each with its reason) or none, and the
+  image's own program list, and writes a manifest,
+  `images-<release>/images.manifest`:
 
   ```text
   KRYPTIK-IMAGES-1
@@ -202,7 +218,10 @@ up ADR-001 in the zones where the applications run.
   root's (SHA-256, 4096-byte blocks, no superblock, the hash tree after
   `data-blocks`), so every value kryptikd passes to dm-verity is signed.
   Image lines are sorted by name and a needs line uses the policy-file
-  syntax; anything else in the file refuses it.
+  syntax; anything else in the file refuses it. A development build also
+  signs the two lists the guest must refuse, under
+  `images-<release>/controls/`: the same list in `kryptik-release`, and
+  one for another root.
 - **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
   the list for each root as `<base>.manifest` and `.manifest.sig`, root
   only. Zone 0 keeps the generation the committed root uses and, during a

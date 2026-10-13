@@ -330,6 +330,11 @@ jobs:
         if: always()
         run: rm -f /mnt/kryptik/work-after-05.tar.zst
 
+      # After the cache is packed, so no image tree or overlay reaches it; stage 06 packs what this builds.
+      - name: Software images (over the base system, in the chroot)
+        timeout-minutes: 30
+        run: make -o system images
+
       # The throwaway production pair, then A and B; a production release is only bound here, where upstream build scripts ran as root.
       - name: Stage 06, the media (production 1.0.0 and 1.0.1, release A and the update B)
         id: media

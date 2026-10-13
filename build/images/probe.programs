@@ -1,0 +1,2 @@
+# The probe image's executable files, as build/config/image-programs.txt names the root's.
+usr/bin/kryptik-probe
