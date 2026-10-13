@@ -1,7 +1,6 @@
 # The browser image's executable files as it ships, its .strip list's left out, as
-# build/config/image-programs.txt names the root's: from Firefox 153's packaging manifest for a
-# GTK build on Linux, which has no plugin-container (content processes start from firefox) and no
-# ClearKey module.
+# build/config/image-programs.txt names the root's: from Firefox 153's packaging manifest, which
+# for a GTK build on Linux lists no plugin-container and no ClearKey module.
 usr/lib/firefox/firefox
 usr/lib/firefox/firefox-bin
 usr/lib/firefox/glxtest
