@@ -28,6 +28,8 @@ s_browser_firefox() {
     echo '#include <cstdint>' | "${llvm}/bin/clang" -x c++ -fsyntax-only --gcc-install-dir="$gccdir" -
     src="$(unpack "firefox-${V_FIREFOX}esr.source.tar.xz" "firefox-${V_FIREFOX}")"
     cd "$src"
+    # What a GCC 14 build of this release needs (build/patches/firefox-*/README.md).
+    apply_repo_patches "firefox-${V_FIREFOX}"
     # The build's Glean step caches what it parses through Python's sqlite3, and the base system's
     # Python has none, as zone 0 has no SQLite: the module is built from that Python's own source
     # and Firefox's copy of SQLite, for this build alone (browser.strip keeps it out of the image).

@@ -1,0 +1,3 @@
+25e3af89f5cd1cb9fb97492b8c254c1d122c1f2bd83003af59577288098cce02  0001-features-h-unwrapped-for-fortify.patch
+d8473ec1e442e5ff0559a08868ed7345024ae898961cffb5b9bb64de29fcb160  0002-ffvpx-gcc-incompatible-pointer-types.patch
+692345659a387cda546bf9aa2a8b19cefce60f3545634607e6a35d526145fd90  0003-cstdint-includes.patch
