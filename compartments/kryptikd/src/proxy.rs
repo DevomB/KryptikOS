@@ -189,7 +189,8 @@ pub fn kill_leftovers() {
 fn same_file(a: RawFd, b: RawFd) -> bool {
     let mut sa: libc::stat = unsafe { std::mem::zeroed() };
     let mut sb: libc::stat = unsafe { std::mem::zeroed() };
-    unsafe { libc::fstat(a, &mut sa) == 0 && libc::fstat(b, &mut sb) == 0 } && (sa.st_dev, sa.st_ino) == (sb.st_dev, sb.st_ino)
+    let read = unsafe { libc::fstat(a, &mut sa) == 0 && libc::fstat(b, &mut sb) == 0 };
+    read && (sa.st_dev, sa.st_ino) == (sb.st_dev, sb.st_ino)
 }
 
 /// In the forked child: the proxy's descriptors (the listener as 3, dwl's socket as 4, the move
