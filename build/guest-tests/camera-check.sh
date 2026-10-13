@@ -70,7 +70,7 @@ node=/run/kryptik-camera/untrusted/video0
 # A camera plugged in loads nothing: eudev loads by alias, and kmod skips a blacklisted module's
 # own aliases, so a video-class device's alias, which uvcvideo claims, loads nothing.
 alias='usb:v0000p0000d0000dcEFdsc02dp01ic0Eisc01ip00in00'
-claims="$(modinfo -F alias uvcvideo 2>&1 | grep -c 'ic0Eisc01ip00')"
+claims="$(grep -c 'ic0Eisc01ip00.* uvcvideo$' "/lib/modules/$(uname -r)/modules.alias" 2>&1)"
 kept="$(modprobe -n -v -b "$alias" 2>&1)"
 if [[ "$claims" -ge 1 && "$kept" != *uvcvideo* ]] && ! loaded uvcvideo; then
     pass "camera-not-by-alias" "uvcvideo claims the video class, and loading by a camera's alias loads nothing"
