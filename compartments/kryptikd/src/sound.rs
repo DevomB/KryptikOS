@@ -6,19 +6,20 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::zone::{NetworkMode, Zone};
+use crate::zone::Zone;
 
 /// The mixer's directory, which its service makes as root.
 pub const RUN_DIR: &str = "/run/kryptik-sound";
 /// Where a zone finds its socket's directory.
 pub const IN_ZONE: &str = "/run/kryptik/sound";
 
-/// The mixer's list, "NAME UID" a line: every zone with an identity but the nic zone, which
-/// plays nothing. The uid is the one the zone's root maps to, the only peer its socket takes.
+/// The mixer's list, "NAME UID" a line: every zone with an identity whose file lets it play,
+/// never the nic zone (`Zone::sound`). The uid is the one the zone's root maps to, the only
+/// peer its socket takes.
 pub fn zones_list(zones: &[Zone]) -> String {
     zones
         .iter()
-        .filter(|z| z.network != NetworkMode::Nic)
+        .filter(|z| z.sound)
         .filter_map(|z| z.uid_base.map(|uid| format!("{} {uid}\n", z.name)))
         .collect()
 }

@@ -174,8 +174,11 @@ pub const PROC_MASKED: &[&str] = &[
     "sys/fs/file-nr", "sys/fs/inode-nr", "sys/fs/dentry-state",
 ];
 
-/// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too.
-pub const PROC_EMPTIED: &[&str] = &["irq"];
+/// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too,
+/// and asound's PCM status shows when another zone plays or records (the card is open while one
+/// does) while its codec files name the machine's model. sysinit loads ALSA's core so asound is
+/// there to empty when a zone starts.
+pub const PROC_EMPTIED: &[&str] = &["irq", "asound"];
 
 /// What a zone sees of sysfs: its interfaces and the CPU layout (glibc counts CPUs there). The
 /// rest holds disk and monitor serials and which encrypted zones run.
