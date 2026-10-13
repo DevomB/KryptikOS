@@ -27,6 +27,7 @@ set -u
 # The root login's home is on the state partition.
 cd / || exit 1
 KD=/usr/bin/kryptikd
+# Where work's volume is mounted, as zone 0 sees it.
 R=/var/lib/kryptik/zones
 USER_NAME="${1:-tester}"
 STATE_PW="${2:-}"
@@ -126,19 +127,22 @@ su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/de
 wait_for 30 test -S "$RT/wayland-0" && pass "session-up" || fail "session-up" "$(tail -3 "$slog" 2>/dev/null | tr '\n' ' ')"
 # The chrome's idle lock would lock the session under the suite.
 wait_for 20 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 600'
-PP="$OUT/zone-pass"; printf 'zone-pass\n' > "$PP"; chmod 600 "$PP"
+# No newline: cryptsetup's --key-file would take it as part of the passphrase, which kryptikd strips.
+PP="$OUT/zone-pass"; printf zone-pass > "$PP"; chmod 600 "$PP"
 UPP="$RT/zone-pass"; cp "$PP" "$UPP"; chown "$USER_NAME" "$UPP"; chmod 600 "$UPP"
 "$KD" volume init work --size 64M --passphrase-file "$PP" > "$OUT/vol.out" 2>&1 || fail "volume-init" "$(tail -1 "$OUT/vol.out")"
-# A tick a second into the zone's home, /home/ZONE inside it: on its volume for work, on the
-# state partition for untrusted.
+# A tick a second into the zone's home, /home/ZONE inside it: on its volume for work, on its own
+# tmpfs for untrusted, which no path here reaches, so both are read through the zone's pid 1.
 tick() { echo "sh -c \"while :; do date +%s >> /home/$1/ticks; sleep 1; done\""; }
+tickfile() { local pid _; read -r pid _ < "/run/kryptik/zones/$1/init.pid" 2>/dev/null; echo "/proc/${pid:-0}/root/home/$1/ticks"; }
+ticking() { [[ -s "$(tickfile "$1")" ]]; }
 as_user "kryptik-launch --no-display --passphrase-fd 3 work -- $(tick work) 3<$UPP" > "$OUT/launch-work.out" 2>&1 &
 as_user "kryptik-launch --no-display untrusted -- $(tick untrusted)" > "$OUT/launch-untrusted.out" 2>&1 &
-ticks() { wc -l < "$R/$1/ticks" 2>/dev/null || echo 0; }
+ticks() { wc -l < "$(tickfile "$1")" 2>/dev/null || echo 0; }
 # Counted again at each look: wait_for runs its command anew, its arguments as they were.
 lines_past() { [[ "$(wc -l < "$1" 2>/dev/null || echo 0)" -gt "$2" ]]; }
 ticks_past() { [[ "$(ticks "$1")" -gt "$2" ]]; }
-if wait_for 60 test -s "$R/work/ticks" && wait_for 60 test -s "$R/untrusted/ticks"; then
+if wait_for 60 ticking work && wait_for 60 ticking untrusted; then
     pass "zones-ticking" "work (its own volume) and untrusted count a tick a second"
 else
     fail "zones-ticking" "work: $(tail -1 "$OUT/launch-work.out" 2>/dev/null); untrusted: $(tail -1 "$OUT/launch-untrusted.out" 2>/dev/null)"
@@ -261,15 +265,13 @@ echo "GT CACHE-MARK $(head -c 32 "$R/work/cache-mark" | od -An -v -tx1 | tr -dc 
 # --- a real sleep ----------------------------------------------------------------------------
 # The user's own way: the lock, then the daemon. The host sees the guest sleep, dumps its memory,
 # waits past the watchdog's timeout and wakes it; should the kernel refuse to sleep, the lock
-# says so, and so does this script, for the host.
+# says so, and so does this script, for the host. The host hears of the sleep first: once the
+# daemon has frozen this script, it says nothing more until the machine is back.
+echo "GT SLEEPING 1"
 as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/lock-suspend.out" 2>&1 &
-if wait_for 30 grep -q '^kryptik-lock: suspending' "$OUT/lock-suspend.out"; then
-    echo "GT SLEEPING 1"
-else
-    fail "suspend-asked" "$(tr '\n' ' ' < "$OUT/lock-suspend.out")"
-fi
 # The lock tells the daemon's answer once the machine is back, or once the kernel has refused.
 wait_for 300 grep -q '^kryptik-lock: suspend: ' "$OUT/lock-suspend.out"
+grep -q '^kryptik-lock: suspending' "$OUT/lock-suspend.out" || fail "suspend-asked" "$(tr '\n' ' ' < "$OUT/lock-suspend.out")"
 answer="$(grep '^kryptik-lock: suspend: ' "$OUT/lock-suspend.out" | tail -1)"
 case "$answer" in
     *": ok woke")
@@ -313,7 +315,7 @@ else
     fail "waiting-zone-stops" "mappings: $(ls /dev/mapper | tr '\n' ' '); $(tr '\n' ' ' < "$OUT/stop-waiting.out")"
 fi
 as_user "kryptik-launch --no-display --passphrase-fd 3 work -- $(tick work) 3<$UPP" > "$OUT/launch-work-again.out" 2>&1 &
-if wait_for 60 test -s "$R/work/ticks" && t_work="$(ticks work)" && wait_for 30 ticks_past work "$t_work"; then
+if wait_for 60 ticking work && t_work="$(ticks work)" && wait_for 30 ticks_past work "$t_work"; then
     pass "volume-opens-after-giving-up" "work started again on its volume, which checked clean, and counts on"
 else
     fail "volume-opens-after-giving-up" "$(tail -2 "$OUT/launch-work-again.out" | tr '\n' ' ')"
@@ -425,8 +427,10 @@ if wait_for 10 test -s "$pf" && [[ "$(stat -c '%u %a' "$pf")" == "${UID_} 600" ]
 else
     fail "lock-pid-written" "$(stat -c '%U %a %s' "$pf" 2>&1)"
 fi
-as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/hand-off.out" 2>&1
+# Said before the hand-off, for the same reason as GT SLEEPING 1: the sleep can come before the
+# hand-off returns.
 echo "GT SLEEPING 3"
+as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/hand-off.out" 2>&1
 if grep -q '^kryptik-lock: asked the lock that is up to suspend' "$OUT/hand-off.out"; then
     slept "$slog" "$a0" 5 "lock-up-sleeps"
 else
