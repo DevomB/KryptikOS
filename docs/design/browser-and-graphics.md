@@ -183,8 +183,11 @@ floors are given with each layer.
     `--disable-updater` (updates are the image's) and `--disable-eme`.
   - `--disable-jemalloc`, as the image preloads hardened_malloc for every
     process.
-  - `--disable-audio-backends` until sound reaches zones. The ESR default
-    is PulseAudio, and ALSA needs alsa-lib and a sound path designed first.
+  - `--enable-audio-backends=alsa`: a zone's default ALSA device is zone
+    0's mixer (the laptop design's sound path). Firefox needs alsa-lib in
+    any case, as Web MIDI on Linux links ALSA's sequencer API; with no
+    sequencer in the kernel and no `/dev/snd` in a zone, it reaches no
+    device.
   - The first build is `--without-wasm-sandboxed-libraries`. The next adds
     a WASI sysroot to the `clang` layer, since a font or spelling parser
     bug should stay inside that sandbox.
