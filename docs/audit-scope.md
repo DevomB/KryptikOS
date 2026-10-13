@@ -161,7 +161,7 @@ From [status](status.md#known-gaps) and the designs' own lists:
   ([supply chain](supply-chain.md#open-problems)).
 - dhcpcd runs without its own privilege separation; the net zone is its
   sandbox.
-- Every `kryptik-wlproxy` runs as the login user and connects to the
+- Every `kryptik-wlproxy` runs as the login user, who can reach the
   compositor's own socket, which offers capture and input injection, so a
   bug in a proxy would reach the whole desktop.
 - The artifact audit's soft findings, each with its reason in
