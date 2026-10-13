@@ -224,6 +224,43 @@ fn zone_log_starts_again_past_its_bound() {
 }
 
 #[test]
+fn check_password_takes_the_peers_own_entry_alone() {
+    // "Hello world!" under SHA-512 crypt, the specification's example (password/tests.rs).
+    const HELLO: &str = "$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1";
+    let uid = unsafe { libc::geteuid() };
+    let user = user_of(uid).expect("the test's uid has a name");
+    let shadow = std::env::temp_dir().join(format!("kryptikd-serve-shadow-{}", std::process::id()));
+    std::fs::write(&shadow, format!("other:{HELLO}:20000:0:99999:7:::\n{user}:{HELLO}:20000:0:99999:7:::\n")).unwrap();
+    let cfg = ServeConfig {
+        socket: PathBuf::new(),
+        group: String::new(),
+        zones_dir: PathBuf::new(),
+        rootfs: String::new(),
+        log_dir: PathBuf::new(),
+        proxy_exe: PathBuf::new(),
+        wifi_dir: PathBuf::new(),
+        developer: true,
+        shadow: shadow.clone(),
+    };
+    let ask = |p: &str, a: &mut crate::password::Attempts| check_password(&cfg, uid, &format!("check-password\npassword {p}\nend\n"), a);
+    let mut a = crate::password::Attempts::default();
+    assert_eq!(ask("Hello world!", &mut a), "ok\n");
+    assert_eq!(ask("hello world!", &mut a), "error: wrong password\n");
+    // Within the pause even the right one is turned away unchecked.
+    assert_eq!(ask("Hello world!", &mut a), "error: wait 2 s\n");
+    for bad in ["check-password\npassword x\n", "check-password\npassword x\nend\nmore\n", "check-password\npass x\nend\n", "check-password\n"] {
+        assert!(check_password(&cfg, uid, bad, &mut a).starts_with("error: check-password: "), "{bad:?}");
+    }
+    std::fs::write(&shadow, format!("{user}:!:20000:0:99999:7:::\nother:{HELLO}:20000:0:99999:7:::\n")).unwrap();
+    assert_eq!(
+        ask("Hello world!", &mut crate::password::Attempts::default()),
+        format!("error: {user} has no SHA-512 or SHA-256 crypt password to check\n"),
+        "another account's hash is never tried"
+    );
+    let _ = std::fs::remove_file(&shadow);
+}
+
+#[test]
 fn socketpair_peer_is_self() {
     let (a, _b) = UnixStream::pair().unwrap();
     let cred = peer_cred(a.as_raw_fd()).unwrap();

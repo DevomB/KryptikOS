@@ -284,6 +284,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |
+| Alt+Shift+l | lock the screen until the login password is typed |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |
@@ -291,6 +292,15 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+1 … Alt+9 / Alt+Shift+1 … 9 | show a tag / move the focused window to it; vault windows keep to tag 9 |
 | Ctrl+Alt+F2 / Ctrl+Alt+F1 | the administration login / back to the desktop |
 | Alt+Shift+q | leave the desktop, which logs you out |
+
+Alt+Shift+l locks the screen. Nothing shows but the word LOCKED and a mark
+for each character typed, and every key goes to the lock, so no window, zone
+0's or a zone's, sees the password; Ctrl+Alt+F2 does nothing while locked.
+Type the login password and Enter. After a wrong one the lock shows WRONG,
+and the next try waits 2 seconds, doubling with each wrong one in a row up
+to a minute (the lock shows WAIT and the seconds); Escape clears what was
+typed. If the lock's program dies, the screen stays locked and the lock
+starts again.
 
 Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then

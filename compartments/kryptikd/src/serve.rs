@@ -8,6 +8,7 @@
 //!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              wifi-scan, answered once the nic zone has scanned
+//!              check-password, `password <password>`, `end` (the screen lock's)
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
@@ -102,6 +103,16 @@ fn gid_of_group(name: &str) -> Option<u32> {
         None
     } else {
         Some(unsafe { (*g).gr_gid })
+    }
+}
+
+/// The login name of `uid`, as the password database has it.
+fn user_of(uid: u32) -> Option<String> {
+    let pw = unsafe { libc::getpwuid(uid) };
+    if pw.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr((*pw).pw_name) }.to_string_lossy().into_owned())
     }
 }
 
@@ -867,6 +878,8 @@ pub struct ServeConfig {
     pub wifi_dir: PathBuf,
     /// Unprivileged instance: serves its own uid only.
     pub developer: bool,
+    /// The shadow file the screen lock's password is checked against.
+    pub shadow: PathBuf,
 }
 
 fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String> {
@@ -893,6 +906,7 @@ fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String>
         proxy_exe: PathBuf::from(opt("--proxy-exe").unwrap_or_else(|| PROXY_EXE.to_string())),
         wifi_dir: crate::wifi_dir_from(args),
         developer,
+        shadow: PathBuf::from(opt("--shadow").unwrap_or_else(|| crate::password::SHADOW.to_string())),
     })
 }
 
@@ -1031,8 +1045,28 @@ fn net_summary(line: &str) -> Option<String> {
     })
 }
 
+/// `check-password`, the screen lock's: the password on a line of its own, checked against the
+/// peer's own login entry. The reply never repeats it.
+fn check_password(cfg: &ServeConfig, uid: u32, text: &str, attempts: &mut crate::password::Attempts) -> String {
+    let mut lines = text.lines();
+    let password = match (lines.next(), lines.next().and_then(|l| l.strip_prefix("password ")), lines.next(), lines.next()) {
+        (Some("check-password"), Some(p), Some("end"), None) => p,
+        _ => return "error: check-password: the request is `password <PASSWORD>` and `end`, one per line\n".into(),
+    };
+    let Some(user) = user_of(uid) else {
+        return format!("error: no account has uid {uid}\n");
+    };
+    match crate::password::check(&cfg.shadow, &user, password.as_bytes(), attempts, Instant::now()) {
+        Ok(()) => "ok\n".into(),
+        Err(e) => {
+            eprintln!("kryptikd serve: uid {uid}: the screen lock's password: {e}");
+            format!("error: {e}\n")
+        }
+    }
+}
+
 /// Serve one connection; a started launch is returned and a slow command pushed to `jobs`.
-fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
+fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, attempts: &mut crate::password::Attempts) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let Ok(peer) = peer_cred(fd) else {
         reply(&conn, "error: unidentified peer\n");
@@ -1044,7 +1078,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
         eprintln!("kryptikd serve: refused uid {uid} (pid {})", peer.pid);
         return None;
     }
-    let (text, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
+    let (mut raw, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("kryptikd serve: uid {uid}: {e}");
@@ -1052,7 +1086,17 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             return None;
         }
     };
-    let text = String::from_utf8_lossy(&text).into_owned();
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    // The bytes as read are wiped once copied: a request may carry a password or a passphrase.
+    raw.fill(0);
+    if text.lines().next() == Some("check-password") {
+        let said = check_password(cfg, uid, &text, attempts);
+        let mut text = text;
+        // SAFETY: zero bytes are valid UTF-8.
+        unsafe { text.as_bytes_mut() }.fill(0);
+        reply(&conn, &said);
+        return None;
+    }
     let first = text.lines().next().unwrap_or("");
     let verb = first.split_whitespace().next().unwrap_or("");
     match verb {
@@ -1366,6 +1410,8 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
+    // Wrong passwords at the screen lock, kept across connections.
+    let mut attempts = crate::password::Attempts::default();
     // The login prompt carries what `kryptik update status` says of a stale statement, on the
     // installed system's instance: checked as it starts, then hourly, as days are what count.
     let mut notice_due = (!cfg.developer).then(Instant::now);
@@ -1486,7 +1532,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             match listener.accept() {
                 Ok((conn, _)) => {
                     let _ = conn.set_nonblocking(false);
-                    if let Some(p) = handle(&cfg, conn, &mut jobs) {
+                    if let Some(p) = handle(&cfg, conn, &mut jobs, &mut attempts) {
                         pending.push(p);
                     }
                 }

@@ -17,6 +17,10 @@
 #   GT SCREENSHOT-POPUP                             take a screenshot
 #   GT KEY-MENU-POPUP                               press Alt+p (the chrome menu)
 #   GT KEY-FOCUS-POPUP                              press Alt+j
+#   GT KEY-LOCK                                     press Alt+Shift+l (the screen lock)
+#   GT SCREENSHOT-LOCKED                            take a screenshot
+#   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
+#   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
@@ -31,6 +35,8 @@ set -u
 R=/var/lib/kryptik/zones
 KD=/usr/bin/kryptikd
 USER_NAME="${1:-tester}"
+# The user's login password, which the screen lock's checks send to the launch daemon.
+USER_PW="${2:-}"
 UID_="$(id -u "$USER_NAME")"
 RT="/run/user/$UID_"
 LOG=/var/log/kryptik/gui-check
@@ -711,6 +717,86 @@ if wait_for 10 own_done && wait_for 10 own_keyed && wait_for 10 grep -q '^zone=u
 else
     fail "zone-popup-ends-on-own-focus" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); probe: $(since_mark popup-own untrusted | tail -4 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-popup-own.out")"
 fi
+stop_zone untrusted
+# --- the screen lock -------------------------------------------------------------------------
+# The launch daemon checks the login password against the user's own shadow entry. After a
+# wrong one the next waits 2 s, the right one included, which the daemon does not check
+# then; the right one after the pause is taken; and no log holds what was typed.
+pw_try() { printf '%s\n' "$1" | as_user "kryptik-launch --check-password" 2>&1; echo "exit=$?"; }
+in_logs() { grep -rlsF -e "$1" -e "$2" /run/uncaught-logs "$RT/kryptik" /var/log/kryptik/zone-*.log; }
+guess=lock-guess-4471
+t1="$(pw_try "$guess")"; t2="$(pw_try "$USER_PW")"; sleep 3; t3="$(pw_try "$USER_PW")"
+if [[ -z "$USER_PW" ]]; then
+    fail "password-check-pauses" "no password given: gui-check.sh USER PASSWORD"
+elif [[ "$t1" == "error: wrong password"*"exit=1" && "$t2" == "error: wait "*"exit=1" && "$t3" == "exit=0" && -z "$(in_logs "$guess" "$USER_PW")" ]]; then
+    pass "password-check-pauses" "a wrong password: ${t1%%$'\n'*}; the right one at once: ${t2%%$'\n'*}; the right one after the pause: taken; neither is in a log"
+else
+    fail "password-check-pauses" "wrong: $(tr '\n' ' ' <<<"$t1"); right at once: $(tr '\n' ' ' <<<"$t2"); right after the pause: $(tr '\n' ' ' <<<"$t3"); logs holding one: $(in_logs "$guess" "$USER_PW" | tr '\n' ' ')"
+fi
+# The lock, Alt+Shift+l, must take the keyboard from zone 0's window while a zone's popup
+# holds a grab no input gave, and close that popup; show nothing but itself; refuse a wrong
+# password; stay locked when its program is killed, and lock again; keep every key from a
+# grab a zone makes while it is locked; and give zone 0's window the keyboard back for the
+# login password.
+slog="$RT/kryptik/session.log"
+said() { grep -c "^kryptik-lock: $1" "$slog" 2>/dev/null; }
+more() { [[ "$(said "$1")" -gt "$2" ]]; }
+entered0() { grep -c 'keyboard entered the window' "$LOG/lock-zone0.out"; }
+back0() { [[ "$(entered0)" -ge 2 ]]; }
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 300 lock-0" > "$LOG/lock-zone0.out" 2>&1 &
+lock0_pid=$!
+wait_for 15 grep -q 'keyboard entered the window' "$LOG/lock-zone0.out"
+mark lock untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 300 grab" > "$LOG/launch-lock.out" 2>&1
+lock_grabbed() { since_mark lock untrusted | grep -q '^popup committed '; }
+lock_popup_done() { since_mark lock untrusted | grep -q '^popup done'; }
+wait_for 20 lock_grabbed
+locked0="$(said locked)"; refused0="$(said refused)"; unlocked0="$(said unlocked)"
+echo "GT KEY-LOCK"
+if wait_for 20 more locked "$locked0" && wait_for 10 lock_popup_done && wait_for 10 grep -q 'keyboard left the window' "$LOG/lock-zone0.out"; then
+    pass "lock-takes-keyboard" "Alt+Shift+l locked the session, closed the zone's grabbing popup and took the keyboard from zone 0's window"
+else
+    fail "lock-takes-keyboard" "lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); zone 0's window: $(tr '\n' ' ' < "$LOG/lock-zone0.out"); the zone's: $(since_mark lock untrusted | tail -3 | tr '\n' ' ')"
+fi
+sleep 2
+echo "GT SCREENSHOT-LOCKED"
+sleep 6
+echo "GT LOCK-TYPE-WRONG"
+if wait_for 20 more refused "$refused0" && grep '^kryptik-lock: refused' "$slog" | tail -1 | grep -q 'wrong password$'; then
+    pass "lock-refuses-wrong-password" "$(grep '^kryptik-lock: refused' "$slog" | tail -1)"
+else
+    fail "lock-refuses-wrong-password" "$(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
+# Killed, the lock's program leaves the session locked with no window given the keyboard,
+# and the lock locks again.
+pkill -KILL -P "$(pgrep -o -x -u "$USER_NAME" kryptik-lock)" -x kryptik-lock 2>/dev/null
+if wait_for 20 more locked "$((locked0 + 1))" && grep -q 'the lock died of signal 9; locking again' "$slog" \
+   && [[ "$(entered0)" -eq 1 ]] && ! since_mark lock untrusted | grep -q '^keyboard entered'; then
+    pass "lock-survives-its-death" "killed, the lock locked again, and no window got the keyboard meanwhile"
+else
+    fail "lock-survives-its-death" "lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); zone 0's window: $(tr '\n' ' ' < "$LOG/lock-zone0.out"); the zone's: $(since_mark lock untrusted | tail -3 | tr '\n' ' ')"
+fi
+# A zone's grab made while locked, from a window started then: the password typed next must
+# still reach the lock, and the popup closes as the keyboard goes back.
+stop_zone untrusted
+mark lock2 untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 120 grab" > "$LOG/launch-lock2.out" 2>&1
+lock2_grabbed() { since_mark lock2 untrusted | grep -q '^popup committed '; }
+lock2_done() { since_mark lock2 untrusted | grep -q '^popup done'; }
+wait_for 20 lock2_grabbed; grabbed_locked=$?
+# The wrong password's 2 s pause ended while the zone restarted.
+echo "GT LOCK-TYPE-RIGHT"
+if wait_for 30 more unlocked "$unlocked0" && wait_for 10 back0; then
+    pass "lock-unlocks-with-password" "the login password unlocked the session and zone 0's window has the keyboard again"
+else
+    fail "lock-unlocks-with-password" "lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); zone 0's window: $(tr '\n' ' ' < "$LOG/lock-zone0.out")"
+fi
+if [[ "$grabbed_locked" -eq 0 ]] && more unlocked "$unlocked0" && wait_for 10 lock2_done && ! since_mark lock2 untrusted | grep -q '^keyboard entered'; then
+    pass "lock-keeps-keys-from-zone-grab" "a zone's popup grabbed the keyboard while locked; the password still reached the lock, and the popup closed at the unlock"
+else
+    fail "lock-keeps-keys-from-zone-grab" "the zone's probe: $(since_mark lock2 untrusted | tail -4 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-lock2.out")"
+fi
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 300 lock-0' 2>/dev/null; wait "$lock0_pid" 2>/dev/null
 stop_zone untrusted
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
