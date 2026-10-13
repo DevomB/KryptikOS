@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Launch daemon suite: drives `kryptikd serve` over its socket as kryptik-launch does.
-# Runs as a user or root and needs python3 (exit 77 without it); 0 means every check ran and passed.
+# Runs as a user or root and needs python3 (exit 77 without it); 0 means every check ran and passed,
+# but those a root run leaves to the installed system, which the summary names.
 
 set -uo pipefail
 
@@ -8,10 +9,12 @@ C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_BLU=$'\033[34m'; C_DI
 [[ -t 1 ]] || { C_RED=""; C_GRN=""; C_YEL=""; C_BLU=""; C_DIM=""; C_RST=""; }
 
 PASS=0; FAIL=0; SKIP=0
-declare -a FAILED=() SKIPPED=()
+declare -a FAILED=() SKIPPED=() ELSEWHERE=()
 pass()  { printf '%s  PASS%s  %s\n' "$C_GRN" "$C_RST" "$1"; PASS=$((PASS+1)); }
 fail()  { printf '%s  FAIL%s  %s\n' "$C_RED" "$C_RST" "$1"; FAIL=$((FAIL+1)); FAILED+=("$1"); }
 skip()  { printf '%s  SKIP%s  %s\n' "$C_YEL" "$C_RST" "$1"; SKIP=$((SKIP+1)); SKIPPED+=("$1"); }
+# Not run in this mode, and checked where it can be: no skip, but named in the summary.
+elsewhere() { printf '%s  ELSEWHERE%s  %s\n' "$C_DIM" "$C_RST" "$1"; ELSEWHERE+=("$1"); }
 info()  { printf '%s        %s%s\n' "$C_DIM" "$1" "$C_RST"; }
 head_() { printf '\n%s==>%s %s\n' "$C_BLU" "$C_RST" "$1"; }
 
@@ -347,7 +350,7 @@ fi
 if (( PRIVILEGED == 1 )); then
     # Made for this run alone: no session of root's has a compositor.
     rmdir "$CDIR" 2>/dev/null
-    skip "S8d-S8k: a root daemon runs the proxy as the zone's own uid, under Landlock and the proxy's own filter, which only the image's static proxy passes; gui-check's proxy rounds check that on the installed system"
+    elsewhere "S8d-S8k: a root daemon runs the proxy as the zone's own uid, under Landlock and the proxy's own filter, which only the image's static proxy passes; gui-check's proxy rounds check that on the installed system, and an unprivileged run (CI's) runs S8d-S8k"
 elif [[ ! -x "$WLPROXY" ]]; then
     skip "S8d-S8k need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
 else
@@ -522,6 +525,7 @@ if [[ "$(ask 'status\n')" == "end" ]]; then pass "S9u the daemon still answers";
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 if (( FAIL > 0 )); then printf 'FAILED:\n'; printf '  %s\n' "${FAILED[@]}"; fi
 if (( SKIP > 0 )); then printf 'NOT RUN (not a pass):\n'; printf '  %s\n' "${SKIPPED[@]}"; fi
+if (( ${#ELSEWHERE[@]} > 0 )); then printf 'NOT RUN here, checked elsewhere:\n'; printf '  %s\n' "${ELSEWHERE[@]}"; fi
 if (( FAIL > 0 )); then printf '\ndaemon log:\n'; sed 's/^/  /' "$WORK/serve.log"; fi
 (( FAIL == 0 && SKIP == 0 )) || exit 1
 exit 0
