@@ -4,8 +4,10 @@
  * compositor's full set.
  *
  *   wlprobe list              print "global <name> <interface> <version>" per global
- *   wlprobe bind INTERFACE    list, then bind INTERFACE by its offered name
- *                             (name 1 if not offered) and print what came back
+ *   wlprobe bind INTERFACE [NAME]
+ *                             list, then bind INTERFACE by its offered name, or
+ *                             as global NAME (from another client's list), or 1,
+ *                             and print what came back
  *   wlprobe oversize EXTRA SECONDS [TITLE]
  *                             map a window and answer every configure with a
  *                             buffer EXTRA px wider and taller than asked, in a
@@ -19,6 +21,7 @@
  *                             as oversize 0, and once drawn map a second window
  *                             that is a child of the first; with late, only
  *                             once the first's configure was fullscreen
+ *   A held window's app_id is $WLPROBE_APP_ID (at most 255 bytes), or wlprobe.
  *   Every held window prints "keyboard entered|left the window|the child"
  *   as wl_keyboard reports it: where the keys go, not what a record says.
  *   wlprobe charge            map one unwritten 4 MiB shmem buffer for 10 s;
@@ -162,6 +165,7 @@ struct global { uint32_t name; char iface[128]; uint32_t version; };
 static struct global globals[256];
 static int nglobals;
 static int errored;
+static const char *appid = "wlprobe";
 
 /* oversize's object ids: each new id is the next unused one (the registry is 2, its sync 3). */
 enum { COMPOSITOR = 4, SHM, WM_BASE, SURFACE, XDG_SURFACE, TOPLEVEL };
@@ -637,7 +641,7 @@ static int hold_oversize(int more, int seconds, const char *title)
 	send_msg(XDG_SURFACE, 1, b, 4);            /* xdg_surface.get_toplevel */
 	n = put_string(b, title);
 	send_msg(TOPLEVEL, 2, b, n);               /* xdg_toplevel.set_title */
-	n = put_string(b, "wlprobe");
+	n = put_string(b, appid);
 	send_msg(TOPLEVEL, 3, b, n);               /* xdg_toplevel.set_app_id */
 	if (cursor) {
 		seat_id = next_id++;
@@ -704,7 +708,7 @@ int main(int argc, char **argv)
 	                 && strcmp(argv[1], "fullscreen") && strcmp(argv[1], "child") && strcmp(argv[1], "charge")
 	                 && strcmp(argv[1], "cursor") && strcmp(argv[1], "animate") && strcmp(argv[1], "popup")
 	                 && strcmp(argv[1], "copy") && strcmp(argv[1], "paste"))
-	    || (!strcmp(argv[1], "bind") && argc < 3) || (!strcmp(argv[1], "oversize") && argc < 4)
+	    || (!strcmp(argv[1], "bind") && (argc < 3 || argc > 4)) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
 	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "child") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
@@ -714,8 +718,13 @@ int main(int argc, char **argv)
 	    || (!strcmp(argv[1], "popup") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "grab"))))
 	    || (!strcmp(argv[1], "copy") && (argc != 4 || strlen(argv[3]) > 200))
 	    || (!strcmp(argv[1], "paste") && argc != 3)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS\n");
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE [NAME] | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS\n");
 		return 2;
+	}
+	const char *own_id = getenv("WLPROBE_APP_ID");
+	if (own_id && *own_id) {
+		if (strlen(own_id) > 255) { fprintf(stderr, "wlprobe: WLPROBE_APP_ID is over 255 bytes\n"); return 2; }
+		appid = own_id;
 	}
 	const char *disp = getenv("WAYLAND_DISPLAY");
 	const char *rt = getenv("XDG_RUNTIME_DIR");
@@ -766,9 +775,10 @@ int main(int argc, char **argv)
 		return held ? held : frames ? 0 : 1;
 	}
 
-	/* A hidden global's name is unknown to a filtered client: guess 1, refused either way. */
+	/* A hidden global's name is unknown to a filtered client: NAME gives it, from another
+	 * client's list, or 1 is guessed; refused either way. */
 	const char *want = argv[2];
-	uint32_t name = 1, version = 1;
+	uint32_t name = argc > 3 ? (uint32_t)strtoul(argv[3], NULL, 10) : 1, version = 1;
 	for (int i = 0; i < nglobals; i++) if (!strcmp(globals[i].iface, want)) { name = globals[i].name; version = globals[i].version; }
 	unsigned char b[512]; size_t n = 0;
 	put32(b + n, name); n += 4;
