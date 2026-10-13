@@ -5,7 +5,8 @@
  *   kryptik-launch --stop ZONE
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
- *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move FROM's clipboard to TO
+ *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move what FROM's windows copied
+ *                                      to TO's, or FROM's broker payload when they copied nothing
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
  *   kryptik-launch --wifi-scan          the networks in range, as the net zone hears them
  *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
@@ -32,6 +33,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -173,6 +175,11 @@ static const char *ensure_proxy(const char *zone)
 	join(pidfile, dir, "proxy.pid");
 	join(logfile, dir, "proxy.log");
 	join(oldlog, dir, "proxy.log.old");
+	/* The move gesture's socket, beside the zone's and never bound into it, and the one user
+	 * it answers: this session's. */
+	char control[PATH_MAX], uid[16];
+	join(control, dir, "control");
+	snprintf(uid, sizeof uid, "%u", (unsigned)getuid());
 
 	FILE *f = fopen(pidfile, "r");
 	if (f) {
@@ -202,7 +209,7 @@ static const char *ensure_proxy(const char *zone)
 		if (close_range(3, ~0U, 0) < 0)
 			_exit(127);
 		execl(PROXY_BIN, "kryptik-wlproxy", "--zone", zone, "--listen", sock, "--upstream", upstream,
-		      "--max-clients", "32", (char *)NULL);
+		      "--max-clients", "32", "--control", control, "--control-uid", uid, (char *)NULL);
 		_exit(127);
 	}
 	f = fopen(pidfile, "w");
@@ -420,6 +427,123 @@ static int update_main(int argc, char **argv)
 	return ok ? 0 : 1;
 }
 
+/* One request to a zone's proxy on the move gesture's socket (kryptik-wlproxy's control.rs),
+ * `body` after its line: the answer's line in `line`, and the bytes an "ok GEN TYPE N" answer
+ * announces in *data. -1 when the zone has no proxy to ask. */
+static int ask_proxy(const char *zone, const char *head, const unsigned char *body, size_t blen,
+		     char *line, size_t lsize, unsigned char **data, size_t *dlen)
+{
+	const char *rt = getenv("XDG_RUNTIME_DIR");
+	struct sockaddr_un sa = { .sun_family = AF_UNIX };
+	*data = NULL;
+	*dlen = 0;
+	line[0] = 0;
+	if (!rt || !*rt || snprintf(sa.sun_path, sizeof sa.sun_path, "%s/kryptik/%s/control", rt, zone) >= (int)sizeof sa.sun_path)
+		return -1;
+	int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (s < 0)
+		return -1;
+	/* The proxy keeps its own 2 s; this keeps a wedged one from holding the gesture. */
+	struct timeval tv = { .tv_sec = 5 };
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+	if (connect(s, (struct sockaddr *)&sa, sizeof sa) < 0) {
+		close(s);
+		return -1;
+	}
+	size_t hlen = strlen(head), off = 0;
+	int sent = 1;
+	while (sent && off < hlen + blen) {
+		/* A proxy that hangs up early ends the request, not this process. */
+		ssize_t n = off < hlen ? send(s, head + off, hlen - off, MSG_NOSIGNAL)
+				       : send(s, body + (off - hlen), hlen + blen - off, MSG_NOSIGNAL);
+		if (n <= 0)
+			sent = 0;
+		else
+			off += (size_t)n;
+	}
+	shutdown(s, SHUT_WR);
+	/* The line a byte at a time, as what follows it is the payload. */
+	size_t n = 0;
+	char c;
+	while (n + 1 < lsize && read(s, &c, 1) == 1 && c != '\n')
+		line[n++] = c;
+	line[n] = 0;
+	unsigned long long gen;
+	char type[64];
+	size_t len;
+	if (!sent) {
+		snprintf(line, lsize, "error: the request could not be sent");
+	} else if (sscanf(line, "ok %llu %63s %zu", &gen, type, &len) == 3 && len <= 1 << 20) {
+		unsigned char *buf = malloc(len ? len : 1);
+		size_t got = 0;
+		while (buf && got < len) {
+			ssize_t r = read(s, buf + got, len - got);
+			if (r <= 0)
+				break;
+			got += (size_t)r;
+		}
+		if (buf && got == len) {
+			*data = buf;
+			*dlen = len;
+		} else {
+			if (buf)
+				explicit_bzero(buf, got);
+			free(buf);
+			snprintf(line, lsize, "error: the answer was cut short");
+		}
+	}
+	close(s);
+	return 0;
+}
+
+/* The zone 0 move gesture: what FROM's windows copied goes to TO's. FROM's proxy is asked for
+ * it, TO's is given it, and FROM's selection is cleared once TO holds it, if nothing was copied
+ * there since; only the proxies' lines are printed, never what moved. With nothing copied in
+ * FROM's windows, or no windows, FROM's broker payload moves, as it always has. */
+static int clipboard_move(const char *from, const char *to)
+{
+	char line[160], said[160], type[64], head[128];
+	unsigned char *data, *none;
+	size_t len, nlen;
+	unsigned long long gen;
+	if (strcmp(from, to) == 0) {
+		fprintf(stderr, "nothing moved: %s's clipboard is %s's already\n", from, to);
+		return 1;
+	}
+	if (ask_proxy(from, "take\n", NULL, 0, line, sizeof line, &data, &len) < 0 || strcmp(line, "empty") == 0) {
+		char req[160];
+		snprintf(req, sizeof req, "clipboard-move %s %s\n", from, to);
+		char *r = talk(req, -1);
+		fputs(r, strncmp(r, "ok", 2) == 0 ? stdout : stderr);
+		return strncmp(r, "ok", 2) == 0 ? 0 : 1;
+	}
+	if (!data || sscanf(line, "ok %llu %63s", &gen, type) != 2) {
+		fprintf(stderr, "nothing moved: %s's windows: %s\n", from, line[0] ? line : "no answer");
+		free(data);
+		return 1;
+	}
+	snprintf(head, sizeof head, "give %s %zu\n", type, len);
+	int r = ask_proxy(to, head, data, len, said, sizeof said, &none, &nlen);
+	explicit_bzero(data, len);
+	free(data);
+	free(none);
+	if (r < 0 || strcmp(said, "ok") != 0) {
+		fprintf(stderr, "nothing moved: %s\n", r < 0 ? "the receiving zone has no windows to paste in" : said);
+		return 1;
+	}
+	snprintf(head, sizeof head, "clear %llu\n", gen);
+	r = ask_proxy(from, head, NULL, 0, said, sizeof said, &none, &nlen);
+	free(none);
+	if (r < 0 || strcmp(said, "ok") != 0) {
+		printf("copied %zu bytes of %s from %s's windows to %s's; %s still holds it (%s)\n", len, type, from, to, from,
+		       r < 0 ? "its proxy is gone" : said);
+		return 0;
+	}
+	printf("moved %zu bytes of %s from %s's windows to %s's\n", len, type, from, to);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	int ask = 0, no_display = 0, pass_fd = -1, sep = -1;
@@ -432,11 +556,7 @@ int main(int argc, char **argv)
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();
-		char req[160];
-		snprintf(req, sizeof req, "clipboard-move %s %s\n", argv[2], argv[3]);
-		char *r = talk(req, -1);
-		fputs(r, strncmp(r, "ok", 2) == 0 ? stdout : stderr);
-		return strncmp(r, "ok", 2) == 0 ? 0 : 1;
+		return clipboard_move(argv[2], argv[3]);
 	}
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--") == 0) { sep = i; break; }

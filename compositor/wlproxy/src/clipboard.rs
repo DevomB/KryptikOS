@@ -1,18 +1,24 @@
 //! A zone's selection, served by the proxy among the zone's own clients: copy and paste inside a
 //! zone, with nothing sent to the compositor or another zone. Only the client with the keyboard
 //! copies, and a client is offered the selection just before the keyboard enters it, as the core
-//! protocol has a compositor do (wl_data_device.selection). The broker stays the only channel
-//! between zones.
+//! protocol has a compositor do (wl_data_device.selection). Between zones only the zone 0 move
+//! gesture carries one (control.rs), and the broker's payload otherwise.
 
 use std::os::unix::io::OwnedFd;
+use std::rc::Rc;
+
+/// The owner of a selection the proxy holds itself, moved in by the gesture: no session's.
+pub const OWN: u64 = 0;
 
 /// What the zone's clients last copied: the session that holds the source, the
-/// wl_data_source in that session's ids, and the types it offered.
+/// wl_data_source in that session's ids, and the types it offered; or bytes the move gesture
+/// brought, which the proxy holds and serves itself.
 #[derive(Debug)]
 pub struct Selection {
     pub owner: u64,
     pub source: u32,
     pub mimes: Vec<String>,
+    pub data: Option<Rc<Vec<u8>>>,
 }
 
 /// What one session's messages ask of another, done by the main loop once every turn is over.
@@ -49,7 +55,7 @@ impl Clipboard {
     /// the keyboard is offered what is now the selection.
     pub fn set(&mut self, sel: Option<Selection>) {
         if let Some(old) = self.selection.take() {
-            if !sel.as_ref().is_some_and(|s| s.owner == old.owner && s.source == old.source) {
+            if old.owner != OWN && !sel.as_ref().is_some_and(|s| s.owner == old.owner && s.source == old.source) {
                 self.actions.push(Action::Cancel(old.owner, old.source));
             }
         }

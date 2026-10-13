@@ -12,6 +12,7 @@
 #   GT KEY-PARENT-FULLSCREEN, GT KEY-LATE-FULLSCREEN press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT KEY-FOCUS-CLIP 1..4, GT KEY-FOCUS-CLIP-PERSONAL  press Alt+j
+#   GT KEY-FOCUS-MOVE 1..4, GT KEY-FOCUS-MOVED 1..4     press Alt+j
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
@@ -128,6 +129,13 @@ elif grep -q "^SOCK ${comp} " <<<"$socks"; then
     fail "compositor-socket-unreached" "the zone reaches dwl's socket: $(grep "^SOCK ${comp} " <<<"$socks" | tr '\n' ';')"
 else
     pass "compositor-socket-unreached" "none of the zone's $(grep -c . <<<"$socks") sockets is dwl's (${comp}); it reaches the proxy's"
+fi
+# The move gesture's socket, beside the proxy's, is none of them either.
+door="$(stat -c '%d:%i' "$RT/kryptik/untrusted/control" 2>/dev/null)"
+if [[ -n "$door" ]] && socks_done && ! grep -q "^SOCK ${door} " <<<"$socks"; then
+    pass "move-door-unreached" "none of the zone's sockets is the move gesture's (${door})"
+else
+    fail "move-door-unreached" "the gesture's socket: ${door:-not found}; the zone's reaching it: $(grep "^SOCK ${door:-none} " <<<"$socks" | tr '\n' ';')"
 fi
 wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
 mark bind untrusted
@@ -599,6 +607,63 @@ if grep -q '^no selection' "$LOG/paste-zone0.out" && ! grep -q '^pasted: ' "$LOG
 else
     fail "zone-copy-not-in-zone0" "$(tr '\n' ' ' < "$LOG/paste-zone0.out")"
 fi
+
+# --- the move gesture carries a zone's copy to another zone's windows -------
+# kryptik-launch --clipboard-move, the chrome's m<N><M>, takes what untrusted's windows copied
+# from untrusted's proxy, gives it to personal's, and clears it in untrusted once personal holds
+# it: personal's window pastes it, and untrusted's is no longer offered it. Four Alt+j presses
+# before the move visit every window, the copying one among them, and four after it again.
+mark move untrusted
+launch_plain untrusted "sh -c '/usr/libexec/kryptik/wlprobe copy 120 moved4471 & exec /usr/libexec/kryptik/wlprobe paste 120'" > "$LOG/launch-move.out" 2>&1
+mark move personal
+launch personal "/usr/libexec/kryptik/wlprobe paste 120" > "$LOG/launch-move-paste.out" 2>&1
+three_drawn() { [[ "$(since_mark move untrusted | grep -c 'committed ')" -ge 2 ]] && since_mark move personal | grep -q 'committed '; }
+wait_for 30 three_drawn
+for k in 1 2 3 4; do
+    echo "GT KEY-FOCUS-MOVE $k"
+    sleep 3
+done
+as_user "kryptik-launch --clipboard-move untrusted personal" > "$LOG/move.out" 2>&1; moved=$?
+mark moved untrusted; mark moved personal
+for k in 1 2 3 4; do
+    echo "GT KEY-FOCUS-MOVED $k"
+    sleep 3
+done
+if since_mark move untrusted | grep -q 'copied$' && [[ "$moved" = 0 ]] \
+   && grep -qx "moved 9 bytes of text/plain;charset=utf-8 from untrusted's windows to personal's" "$LOG/move.out" \
+   && since_mark moved personal | grep -q 'pasted: moved4471$'; then
+    pass "move-crosses-zones" "$(cat "$LOG/move.out"); personal's window pasted it"
+else
+    fail "move-crosses-zones" "move: $(tr '\n' ' ' < "$LOG/move.out") (rc $moved); untrusted: $(since_mark move untrusted | grep -E 'copied|pasted|no selection|keyboard' | tail -4 | tr '\n' ' '); personal: $(since_mark moved personal | tail -3 | tr '\n' ' ')"
+fi
+if since_mark moved untrusted | grep -q 'no selection' && ! since_mark moved untrusted | grep -q 'pasted: '; then
+    pass "move-leaves-nothing-behind" "untrusted's pasting window, given the keyboard after the move, was offered no selection"
+else
+    fail "move-leaves-nothing-behind" "$(since_mark moved untrusted | tail -4 | tr '\n' ' ')"
+fi
+# What moved is in no log of zone 0's: the proxies and the launcher name the type and length.
+if grep -q 'move: took 9 bytes of text/plain;charset=utf-8' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null \
+   && ! grep -rqsF moved4471 "$RT/kryptik" /run/uncaught-logs; then
+    pass "move-in-no-log" "$(grep -h 'move: ' "$RT/kryptik/untrusted/proxy.log" "$RT/kryptik/personal/proxy.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+else
+    fail "move-in-no-log" "proxy lines: $(grep -h 'move' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null | tail -2 | tr '\n' ' '); holding the text: $(grep -rlsF moved4471 "$RT/kryptik" /run/uncaught-logs | tr '\n' ' ')"
+fi
+# The gesture's socket answers the session's user alone: root, past the directory's 0700,
+# is refused like any zone's uid would be.
+door="$RT/kryptik/untrusted/control"
+refusal="$(python3 - "$door" 2>&1 <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(5)
+s.connect(sys.argv[1])
+s.sendall(b"take\n")
+s.shutdown(socket.SHUT_WR)
+print(s.recv(200).decode(errors="replace").strip())
+PY
+)"
+[[ "$refusal" == "error: not the session's user" ]] && pass "move-door-refuses-others" "root, at $door, was told: $refusal" \
+    || fail "move-door-refuses-others" "root got: ${refusal:-nothing}"
+stop_zone untrusted; stop_zone personal
 
 # --- transfers: the user decides --------------------------------------------
 launch work "havoc" > /dev/null 2>&1   # work must be running to receive

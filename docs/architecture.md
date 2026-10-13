@@ -55,8 +55,8 @@ The chrome's menu is its menu window.
 Nothing crosses by default. The [broker](design/broker.md) in kryptikd
 identifies a caller by its socket's peer uid and carries two things. A file
 transfer sends one file, one way, to a zone listed in the sender's policy,
-once the user approves it. Each zone has one clipboard, moved to another zone
-only by a user gesture in zone 0.
+once the user approves it. Each zone has one clipboard, what its windows
+copied, moved to another zone only by a user gesture in zone 0.
 
 Routed zones reach the network through isolated ports on the `net` zone's
 bridge. The `net` zone can also send zone 0 a clock offset and releases, both

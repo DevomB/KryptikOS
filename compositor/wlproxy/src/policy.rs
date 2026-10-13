@@ -96,6 +96,19 @@ pub const MAX_SHM_BYTES_PER_ZONE: usize = 256 << 20;
 /// A pool a surface may still show stays charged, so these bound what one session can hold.
 pub const MAX_SUBSURFACES_PER_SESSION: usize = 256;
 pub const MAX_HELD_PER_SURFACE: usize = 64;
+/// The types the zone 0 move gesture carries, the broker's list (kryptikd's broker.rs
+/// MIME_TYPES): fixed, as a free-form label would be a channel. The first one offered is taken.
+pub const MOVE_TYPES: &[&str] = &[
+    "text/plain;charset=utf-8",
+    "text/plain",
+    "text/html",
+    "text/uri-list",
+    "image/png",
+    "image/jpeg",
+    "application/octet-stream",
+];
+/// What one move carries at most, as much as the broker's clipboard holds.
+pub const MAX_MOVE_BYTES: usize = 1 << 20;
 /// Copies one session may hold at once: a cancelled one is its client's to destroy.
 pub const MAX_DATA_SOURCES_PER_SESSION: usize = 64;
 /// The types one copy offers, each a short MIME name that other clients of the zone are shown.

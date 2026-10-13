@@ -256,10 +256,9 @@ Four things are needed, each with its own review. The first two are built.
   object is made, which keeps its object ids dense. Drag and drop is not
   served: a drag's source is cancelled at once. `make gui-test` copies in
   one of a zone's windows and pastes in another; neither another zone's
-  window nor zone 0's is offered it. Joining it to the broker's per-zone
-  clipboard, so the zone 0 move gesture carries a payload between zones,
-  comes next: which of the two clipboards the gesture moves is the
-  decision it needs.
+  window nor zone 0's is offered it. Between zones the zone 0 move gesture
+  carries it: one zone's proxy hands what its windows copied to another's
+  ([broker](broker.md#clipboard)).
 - **`wp_fractional_scale_v1`**, for sharp text on high-density screens.
 - **`zwp_idle_inhibit_manager_v1`**, so video keeps the screen awake; the
   chrome shows which zone holds it.

@@ -662,7 +662,7 @@ impl Session {
                     return Err(SessionError::Forbidden("set_selection names no data source of this client's"));
                 }
                 if clip.focus == Some(self.id) {
-                    clip.set((source != 0).then(|| Selection { owner: self.id, source, mimes: self.sources[&source].clone() }));
+                    clip.set((source != 0).then(|| Selection { owner: self.id, source, mimes: self.sources[&source].clone(), data: None }));
                 } else if source != 0 && !clip.selection.as_ref().is_some_and(|s| s.owner == self.id && s.source == source) {
                     // Without the keyboard there is no copy: this source never held the selection.
                     self.cancel(source)?;
