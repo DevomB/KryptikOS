@@ -260,20 +260,25 @@ up ADR-001 in the zones where the applications run.
 - **Fetched** alone for an image-only fix, by the same verbs as a release.
   The statement of what is current gains one line per image for each base
   it serves; zone 0 fetches only images whose hash it does not hold, never
-  past the signed size.
+  past the signed size. A second list for a root whose list the store keeps
+  replaces it only if the statement names it as newer: a signed list from
+  before an image's fix, replayed, must not bring the old image back.
 - **Mounted** by kryptikd on first use: a read-only loop device, dm-verity
   with the manifest's root hash, and ext4 mounted read-only, `nosuid,nodev`
-  under `/run/kryptik/images/<name>/`, one directory per root hash. Each
-  start checks the list's signature again, as nobody, on a copy of the bytes
-  it then reads. A mapping that dm-verity has marked corrupted is not used
-  again: the next start of a zone that names the image is refused, with the
+  under `/run/kryptik/images/<name>/`, one directory per root hash; the
+  mapping and the directory are named by the whole hash. Each start checks
+  the list's signature again, as nobody, on a copy of the bytes it then
+  reads. A mapping that dm-verity has marked corrupted is not used again:
+  the next start of a zone that names the image is refused, with the
   reason, until the image is fetched again. For each distinct set of images
   a zone names, kryptikd mounts a read-only overlay (no upper directory; the
-  images' `usr` over the root's `/usr`) at `/run/kryptik/usr/<set>` in the
-  initial namespace, and the zone's bind of `/usr` takes that instead. Since
-  zone 0 mounts it and the zone only receives a bind, the hardened kernel's
-  `OVERLAY_FS_UNPRIVILEGED`, which is off, does not come into it. Loop,
-  dm-verity and overlayfs are already built in.
+  images' `usr` over the root's `/usr`; redirects in a layer not followed)
+  at `/run/kryptik/usr/<set>` in the initial namespace, and the zone's bind
+  of `/usr` takes that instead. A set already mounted there is used only if
+  it stacks exactly those mounts, as its name holds 64 bits of each root
+  hash. Since zone 0 mounts it and the zone only receives a bind, the
+  hardened kernel's `OVERLAY_FS_UNPRIVILEGED`, which is off, does not come
+  into it. Loop, dm-verity and overlayfs are already built in.
 - **Named** in the zone file:
 
   ```toml
