@@ -97,6 +97,9 @@ pub struct Zone {
     /// `[transfer] max_bytes = N`: the largest file this zone sends or
     /// receives through the broker, at most its cap. None: the cap alone.
     pub transfer_max: Option<u64>,
+    /// `[software] images = "browser viewer"`: signed images stacked over this zone's /usr
+    /// (images.rs). Adding one takes a zone file on the verified root.
+    pub images: Vec<String>,
 }
 
 /// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
@@ -135,6 +138,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "limits.memory_max", "limits.pids_max", "limits.cpu_max", "limits.io_max",
     "identity.uid_base",
     "transfer.to", "transfer.max_bytes",
+    "software.images",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
@@ -462,11 +466,34 @@ impl Zone {
             },
         };
 
+        let images: Vec<String> = match get("software.images") {
+            None => Vec::new(),
+            Some(v) => {
+                let mut out: Vec<String> = Vec::new();
+                for n in v.split_whitespace() {
+                    if !crate::images::valid_name(n) {
+                        return Err(bad("software.images", &v, "space-separated image names"));
+                    }
+                    if out.iter().any(|o| o == n) {
+                        return Err(ZoneError::Invalid(format!(
+                            "zone {name:?}: [software] images names {n:?} twice"
+                        )));
+                    }
+                    out.push(n.to_string());
+                }
+                if out.is_empty() {
+                    return Err(bad("software.images", &v, "at least one image name, or omit [software]"));
+                }
+                out
+            }
+        };
+
         let zone = Zone {
             nic,
             uid_base,
             transfer_to,
             transfer_max,
+            images,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),
             size: get("storage.size"),

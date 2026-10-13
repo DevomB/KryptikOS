@@ -51,7 +51,7 @@ for n in kryptik-release kryptik-latest kryptik-testctl; do
     ssh-keygen -q -t ed25519 -N '' -C "$n" -f "$n" < /dev/null
 done
 {
-    printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 kryptik-release.pub)"
+    printf 'kryptik-release namespaces="kryptik-release,kryptik-media,kryptik-image" %s\n' "$(cut -d' ' -f1,2 kryptik-release.pub)"
     printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 kryptik-latest.pub)"
     printf 'kryptik-testctl namespaces="kryptik-testctl" %s\n' "$(cut -d' ' -f1,2 kryptik-testctl.pub)"
 } > release-signers

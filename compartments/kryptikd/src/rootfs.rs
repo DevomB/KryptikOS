@@ -306,8 +306,9 @@ pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> 
 }
 
 /// Pivot into a root holding only what the zone should see; returns the home. Runs as root in the
-/// new user namespace, before Landlock and seccomp; `ephemeral` is a tmpfs home's size, and
-/// `service` adds dhcpcd's user and `SERVICE_HOME`.
+/// new user namespace, before Landlock and seccomp; `ephemeral` is a tmpfs home's size, `usr` what
+/// the zone sees as /usr (zone 0's, or images stacked over it), and `service` adds dhcpcd's user
+/// and `SERVICE_HOME`.
 #[allow(clippy::too_many_arguments)]
 pub fn pivot_into(
     data_dir: &str,
@@ -317,6 +318,7 @@ pub fn pivot_into(
     broker: Option<&str>,
     wayland: Option<&str>,
     wifi_conf: Option<&str>,
+    usr: &str,
     service: bool,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
@@ -373,7 +375,8 @@ pub fn pivot_into(
     for p in SYSTEM_PATHS {
         // Skip paths the host lacks; is_dir follows a merged-usr /bin symlink.
         if Path::new(p).is_dir() {
-            bind_ro_dir(p, &format!("{root}{p}"))?;
+            let src = if *p == "/usr" { usr } else { *p };
+            bind_ro_dir(src, &format!("{root}{p}"))?;
         }
     }
 

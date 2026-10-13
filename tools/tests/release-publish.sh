@@ -46,7 +46,7 @@ git -C "$T" tag v0.1.1
 # --- the release key, and the anchor the image carries ---------------------------
 K="${W}/keys"; mkdir -p "$K"
 ssh-keygen -q -t ed25519 -N '' -C kryptik-release -f "${K}/kryptik-release"
-printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 "${K}/kryptik-release.pub")" > "${K}/release-signers"
+printf 'kryptik-release namespaces="kryptik-release,kryptik-media,kryptik-image" %s\n' "$(cut -d' ' -f1,2 "${K}/kryptik-release.pub")" > "${K}/release-signers"
 
 # --- an export as make acceptance writes one --------------------------------------
 make_export() {   # make_export DIR VERSION ROLE VERDICT REVISION
