@@ -1,0 +1,12 @@
+# Findings of tools/check-artifact-hardening.sh the toolkit image keeps, in the form of
+# build/config/artifact-accepted.txt. Stage 06 audits the image against this list alone.
+
+# No canary anywhere in the object's code. -fstack-protector-strong (in CFLAGS, and GCC's default
+# here) guards only functions with a local array or an address-taken local; these have none.
+NO-SSP  usr/bin/fc-list                 # fontconfig's small tools
+NO-SSP  usr/bin/fc-pattern              # the same
+NO-SSP  usr/bin/fc-query                # the same
+NO-SSP  usr/bin/fc-scan                 # the same
+NO-SSP  usr/bin/gobject-query           # GLib's, the same
+NO-SSP  usr/lib/libcairo-gobject.so.*   # the GType registrations of cairo's types
+NO-SSP  usr/lib/libgthread-2.0.so.*     # a stub kept for old programs, g_thread_init alone
