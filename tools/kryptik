@@ -425,11 +425,11 @@ cmd_suspend() {
 # root (docs/design/keyboard-layout.md).
 cmd_keyboard() {
     local lib=/usr/libexec/kryptik/keyboard.sh now n
+    [[ "${1:-}" == desktop || $# -le 1 ]] || die "$PROG keyboard takes one layout's name, or none to list them" 2
     [[ -r "$lib" ]] || die "keyboard layouts are an installed Kryptik's: no ${lib} here"
     # shellcheck source=/dev/null
     . "$lib"
     [[ "${1:-}" == desktop ]] && { shift; desktop_layouts "$@"; return; }
-    [[ $# -le 1 ]] || die "$PROG keyboard takes one layout's name, or none to list them" 2
     now="$(kb_current)"
     if [[ $# -eq 0 ]]; then
         while read -r n; do
