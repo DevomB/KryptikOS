@@ -6,20 +6,31 @@
     update-fetch.py poll      ask zone 0 whether a release is wanted and, if
                               one is, stream what it says is still missing
 
-Decides nothing and is trusted for nothing, TLS included: zone 0 names the
-channel (`channel = <address>` in update.conf), verifies every signature and
-refuses any piece it did not ask for. Keeps nothing: a release is larger than
-this zone's storage.
+Trusted for nothing, TLS included: zone 0 names the channel in update.conf and
+verifies every piece. Keeps nothing: a release is larger than this zone's storage.
 """
 import argparse
+import ctypes
 import socket
 import ssl
 import sys
+import urllib.error
 import urllib.request
 
 PIECE = 1 << 20        # the most one update-put carries
 SMALL = 8 * 1024       # the most a statement or its signature may be
 ROUNDS = 8             # polls per run: the manifest, then the files, then idle
+
+
+def drop_capabilities():
+    """None of the net zone root's capabilities, CAP_NET_ADMIN among them, for what reads a far
+    host's bytes; no new privileges, so an exec cannot take them back."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    ulong = ctypes.c_ulong
+    header = (ctypes.c_uint32 * 2)(0x20080522, 0)      # capability version 3, this process
+    # 38 is PR_SET_NO_NEW_PRIVS; capset with zeroed sets empties effective, permitted and inheritable.
+    if libc.prctl(38, ulong(1), ulong(0), ulong(0), ulong(0)) or libc.capset(header, (ctypes.c_uint32 * 6)()):
+        raise OSError(ctypes.get_errno(), "the net zone's capabilities could not be dropped")
 
 
 def ask(broker, header, payload=b""):
@@ -39,11 +50,22 @@ def ask(broker, header, payload=b""):
     return reply.decode("utf-8", "replace").strip()
 
 
+class StayOnTLS(urllib.request.HTTPRedirectHandler):
+    """Off https, a redirect is refused: zone 0 chose how releases travel (update.rs), and a
+    production image's channel is https, which one 302 would otherwise end."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.full_url.startswith("https://") and not newurl.startswith("https://"):
+            raise urllib.error.HTTPError(req.full_url, code, "redirect off https refused", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch(url, ca, offset=0):
     """An open response at `offset`; if the server ignores Range, skip to it."""
     headers = {"Range": "bytes=%d-" % offset} if offset else {}
     context = ssl.create_default_context(cafile=ca) if url.startswith("https://") else None
-    r = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30, context=context)
+    opener = urllib.request.build_opener(StayOnTLS, urllib.request.HTTPSHandler(context=context))
+    r = opener.open(urllib.request.Request(url, headers=headers), timeout=30)
     if offset and r.status != 206:
         left = offset
         while left:
@@ -112,9 +134,11 @@ def main():
     ap.add_argument("--ca", default="/etc/ssl/certs/ca-certificates.crt")
     args = ap.parse_args()
     try:
+        drop_capabilities()
         return latest(args) if args.what == "latest" else poll(args)
     except (OSError, ValueError) as e:     # urllib's errors are OSErrors
-        print("update-fetch: %s" % e, file=sys.stderr)
+        # One line: the text can hold a host's own words, line ends among them.
+        print("update-fetch: %s" % " ".join(str(e).split()), file=sys.stderr)
         return 1
 
 

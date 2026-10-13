@@ -74,6 +74,15 @@ at="$(g rev-parse "refs/tags/${TAG}^{commit}" 2>/dev/null)" \
     || die "no tag ${TAG} here: tag the tested revision ${REV:0:12} and push the tag first (docs/releases.md)"
 [[ "$at" == "$REV" ]] || die "tag ${TAG} is at ${at:0:12}, and the run tested ${REV:0:12}: a release is of the revision its tag names"
 ok "${TAG} is at the tested revision, ${REV:0:12}"
+# From 1.0.0 on a release is production, signed by the keys whose public halves the tree holds.
+if [[ "${VERSION%%.*}" != 0 ]]; then
+    [[ "$ROLE" == production ]] || die "${VERSION} is a production version, and ${EXPORT} is a ${ROLE} build"
+    pub="${KRYPTIK_RELEASE_PUBLIC:-${TOP}/build/config/release}"
+    for f in release-signers kryptik-sb.crt; do
+        cmp -s "${EXPORT}/${f}" "${pub}/${f}" || die "${EXPORT}/${f} is not ${pub}/${f}: a release is signed by the tree's keys"
+    done
+    ok "${TAG} is signed by the keys build/config/release names"
+fi
 
 # --- the files as they go up ----------------------------------------------------
 if [[ -n "$STAGE" ]]; then
@@ -122,7 +131,7 @@ fi
         printf '| `%s` | %s | `%s` |\n' "$f" "$(stat -c %s "${OUT}/${f}" | numfmt --to=iec-i --suffix=B)" "$(sha256_of "${OUT}/${f}")"
     done
     printf '\nAfter `zstd -d kryptik-%s-usb.img.zst`, check it as `INSTRUCTIONS.md` says:\n\n' "$VERSION"
-    printf '```sh\nssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \\\n    -s kryptik-%s.SHA256SUMS.sig < kryptik-%s.SHA256SUMS\nsha256sum -c kryptik-%s.SHA256SUMS\n```\n' "$VERSION" "$VERSION" "$VERSION"
+    printf '```sh\nssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \\\n    -s kryptik-%s.SHA256SUMS.sig < kryptik-%s.SHA256SUMS\nsha256sum -c --ignore-missing kryptik-%s.SHA256SUMS\n```\n' "$VERSION" "$VERSION" "$VERSION"
 } > "${OUT}/NOTES.md"
 if [[ -n "$STAGE" ]]; then
     ok "staged ${TAG}, a ${KIND}, in ${OUT}: ${#ASSETS[@]} files and NOTES.md"

@@ -1,25 +1,29 @@
-/* kryptik-launch: start a program in a zone from the desktop session. The
- * client of kryptikd's launch daemon (a root-owned socket open to group
- * `kryptik`); the compositor's keybindings and the chrome's menu run only this.
+/* kryptik-launch: start a program in a zone, as a client of kryptikd's launch daemon (a
+ * root-owned socket open to group kryptik); the compositor's keys and the chrome's menu run only this.
  *
  *   kryptik-launch [--ask | --passphrase-fd N] [--no-display] ZONE -- COMMAND [ARG...]
  *   kryptik-launch --stop ZONE
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
- *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move FROM's clipboard to TO
+ *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move what FROM's windows copied
+ *                                      to TO's, or FROM's broker payload when they copied nothing
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
+ *   kryptik-launch --wifi-scan          the networks in range, as the net zone hears them
  *   kryptik-launch --wifi-add SSID      add one or replace its passphrase (one line on stdin)
+ *   kryptik-launch --wifi-add-open SSID add one as an open network, with no passphrase
+ *                                       (either with --hidden: one that hides its name)
  *   kryptik-launch --wifi-forget SSID   remove one
- *   kryptik-launch --update status|fetch|apply   show, fetch or install a release
+ *   kryptik-launch --update status|fetch|forget|apply   show, fetch, drop or install a release
+ *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
+ *   kryptik-launch --check-password    whether the line on stdin is the login password: the
+ *                                      screen lock asks, and the daemon pauses after a wrong one
  *
- * With a display, the zone's kryptik-wlproxy is started if needed at
- * $XDG_RUNTIME_DIR/kryptik/ZONE/wayland-0; the daemon binds that socket into
- * the zone, which never sees the compositor's own.
- *
- * --ask: for an encrypted zone, read the passphrase on the controlling terminal,
- * or without one hand over to kryptik-chrome --prompt, which calls back with
- * --passphrase-fd. The passphrase travels as a descriptor (SCM_RIGHTS), never
- * in argv or environ.
+ * A display goes through the zone's own proxy, which the daemon starts as a user of its own and
+ * binds into the zone at /run/kryptik/wayland-0: a zone never sees the compositor's own socket.
+ * The proxy reaches dwl through dwl's socket for that zone, which offers only what the proxy
+ * passes on and is how dwl knows the zone of each window.
+ * --ask reads an encrypted zone's passphrase on the controlling terminal, or hands over to
+ * kryptik-chrome --prompt; it travels as a descriptor, never in argv or environ.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -33,6 +37,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -40,7 +45,6 @@
 #include <unistd.h>
 
 #define LAUNCH_SOCKET "/run/kryptik-launch/launch.sock"
-#define PROXY_BIN "/usr/bin/kryptik-wlproxy"
 #define CHROME_BIN "/usr/bin/kryptik-chrome"
 
 static void die(const char *fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
@@ -125,121 +129,46 @@ static char *talk(const char *text, int fd)
 	return reply;
 }
 
-static int pid_is_proxy(pid_t pid)
+static volatile sig_atomic_t caught;
+static void on_signal(int sig) { caught = sig; }
+
+static const int quiet_sigs[] = { SIGINT, SIGQUIT, SIGTERM, SIGHUP };
+static struct sigaction quiet_old[4];
+static struct termios quiet_saved;
+
+/* Echo off on a terminal, before any prompt so what was typed ahead is kept.
+ * Until quiet_end the signals that would leave it silent only end the read. */
+static void quiet_start(int fd)
 {
-	char path[64], buf[256];
-	if (pid <= 0 || kill(pid, 0) != 0)
-		return 0;
-	snprintf(path, sizeof path, "/proc/%d/cmdline", (int)pid);
-	int fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
-		return 0;
-	ssize_t n = read(fd, buf, sizeof buf - 1);
-	close(fd);
-	if (n <= 0)
-		return 0;
-	buf[n] = 0;
-	return strstr(buf, "kryptik-wlproxy") != NULL;
+	struct sigaction sa = { .sa_handler = on_signal };
+	sigemptyset(&sa.sa_mask);
+	for (int i = 0; i < 4; i++)
+		sigaction(quiet_sigs[i], &sa, &quiet_old[i]);
+	tcgetattr(fd, &quiet_saved);
+	struct termios raw = quiet_saved;
+	raw.c_lflag &= ~(tcflag_t)ECHO;
+	tcsetattr(fd, TCSANOW, &raw);
 }
 
-/* dir/name into a PATH_MAX buffer, or die: a cut path names another file. */
-static void join(char *out, const char *dir, const char *name)
+/* Echo back on, a newline to out, then any signal caught meanwhile. */
+static void quiet_end(int fd, int out)
 {
-	int n = snprintf(out, PATH_MAX, "%s/%s", dir, name);
-	if (n < 0 || n >= PATH_MAX)
-		die("path too long: %s/%s", dir, name);
+	tcsetattr(fd, TCSANOW, &quiet_saved);
+	dprintf(out, "\n");
+	for (int i = 0; i < 4; i++)
+		sigaction(quiet_sigs[i], &quiet_old[i], NULL);
+	if (caught)
+		raise(caught);
 }
 
-/* Make sure the zone's proxy is up; return the socket path (static). */
-static const char *ensure_proxy(const char *zone)
-{
-	static char sock[PATH_MAX];
-	char dir[PATH_MAX], pidfile[PATH_MAX], logfile[PATH_MAX], oldlog[PATH_MAX], upstream[PATH_MAX];
-	const char *rt = getenv("XDG_RUNTIME_DIR");
-	const char *disp = getenv("WAYLAND_DISPLAY");
-	if (!rt || !*rt)
-		die("XDG_RUNTIME_DIR is not set; use --no-display for a zone without a window");
-	if (!disp || !*disp)
-		disp = "wayland-0";
-	if (disp[0] == '/')
-		snprintf(upstream, sizeof upstream, "%s", disp);
-	else
-		snprintf(upstream, sizeof upstream, "%s/%s", rt, disp);
-	snprintf(dir, sizeof dir, "%s/kryptik", rt);
-	mkdir(dir, 0700);
-	snprintf(dir, sizeof dir, "%s/kryptik/%s", rt, zone);
-	if (mkdir(dir, 0700) < 0 && errno != EEXIST)
-		die("%s: %s", dir, strerror(errno));
-	join(sock, dir, "wayland-0");
-	join(pidfile, dir, "proxy.pid");
-	join(logfile, dir, "proxy.log");
-	join(oldlog, dir, "proxy.log.old");
-
-	FILE *f = fopen(pidfile, "r");
-	if (f) {
-		int pid = 0;
-		if (fscanf(f, "%d", &pid) == 1 && pid_is_proxy(pid)) {
-			fclose(f);
-			return sock;
-		}
-		fclose(f);
-	}
-	struct stat st;
-	if (stat(upstream, &st) != 0 || !S_ISSOCK(st.st_mode))
-		die("no compositor at %s", upstream);
-
-	/* The log is in /run, which is RAM, and each proxy bounds only its own
-	 * lines: a new proxy starts a new file, and the last one is kept. */
-	(void)rename(logfile, oldlog);
-	pid_t pid = fork();
-	if (pid < 0)
-		die("fork: %s", strerror(errno));
-	if (pid == 0) {
-		setsid();
-		int null = open("/dev/null", O_RDONLY);
-		int log = open(logfile, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
-		if (null < 0 || log < 0 || dup2(null, 0) < 0 || dup2(log, 1) < 0 || dup2(log, 2) < 0)
-			_exit(127);
-		/* The proxy gets stdio only, never the passphrase fd or other session
-		 * descriptors. */
-		if (close_range(3, ~0U, 0) < 0)
-			_exit(127);
-		execl(PROXY_BIN, "kryptik-wlproxy", "--zone", zone, "--listen", sock, "--upstream", upstream,
-		      "--max-clients", "32", (char *)NULL);
-		_exit(127);
-	}
-	f = fopen(pidfile, "w");
-	if (f) {
-		fprintf(f, "%d\n", (int)pid);
-		fclose(f);
-	}
-	/* Wait up to 3 s for the listener. */
-	for (int i = 0; i < 60; i++) {
-		if (stat(sock, &st) == 0 && S_ISSOCK(st.st_mode))
-			return sock;
-		int status;
-		if (waitpid(pid, &status, WNOHANG) == pid)
-			die("kryptik-wlproxy exited before listening (see %s)", logfile);
-		struct timespec ts = { 0, 50 * 1000 * 1000 };
-		nanosleep(&ts, NULL);
-	}
-	die("kryptik-wlproxy did not start listening on %s (see %s)", sock, logfile);
-}
-
-/* Read a passphrase from the open terminal into a memfd; returns the fd.
- * Echo goes off before the prompt, and what was typed ahead is kept. */
+/* Read a passphrase from the open terminal into a memfd; returns the fd. */
 static int passphrase_from_tty(int tty, const char *zone)
 {
-	struct termios old, raw;
-	tcgetattr(tty, &old);
-	raw = old;
-	raw.c_lflag &= ~(tcflag_t)ECHO;
-	tcsetattr(tty, TCSANOW, &raw);
+	quiet_start(tty);
 	dprintf(tty, "passphrase for zone %s: ", zone);
 	char buf[512];
-	ssize_t n = read(tty, buf, sizeof buf - 1);
-	tcsetattr(tty, TCSANOW, &old);
-	dprintf(tty, "\n");
+	ssize_t n = caught ? -1 : read(tty, buf, sizeof buf - 1);
+	quiet_end(tty, tty);
 	close(tty);
 	if (n <= 0)
 		die("no passphrase");
@@ -276,31 +205,37 @@ static void usage(void)
 	      "       kryptik-launch --info ZONE\n"
 	      "       kryptik-launch --runtime-dir\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
-	      "       kryptik-launch --wifi-list | --wifi-add SSID | --wifi-forget SSID\n"
+	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID [--hidden] | --wifi-add-open SSID [--hidden] | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
-	      "       kryptik-launch --update status|fetch|apply\n", stderr);
+	      "       kryptik-launch --update status|fetch|forget|apply | --update auto on|off\n"
+	      "       kryptik-launch --check-password   (the password on standard input)\n", stderr);
 	exit(2);
+}
+
+/* A descriptor number, all of the argument. */
+static int fd_arg(const char *s)
+{
+	char *end;
+	errno = 0;
+	long v = strtol(s, &end, 10);
+	if (errno || end == s || *end || v < 0 || v > INT_MAX)
+		usage();
+	return (int)v;
 }
 
 /* One secret line from stdin: prompted with echo off on a terminal, silent
  * from a pipe (the kryptik command pipes it). Trailing newlines dropped. */
 static void secret_from_stdin(const char *prompt, char *buf, size_t size)
 {
-	struct termios old, raw;
 	int tty = isatty(0);
 	if (tty) {
-		tcgetattr(0, &old);
-		raw = old;
-		raw.c_lflag &= ~(tcflag_t)ECHO;
+		quiet_start(0);
 		fputs(prompt, stderr);
 		fflush(stderr);
-		tcsetattr(0, TCSAFLUSH, &raw);
 	}
-	char *got = fgets(buf, (int)size, stdin);
-	if (tty) {
-		tcsetattr(0, TCSAFLUSH, &old);
-		fputc('\n', stderr);
-	}
+	char *got = caught ? NULL : fgets(buf, (int)size, stdin);
+	if (tty)
+		quiet_end(0, 2);
 	if (!got)
 		die("no passphrase on standard input");
 	size_t n = strlen(buf);
@@ -312,8 +247,7 @@ static void secret_from_stdin(const char *prompt, char *buf, size_t size)
 		die("empty passphrase");
 }
 
-/* The daemon's wifi verbs (kryptikd's wifi.rs): it validates, writes the net
- * zone's file and restarts it. The passphrase goes in the request body. */
+/* The daemon's wifi verbs (kryptikd's wifi.rs); the passphrase goes in the request body. */
 static int wifi_main(int argc, char **argv)
 {
 	const char *mode = argv[1];
@@ -337,20 +271,33 @@ static int wifi_main(int argc, char **argv)
 		}
 		return 0;
 	}
-	if (argc != 3 || (strcmp(mode, "--wifi-add") != 0 && strcmp(mode, "--wifi-forget") != 0))
+	/* An `ok` line and the daemon's lines, or one `error:` line; the net zone takes seconds. */
+	if (strcmp(mode, "--wifi-scan") == 0) {
+		if (argc != 2)
+			usage();
+		char *r = talk("wifi-scan\n", -1);
+		int ok = strncmp(r, "ok\n", 3) == 0;
+		fputs(ok ? r + 3 : r, ok ? stdout : stderr);
+		return ok ? 0 : 1;
+	}
+	int add = strcmp(mode, "--wifi-add") == 0, add_open = strcmp(mode, "--wifi-add-open") == 0;
+	int hidden = argc == 4 && (add || add_open) && strcmp(argv[3], "--hidden") == 0;
+	if (argc != 3 + hidden || (!add && !add_open && strcmp(mode, "--wifi-forget") != 0))
 		usage();
 	const char *ssid = argv[2];
 	if (!*ssid || strlen(ssid) > 32 || strchr(ssid, '\n'))
 		die("an SSID is 1 to 32 bytes without a newline");
 	char pass[256] = "";
-	if (strcmp(mode, "--wifi-add") == 0) {
+	if (add) {
 		char prompt[64];
 		snprintf(prompt, sizeof prompt, "passphrase for %s: ", ssid);
 		secret_from_stdin(prompt, pass, sizeof pass);
 	}
 	char req[512];
-	if (pass[0])
-		snprintf(req, sizeof req, "wifi-add\nssid %s\npsk %s\nend\n", ssid, pass);
+	if (add)
+		snprintf(req, sizeof req, "wifi-add\nssid %s\npsk %s\n%send\n", ssid, pass, hidden ? "hidden\n" : "");
+	else if (add_open)
+		snprintf(req, sizeof req, "wifi-add\nssid %s\nopen\n%send\n", ssid, hidden ? "hidden\n" : "");
 	else
 		snprintf(req, sizeof req, "wifi-forget\nssid %s\nend\n", ssid);
 	char *r = talk(req, -1);
@@ -361,19 +308,159 @@ static int wifi_main(int argc, char **argv)
 	return ok ? 0 : 1;
 }
 
-/* The daemon's update verbs (kryptikd's update.rs). The reply is an `ok` line
- * and text for the user, or one `error:` line; `apply` answers once
- * kryptik-update has written the slot. */
+/* The daemon's update verbs (kryptikd's update.rs): an `ok` line and text, or one `error:` line;
+ * `apply` answers once kryptik-update has written the slot. */
 static int update_main(int argc, char **argv)
 {
-	if (argc != 3 || (strcmp(argv[2], "status") != 0 && strcmp(argv[2], "fetch") != 0 && strcmp(argv[2], "apply") != 0))
+	int automatic = argc == 4 && strcmp(argv[2], "auto") == 0 && (strcmp(argv[3], "on") == 0 || strcmp(argv[3], "off") == 0);
+	if (!automatic && (argc != 3 || (strcmp(argv[2], "status") != 0 && strcmp(argv[2], "fetch") != 0 &&
+	                                 strcmp(argv[2], "forget") != 0 && strcmp(argv[2], "apply") != 0)))
 		usage();
 	char req[32];
-	snprintf(req, sizeof req, "update-%s\n", argv[2]);
+	if (automatic)
+		snprintf(req, sizeof req, "update-auto %s\n", argv[3]);
+	else
+		snprintf(req, sizeof req, "update-%s\n", argv[2]);
 	char *r = talk(req, -1);
 	int ok = strncmp(r, "ok\n", 3) == 0;
 	fputs(ok ? r + 3 : r, ok ? stdout : stderr);
 	return ok ? 0 : 1;
+}
+
+/* The screen lock's question, the password in the request's body. Exit 0 if it is the login
+ * password; 1, with the daemon's reason, if not or not yet. */
+static int password_main(int argc)
+{
+	if (argc != 2)
+		usage();
+	char pass[512], req[600];
+	secret_from_stdin("password: ", pass, sizeof pass);
+	snprintf(req, sizeof req, "check-password\npassword %s\nend\n", pass);
+	explicit_bzero(pass, sizeof pass);
+	char *r = talk(req, -1);
+	explicit_bzero(req, sizeof req);
+	int ok = strcmp(r, "ok\n") == 0;
+	if (!ok)
+		fputs(r, stderr);
+	free(r);
+	return ok ? 0 : 1;
+}
+
+/* One request to a zone's proxy on the move gesture's socket (kryptik-wlproxy's control.rs),
+ * which the launch daemon made for this user beside the proxy's own, `body` after its line:
+ * the answer's line in `line`, and the bytes an "ok GEN TYPE N" answer announces in *data.
+ * -1 when the zone has no proxy to ask. */
+static int ask_proxy(const char *zone, const char *head, const unsigned char *body, size_t blen,
+		     char *line, size_t lsize, unsigned char **data, size_t *dlen)
+{
+	struct sockaddr_un sa = { .sun_family = AF_UNIX };
+	*data = NULL;
+	*dlen = 0;
+	line[0] = 0;
+	if (snprintf(sa.sun_path, sizeof sa.sun_path, "/run/kryptik-proxy/%u/%s.control", (unsigned)getuid(), zone) >= (int)sizeof sa.sun_path)
+		return -1;
+	int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (s < 0)
+		return -1;
+	/* The proxy keeps its own 2 s; this keeps a wedged one from holding the gesture. */
+	struct timeval tv = { .tv_sec = 5 };
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+	if (connect(s, (struct sockaddr *)&sa, sizeof sa) < 0) {
+		close(s);
+		return -1;
+	}
+	size_t hlen = strlen(head), off = 0;
+	int sent = 1;
+	while (sent && off < hlen + blen) {
+		/* A proxy that hangs up early ends the request, not this process. */
+		ssize_t n = off < hlen ? send(s, head + off, hlen - off, MSG_NOSIGNAL)
+				       : send(s, body + (off - hlen), hlen + blen - off, MSG_NOSIGNAL);
+		if (n <= 0)
+			sent = 0;
+		else
+			off += (size_t)n;
+	}
+	shutdown(s, SHUT_WR);
+	/* The line a byte at a time, as what follows it is the payload. */
+	size_t n = 0;
+	char c;
+	while (n + 1 < lsize && read(s, &c, 1) == 1 && c != '\n')
+		line[n++] = c;
+	line[n] = 0;
+	unsigned long long gen;
+	char type[64];
+	size_t len;
+	if (!sent) {
+		snprintf(line, lsize, "error: the request could not be sent");
+	} else if (sscanf(line, "ok %llu %63s %zu", &gen, type, &len) == 3 && len <= 1 << 20) {
+		unsigned char *buf = malloc(len ? len : 1);
+		size_t got = 0;
+		while (buf && got < len) {
+			ssize_t r = read(s, buf + got, len - got);
+			if (r <= 0)
+				break;
+			got += (size_t)r;
+		}
+		if (buf && got == len) {
+			*data = buf;
+			*dlen = len;
+		} else {
+			if (buf)
+				explicit_bzero(buf, got);
+			free(buf);
+			snprintf(line, lsize, "error: the answer was cut short");
+		}
+	}
+	close(s);
+	return 0;
+}
+
+/* The zone 0 move gesture: what FROM's windows copied goes to TO's. FROM's proxy is asked for
+ * it, TO's is given it, and FROM's selection is cleared once TO holds it, if nothing was copied
+ * there since; only the proxies' lines are printed, never what moved. With nothing copied in
+ * FROM's windows, or no windows, FROM's broker payload moves, as it always has. */
+static int clipboard_move(const char *from, const char *to)
+{
+	char line[160], said[160], type[64], head[128];
+	unsigned char *data, *none;
+	size_t len, nlen;
+	unsigned long long gen;
+	if (strcmp(from, to) == 0) {
+		fprintf(stderr, "nothing moved: %s's clipboard is %s's already\n", from, to);
+		return 1;
+	}
+	if (ask_proxy(from, "take\n", NULL, 0, line, sizeof line, &data, &len) < 0 || strcmp(line, "empty") == 0) {
+		char req[160];
+		snprintf(req, sizeof req, "clipboard-move %s %s\n", from, to);
+		char *r = talk(req, -1);
+		fputs(r, strncmp(r, "ok", 2) == 0 ? stdout : stderr);
+		return strncmp(r, "ok", 2) == 0 ? 0 : 1;
+	}
+	if (!data || sscanf(line, "ok %llu %63s", &gen, type) != 2) {
+		fprintf(stderr, "nothing moved: %s's windows: %s\n", from, line[0] ? line : "no answer");
+		free(data);
+		return 1;
+	}
+	snprintf(head, sizeof head, "give %s %zu\n", type, len);
+	int r = ask_proxy(to, head, data, len, said, sizeof said, &none, &nlen);
+	explicit_bzero(data, len);
+	free(data);
+	free(none);
+	if (r < 0 || strcmp(said, "ok") != 0) {
+		fprintf(stderr, "nothing moved: %s\n", r < 0 ? "the receiving zone has no windows to paste in" : said);
+		return 1;
+	}
+	snprintf(head, sizeof head, "clear %llu\n", gen);
+	r = ask_proxy(from, head, NULL, 0, said, sizeof said, &none, &nlen);
+	free(none);
+	if (r < 0 || strcmp(said, "ok") != 0) {
+		printf("copied %zu bytes of %s from %s's windows to %s's; %s still holds it (%s)\n", len, type, from, to, from,
+		       r < 0 ? "its proxy is gone" : said);
+		return 0;
+	}
+	printf("moved %zu bytes of %s from %s's windows to %s's\n", len, type, from, to);
+	return 0;
 }
 
 int main(int argc, char **argv)
@@ -385,20 +472,18 @@ int main(int argc, char **argv)
 		return wifi_main(argc, argv);
 	if (argc >= 2 && strcmp(argv[1], "--update") == 0)
 		return update_main(argc, argv);
+	if (argc >= 2 && strcmp(argv[1], "--check-password") == 0)
+		return password_main(argc);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();
-		char req[160];
-		snprintf(req, sizeof req, "clipboard-move %s %s\n", argv[2], argv[3]);
-		char *r = talk(req, -1);
-		fputs(r, strncmp(r, "ok", 2) == 0 ? stdout : stderr);
-		return strncmp(r, "ok", 2) == 0 ? 0 : 1;
+		return clipboard_move(argv[2], argv[3]);
 	}
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--") == 0) { sep = i; break; }
 		else if (strcmp(argv[i], "--ask") == 0) ask = 1;
 		else if (strcmp(argv[i], "--no-display") == 0) no_display = 1;
-		else if (strcmp(argv[i], "--passphrase-fd") == 0 && i + 1 < argc) pass_fd = atoi(argv[++i]);
+		else if (strcmp(argv[i], "--passphrase-fd") == 0 && i + 1 < argc) pass_fd = fd_arg(argv[++i]);
 		else if (strcmp(argv[i], "--stop") == 0) mode = "stop";
 		else if (strcmp(argv[i], "--info") == 0) mode = "info";
 		else if (strcmp(argv[i], "--runtime-dir") == 0) mode = "runtime";
@@ -445,6 +530,8 @@ int main(int argc, char **argv)
 		} else {
 			/* The trusted chrome prompts and calls back with --passphrase-fd. */
 			char **nargv = calloc((size_t)ncmd + 8, sizeof *nargv);
+			if (!nargv)
+				die("out of memory");
 			int k = 0;
 			nargv[k++] = CHROME_BIN;
 			nargv[k++] = "--prompt";
@@ -458,18 +545,14 @@ int main(int argc, char **argv)
 		}
 	}
 
-	const char *wl = no_display ? NULL : ensure_proxy(zone);
-
-	/* Every string in the request is counted, the socket path included (up to
-	 * PATH_MAX); 1024 covers the fixed words. */
-	size_t cap = 1024 + strlen(zone) + (wl ? strlen(wl) : 0);
+	/* Every string is counted; 1024 covers the fixed words. */
+	size_t cap = 1024 + strlen(zone);
 	for (i = 0; i < ncmd; i++)
 		cap += strlen(cmd[i]) + 8;
 	char *req = malloc(cap);
 	if (!req)
 		die("out of memory");
-	/* snprintf returns the length it wanted: check each piece fitted before
-	 * advancing, or a short buffer becomes a write past its end. */
+	/* snprintf returns the length it wanted: unchecked, len would run past the buffer. */
 	size_t len = 0;
 	#define PUT(...) do { \
 		int n_ = snprintf(req + len, cap - len, __VA_ARGS__); \
@@ -477,7 +560,7 @@ int main(int argc, char **argv)
 			die("request too long"); \
 		len += (size_t)n_; \
 	} while (0)
-	PUT("run %s%s%s%s\n", zone, wl ? " wayland=" : "", wl ? wl : "", pass_fd >= 0 ? " pass=fd" : "");
+	PUT("run %s%s%s\n", zone, no_display ? "" : " wayland", pass_fd >= 0 ? " pass=fd" : "");
 	for (i = 0; i < ncmd; i++) {
 		if (strchr(cmd[i], '\n'))
 			die("argument %d contains a newline", i);

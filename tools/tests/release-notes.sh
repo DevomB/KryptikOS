@@ -128,10 +128,10 @@ fi
 if has "Kernel: 2 kernel-hardening-checker findings accepted" && has "Compiler flags: 1 exception to" \
     && has "setuid and setgid: 2 programs," && has "Programs with file capabilities: 0." \
     && has "(766 executables, 554 libraries). None refused, none reported, 3 accepted" && has "NO-CET, 2 objects:" \
-    && has "\`usr/bin/kryptik-wlproxy\`: rustc marks nothing for CET" && has "RPATH, 1 object:" \
+    && has "\`usr/bin/kryptikd\`, \`usr/bin/kryptik-wlproxy\`: rustc marks nothing for CET" && has "RPATH, 1 object:" \
     && has "\`usr/lib/gconv/*.so\`, rpath \`\$ORIGIN\`: glibc's converters" \
     && has "Stack protector in 1233 objects, FORTIFY_SOURCE in 854."; then
-    green "the audit's counts per list, and each accepted kind with its reasons"
+    green "the audit's counts per list, and each accepted kind with its reasons, one line per reason"
 else
     red "the hardening audit"; sed 's/^/        /' "$OUT"
 fi

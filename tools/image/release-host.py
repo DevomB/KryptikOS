@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""A release host for the suites: static files over HTTP, on loopback only.
+"""A release host for the suites: ROOT over HTTP on 127.0.0.1 (10.0.2.2 to a QEMU guest).
 
     release-host.py ROOT PORTFILE LOG [NORANGE]
 
-Serves ROOT on 127.0.0.1 (10.0.2.2 to a guest on QEMU's user network; nothing
-else on the runner's network can reach it) and writes the port to PORTFILE
-once listening. Honours `Range: bytes=N-` (docs/design/update-channel.md),
-which http.server does not, except while the file NORANGE exists. Streams
-files, as a root image is gigabytes. Logs each request as the path and the
-Range header or `-`.
+Writes the port to PORTFILE once listening, honours `Range: bytes=N-` unless the file
+NORANGE exists, and logs each request's path and Range header (or `-`) to LOG.
 """
 import http.server
 import os
@@ -24,8 +20,7 @@ class Host(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        # Links inside ROOT may point anywhere (suites link payloads in), but the
-        # requested name is normalised and held to ROOT before it is used.
+        # Links in ROOT may point anywhere (payloads are linked in); the name asked for may not.
         path = os.path.normpath(os.path.join(root, self.path.split("?", 1)[0].lstrip("/")))
         if not path.startswith(root + os.sep):
             self.send_error(404)

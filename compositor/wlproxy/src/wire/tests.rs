@@ -170,7 +170,7 @@ fn writer_output_is_aligned() {
         let msg = MessageWriter::new(1, 0).string(s).finish().unwrap();
         assert_eq!(msg.len() % 4, 0, "string {s:?} produced {} bytes", msg.len());
         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
-        assert_eq!(r.string().unwrap(), Some(s).filter(|x: &&str| !x.is_empty()).or(Some("")));
+        assert_eq!(r.string().unwrap(), Some(s));
     }
 }
 

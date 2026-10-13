@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# kryptik: the user's command for zones. Fills in kryptikd's paths from
-# kryptik.conf and never offers a way past kryptikd's refusals.
-#
-# When not root and the session's launch service (kryptik-launch) answers,
-# zones start through it; otherwise kryptikd runs them directly. There is no
-# transfer, clipboard or mount command: from zone 0 those would bypass the
-# chrome, where the user approves each move.
+# kryptik: the user's zone command; fills in kryptikd's paths and offers no way past its refusals.
+# No transfer, clipboard or mount command: from zone 0 those would bypass the chrome's approval.
 set -uo pipefail
 
 PROG="${0##*/}"
@@ -40,16 +35,33 @@ USAGE:
     $PROG gc                        clean up after zones whose manager died
     $PROG doctor                    check this system can run zones at all
     $PROG wifi list                 the Wi-Fi networks the net zone knows
+    $PROG wifi scan                 the networks in range, with their security
+                                    and signal, as the net zone hears them
     $PROG wifi add SSID             add one, or change its passphrase (asked
                                     for on the terminal; never an argument)
+    $PROG wifi add SSID --open      add one that has no passphrase, a cafe's
+                                    or an airport's: anyone in range can read
+                                    what is not encrypted again above it
+    $PROG wifi add SSID --hidden    add one that hides its name (with --open
+                                    too, or asked for its passphrase); scans
+                                    then ask for it by name, wherever they are
     $PROG wifi forget SSID          remove one
     $PROG update status             the release running, the newest one known
                                     and how old that news is, what is staged
     $PROG update fetch              ask for the newest release to be fetched
+    $PROG update forget             stop fetching the release asked for, and
+                                    delete what has arrived of it
+    $PROG update auto on|off        fetch each newer release as it is
+                                    announced, or only when asked (the default)
     $PROG update apply              install what has arrived; the next boot
                                     tries it once and falls back if it fails
     $PROG state passphrase          change the passphrase the state partition
-                                    asks for at boot (root; the old one first)
+                                    asks for at boot (root; the old one first,
+                                    then a new one of 8 characters or more)
+    $PROG keyboard                  the keyboard layouts, the one in force marked
+    $PROG keyboard NAME             use that layout (root): the console now, the
+                                    desktop at its next login, the passphrase's
+                                    prompt from the next boot
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
@@ -76,8 +88,7 @@ $PROG has no commands for either, on purpose.
 USAGE
 }
 
-# True when not root and the session's launch service answers. --runtime-dir
-# is its cheapest request and fails fast rather than hanging.
+# Not root and the launch service answers; --runtime-dir is its cheapest request and fails fast.
 LAUNCH="${KRYPTIK_LAUNCH:-kryptik-launch}"
 via_launch() {
     [[ "$(id -u)" -ne 0 ]] || return 1
@@ -114,17 +125,14 @@ have_kryptikd() {
     arguments. Install it, or set KRYPTIKD=/path/to/kryptikd."
 }
 
-# The flags that map a zone to an unprivileged host user. kryptikd takes them
-# only as root, and then requires them unless the zone declares its own.
-# Sets an array rather than printing for `< <(...)`: process substitution
-# needs /dev/fd, which a minimal system may lack.
+# An array, not printed for `< <(...)`: process substitution needs /dev/fd, which may be missing.
 IDENTITY_ARGS=()
+# The flags mapping a zone to a host user: kryptikd takes them only as root, then requires them.
 set_identity_args() { # zone name
     IDENTITY_ARGS=()
     [[ "$(id -u)" -eq 0 ]] || return 0
 
-    # kryptikd refuses the flags for a zone with [identity] uid_base. A
-    # presence test is enough: kryptikd checks the value itself.
+    # Not for a zone with [identity] uid_base; kryptikd checks the value, so presence is enough.
     if grep -qE '^[[:space:]]*uid_base[[:space:]]*=' "$ZONES_DIR/$1.toml" 2>/dev/null; then
         return 0
     fi
@@ -169,8 +177,7 @@ require_zone() {
 }
 
 # --- running state ----------------------------------------------------------
-# A word, not a colour: it must survive a pipe, a monochrome terminal and a
-# screen reader.
+# A word, not a colour: it must survive a pipe, a monochrome terminal and a screen reader.
 running_state() {
     local out
     out="$("$KRYPTIKD" status "$1" 2>/dev/null)" || { printf 'unknown'; return; }
@@ -206,7 +213,11 @@ cmd_status() {
     fi
     require_zone "$1"
     printf '%-16s %s\n' "$1" "$(running_state "$1")"
-    "$KRYPTIKD" status "$1" 2>&1 | sed 's/^/    /'
+    "$KRYPTIKD" status "$1" --zones "$ZONES_DIR" 2>&1 | sed 's/^/    /'
+    # Root reads the net zone's word on the network itself; a user asks the launch service.
+    if via_launch; then
+        "$LAUNCH" --info "$1" 2>/dev/null | sed -n 's/^network /    network  /p'
+    fi
 }
 
 cmd_explain() {
@@ -225,7 +236,7 @@ cmd_doctor() {
     "$KRYPTIKD" check --zones "$ZONES_DIR"
 }
 
-cmd_gc() { have_kryptikd; "$KRYPTIKD" gc; }
+cmd_gc() { have_kryptikd; "$KRYPTIKD" gc --rootfs "$ROOTFS"; }
 
 cmd_stop() {
     local name="$1"; shift
@@ -246,13 +257,13 @@ cmd_stop() {
 
 # --- starting ---------------------------------------------------------------
 
-# The one place that runs a zone, for both shell and run.
+# Shared by shell and run.
 start_zone() {
     local name="$1"; shift
     if via_launch; then
         [[ -f "$ZONES_DIR/$name.toml" ]] || die "no zone named $name in $ZONES_DIR"
-        # --ask reads an encrypted zone's passphrase on this terminal and passes
-        # it on a descriptor, never as an argument.
+        # --ask reads an encrypted zone's passphrase on this terminal and passes it on a
+        # descriptor, never as an argument.
         "$LAUNCH" --ask --no-display "$name" -- "$@"
         local rc=$?
         (( rc == 0 )) || printf '\n%s: %s did not start through the launch service (exit %d).\n' "$PROG" "$name" "$rc" >&2
@@ -266,8 +277,7 @@ start_zone() {
     local rc
     set_identity_args "$name"
 
-    # Not captured: a shell needs the terminal, and kryptikd's warnings and
-    # refusals must reach the user unchanged.
+    # Not captured: a shell needs the terminal, and the user must see kryptikd's refusals unchanged.
     "$KRYPTIKD" run "$name" --zones "$ZONES_DIR" \
         --rootfs "$ROOTFS" "${IDENTITY_ARGS[@]}" -- "$@"
     rc=$?
@@ -293,15 +303,11 @@ cmd_run() {
     start_zone "$name" "$@"
 }
 
-# --- the net zone's Wi-Fi networks ------------------------------------------
-# kryptikd keeps the credentials in zone 0 and restarts the net zone after a
-# change (docs/design/net-zone.md). The passphrase always goes on stdin.
-
 # Read one line into PASSPHRASE: from the terminal with echo off, or a pipe.
 PASSPHRASE=""
-read_passphrase() { # ssid
+ask_passphrase() { # prompt
     if [[ -t 0 ]]; then
-        IFS= read -rs -p "passphrase for $1: " PASSPHRASE
+        IFS= read -rs -p "$1" PASSPHRASE
         printf '\n' >&2
     else
         IFS= read -r PASSPHRASE
@@ -309,19 +315,37 @@ read_passphrase() { # ssid
     [[ -n "$PASSPHRASE" ]] || die "no passphrase given"
 }
 
+# --- the net zone's Wi-Fi networks, kept by kryptikd in zone 0 --------------
+# The passphrase always goes on stdin; kryptikd restarts the net zone after a change.
+
+read_passphrase() { ask_passphrase "passphrase for $1: "; }   # read_passphrase SSID
+
 cmd_wifi() {
-    local sub="${1:-}"; [[ $# -gt 0 ]] && shift
+    local sub="${1:-}" open=0 a; local hidden=(); [[ $# -gt 0 ]] && shift
     case "$sub" in
-        list)   [[ $# -eq 0 ]] || die "$PROG wifi list takes no argument" 2 ;;
-        add|forget) [[ $# -eq 1 ]] || die "$PROG wifi $sub SSID: exactly one SSID" 2 ;;
-        *) usage >&2; die "wifi needs a subcommand: list, add SSID or forget SSID" 2 ;;
+        list|scan) [[ $# -eq 0 ]] || die "$PROG wifi $sub takes no argument" 2 ;;
+        add) [[ $# -ge 1 ]] || die "$PROG wifi add SSID [--open] [--hidden]: exactly one SSID" 2
+             for a in "${@:2}"; do
+                 case "$a" in
+                     --open) open=1 ;;
+                     --hidden) hidden=(--hidden) ;;
+                     *) die "$PROG wifi add SSID [--open] [--hidden]: exactly one SSID" 2 ;;
+                 esac
+             done ;;
+        forget) [[ $# -eq 1 ]] || die "$PROG wifi forget SSID: exactly one SSID" 2 ;;
+        *) usage >&2; die "wifi needs a subcommand: list, scan, add SSID or forget SSID" 2 ;;
     esac
     if via_launch; then
         case "$sub" in
             list)   "$LAUNCH" --wifi-list ;;
-            add)    read_passphrase "$1"
-                    # printf is a builtin, so the passphrase is never in argv.
-                    printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1" ;;
+            scan)   "$LAUNCH" --wifi-scan ;;
+            add)    if [[ "$open" = 1 ]]; then
+                        "$LAUNCH" --wifi-add-open "$1" "${hidden[@]}"
+                    else
+                        read_passphrase "$1"
+                        # printf is a builtin, so the passphrase is never in argv.
+                        printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1" "${hidden[@]}"
+                    fi ;;
             forget) "$LAUNCH" --wifi-forget "$1" ;;
         esac
         return
@@ -329,30 +353,84 @@ cmd_wifi() {
     have_kryptikd
     case "$sub" in
         list)   "$KRYPTIKD" wifi list --wifi-dir "$WIFI_DIR" ;;
-        add)    read_passphrase "$1"
-                printf '%s\n' "$PASSPHRASE" | "$KRYPTIKD" wifi add "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
+        scan)   "$KRYPTIKD" wifi scan --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
+        add)    if [[ "$open" = 1 ]]; then
+                    "$KRYPTIKD" wifi add "$1" --open "${hidden[@]}" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR"
+                else
+                    read_passphrase "$1"
+                    printf '%s\n' "$PASSPHRASE" | "$KRYPTIKD" wifi add "$1" "${hidden[@]}" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR"
+                fi ;;
         forget) "$KRYPTIKD" wifi forget "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
     esac
 }
 
-# Installed systems only: the update state is zone 0's, reached through the
-# launch service.
+# Installed systems only: the update state is zone 0's, reached through the launch service.
 cmd_update() {
     case "${1:-}" in
-        status|fetch|apply) [[ $# -eq 1 ]] || die "$PROG update $1 takes no argument" 2 ;;
-        *) usage >&2; die "update needs a subcommand: status, fetch or apply" 2 ;;
+        status|fetch|forget|apply) [[ $# -eq 1 ]] || die "$PROG update $1 takes no argument" 2 ;;
+        auto) [[ $# -eq 2 && ( "${2:-}" == on || "${2:-}" == off ) ]] || die "$PROG update auto takes on or off" 2 ;;
+        *) usage >&2; die "update needs a subcommand: status, fetch, forget, apply, or auto on|off" 2 ;;
     esac
     via_launch || die "update goes through the launch service, which is not answering here (an installed Kryptik, as a session user)"
-    "$LAUNCH" --update "$1"
+    "$LAUNCH" --update "$@"
 }
 
-# cryptsetup asks for the passphrases on the terminal; none pass through here.
+# Asked for here, so the new one is held to the installer's floor: on a
+# terminal the new one twice, else two lines of stdin, the old then the new.
+# They reach cryptsetup through pipes from the printf builtin, never argv.
 cmd_state() {
     [[ "${1:-}" == passphrase && $# -eq 1 ]] || { usage >&2; die "state needs a subcommand: passphrase" 2; }
     [[ $EUID -eq 0 ]] || die "the state passphrase is root's to change"
-    local dev; dev="$(sed -n 's/^state_dev=//p' /run/kryptik/boot-identity 2>/dev/null)"
+    local dev old new n
+    dev="$(sed -n 's/^state_dev=//p' /run/kryptik/boot-identity 2>/dev/null)"
     [[ -b "$dev" ]] || die "this system has no state partition in use"
-    exec cryptsetup luksChangeKey "$dev"
+    ask_passphrase "the state passphrase now: "; old="$PASSPHRASE"
+    printf '%s' "$old" | cryptsetup open --test-passphrase --type luks2 --key-file=- "$dev" 2>/dev/null
+    case $? in
+        0) ;;
+        2) die "that is not the state passphrase; nothing was changed" ;;
+        *) die "cryptsetup could not check the passphrase against $dev; nothing was changed" ;;
+    esac
+    ask_passphrase "a new one, asked at every boot: "; new="$PASSPHRASE"
+    if [[ -t 0 ]]; then
+        ask_passphrase "again: "
+        [[ "$PASSPHRASE" == "$new" ]] || die "the two passphrases differ; nothing was changed"
+    fi
+    PASSPHRASE=""
+    # Characters, not the C locale's bytes.
+    n="$(LC_ALL=C.UTF-8; echo "${#new}")"
+    (( n >= 8 )) || die "the new passphrase is $n characters; it needs at least 8, as a stolen disk can be guessed at offline; nothing was changed"
+    cryptsetup luksChangeKey --batch-mode --key-file=<(printf '%s' "$old") "$dev" <(printf '%s' "$new") \
+        || die "cryptsetup did not change the state passphrase"
+    echo "the state passphrase is changed; the next boot asks for the new one"
+}
+
+# The layout's name is kept in the firmware and its keymaps on the verified
+# root (docs/design/keyboard-layout.md).
+cmd_keyboard() {
+    [[ $# -le 1 ]] || die "$PROG keyboard takes one layout's name, or none to list them" 2
+    local lib=/usr/libexec/kryptik/keyboard.sh now n
+    [[ -r "$lib" ]] || die "keyboard layouts are an installed Kryptik's: no ${lib} here"
+    # shellcheck source=/dev/null
+    . "$lib"
+    now="$(kb_current)"
+    if [[ $# -eq 0 ]]; then
+        while read -r n; do
+            if [[ "$n" == "$now" ]]; then echo "* $n"; else echo "  $n"; fi
+        done < <(kb_names)
+        return 0
+    fi
+    [[ $EUID -eq 0 ]] || die "the keyboard layout is root's to change"
+    kb_row "$1" > /dev/null || die "no keyboard layout named $1: \`$PROG keyboard\` lists them" 2
+    kb_load "$1" || die "could not load the console keymap of $1"
+    # A medium keeps nothing: kryptik-install names the layout in force.
+    if grep -qs '^media=.' /run/kryptik/boot-identity; then
+        echo "keyboard layout $1, until this medium is shut down"
+        return 0
+    fi
+    kb_store "$1" || die "the console has $1 now, but the firmware did not take the name: the next boot asks under $(kb_stored | grep . || echo us)"
+    echo "keyboard layout $1: the console now, the desktop at its next login, the state passphrase's prompt from the next boot."
+    echo "Keys that $1 puts elsewhere are pressed where $1 has them, the passphrase's too."
 }
 
 # --- argument parsing -------------------------------------------------------
@@ -384,6 +462,7 @@ case "$cmd" in
     wifi)    cmd_wifi "$@" ;;
     update)  cmd_update "$@" ;;
     state)   cmd_state "$@" ;;
+    keyboard) cmd_keyboard "$@" ;;
     ""|help) usage ;;
     # Commands users will expect, answered with why they do not exist.
     transfer|copy|clipboard|paste|mount)

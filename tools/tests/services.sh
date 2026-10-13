@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Structural checks on the s6-rc service tree, offline: mistakes s6-rc-compile
-# would find only at the end of stage 04, inside the chroot.
+# The s6-rc service tree, offline: mistakes s6-rc-compile would find only at the end of stage 04.
 
 set -uo pipefail
 
@@ -147,8 +146,7 @@ check "no dependency cycle" "$([[ -z "$cycle" ]] && echo ok)"
 
 echo
 echo "-- every longrun bounds its own stop"
-# s6-svc -d waits forever unless timeout-kill bounds it, and some processes
-# ignore SIGTERM (getty-tty1's interactive bash).
+# s6-svc -d waits forever without timeout-kill, and some ignore SIGTERM (getty-tty1's bash).
 for d in "${SRC}"/*/; do
     svc="$(basename "$d")"
     [[ -f "${d}type" ]] || continue
@@ -169,8 +167,7 @@ done
 
 echo
 echo "-- every directory in the source tree is a service definition"
-# s6-rc-compile reads every directory here as a service; one without a type
-# file stops the whole compile.
+# s6-rc-compile reads every directory as a service; one without a type file stops the compile.
 for d in "${SRC}"/*/; do
     svc="$(basename "$d")"
     if [[ -f "${d}type" ]]; then
@@ -200,11 +197,14 @@ for s in "${SCRIPTS}"/*.sh; do
     case "$(head -1 "$s")" in "#!/bin/bash"*|"#!/usr/bin/bash"*) interp="bash" ;; esac
     check "${n}: valid ${interp}"    "$("$interp" -n "$s" 2>/dev/null && echo ok)"
     check "${n}: executable"  "$([[ -x "$s" ]] && echo ok)"
-    # Each script must be run by a service, or sourced by a script that is.
+    # Each script must be run by a service, or sourced by a script that is,
+    # or by the installer or the update tools.
     if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null; then
         green "${n}: referenced by a service"
     elif sourced "$n"; then
         green "${n}: sourced by a script a service runs"
+    elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "$ROOT"/tools/install/*.sh "$ROOT"/tools/update/kryptik-* 2>/dev/null; then
+        green "${n}: sourced by the installer or the update tools"
     else
         red "${n}: installed by the stage but no service runs it"
     fi

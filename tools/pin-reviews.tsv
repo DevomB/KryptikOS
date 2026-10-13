@@ -1,24 +1,21 @@
-# Reviews of pins that are behind their upstream. Read by tools/check-pin-reviews.sh.
+# Reviews of pins that are behind their upstream, read by tools/check-pin-reviews.sh.
 #
 #   package  pinned  reviewed_up_to  fine|held  date  what was read, and why
 #
-# fine: nothing released after the pin, up to reviewed_up_to, is a security fix
-# that reaches Kryptik. held: something is, and the note says why the pin stays.
-# A pin that has caught up has no row; a row for it fails, so this file shrinks.
-
-# Reviewed 2026-09-19 from upstream NEWS and changelogs, project security
-# pages, the Debian security tracker and NVD records. "Survey" below is
-# check-source-currency.sh's newest-upstream column on that day.
+# reviewed_up_to: upstream's newest in the survey (check-source-currency.sh --tsv) on that date.
+# fine: nothing released after the pin, up to reviewed_up_to, is a security fix that reaches Kryptik.
+# held: something is, and the note says why the pin stays. A pin that has caught up has no row.
+# Read from upstream NEWS and changelogs, security pages, the Debian security tracker and NVD.
 
 # --- toolchain -----------------------------------------------------------------
-binutils      2.43.1   2.47     fine  2026-09-19  NEWS 2.44 to 2.47 and the Debian tracker: every CVE since 2.43 is a crafted-input bug in tools that are only fed the project's own objects, and upstream's SECURITY.txt excludes them; no wrong-code or hardening fix found. 2.44 drops gold, which the recipe enables.
+binutils      2.43.1   2.47     fine  2026-09-19  NEWS 2.44 to 2.47 and the Debian tracker: every CVE since 2.43 is a crafted-input bug in tools that are only fed the project's own objects, and upstream's SECURITY.txt excludes them; no wrong-code or hardening fix found.
 gcc           14.4.0   16.2.0   fine  2026-09-19  14.4.0 is the newest 14.x. 15 changes the default C standard and 16 the default C++ one; neither is a security release. GCC Bugzilla milestones for 14.3 and 14.4 were read when the pin moved off 14.2.0.
-glibc         2.40     2.44     fine  2026-09-19  The tarball is 2.40 and build/patches/glibc-2.40 carries upstream's maintained release/2.40/master branch to cdaa5d6d (2026-09-10), which is where 2.40's security fixes live. Re-read that branch's head when this row is next reviewed.
+glibc         2.40     2.44     fine  2026-09-19  The tarball is 2.40 and build/patches/glibc-2.40 carries upstream's maintained release/2.40/master branch to cdaa5d6d (2026-09-10), which is where 2.40's security fixes live. Re-read that branch's head when this row is next reviewed. GLIBC-SA-2026-0022 (CVE-2026-86805, the loader's $ORIGIN check racing for setuid programs; fixed only for 2.45) needs a setuid program whose RPATH climbs out of $ORIGIN, and fs.protected_hardlinks off: su and passwd carry no RPATH (the artifact audit lists every one in the image) and build/config/sysctl.d sets protected_hardlinks to 1.
 mpc           1.3.1    1.4.1    fine  2026-09-19  NEWS 1.4.0 and 1.4.1: no security or wrong-result fix. 1.4.0 is to be skipped if this ever moves.
 
 # --- fine: nothing in the gap is a security fix that reaches Kryptik ---------------
 gawk          5.3.0    5.4.1    fine  2026-09-26  build/patches/gawk-5.3.0 carries upstream's fixes for CVE-2026-40467 (do_getline_redir use-after-free, a2d18c74), -40468 (do_sub and parse_escape overflows, 062f2f25) and -40553 (readdir extension, cca03661 and bfa2e4b8), made against 5.3.0's text; make check passes. -40469 (aa7272a6) guards 32-bit builds only and is not carried. 5.4 makes MinRX the default regex engine under every build script that calls awk, glibc's and the kernel's included: move in a build of its own, not in a batch.
-shadow        4.16.0   4.20.3   fine  2026-09-27  build/patches/shadow-4.16.0 carries 4.17.0's sgetgrent use-after-free fix (8424d7c49462). No CVE is fixed in the gap; 4.20.3 only fixes the build with --with-nscd=no. CVE-2024-56433 is unfixed upstream and does not reach Kryptik: it needs accounts defined on the network with UIDs in the default /etc/subuid range and a setuid newuidmap; nsswitch.conf reads passwd and group from files only, and stage 06's audit-setuid.sh --strip leaves only su and passwd setuid, so no user can map the subordinate range that zones (uid_base 100000) also use. 4.19 needs --disable-logind, 4.20 changes the login.defs line the recipe edits, removes PASS_MIN_DAYS and makes su - fail unless TIOCSTI is off. Target 4.19.4, with the recipe.
+shadow        4.16.0   4.20.3   fine  2026-09-27  build/patches/shadow-4.16.0 carries 4.17.0's sgetgrent use-after-free fix (8424d7c49462). No CVE is fixed in the gap; 4.20.3 only fixes the build with --with-nscd=no. CVE-2024-56433 is unfixed upstream and does not reach Kryptik: it needs accounts defined on the network with UIDs in the default /etc/subuid range and a setuid newuidmap; nsswitch.conf reads passwd and group from files only, and stage 06's audit-setuid.sh refuses any setuid file but su, so no user can map the subordinate range that zones (uid_base 100000) also use. 4.19 needs --disable-logind, 4.20 changes the login.defs line the recipe edits, removes PASS_MIN_DAYS and makes su - fail unless TIOCSTI is off. Target 4.19.4, with the recipe.
 bash          5.2.32   5.3      fine  2026-09-19  Patches 5.2.33 to 5.2.37 and the 5.3 NEWS: no security fix found. 5.3 needs readline 8.3.
 grep          3.11     3.12     fine  2026-09-19  NEWS 3.12: a failure of grep -r on directories with over 100,000 entries; no security fix.
 diffutils     3.10     3.12     fine  2026-09-27  NEWS 3.11 and 3.12: no security fix in a release. CVE-2026-53910 (a diff3 overflow on crafted diff output, disputed upstream as a crash) is fixed only in upstream git (9ff04d5b, 73ed7ce8), so a bump would not fix it. It needs whoever runs diff3 to take its diff output from an attacker, e.g. through --diff-program. Nothing in Kryptik runs diff3, and a user or zone that does runs it as itself, crossing no boundary. Never 3.11.
@@ -32,8 +29,7 @@ gettext       0.22.5   1.0      fine  2026-09-19  NEWS 0.23 to 1.0: no security 
 texinfo       7.1      7.3      fine  2026-09-19  NEWS 7.1.1 to 7.3: no security fix.
 libtool       2.4.7    2.6.2    fine  2026-09-19  NEWS 2.5.x and 2.6.x: no security fix.
 gperf         3.1      3.3      fine  2026-09-19  NEWS 3.2 and 3.3: no security fix.
-pkgconf       2.3.0    3.0.7    fine  2026-09-19  NEWS to 3.0.7: no security fix. 3.0 breaks the libpkgconf ABI, moves to meson and changed quoting and sysroot handling twice.
-iana-etc      20240806 20260911 fine  2026-09-19  Data only: /etc/services and /etc/protocols.
+pkgconf       2.3.0    3.0.8    fine  2026-10-09  NEWS to 3.0.8: no security fix. 3.0 breaks the libpkgconf ABI, moves to meson and changed quoting and sysroot handling twice; 3.0.8 (2026-10-09) percent-encodes spdxtool URLs, uses the platform path separator in the built-in path variables, and fixes documentation.
 intel-microcode 20260812 20260925 fine  2026-09-27  Release notes 20260925: one functional update, Meteor Lake C0 (06-aa-04, 0x28 to 0x2b), and no security advisory.
 ca-bundle     2026-08-13 2026-09-25 fine  2026-09-27  The 2026-09-25 bundle holds the same 121 certificates, byte for byte; only its header's date and certdata.txt digest differ.
 groff         1.23.0   1.24.2   fine  2026-09-29  NEWS 1.24.0 to 1.24.2: 1.24.2 fixes command injection (CWE-78) in mmroff, pdfmom and pre-grohtml, which the image does not install (build/recipes/groff.sh); man renders for a terminal, never HTML. 1.24.0 has incompatible request-syntax changes; never that one.
@@ -48,3 +44,4 @@ libxkbcommon  1.13.2   1.14.0   fine  2026-09-19  NEWS for 1.14.0: no security f
 libdrm        2.4.129  2.4.134  fine  2026-09-19  The 27 commits between them: none is a security fix.
 libinput      1.30.4   1.32.0   fine  2026-09-19  CVE-2026-35093, -35094 and -50292 are all fixed in the pinned 1.30.4, the newest 1.30.x. 1.31.3 and 1.32.0 add hardening against malicious uinput devices that was not backported; wlroots 0.19.3 has not been built against 1.32.
 dwl           0.8      0.9      fine  2026-09-27  v0.8..v0.9, 55 commits. The decoration use-after-free fix (f4dfdab, 04279f2) is carried as build/patches/dwl-0.8, and the idle-inhibitor one (4847f97) needs a protocol the proxy never offers a zone (see that README); 433c325, d16036e and 7ba3350 fix IME and pointer code new in 0.9. The Xwayland fixes do not apply (built with XWAYLAND=). 0.8 holds a monitor's frames while a tiled window's resize is pending only when its client is dwl's own child, and a zone window's client is the proxy, which kryptikd starts. f6800e9 stops a key binding's release from reaching the client focused after it, which learns only which binding key was let go. 0.9 needs wlroots 0.20; its new data-control, image-capture and foreign-toplevel globals are off the proxy's allowlist.
+libevdev      1.13.7   1.14.0   fine  2026-10-07  Four commits since 1.13.7 (tagged 2026-10-07): two new force-feedback functions, libevdev_upload_ff_effect and libevdev_remove_ff_effect, and two documentation fixes; no security fix, and libinput calls neither.

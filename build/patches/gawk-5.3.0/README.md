@@ -7,13 +7,13 @@ gawk 5.4.1 fixes four advisories (CERT Polska, July 2026). Three reach
 Kryptik's x86-64 build and are carried, each as upstream wrote it, with its
 ChangeLog hunk dropped:
 
-- `0001`, CVE-2026-40467: `do_getline_redir()` in io.c released the
-  redirection's name and then read it on the path for a closed two-way pipe.
+- `0001`, CVE-2026-40467: `do_getline_redir()` in io.c frees the
+  redirection's name and then reads it on the path for a closed two-way pipe.
   Upstream a2d18c74109e41bec29a23098eba2e00057286d8, "Small memory
   management fix in io.c.", made against 5.3.0's text, which differs in the
   lines around it.
-- `0002`, CVE-2026-40468: `do_sub()` kept its output offset in an `int`, and
-  `parse_escape()` gathered a `\u` escape's eight hex digits in an `int`.
+- `0002`, CVE-2026-40468: `do_sub()` keeps its output offset in an `int`, and
+  `parse_escape()` gathers a `\u` escape's eight hex digits in an `int`.
   Both are widened as in upstream 062f2f2581b991362c046f7f2e238ffa34e6f8c7,
   "Minor integer overflow fixes."; 5.3.0 declares the escape's value `int`
   where upstream had `long`.

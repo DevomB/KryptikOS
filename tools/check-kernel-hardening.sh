@@ -1,21 +1,15 @@
 #!/usr/bin/env bash
-# Run kernel-hardening-checker on a resolved kernel config and the shipped
-# command line, and hold the result to a list of accepted failures.
+# Run kernel-hardening-checker on a kernel config and command line; each FAIL is fixed or accepted.
 #
 #   ./tools/check-kernel-hardening.sh --config FILE [--cmdline FILE]
 #                                     [--accepted FILE] [--checker-dir DIR]
 #
-#   --config FILE      the resolved .config (from stage 05 or
-#                      tools/resolve-kernel-config.sh)
-#   --cmdline FILE     a one-line kernel command line; default: the shipped
-#                      shape, built from COMMON_ARGS in build/stages/06-iso.sh
+#   --config FILE      the resolved .config (stage 05 or tools/resolve-kernel-config.sh)
+#   --cmdline FILE     a one-line command line; default: built from COMMON_ARGS in stage 06
 #   --accepted FILE    default build/config/kernel/checker-accepted.txt
-#   --checker-dir DIR  an unpacked checker tree; default: the pinned release,
-#                      unpacked from KRYPTIK_SOURCES on demand
+#   --checker-dir DIR  an unpacked checker; default: the pinned release from KRYPTIK_SOURCES
 #
-# Each FAIL must be fixed or listed, with its reason, in the accepted file; an
-# accepted option that passes now is reported stale. Exit 1 on an unaccepted
-# failure, a malformed accepted list, or a checker that could not run.
+# Exit 1 on an unaccepted failure, a malformed accepted list or a checker that could not run.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -30,7 +24,7 @@ while [[ $# -gt 0 ]]; do
         --cmdline)     CMDLINE="${2:?--cmdline needs a file}"; shift 2 ;;
         --accepted)    ACCEPTED="${2:?--accepted needs a file}"; shift 2 ;;
         --checker-dir) CHECKER_DIR="${2:?--checker-dir needs a directory}"; shift 2 ;;
-        -h|--help)     sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)     sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -62,8 +56,6 @@ KHC="${CHECKER_DIR}/bin/kernel-hardening-checker"
 run_khc() { PYTHONPATH="$CHECKER_DIR" python3 "$KHC" "$@"; }
 log "kernel-hardening-checker $(run_khc --version 2>&1 | awk '{print $NF}')"
 
-# Without --cmdline, build one of the shipped shape. Stage 06 writes the real
-# ones; their hardening-relevant part is COMMON_ARGS, the rest names the root.
 CMDLINE_TMP=""
 JSON_TMP=""
 # shellcheck disable=SC2317  # reached through the EXIT trap below
@@ -73,6 +65,7 @@ cleanup() {
     return 0
 }
 trap cleanup EXIT
+# Without --cmdline, use stage 06's COMMON_ARGS; the rest of a shipped line only names the root.
 if [[ -z "$CMDLINE" ]]; then
     stage06="${KRYPTIK_ROOT}/build/stages/06-iso.sh"
     common="$(sed -n 's/^COMMON_ARGS="\([^"]*\)"$/\1/p' "$stage06" | head -1)"
@@ -92,10 +85,10 @@ echo
 JSON="$(run_khc -c "$CONFIG" -l "$CMDLINE" -m json 2>/dev/null)" \
     || die "the checker failed on ${CONFIG}"
 
-# Hold the failures to the accepted list; counts come back on the last line.
-# The JSON goes through a file because the heredoc already takes stdin.
+# A file, as the heredoc below takes stdin.
 JSON_TMP="$(mktemp)"
 printf '%s' "$JSON" > "$JSON_TMP"
+# Hold the failures to the accepted list; the counts come back on the last line.
 result="$(python3 - "$ACCEPTED" "$JSON_TMP" <<'PY'
 import json, sys
 accepted_path, json_path = sys.argv[1], sys.argv[2]

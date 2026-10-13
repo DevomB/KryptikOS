@@ -1,4 +1,2 @@
-# SC2164 ("cd ... || exit"): every script sources build/lib/common.sh, whose
-# `set -Eeuo pipefail` and ERR trap already abort on a failed cd. A script
-# that does not source it should re-enable the check locally.
+# common.sh's ERR trap aborts on a failed cd; a script that does not source it should re-enable SC2164.
 disable=SC2164

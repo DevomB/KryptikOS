@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
-# Publish a release into an update channel's directory, and sign the channel's
-# statement of what is current again (docs/design/update-channel.md).
+# Publish a release into an update channel or re-sign its statement (docs/design/update-channel.md).
 #
 #   ./tools/release-channel.sh publish --key KEY --signers FILE --payload DIR
 #                                      --out CHANNEL [--issued DATE] [--base ADDRESS]
 #   ./tools/release-channel.sh reissue --key KEY --signers FILE
 #                                      [--issued DATE] [--manifest FILE] CHANNEL
 #
-# CHANNEL is served as it stands: latest, latest.sig, and one directory per
-# version, which the statement's base names. With --base the payload is
-# served at that https address instead (the release's files on GitHub, as
-# tools/channel-host.sh publishes them): it is verified here as the image
-# will verify it, and only the statement is written; a reissue of such a
-# statement takes --manifest, the manifest served there. KEY is the kryptik-latest key,
-# passed to ssh-keygen by path and never read here; SIGNERS is the anchor the
-# image carries, and every statement is checked against it as a client would.
-# DATE defaults to now, as YYYY-MM-DDTHH:MM:SS+00:00. The payload's files are
-# hard-linked where the filesystem allows, so a file in DIR must never be
-# rewritten in place afterwards; replace DIR whole, as stage 06 does.
+#   CHANNEL    served as it stands: latest, latest.sig and a directory per version
+#   --base     an https address that serves the payload instead; only the statement is
+#              written, and its reissue takes --manifest, the manifest served there
+#   --key      the kryptik-latest key, passed to ssh-keygen by path and never read here
+#   --signers  the image's anchor: every statement is checked against it as a client would
+#   --issued   YYYY-MM-DDTHH:MM:SS+00:00, by default now
+#
+# The payload's files are hard-linked where possible: replace DIR whole, never a file in it.
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
@@ -38,15 +34,13 @@ statement_ok() {   # statement_ok FILE SIGNERS: does FILE.sig verify as a client
         -s "$1.sig" < "$1" > /dev/null 2>&1
 }
 
-# One run at a time per channel, from reading its statement to replacing it:
-# a reissue finishing after a publish would name the older release again.
+# One run per channel at a time, or a reissue ending after a publish could undo it.
 lock_channel() {
     exec 9< "$1"
     flock -n 9 || die "another publish or reissue is running on $1"
 }
 
-# Sign a statement for MANIFEST under BASE, check it as a client would, and
-# only then rename it into place. Anything that fails leaves the old pair.
+# Sign, check as a client would, then rename into place; any failure leaves the old pair.
 install_statement() {   # install_statement CHANNEL MANIFEST BASE KEY SIGNERS ISSUED
     local chan="$1" manifest="$2" base="$3" key="$4" signers="$5" issued="$6"
     issued="${issued:-$(date -u +%Y-%m-%dT%H:%M:%S+00:00)}"
@@ -55,8 +49,7 @@ install_statement() {   # install_statement CHANNEL MANIFEST BASE KEY SIGNERS IS
     [[ "$issued" =~ $form ]] || die "--issued ${issued} is not YYYY-MM-DDTHH:MM:SS with Z or +HH:MM"
     local now was
     now="$(date -u -d "$issued" +%s 2>/dev/null)" || die "--issued ${issued} is not a date"
-    # Clients refuse a statement dated more than a day ahead of their clock,
-    # and one issued before the newest they accepted.
+    # Clients refuse a statement over a day ahead of their clock, or older than the last they took.
     (( now <= $(date -u +%s) + 86400 )) || die "${issued} is more than a day ahead; clients would refuse it"
     if [[ -f "${chan}/latest" ]]; then
         was="$(date -u -d "$(field "${chan}/latest" issued)" +%s 2>/dev/null)" \
@@ -72,8 +65,7 @@ install_statement() {   # install_statement CHANNEL MANIFEST BASE KEY SIGNERS IS
         rm -f "$new" "${new}.sig"
         die "the new statement does not verify against ${signers}; ${chan}/latest is unchanged"
     fi
-    # Two renames: a client reading between them gets a pair that does not
-    # verify, refuses it, and asks again at its next poll.
+    # A client reading between the renames gets a pair that does not verify, and asks again later.
     mv -f "${new}.sig" "${chan}/latest.sig"
     mv -f "$new" "${chan}/latest"
     ok "${chan}/latest names $(field "${chan}/latest" version), issued ${issued}"
@@ -104,8 +96,7 @@ do_publish() {
         statement_ok "${out}/latest" "$signers" || die "publish: ${out}/latest does not verify against ${signers}"
         cur="$(field "${out}/latest" version)"
     fi
-    # Verified as the image verifies it, and refused if older than what the
-    # channel names (sort -V order, which zone 0's version_cmp mirrors).
+    # As the image verifies it; older than the channel's is refused (sort -V, like version_cmp).
     "$MANIFEST_TOOL" verify --signers "$signers" --principal kryptik-release \
         --root "$payload" --exact --strict ${cur:+--no-downgrade "$cur"} "${payload}/manifest" \
         || die "publish: ${payload} does not verify; nothing was published"
@@ -155,8 +146,7 @@ do_reissue() {
     # Only what already verifies is signed again, so a tampered channel stays refused.
     statement_ok "${chan}/latest" "$signers" || die "reissue: ${chan}/latest does not verify against ${signers}"
     local base; base="$(field "${chan}/latest" base)"
-    # The same manifest, so the new statement differs from the old only in its
-    # date: under the channel for a relative base, given for an absolute one.
+    # The same manifest, so only the date changes: under the channel, or --manifest for an address.
     if [[ "$base" == *://* ]]; then
         [[ -n "$manifest" ]] || die "reissue: ${chan}/latest names an absolute base (${base}); give --manifest, the manifest served there"
     else

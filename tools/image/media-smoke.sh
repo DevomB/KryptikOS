@@ -4,11 +4,9 @@
 #   tools/image/media-smoke.sh (--usb IMG | --iso ISO) [--vars clean|enrolled|ms]
 #                              [--expect-refused] [--timeout N]
 #
-# Boots by firmware discovery alone (run-ovmf.sh); a kryptik-testctl disk arms
-# the poweroff. Every check needs something to appear, so an empty run fails.
+#   --expect-refused  the firmware must refuse a kernel the store's keys did not sign (--vars ms)
 #
-# --expect-refused: the store's keys did not sign our kernel (--vars ms), and
-# the firmware must refuse it: the negative control for the enforced chain.
+# A kryptik-testctl disk arms the poweroff; the checks need output, so an empty run fails.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -23,7 +21,7 @@ while [[ "$#" -gt 0 ]]; do
         --vars) VARS="${2:?}"; shift 2 ;;
         --expect-refused) REFUSED=1; shift ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -59,10 +57,7 @@ echo "serial log: ${SERIAL} ($(grep -c '' < "$TXT") lines, qemu exit ${qrc})"
 echo
 
 if [[ "$REFUSED" -eq 1 ]]; then
-    # No kernel or userspace ran, and the firmware itself refused the image:
-    # an empty, hung or crashed boot is not a refusal. OVMF reports a Secure
-    # Boot rejection as "Access Denied" (LoadImage's EFI_ACCESS_DENIED) or
-    # "Security Violation" (DXE core), after naming the option it tried.
+    # OVMF refuses with "Access Denied" (LoadImage) or "Security Violation" (DXE core).
     echo "-- the firmware must refuse a kernel its keys did not sign (variables: ${VARS})"
     [[ "$VARS" == "ms" || "$VARS" == "enrolled" ]] || red "--expect-refused needs a store with Secure Boot on (ms or enrolled); '${VARS}' proves nothing"
     deny "no kernel banner appeared"                 'Linux version'
@@ -74,7 +69,7 @@ if [[ "$REFUSED" -eq 1 ]]; then
     echo
     if [[ "$FAIL" -gt 0 ]]; then
         echo "${FAIL} check(s) failed, ${PASS} passed. Transcript: ${SERIAL}"
-        echo "A refusal is only proven by the firmware's own refusal message; a silent or broken boot is a failure of this test."
+        echo "Only the firmware's own refusal message proves a refusal; a silent or broken boot fails."
         exit 1
     fi
     echo "All ${PASS} checks passed: the ${KIND} medium was refused under foreign keys (${SERIAL})."

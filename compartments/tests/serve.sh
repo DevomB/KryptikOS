@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
-# Tests for the launch daemon (`kryptikd serve`), driven over its socket as
-# kryptik-launch drives it; launcher.sh covers `kryptikd run` itself. Runs as a
-# user (a developer instance serving only this uid) or as root. Needs python3
-# (exit 77 without it). Exits 0 only when every check ran and passed.
-#
-# A refusal only counts once the daemon is seen answering something else, and
-# a launch only once the zone is seen doing what it was asked.
+# Launch daemon suite: drives `kryptikd serve` over its socket as kryptik-launch does.
+# Runs as a user or root and needs python3 (exit 77 without it); 0 means every check ran and passed,
+# but those a root run leaves to the installed system, which the summary names.
 
 set -uo pipefail
 
@@ -13,10 +9,12 @@ C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'; C_BLU=$'\033[34m'; C_DI
 [[ -t 1 ]] || { C_RED=""; C_GRN=""; C_YEL=""; C_BLU=""; C_DIM=""; C_RST=""; }
 
 PASS=0; FAIL=0; SKIP=0
-declare -a FAILED=() SKIPPED=()
+declare -a FAILED=() SKIPPED=() ELSEWHERE=()
 pass()  { printf '%s  PASS%s  %s\n' "$C_GRN" "$C_RST" "$1"; PASS=$((PASS+1)); }
 fail()  { printf '%s  FAIL%s  %s\n' "$C_RED" "$C_RST" "$1"; FAIL=$((FAIL+1)); FAILED+=("$1"); }
 skip()  { printf '%s  SKIP%s  %s\n' "$C_YEL" "$C_RST" "$1"; SKIP=$((SKIP+1)); SKIPPED+=("$1"); }
+# Not run in this mode, and checked where it can be: no skip, but named in the summary.
+elsewhere() { printf '%s  ELSEWHERE%s  %s\n' "$C_DIM" "$C_RST" "$1"; ELSEWHERE+=("$1"); }
 info()  { printf '%s        %s%s\n' "$C_DIM" "$1" "$C_RST"; }
 head_() { printf '\n%s==>%s %s\n' "$C_BLU" "$C_RST" "$1"; }
 
@@ -46,13 +44,13 @@ fi
 WORK="$(mktemp -d)"
 ZONES="$WORK/zones"; ROOTFS="$WORK/rootfs"; SOCK="$WORK/launch.sock"
 mkdir -p "$ZONES" "$ROOTFS"
-# mktemp -d makes 0700, but a privileged zone's setup runs as the zone's own
-# identity and must reach its data directory.
+# mktemp -d makes 0700, but a privileged zone's setup reaches its data as the zone's identity.
 chmod 0755 "$WORK" "$ROOTFS"
 declare -a BG_PIDS=()
 cleanup() {
     for p in "${BG_PIDS[@]:-}"; do [[ -n "$p" ]] && kill -9 "$p" 2>/dev/null; done
-    [[ -n "${RT_DIR:-}" && -d "$RT_DIR" ]] && rm -rf "$RT_DIR/alpha" "$RT_DIR/beta" 2>/dev/null
+    # A proxy the daemon started outlives it.
+    pkill -u "$EUID" -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' 2>/dev/null
     rm -rf "$WORK" 2>/dev/null
 }
 trap cleanup EXIT
@@ -64,8 +62,7 @@ MARK="LAUNCH_OK_$$"
 
 # --- fixtures ----------------------------------------------------------------
 
-# uid_base (65536-aligned, >= 131072) is used by root launches only; an
-# unprivileged launch maps to the caller.
+# uid_base (65536-aligned, >= 131072) applies to root launches; others map to the caller.
 mkzone() { # name mode extra-lines uid_base
     local name="$1" mode="$2" extra="${3:-}" base="$4"
     {
@@ -81,13 +78,13 @@ mkzone alpha   none ''                                            131072
 mkzone beta    none ''                                            196608
 mkzone carrier nic  ''                                            262144
 mkzone broken  none $'[policy]\nseccomp = "policy/does-not-exist.seccomp"' 327680
-# An encrypted zone, for `info`; never launched here (that is the volume suite).
+# An encrypted zone, only for `info`: launcher.sh group F launches one.
 {
     printf '[zone]\nname = "sealed"\ndescription = "serve-suite fixture"\n[network]\nmode = "none"\n'
     printf '[storage]\nmode = "encrypted"\nvolume = "/dev/kryptik/sealed"\n[identity]\nuid_base = 393216\n[ui]\nborder_color = "#060000"\n'
 } > "$ZONES/sealed.toml"
 
-# --- the client ----------------------------------------------------------------
+# --- the client --------------------------------------------------------------
 
 cat > "$WORK/client.py" <<'PY'
 import os, socket, sys, time
@@ -132,12 +129,10 @@ while True:
     c, _ = s.accept()
 PY
 
-# --- the daemon --------------------------------------------------------------------
+# --- the daemon --------------------------------------------------------------
 
 head_ "daemon"
-# --group: the suite's own; root is authorised anyway and a developer instance
-# ignores it. --wifi-dir keeps the credentials file in $WORK, so no installed
-# one is touched and no real net zone is restarted.
+# --wifi-dir in $WORK: no installed credentials file is touched and no net zone restarted.
 "$KRYPTIKD" serve --zones "$ZONES" --rootfs "$ROOTFS" --socket "$SOCK" --proxy-exe "$WLPROXY" --group "$(id -gn)" --wifi-dir "$WORK/wifi" > "$WORK/serve.log" 2>&1 &
 DAEMON=$!; BG_PIDS+=("$DAEMON")
 for _ in $(seq 1 100); do [[ -S "$SOCK" ]] && break; sleep 0.05; done
@@ -147,7 +142,7 @@ else
     fail "S0 the daemon did not start"; sed 's/^/        /' "$WORK/serve.log"; exit 1
 fi
 
-# --- requests -----------------------------------------------------------------------
+# --- requests ----------------------------------------------------------------
 
 head_ "requests"
 r="$(ask 'status\n')"
@@ -181,7 +176,7 @@ if [[ "$r" == ok\ /* ]]; then
     if [[ -d "$d" && "$(stat -c %a "$d")" == 700 ]]; then pass "S3e runtime creates a private runtime directory ($d)"; else fail "S3e runtime dir $d missing or not 0700"; fi
 else fail "S3e runtime: $r"; fi
 
-# --- the deadline -----------------------------------------------------------------------
+# --- the deadline ------------------------------------------------------------
 
 head_ "a stalled client"
 python3 "$WORK/client.py" "$SOCK" hold 'run alpha\narg x\n' 12 > "$WORK/hold.out" 2>&1 &
@@ -199,7 +194,7 @@ fi
 wait "$HOLD" 2>/dev/null
 if grep -q "not completed within" "$WORK/hold.out"; then pass "S4b the stalled client is told its request timed out"; else fail "S4b stalled client got: $(cat "$WORK/hold.out")"; fi
 
-# --- descriptors --------------------------------------------------------------------------
+# --- descriptors -------------------------------------------------------------
 
 head_ "descriptors"
 printf 'x' > "$WORK/f1"; printf 'y' > "$WORK/f2"
@@ -213,11 +208,10 @@ r="$(python3 "$WORK/client.py" "$SOCK" latefd 'run alpha pass=fd\narg /bin/true\
 if [[ "$r" == "error: a descriptor must accompany the first bytes"* ]]; then pass "S5d a descriptor arriving after the first bytes is refused"; else fail "S5d: $r"; fi
 if [[ "$(ask 'status\n')" == "end" ]]; then pass "S5e the daemon still answers after the refusals"; else fail "S5e daemon wedged"; fi
 
-# --- launches -------------------------------------------------------------------------------
+# --- launches ----------------------------------------------------------------
 
 head_ "launches"
-# The command truncates its stdout between its two lines. O_APPEND does not
-# stop ftruncate, so that stdout must not be the log file itself.
+# The zone truncates its stdout, which O_APPEND does not stop, so that must not be the log file.
 r="$(ask "run alpha\narg /bin/sh\narg -c\narg echo $MARK; python3 -c 'import os; os.ftruncate(1, 0)' 2>/dev/null; echo after-$MARK; sleep 15\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
     pass "S6a run alpha replies ok <pid> once the zone is up"
@@ -239,8 +233,7 @@ else
     fail "S6a run alpha: $r"; sed 's/^/        /' "$ZLOG" 2>/dev/null | tail -5
 fi
 
-# A zone that ignores SIGTERM is only gone at stop's SIGKILL, seconds later.
-# Another client's status, asked meanwhile, must be answered at once.
+# A zone ignoring SIGTERM holds stop for seconds; a status asked meanwhile must be answered at once.
 ms() { date +%s%3N; }
 r="$(ask "run alpha\narg /bin/sh\narg -c\narg trap '' TERM; while :; do sleep 1; done\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
@@ -262,8 +255,7 @@ else
     fail "S6g run alpha (ignoring SIGTERM): $r"
 fi
 
-# A launcher that ends is reaped then, not at the daemon's next request. It
-# runs with PATH alone, plus a developer instance's XDG_RUNTIME_DIR.
+# A launcher gets PATH alone, plus XDG_RUNTIME_DIR from a developer instance.
 r="$(ask "run alpha\narg /bin/sh\narg -c\narg sleep 2\nend\n")"
 if [[ "$r" == ok\ [0-9]* ]]; then
     lp="${r#ok }"; lp="${lp%%[!0-9]*}"
@@ -297,8 +289,7 @@ else
 fi
 for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
 
-# A command that ends at once with 0 is ok, and its end is in the log however
-# quickly it came: a zone terminal whose shell died unseen was a silent "ok".
+# An instant exit is ok, but must reach the log, or a zone terminal's dead shell is a silent "ok".
 r="$(ask 'run alpha\narg /bin/true\nend\n')"
 for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
 if [[ "$r" == ok\ [0-9]* ]] && grep -q "launcher ${r#ok } exited 0" "$WORK/serve.log"; then
@@ -307,12 +298,12 @@ else
     fail "S7d ${r%$'\n'}: $(grep -F "${r#ok }" "$WORK/serve.log" | tr '\n' '|')"
 fi
 
-# --- the clipboard gesture -------------------------------------------------------------------
-# Two zones up at once, each talking to its own broker at /run/kryptik/broker,
-# one request per python3 call (a request without a newline gets one). alpha
-# sets a payload and waits for it to leave; beta waits for it to arrive.
+# --- the clipboard gesture ---------------------------------------------------
+
 head_ "the clipboard gesture"
+# One request to the zone's own broker per python3 call; a request without a newline gets one.
 BQ="python3 -c 'import socket,sys;r=sys.argv[1];r=r if chr(10) in r else r+chr(10);s=socket.socket(socket.AF_UNIX);s.connect(\"/run/kryptik/broker\");s.sendall(r.encode());s.shutdown(socket.SHUT_WR);sys.stdout.write(s.makefile(\"rb\").read().decode())'"
+# alpha sets a payload and waits for it to leave; beta waits for it to arrive.
 SA="q() { $BQ \"\$1\"; }; q \"\$(printf 'clipboard-set text/plain 5'; echo; printf hello)\"; echo SET-$MARK; i=0; while [ \$i -lt 80 ]; do case \"\$(q clipboard-get)\" in empty*) echo GONE-$MARK; break;; esac; sleep 0.5; i=\$((i+1)); done; sleep 5"
 SB="q() { $BQ \"\$1\"; }; i=0; while [ \$i -lt 80 ]; do case \"\$(q clipboard-get)\" in ok*hello*) echo GOT-$MARK; break;; esac; sleep 0.5; i=\$((i+1)); done"
 ra="$(ask "run alpha\narg /bin/sh\narg -c\narg $SA\nend\n")"
@@ -334,74 +325,103 @@ else
     fail "S7e run alpha and beta for the gesture: ${ra%$'\n'} / ${rb%$'\n'}"
 fi
 
-# --- the proxy socket ------------------------------------------------------------------------
+# --- the zone's proxy ----------------------------------------------------------
+# The daemon starts the zone's proxy itself, on dwl's socket for the zone. A developer instance
+# keeps its own uid, so its own uid and namespaces are checked on the installed system
+# (gui-check's proxy-own-user), never here.
 
-head_ "the proxy socket"
+head_ "the zone's proxy"
+LOGDIR="$(dirname "$SOCK")"
+# A developer instance keeps kryptik-proxy/ and kryptik-compositor/ beside its socket, a root
+# daemon under /run.
+if (( PRIVILEGED == 1 )); then RUNDIR=/run; else RUNDIR="$LOGDIR"; fi
 r="$(ask 'run alpha wayland=/tmp/wayland-0\narg /bin/true\nend\n')"
-if [[ "$r" == "error: wayland socket must be /run/user/$EUID/kryptik/alpha/wayland-0"* ]]; then pass "S8a a socket outside the session's runtime directory is refused"; else fail "S8a: $r"; fi
-r="$(ask "run alpha wayland=/run/user/$EUID/kryptik/beta/wayland-0\narg /bin/true\nend\n")"
-if [[ "$r" == "error: wayland socket must be"* ]]; then pass "S8b another zone's socket is refused"; else fail "S8b: $r"; fi
-
-RT_DIR=""
-if [[ -d "/run/user/$EUID" && -w "/run/user/$EUID" ]]; then
-    RT_DIR="/run/user/$EUID/kryptik"
-elif (( PRIVILEGED == 1 )) && mkdir -p "/run/user/$EUID" 2>/dev/null; then
-    chmod 700 "/run/user/$EUID"; RT_DIR="/run/user/$EUID/kryptik"
-fi
-if [[ -z "$RT_DIR" ]]; then
-    skip "S8c-S8h need a writable /run/user/$EUID (none here)"
-elif [[ ! -x "$WLPROXY" ]]; then
-    skip "S8c-S8h need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
+if [[ "$r" == "error: run: unknown option"* ]]; then pass "S8a a socket path from the asker is refused: the daemon chooses the proxy's"; else fail "S8a: $r"; fi
+r="$(ask 'run alpha wayland\narg /bin/true\nend\n')"
+if [[ "$r" == "error: no compositor serves zone \"alpha\" for uid $EUID"* ]]; then pass "S8b with no compositor socket for the zone, no proxy starts"; else fail "S8b: $r"; fi
+r="$(ask 'runtime\n')"
+CDIR="$RUNDIR/kryptik-compositor/$EUID"
+if [[ "$r" == ok\ * && -d "$CDIR" && ! -L "$CDIR" && "$(stat -c %a "$CDIR")" == 711 ]]; then
+    pass "S8c runtime also makes the session's compositor directory, 0711"
 else
-    mkdir -p "$RT_DIR/alpha" "$RT_DIR/beta"; chmod 700 "$RT_DIR" "$RT_DIR/alpha" "$RT_DIR/beta"
-    UP="$WORK/upstream.sock"
+    fail "S8c: $r; $(stat -c '%a %F' "$CDIR" 2>&1)"
+fi
+
+if (( PRIVILEGED == 1 )); then
+    # Made for this run alone: no session of root's has a compositor.
+    rmdir "$CDIR" 2>/dev/null
+    elsewhere "S8d-S8k: a root daemon runs the proxy as the zone's own uid, under Landlock and the proxy's own filter, which only the image's static proxy passes; gui-check's proxy rounds check that on the installed system, and an unprivileged run (CI's) runs S8d-S8k"
+elif [[ ! -x "$WLPROXY" ]]; then
+    skip "S8d-S8k need kryptik-wlproxy at $WLPROXY (build compositor/ first)"
+else
+    UP="$CDIR/alpha"
     python3 "$WORK/upstream.py" "$UP" & BG_PIDS+=("$!")
     for _ in $(seq 1 50); do [[ -S "$UP" ]] && break; sleep 0.05; done
-    WL="$RT_DIR/alpha/wayland-0"
-    r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
-    if [[ "$r" == "error: wayland socket: wayland-0:"* ]]; then pass "S8c a socket that does not exist is refused"; else fail "S8c: $r"; fi
-
-    # Something that is not the proxy, listening at the right path.
-    python3 "$WORK/upstream.py" "$WL" & IMP=$!; BG_PIDS+=("$IMP")
-    for _ in $(seq 1 50); do [[ -S "$WL" ]] && break; sleep 0.05; done
-    r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
-    if [[ "$r" == "error: wayland socket is not served by kryptik-wlproxy"* ]]; then pass "S8d a listener that is not the proxy is refused"; else fail "S8d: $r"; fi
-    kill "$IMP" 2>/dev/null; wait "$IMP" 2>/dev/null; rm -f "$WL"
-
-    # The proxy, but for another zone.
-    "$WLPROXY" --zone beta --listen "$WL" --upstream "$UP" > "$WORK/proxy-beta.log" 2>&1 & PB=$!; BG_PIDS+=("$PB")
-    for _ in $(seq 1 50); do [[ -S "$WL" ]] && break; sleep 0.05; done
-    r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
-    if [[ "$r" == "error: wayland socket is served by a proxy for another zone"* ]]; then pass "S8e a proxy for another zone is refused"; else fail "S8e: $r"; fi
-    kill "$PB" 2>/dev/null; wait "$PB" 2>/dev/null; rm -f "$WL"
-
-    # The zone's own proxy; the zone sees it at /run/kryptik/wayland-0.
-    "$WLPROXY" --zone alpha --listen "$WL" --upstream "$UP" > "$WORK/proxy-alpha.log" 2>&1 & PA=$!; BG_PIDS+=("$PA")
-    for _ in $(seq 1 50); do [[ -S "$WL" ]] && break; sleep 0.05; done
-    r="$(ask "run alpha wayland=$WL\narg /bin/sh\narg -c\narg test -S /run/kryptik/wayland-0 && echo WL_$MARK; sleep 1\nend\n")"
+    PLOG="$LOGDIR/kryptik-proxy/$EUID/alpha.log"
+    r="$(ask "run alpha wayland\narg /bin/sh\narg -c\narg test -S /run/kryptik/wayland-0 && echo WL_$MARK; sleep 1\nend\n")"
+    PP="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
     if [[ "$r" == ok\ [0-9]* ]]; then
         ok=0; for _ in $(seq 1 40); do grep -q "WL_$MARK" "$ZLOG" 2>/dev/null && { ok=1; break; }; sleep 0.1; done
-        if [[ "$ok" -eq 1 ]]; then pass "S8f the session's own proxy socket is accepted and reaches the zone"; else fail "S8f zone did not see /run/kryptik/wayland-0"; fi
-        if grep -q "client #1 connected" "$WORK/proxy-alpha.log"; then pass "S8g the daemon identified the listener by connecting to it"; else fail "S8g no probe connection in the proxy log"; fi
+        if [[ "$ok" -eq 1 ]]; then pass "S8d the daemon starts the zone's proxy, whose socket reaches the zone"; else fail "S8d zone did not see /run/kryptik/wayland-0"; fi
+        if grep -q "listening on descriptor 3 -> /proc/self/fd/4" "$PLOG" 2>/dev/null && [[ "$(readlink "/proc/${PP:-none}/fd/4")" == "$UP" ]]; then
+            pass "S8e the proxy took its listener and the zone's compositor socket from the daemon, as descriptors"
+        else
+            fail "S8e proxy log $PLOG: $(tr '\n' ' ' < "$PLOG" 2>&1)"
+        fi
+        if [[ -n "$PP" ]] && grep -qx 'NoNewPrivs:[[:space:]]*1' "/proc/$PP/status" && grep -qx 'Seccomp:[[:space:]]*2' "/proc/$PP/status"; then
+            pass "S8f the proxy runs with no_new_privs, under seccomp"
+        else
+            fail "S8f proxy pid ${PP:-none}: $(grep -E '^(NoNewPrivs|Seccomp):' "/proc/${PP:-none}/status" 2>&1 | tr '\n' ' ')"
+        fi
+        CTL="$LOGDIR/kryptik-proxy/$EUID/alpha.control"
+        said="$(python3 - "$CTL" 2>&1 <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(5)
+s.connect(sys.argv[1])
+s.sendall(b"take\n")
+s.shutdown(socket.SHUT_WR)
+print(s.recv(200).decode(errors="replace").strip())
+PY
+)"
+        if [[ "$(stat -c %a "$CTL" 2>/dev/null)" == 600 && "$said" == empty ]] && tr '\0' ' ' < "/proc/${PP:-none}/cmdline" 2>/dev/null | grep -q -- "--control-fd 5 --control-uid $EUID "; then
+            pass "S8k the move gesture's socket is the session's alone, handed to the proxy listening, and answered"
+        else
+            fail "S8k $CTL: $(stat -c '%a %F' "$CTL" 2>&1); the proxy said: ${said:-nothing}"
+        fi
     else
-        fail "S8f run with the real proxy: $r"
+        fail "S8d run with a display: $r; proxy log: $(tr '\n' ' ' < "$PLOG" 2>&1)"
     fi
     for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
-
-    # A symlinked zone directory leading to that valid socket: the path is
-    # walked without following links.
-    mv "$RT_DIR/alpha" "$RT_DIR/alpha.real"; ln -s "$RT_DIR/alpha.real" "$RT_DIR/alpha"
-    r="$(ask "run alpha wayland=$WL\narg /bin/true\nend\n")"
-    if [[ "$r" == "error: wayland socket path:"* ]]; then pass "S8h a symlink on the way to the socket is refused"; else fail "S8h: $r"; fi
-    rm -f "$RT_DIR/alpha"; mv "$RT_DIR/alpha.real" "$RT_DIR/alpha"
-    kill "$PA" 2>/dev/null; wait "$PA" 2>/dev/null
+    r="$(ask "run alpha wayland\narg /bin/true\nend\n")"
+    PP2="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
+    if [[ "$r" == ok\ [0-9]* && -n "$PP" && "$PP2" == "$PP" ]]; then pass "S8g a second run uses the same proxy"; else fail "S8g: $r; proxy ${PP:-none} then ${PP2:-none}"; fi
+    for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+    # dwl started again: another socket at the path, so the next run gets a proxy for it.
+    pkill -f "upstream.py $UP" 2>/dev/null; rm -f "$UP"
+    python3 "$WORK/upstream.py" "$UP" & BG_PIDS+=("$!")
+    for _ in $(seq 1 50); do [[ -S "$UP" ]] && break; sleep 0.05; done
+    r="$(ask "run alpha wayland\narg /bin/true\nend\n")"
+    PP3="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
+    if [[ "$r" == ok\ [0-9]* && -n "$PP3" && "$PP3" != "$PP" ]]; then pass "S8i a compositor socket made again gets a new proxy"; else fail "S8i: $r; proxy ${PP:-none} then ${PP3:-none}"; fi
+    for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+    # The session owns that directory: a link in place of the socket is no upstream.
+    mv "$UP" "$UP.real"; ln -s "$UP.real" "$UP"
+    r="$(ask "run alpha wayland\narg /bin/true\nend\n")"
+    if [[ "$r" == "error: no compositor serves zone \"alpha\""* ]]; then pass "S8j a link in place of the compositor's socket is refused"; else fail "S8j: $r"; fi
+    rm -f "$UP"; mv "$UP.real" "$UP"
+    r="$(ask "run alpha wayland\narg /bin/true\nend\n")"
+    PP4="$(pgrep -f '^kryptik-wlproxy --zone alpha --listen-fd 3 ' | head -1)"
+    for _ in $(seq 1 60); do [[ "$(ask 'status\n')" == "end" ]] && break; sleep 0.1; done
+    ask 'stop alpha\n' > /dev/null
+    gone=0; for _ in $(seq 1 50); do kill -0 "${PP4:-0}" 2>/dev/null || { gone=1; break; }; sleep 0.1; done
+    if [[ "$r" == ok\ [0-9]* && -n "$PP4" && "$gone" -eq 1 ]]; then pass "S8h stopping the zone ends its proxy"; else fail "S8h: $r; proxy ${PP4:-none} after stop"; fi
 fi
 
-# --- the net zone's Wi-Fi credentials --------------------------------------------------
-# One file for the net zone (kryptikd's wifi.rs). The passphrase only travels
-# in a request body and never comes back out; a refusal leaves the file as it was.
+# --- the net zone's Wi-Fi credentials ----------------------------------------
 
 head_ "wi-fi credentials"
+# One file for the net zone (wifi.rs); a passphrase goes in a request body and never comes out.
 WIFI="$WORK/wifi"; WCONF="$WIFI/wpa_supplicant.conf"
 r="$(ask 'wifi-list\n')"
 if [[ "$r" == "end" ]]; then pass "S9a wifi-list with no file is an empty list"; else fail "S9a: $r"; fi
@@ -411,7 +431,7 @@ if [[ "$r" == "ok added network \"Home\"; the net zone was not restarted"* && -f
 else
     fail "S9b wifi-add: $r"
 fi
-if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 400 ]]; then pass "S9c the file is mode 0400"; else fail "S9c mode $(stat -c %a "$WCONF" 2>&1)"; fi
+if [[ "$(stat -c %a "$WCONF" 2>/dev/null)" == 440 ]]; then pass "S9c the file is mode 0440"; else fail "S9c mode $(stat -c %a "$WCONF" 2>&1)"; fi
 if grep -qxF $'\tssid="Home"' "$WCONF" && grep -qxF $'\tpsk="correct horse battery"' "$WCONF"; then
     pass "S9d ... holding the ssid= and psk= lines, quoted and tab-indented"
 else
@@ -419,8 +439,8 @@ else
 fi
 if [[ "$(stat -c %a "$WIFI")" == 711 ]]; then pass "S9e the directory is 0711: traversable, not listable"; else fail "S9e directory mode $(stat -c %a "$WIFI")"; fi
 if (( PRIVILEGED == 1 )); then
-    # carrier is the nic zone, the only reader of the file.
-    if [[ "$(stat -c %u:%g "$WCONF")" == "262144:262144" ]]; then pass "S9f the file is owned by the nic zone's identity (carrier, uid_base 262144)"; else fail "S9f owned by $(stat -c %u:%g "$WCONF"), not 262144:262144"; fi
+    # carrier is the nic zone, the only reader of the file: its supplicant's user (101) and root's group.
+    if [[ "$(stat -c %u:%g "$WCONF")" == "262245:262144" ]]; then pass "S9f the file is owned by the nic zone's supplicant user and its root's group (carrier, uid_base 262144)"; else fail "S9f owned by $(stat -c %u:%g "$WCONF"), not 262245:262144"; fi
 else
     if [[ "$(stat -c %u "$WCONF")" == "$EUID" ]]; then pass "S9f an unprivileged daemon leaves the file owned by its writer"; else fail "S9f owned by $(stat -c %u "$WCONF")"; fi
 fi
@@ -445,13 +465,35 @@ else
 fi
 r="$(ask 'wifi-forget\nssid Home\nend\n')"
 if [[ "$r" == "ok forgot network \"Home\";"* ]] && ! grep -qF Home "$WCONF" && grep -qxF $'\tssid="Cafe Wifi"' "$WCONF" \
-   && grep -qxF 'ctrl_interface=/run/wpa_supplicant' "$WCONF" && grep -qxF 'update_config=0' "$WCONF"; then
+   && grep -qxF 'ctrl_interface=/run/wpa_supplicant' "$WCONF" && grep -qxF 'update_config=0' "$WCONF" \
+   && grep -qxF 'scan_res_valid_for_connect=0' "$WCONF" && grep -qxF 'sae_pwe=2' "$WCONF"; then
     pass "S9m wifi-forget removes only its block; the header and the other network stay"
 else
     fail "S9m: $r"; sed 's/^/        /' "$WCONF"
 fi
 r="$(ask 'wifi-forget\nssid Home\nend\n')"
 if [[ "$r" == "error: no network named \"Home\""* ]]; then pass "S9n forgetting a network that is not there is an error"; else fail "S9n: $r"; fi
+# A network with no passphrase, a cafe's: `open` in place of the psk line, joined only without a key.
+r="$(ask 'wifi-add\nssid Airport\nopen\nend\n')"
+if [[ "$r" == "ok added open network \"Airport\";"* && "$(sed -n '/^\tssid="Airport"$/,/^}$/p' "$WCONF" | grep -v $'^\tmac_')" == $'\tssid="Airport"\n\tkey_mgmt=NONE\n}' ]]; then
+    pass "S9v an open network is saved as key_mgmt=NONE, with no psk and no ieee80211w"
+else
+    fail "S9v: $r"; sed 's/^/        /' "$WCONF"
+fi
+r="$(ask 'wifi-add\nssid Airport\npsk now has one\nopen\nend\n')"
+if [[ "$r" == "error: wifi-add: a psk line or an open line, one of them"* ]] && ! grep -qF 'now has one' "$WCONF"; then
+    pass "S9w a request with both a psk and open is refused, and writes nothing"
+else
+    fail "S9w: $r"
+fi
+# Each saved network carries an address of its own, which wpa_supplicant joins it from.
+macs="$(sed -n 's/^\tmac_value=//p' "$WCONF")"
+if [[ "$(grep -c $'^\tmac_addr=3$' "$WCONF")" == "$(grep -c '^network={' "$WCONF")" && "$(wc -l <<<"$macs")" == "$(sort -u <<<"$macs" | wc -l)" ]] \
+   && ! grep -vqE '^[0-9a-f][26ae](:[0-9a-f]{2}){5}$' <<<"$macs"; then
+    pass "S9x each saved network has an address of its own, locally administered and unicast"
+else
+    fail "S9x addresses: $(tr '\n' ' ' <<<"$macs")"
+fi
 
 # Refusals: each names its rule, and the file is byte-identical afterwards.
 cp "$WCONF" "$WORK/wifi-before"
@@ -478,11 +520,12 @@ else
 fi
 if [[ "$(ask 'status\n')" == "end" ]]; then pass "S9u the daemon still answers"; else fail "S9u daemon wedged"; fi
 
-# --- summary ---------------------------------------------------------------------------
+# --- summary -----------------------------------------------------------------
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 if (( FAIL > 0 )); then printf 'FAILED:\n'; printf '  %s\n' "${FAILED[@]}"; fi
 if (( SKIP > 0 )); then printf 'NOT RUN (not a pass):\n'; printf '  %s\n' "${SKIPPED[@]}"; fi
+if (( ${#ELSEWHERE[@]} > 0 )); then printf 'NOT RUN here, checked elsewhere:\n'; printf '  %s\n' "${ELSEWHERE[@]}"; fi
 if (( FAIL > 0 )); then printf '\ndaemon log:\n'; sed 's/^/  /' "$WORK/serve.log"; fi
 (( FAIL == 0 && SKIP == 0 )) || exit 1
 exit 0

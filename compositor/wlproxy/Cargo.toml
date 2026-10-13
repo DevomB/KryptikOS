@@ -5,8 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Dependency policy (ADR-010): this parses an untrusted zone's bytes, so libc
-# only. The wire format is hand-rolled; Wayland libraries are built to be permissive.
+# libc only (ADR-010): this parses a zone's bytes, and Wayland libraries are built to be permissive.
 [dependencies]
 libc = "0.2"
 

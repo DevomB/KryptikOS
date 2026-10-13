@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# lynx: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_lynx() {
     local src; src="$(unpack "lynx${V_LYNX}.tar.bz2" "lynx${V_LYNX}")"

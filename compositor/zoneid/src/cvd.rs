@@ -1,10 +1,5 @@
-//! Colour-vision deficiency simulation, after Machado, Oliveira & Fernandes
-//! (2009), "A Physiologically-based Model for Simulation of Color Vision
-//! Deficiency", IEEE TVCG 15(6).
-//!
-//! Only dichromacy (severity 1.0) is modelled: the milder anomalous forms are
-//! strictly less severe, so a palette that passes here passes for them too.
-//! The matrices apply to linear RGB, and `simulate` does the conversion.
+//! Colour-vision deficiency simulation (Machado, Oliveira & Fernandes 2009, IEEE TVCG 15(6)).
+//! Only dichromacy (severity 1.0) is modelled: a palette that passes it passes the milder forms.
 
 use crate::color::{LinearRgb, Srgb};
 

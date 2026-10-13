@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Install from the medium, boot the result from firmware alone (medium gone,
-# variables reset), and check that the installer's refusals refuse.
+# Install from the medium, boot the result from firmware alone, and check the installer's refusals.
 #
 #   tools/image/install-test.sh --usb IMG [--disk FILE] [--size 12G]
 #                               [--vars clean|enrolled] [--timeout N] [--quick]
 #
-#   step 1  install unattended onto a blank disk; check the transcript and,
-#           from the host, the partition table
+#   step 1  install onto a blank disk; check the transcript and the partition table
 #   step 2  boot the disk alone: first boot, login, reboot, login, poweroff
-#   step 3  cold boot it again (not with --quick)
-#   step 4  a disk too small, a read-only disk, and an I/O error in the root
+#   step 3  cold boot it again (not with --quick), with step 1's signed control
+#           disk attached: an installed system ignores it
+#   step 4  a disk too small, a read-only disk, one with 4096-byte logical
+#           sectors, and an I/O error in the root
 #           image copy (not with --quick): each must fail, installing nothing;
 #           the medium's own disk, even with --replace-kryptik, and a copy of
 #           the installed disk without it: each refused, the copy untouched;
 #           then (not with --quick) that copy replaced with --replace-kryptik
+#   step 5  --slot-size: less than the image needs is refused; more is taken
+#           (not with --quick), and that disk boots with slots of that size
 #
 # Every disk is a file this script creates; no device is touched.
 set -uo pipefail
@@ -31,7 +33,7 @@ while [[ "$#" -gt 0 ]]; do
         --vars) VARS="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
         --quick) QUICK=1; shift ;;
-        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -65,19 +67,32 @@ want "$P1" 'KRYPTIK_INSTALL: BEGIN target=/dev/vda'      "the installer was arme
 want "$P1" 'KRYPTIK_INSTALL: rc=0'                       "the installer exited 0"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-esp=/dev/vda1 type=vfat'   "partition 1 is the ESP"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-a=/dev/vda2'  "partition 2 is kryptik-a"
-want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3'  "partition 3 is kryptik-b"
+want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-b=/dev/vda3 type=(none)?$'  "partition 3 is kryptik-b, and empty"
 want "$P1" 'KRYPTIK_INSTALL: verify: kryptik-state=/dev/vda4 type=crypto_LUKS' "partition 4 is the state partition, and it is LUKS"
 want "$P1" 'KRYPTIK_INSTALL: verify: esp_files=.*EFI/BOOT/BOOTX64.EFI' "the ESP has the removable-media boot file"
+want "$P1" 'KRYPTIK_INSTALL: kryptik-install: firmware +Boot[0-9A-F]{4} -> .EFI.kryptik.kryptik-a\.efi on /dev/vda1 ' \
+    "the firmware has an entry for slot a on the new ESP as well"
+# The entry names the partition by PARTUUID: the one the new GPT holds, not one a cache kept.
+fw_uuid="$(sed -n 's/.*kryptik-install: firmware .*(PARTUUID \([0-9A-Fa-f-]*\)).*/\1/p' "$P1" | head -1)"
+gpt_uuid="$(sfdisk -d "$DISK" 2>/dev/null | awk -v p="${DISK}1" '$1 == p && match($0, /uuid=[0-9A-Fa-f-]+/) { print substr($0, RSTART + 5, RLENGTH - 5) }')"
+if [[ -n "$fw_uuid" && "${fw_uuid,,}" == "${gpt_uuid,,}" ]]; then
+    green "the entry names the new ESP by its PARTUUID (${gpt_uuid})"
+else
+    red "the entry names PARTUUID ${fw_uuid:-none}; the new GPT gives the ESP ${gpt_uuid:-none}"
+fi
 want "$P1" 'KRYPTIK_INSTALL: verify: install_json=yes'   "install.json was written"
 want "$P1" 'KRYPTIK_INSTALL: verify: preseed=present'    "the first-boot preseed was written"
 want "$P1" 'KRYPTIK_INSTALL: .*kryptik-a verifies'       "the root image was read back and verified"
+want "$P1" 'KRYPTIK_INSTALL: kryptik-install: installed [^ ]+ to /dev/vda: boot it from firmware with the medium removed\.' \
+    "the installer ended by naming the version and the disk, and to boot it without the medium"
+want "$P1" 'KRYPTIK_INSTALL: .*Keep a copy of its header \(kryptik-recover --backup-state-header\)' "and to keep a copy of the state header"
 deny "$P1" 'KRYPTIK_INSTALL: FAILED'                     "the installer reported no failure"
 want "$P1" 'Power down'                                  "the medium powered off afterwards"
 deny "$P1" 'Kernel panic|Oops:'                          "no panic during the install boot"
 # From the host side: the partition table the guest wrote.
 sfdisk -l "$DISK" 2>/dev/null | grep -E '^/|Disklabel' | sed 's/^/        /'
 if [[ "$(sfdisk -l "$DISK" 2>/dev/null | grep -c "^${DISK}")" -eq 4 ]]; then green "host sees four partitions on the target"; else red "host does not see four partitions"; fi
-lbls="$(blkid -p -O 0 "$DISK" >/dev/null 2>&1; sfdisk -d "$DISK" 2>/dev/null | grep -o 'name="[^"]*"' | tr '\n' ' ')"
+lbls="$(sfdisk -d "$DISK" 2>/dev/null | grep -o 'name="[^"]*"' | tr '\n' ' ')"
 if [[ "$lbls" == *kryptik-esp* && "$lbls" == *kryptik-a* && "$lbls" == *kryptik-b* && "$lbls" == *kryptik-state* ]]; then
     green "host sees the four partition labels"; else red "host labels: ${lbls}"; fi
 if [[ "$FAIL" -ne 0 ]]; then printf '\nphase 1 failed; not booting the result.\n%d passed, %d failed\n' "$PASS" "$FAIL"; exit 1; fi
@@ -89,7 +104,7 @@ cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
 [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
 start_vm install-p2; LOG2="$LOG"
 REC="${VMDIR}/install-p2.json"
-python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
+drive --record "$REC" \
     "expect:KRYPTIK_SMOKE: END" \
     "seen:kryptik-firstboot: created user '${TUSER}'" \
     "login:${TUSER}:${TPASS}" \
@@ -97,6 +112,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "grab:mounts:awk '\$2==\"/\"||\$2==\"/var\"||\$2==\"/etc\"||\$2==\"/home\" {print \$2, \$1, \$3, \$4}' /proc/mounts" \
     "grab:secureboot:od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null || echo none" \
     "grab:bootresult:cat /var/lib/kryptik/boot/last-result" \
+    "su:${RPASS}:kryptik-update status" \
     "run:echo KRYPTIK-CLEAR-MARKER-7f3a91 > /home/${TUSER}/persisted-p2 && sync" \
     "$(ROOTSH "grep -rqa state[-]pw /proc/[0-9]*/cmdline /run /etc 2>/dev/null && echo PW-LEAK || echo PW-NOLEAK")" "expect:PW-NOLEAK" \
     "su:${RPASS}:reboot" \
@@ -109,7 +125,7 @@ python3 "$DRV" --serial "$SER" --timeout 300 --record "$REC" \
     "expect:Power down" \
     "wait-exit"
 drc=$?
-sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+stop_vm
 P2="${VMDIR}/install-p2.txt"; txt_of "$LOG2" > "$P2"
 echo "  transcript: ${LOG2}"
 [[ "$drc" -eq 0 ]] && green "first boot, login, reboot, second login and clean poweroff all happened" || red "the serial drive failed (see above)"
@@ -128,6 +144,7 @@ else green "a file written under /home is not readable from the raw partition"; 
 want "$P2" 'KRYPTIK_SMOKE: etc_source=overlay'               "/etc is an overlay"
 want "$P2" 'KRYPTIK_SMOKE: root_writable=no'                 "the verified root is not writable"
 want "$P2" 'boot-success: slot a up'                         "boot-success recorded slot a"
+want "$P2" 'slot b: +version none, kernel absent'            "the ESP names no release for the empty slot b"
 want "$P2" 'reboot: Restarting system'                       "the guest rebooted itself"
 if [[ "$(grep -c 'Linux version' "$P2")" -ge 2 ]]; then green "two kernel boots in one session (reboot worked)"; else red "expected two kernel boots"; fi
 want "$P2" 'Power down'                                      "the guest powered off from inside"
@@ -136,59 +153,85 @@ if [[ -f "$REC" ]]; then echo "  recorded:"; sed 's/^/    /' "$REC" | head -30; 
 
 # ----------------------------------------------------------------- step 3 --
 if [[ "$QUICK" -eq 0 ]]; then
-step "step 3: cold boot the installed disk again"
-start_vm install-p3; LOG3="$LOG"
-python3 "$DRV" --serial "$SER" --timeout 300 \
+step "step 3: cold boot the installed disk again, with a signed control disk attached"
+# Step 1's: it names this disk as the target and asks for a poweroff.
+start_vm install-p3 --testctl "$CTL"; LOG3="$LOG"
+drive \
     "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "run:test -f /home/${TUSER}/persisted-p2" \
     "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
 drc=$?
-sleep 1; [[ -f "$PIDF" ]] && kill "$(cat "$PIDF")" 2>/dev/null
+stop_vm
 [[ "$drc" -eq 0 ]] && green "cold boot: login, persisted file present, clean poweroff" || red "cold boot drive failed"
 P3="${VMDIR}/install-p3.txt"; txt_of "$LOG3" > "$P3"
 deny "$P3" 'kryptik-firstboot: created user'  "first-boot setup did not run again"
+want "$P3" 'installer: not an install medium; nothing to do' "the installed system's installer service saw no medium"
+deny "$P3" 'testctl: control file read|KRYPTIK_INSTALL: BEGIN|KRYPTIK_SMOKE: POWEROFF' \
+    "and it neither read the control disk, nor installed or powered off at its word"
 fi
 
 # ----------------------------------------------------------------- step 4 --
 step "step 4: refusals and failures report as failures"
-refusal_case() {   # refusal_case NAME DISK-SIZE EXTRA-RUN-ARGS... ; expects rc!=0 and FAILED, no kryptik-a
-    local name="$1" size="$2"; shift 2
+refusal_case() {   # refusal_case NAME DISK-SIZE WHY EXTRA-RUN-ARGS... ; expects rc!=0 and FAILED for WHY, no kryptik-a
+    local name="$1" size="$2" why="$3"; shift 3
     local d="${VMDIR}/refuse-${name}.img"; rm -f "$d"; truncate -s "$size" "$d"
     local ctl="${VMDIR}/testctl-${name}.img"
-    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
+    # Everything an install needs, so the one thing wrong is the case's own.
+    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 \
+        "${PRESEED[@]}" > /dev/null || die "the ${name} control disk"
     smoke "refuse-${name}" --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" "$@" > /dev/null
     local t="${VMDIR}/refuse-${name}.txt"; boot_txt > "$t"
     want "$t" 'KRYPTIK_INSTALL: BEGIN'            "${name}: the installer ran"
     want "$t" 'KRYPTIK_INSTALL: rc=[1-9]'         "${name}: reported a non-zero status"
-    want "$t" 'KRYPTIK_INSTALL: .*FAILED'         "${name}: said FAILED and why"
+    want "$t" "KRYPTIK_INSTALL: .*FAILED: .*${why}" "${name}: said FAILED, and for this reason"
     deny "$t" 'KRYPTIK_INSTALL: rc=0'             "${name}: never reported success"
-    if sfdisk -d "$d" 2>/dev/null | grep -q 'name="kryptik-a"' && [[ "$name" != "ioerror" ]]; then
+    if [[ "$name" == "ioerror" ]]; then
+        # Its table is written before the copy that fails. What a failed
+        # install must not have is what a finished one makes after that copy:
+        # the LUKS header of the state partition.
+        want "$t" 'KRYPTIK_INSTALL: .*writing the root image to kryptik-a' "${name}: the root image copy began"
+        deny "$t" 'KRYPTIK_INSTALL: .*kryptik-a verifies'                  "${name}: the copy was not taken as whole"
+        [[ "$(part_start "$d" 2)" == "$A_START" ]] && green "${name}: kryptik-a is where the error was aimed" \
+            || red "${name}: kryptik-a starts at sector $(part_start "$d" 2), and the error was aimed past ${A_START}"
+        local s4; s4="$(part_start "$d" 4)"
+        if [[ -z "$s4" ]]; then
+            red "${name}: no partition table on the disk, so the error did not come in the root image copy"
+        elif [[ "$(dd if="$d" bs=1 skip=$(( s4 * 512 )) count=6 status=none | od -An -tx1 | tr -d ' \n')" == 4c554b53babe ]]; then
+            red "${name}: the install went on to make the state partition"
+        else
+            green "${name}: the install stopped before the state partition was made"
+        fi
+    elif sfdisk -d "$d" 2>/dev/null | grep -q 'name="kryptik-a"'; then
         red "${name}: a kryptik-a partition was written anyway"
     else
         green "${name}: no completed installation on the disk"
     fi
     grep -E 'KRYPTIK_INSTALL: .*FAILED' "$t" | head -2 | sed 's/^/        /'
 }
-refusal_case toosmall 1G
-refusal_case readonly "$SIZE" --disk-readonly
+refusal_case toosmall 1G 'this layout needs at least'
+refusal_case readonly "$SIZE" 'is read-only' --disk-readonly
+# A disk with 4096-byte logical sectors, which the medium's 512-byte FAT cannot boot from.
+refusal_case sector4k "$SIZE" '4096-byte logical sectors' --disk-4k
 # An I/O error in the root image copy, after the partition table is written;
-# the runner must report that failure.
+# the runner must report that failure. A disk of step 1's size is laid out as
+# step 1's was, so the error sits 4 MiB into where kryptik-a will be: past
+# anything partitioning writes, inside any root image.
 if [[ "$QUICK" -eq 0 ]]; then
-    cat > "${VMDIR}/blkdebug.conf" <<'EOF'
+    A_START="$(part_start "$DISK" 2)"
+    [[ "$A_START" =~ ^[0-9]+$ ]] || die "could not read kryptik-a's start from ${DISK}"
+    cat > "${VMDIR}/blkdebug.conf" <<EOF
 [inject-error]
 event = "write_aio"
 errno = "5"
-sector = "1400000"
+sector = "$(( A_START + 8192 ))"
 once = "off"
 EOF
-    refusal_case ioerror "$SIZE" --blkdebug "${VMDIR}/blkdebug.conf"
+    refusal_case ioerror "$SIZE" 'writing the root image failed' --blkdebug "${VMDIR}/blkdebug.conf"
 fi
 
-# The runner always passes --yes, so none of these refusals is the ERASE
-# prompt waiting.
+# The runner always passes --yes, so no refusal here is the ERASE prompt waiting.
 
-# The disk this system runs from: the medium, the one USB disk in the guest.
-# No flag opens it.
+# The medium, the guest's one USB disk, is the disk this system runs from: no flag opens it.
 ctl="${VMDIR}/testctl-medium.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/sda install_replace=1 smoke_poweroff=1 install_wait=5 > /dev/null
 d="${VMDIR}/refuse-medium.img"; rm -f "$d"; truncate -s "$SIZE" "$d"
@@ -198,9 +241,7 @@ want "$t" 'KRYPTIK_INSTALL: BEGIN target=/dev/sda'                     "medium: 
 want "$t" 'KRYPTIK_INSTALL: .*is the disk this system is running from' "medium: refused as the disk this system runs from, even with --replace-kryptik"
 deny "$t" 'KRYPTIK_INSTALL: rc=0'                                      "medium: never reported success"
 
-# A control disk signed by some other key: the medium honours the
-# kryptik-testctl key its anchor lists and no other, so nothing is armed. The
-# disk's poweroff is ignored with the rest, so this boot runs to its timeout.
+# The medium ignores a control disk its testctl key did not sign, poweroff too: this boot times out.
 ssh-keygen -q -t ed25519 -N '' -C stranger -f "${VMDIR}/stranger-key" < /dev/null
 ctl="${VMDIR}/testctl-stranger.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "${VMDIR}/stranger-key" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
@@ -217,7 +258,7 @@ state_uuid() {
     [[ -n "$start" ]] && blkid -p -O "$(( start * 512 ))" -s UUID -o value "$1" 2>/dev/null
 }
 
-# An old installation: refused without the flag, and left exactly as it was.
+# An old installation is refused without the flag, and left as it was.
 old="${VMDIR}/old-install.img"; rm -f "$old"; cp --sparse=always "$DISK" "$old"
 ctl="${VMDIR}/testctl-oldinstall.img"
 "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda smoke_poweroff=1 install_wait=5 > /dev/null
@@ -248,6 +289,48 @@ if [[ "$QUICK" -eq 0 ]]; then
     else
         red "replace: the state partition was not replaced (before '${before}', after '${after}')"
     fi
+fi
+
+# ----------------------------------------------------------------- step 5 --
+step "step 5: a chosen slot size: less than the image needs is refused, more is taken"
+# What the installer gave each slot in step 1, from its own plan.
+SLOT="$(sed -n 's/.*KRYPTIK_INSTALL: .*kryptik-a \([0-9][0-9]*\) MiB, kryptik-b.*/\1/p' "$P1" | head -1)"
+[[ -n "$SLOT" ]] && green "slot-size: step 1's plan gave each slot ${SLOT} MiB" || red "slot-size: no slot size in step 1's plan"
+ctl="${VMDIR}/testctl-slotsmall.img"
+"${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda "install_slot_mib=$(( ${SLOT:-128} - 64 ))" smoke_poweroff=1 install_wait=5 > /dev/null
+d="${VMDIR}/refuse-slotsmall.img"; rm -f "$d"; truncate -s "$SIZE" "$d"
+smoke refuse-slotsmall --usb "$USB" --disk "$d" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
+t="${VMDIR}/refuse-slotsmall.txt"; boot_txt > "$t"
+want "$t" "KRYPTIK_INSTALL: .*--slot-size [0-9]+ is less than the ${SLOT} MiB a slot needs" "slot-size: a slot smaller than the image and its room is refused, and says why"
+want "$t" 'KRYPTIK_INSTALL: rc=[1-9]'  "slot-size: the refusal reported a non-zero status"
+if sfdisk -d "$d" 2>/dev/null | grep -q 'name="kryptik-a"'; then red "slot-size: the refused install partitioned the disk"; else green "slot-size: the refused install wrote nothing"; fi
+
+if [[ "$QUICK" -eq 0 && -n "$SLOT" ]]; then
+    BIG=$(( SLOT + 256 ))
+    big="${VMDIR}/slot-size.img"; rm -f "$big"
+    truncate -s "$("${SELF}/test-disk-size.sh" --medium "$USB" --extra-mib 512)" "$big"
+    ctl="${VMDIR}/testctl-slotbig.img"
+    "${SELF}/mk-testctl.sh" --out "$ctl" --key "$TESTCTL_KEY" install_target=/dev/vda "install_slot_mib=${BIG}" smoke_poweroff=1 install_wait=5 \
+        "${PRESEED[@]}" > /dev/null
+    smoke slot-size --usb "$USB" --disk "$big" --testctl "$ctl" --vars "$VARS" --timeout "$TIMEOUT" > /dev/null
+    t="${VMDIR}/slot-size.txt"; boot_txt > "$t"
+    want "$t" 'KRYPTIK_INSTALL: rc=0' "slot-size: the install with --slot-size ${BIG} succeeded"
+    want "$t" "KRYPTIK_INSTALL: .*kryptik-a ${BIG} MiB, kryptik-b ${BIG} MiB" "slot-size: the plan names slots of ${BIG} MiB"
+    want "$t" 'KRYPTIK_INSTALL: .*kryptik-a verifies against the signed kernel' "slot-size: the root in the larger slot verifies"
+    sectors="$(sfdisk -d "$big" 2>/dev/null | sed -n 's/.*size= *\([0-9]*\),.*name="kryptik-[ab]".*/\1/p' | sort -u | tr '\n' ' ')"
+    [[ "$sectors" == "$(( BIG * 2048 )) " ]] && green "slot-size: host sees both slots at ${BIG} MiB" || red "slot-size: host sees slots of ${sectors}sectors, wanted $(( BIG * 2048 ))"
+    SAVED_DISK="$DISK"; DISK="$big"
+    cp "/usr/share/OVMF/OVMF_VARS_4M.fd" "$VARSF"
+    [[ "$VARS" == "enrolled" ]] && cp "${KRYPTIK_WORK}/keys/sb/vars/enrolled.fd" "$VARSF"
+    start_vm slot-size-boot
+    drive \
+        "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
+        "run:test \"\$(cat /sys/class/block/vda2/size)\" = $(( BIG * 2048 ))" \
+        "su:${RPASS}:poweroff" "expect:Power down" "wait-exit"
+    drc=$?
+    stop_vm
+    DISK="$SAVED_DISK"
+    [[ "$drc" -eq 0 ]] && green "slot-size: the disk boots alone, and slot a is ${BIG} MiB from inside" || red "slot-size: the boot of the disk with larger slots failed"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

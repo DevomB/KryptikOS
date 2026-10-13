@@ -5,8 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# No dependencies: the colour maths is published formulae checked against
-# reference values in the tests (the ADR-010 argument, as for kryptikd).
+# No dependencies (ADR-010): published colour formulae, tested against reference values.
 [dependencies]
 
 [[bin]]

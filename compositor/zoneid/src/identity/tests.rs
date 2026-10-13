@@ -16,7 +16,7 @@ fn unknown_pattern_refused() {
 }
 
 #[test]
-fn glyph_allowlist_has_no_duplicates() {
+fn glyph_allowlist_unique() {
     let mut seen = Vec::new();
     for &c in GLYPH_ALLOWLIST {
         assert!(!seen.contains(&c), "U+{:04X} listed twice", c as u32);
@@ -25,13 +25,12 @@ fn glyph_allowlist_has_no_duplicates() {
 }
 
 #[test]
-fn glyph_allowlist_contains_nothing_dangerous() {
-    // The allowlist is the whole defence, so check what is on it.
+fn glyph_allowlist_safe() {
+    // The allowlist is the only defence, so check what is on it.
     for &c in GLYPH_ALLOWLIST {
         assert!(!c.is_control(), "U+{:04X} is a control character", c as u32);
         assert!(!c.is_whitespace(), "U+{:04X} is whitespace", c as u32);
-        /* Cf format characters (the bidi controls), and the variation
-         * selectors that switch a character to emoji rendering. */
+        // Format characters (the bidi controls) and the selectors that switch to emoji rendering.
         let n = c as u32;
         assert!(
             !(0x200B..=0x200F).contains(&n),
@@ -113,7 +112,7 @@ fn label_bounds() {
 }
 
 #[test]
-fn label_key_folds_case_and_punctuation() {
+fn label_key_folding() {
     let mk = |l: &str| {
         ZoneIdentity::new("z", "#aa3333", None, None, Some(l))
             .unwrap()
@@ -122,7 +121,7 @@ fn label_key_folds_case_and_punctuation() {
     };
     assert_eq!(mk("WORK"), mk("work"));
     assert_eq!(mk("WORK"), mk("W-O-R-K"));
-    assert_ne!(mk("WORK"), mk("W0RK")); // zero vs O is a real difference
+    assert_ne!(mk("WORK"), mk("W0RK")); // zero and O stay different
 }
 
 #[test]

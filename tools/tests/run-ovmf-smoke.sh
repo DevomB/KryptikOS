@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Test run-ovmf.sh's smoke mode with a stand-in QEMU that, like QEMU, closes
-# its console just before it exits: a clean poweroff must not be reported as
-# the timeout.
+# Test that run-ovmf.sh's smoke mode tells a clean poweroff from a timeout, with a stand-in QEMU.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
@@ -12,9 +10,7 @@ check() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 (got '$2', want '$3'
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/ovmf" "$T/work"
 : > "$T/ovmf/OVMF_CODE_4M.secboot.fd"; : > "$T/ovmf/OVMF_VARS_4M.fd"; : > "$T/medium.img"
-# The stand-in serves the console socket, prints a kernel's last line, closes
-# the console and lives half a second more, as QEMU does. STAY=SECONDS first
-# waits that long: a guest that does not power off.
+# The stand-in closes the console after a kernel's last line, then lives 0.5 s; STAY delays it.
 cat > "$T/qemu" <<'EOF'
 #!/usr/bin/env python3
 import os, socket, sys, time

@@ -18,8 +18,7 @@ done
 
 RELEASES_URL="https://www.kernel.org/releases.json"
 
-# Test hook for tools/tests/check-kernel-eol.sh. It needs a second variable so a
-# stray one cannot point the gate at a feed other than kernel.org.
+# Test hook; it needs a second variable, so a stray one cannot point the gate off kernel.org.
 if [[ -n "${KRYPTIK_KERNEL_RELEASES_URL:-}" ]]; then
     [[ "${KRYPTIK_KERNEL_EOL_SELFTEST:-0}" == "1" ]] || die \
 "KRYPTIK_KERNEL_RELEASES_URL is set but KRYPTIK_KERNEL_EOL_SELFTEST is not.
@@ -45,8 +44,7 @@ if ! curl -fsL --max-time 30 -o "$RELEASES" "$RELEASES_URL"; then
     rm -f "$RELEASES"
     if [[ "$STRICT" -eq 1 ]]; then
         err "could not reach ${RELEASES_URL}"
-        die "Kernel support status could not be established (ADR-009).
---strict will not pass an unverified kernel pin. Re-run with network access."
+        die "Kernel support status could not be established (ADR-009); re-run with network access."
     fi
     warn "could not reach ${RELEASES_URL}; kernel support status UNKNOWN"
     warn "this is not a pass: --strict fails here. Re-run with network access"
@@ -58,9 +56,7 @@ classify() {
     "$PY_BIN" - "$RELEASES" "$V_LINUX" <<'PYEOF'
 import json, sys
 
-# Monikers kernel.org actually publishes. Anything else means this script is
-# looking at a feed it does not understand, which is not the same as a
-# supported kernel.
+# Monikers kernel.org publishes; any other means a feed this does not understand.
 KNOWN = {"mainline", "stable", "longterm", "linux-next"}
 
 
@@ -146,8 +142,7 @@ if not same_series:
                   "longterm series: %s"
                   % (series, ", ".join(lts) or "none listed"))
 
-# No exact entry: kernel.org lists only the current release of each series, so
-# the authority for a pin that is behind is the newest entry in ITS series.
+# kernel.org lists only each series' current release, so a pin behind it is judged by that release.
 newest = max(same_series, key=lambda r: parts(r.get("version")))
 check(newest, "series %s, represented by %s" % (series, newest.get("version")))
 
@@ -166,16 +161,14 @@ rc=0
 result="$(classify)" || rc=$?
 if [[ "$rc" -ne 0 || -z "$result" ]]; then
     err "the kernel classifier failed (exit ${rc})"
-    die "Kernel support status could not be established (ADR-009).
-This is a defect in tools/check-kernel-eol.sh, not a passing check."
+    die "Kernel support status could not be established (ADR-009): a defect in this tool, not a pass."
 fi
 
 status="$(printf '%s\n' "$result" | head -1)"
 message="$(printf '%s\n' "$result" | tail -n +2)"
 
-BUMP_ADVICE="Pick a current 'longterm' release from
-https://www.kernel.org/releases.json and update V_LINUX in
-build/config/versions.env, along with V_LINUX_HARDENED to match."
+BUMP_ADVICE="Pin a current longterm release from https://www.kernel.org/releases.json
+as V_LINUX in build/config/versions.env, with V_LINUX_HARDENED to match."
 
 case "$status" in
     OK)
@@ -183,50 +176,41 @@ case "$status" in
         ;;
     STALE)
         warn "$message"
-        warn "Still longterm and supported, but a point release is available."
-        warn "Bump when convenient; this is not a security failure."
+        warn "A point release is available: bump when convenient; this is not a security failure."
         ;;
     EOL)
         err "$message"
-        die "The pinned kernel receives no security updates.
-This is disqualifying for a security distribution (ADR-009).
+        die "The pinned kernel receives no security updates (ADR-009).
 ${BUMP_ADVICE}"
         ;;
     NOTLTS)
         err "$message"
-        die "Kryptik pins longterm kernels only (ADR-009).
-A non-longterm kernel reaches EOL within roughly two months of release.
+        die "Kryptik pins longterm kernels only (ADR-009); others reach EOL within months.
 ${BUMP_ADVICE}"
         ;;
     ABSENT)
         err "$message"
-        die "A kernel whose series upstream no longer lists cannot be shown to
-be supported, and an unsupported kernel is disqualifying (ADR-009).
+        die "A series kernel.org no longer lists cannot be shown to be supported (ADR-009).
 ${BUMP_ADVICE}"
         ;;
     AHEAD)
         err "$message"
-        die "The pin matches no release kernel.org lists, so its support status
-cannot be checked. Verify V_LINUX is not a typo.
+        die "The pin is newer than any release kernel.org lists; check V_LINUX for a typo.
 ${BUMP_ADVICE}"
         ;;
     UNKNOWN)
         err "$message"
-        die "Unknown support status is not supported status (ADR-009).
-Either kernel.org changed the shape of releases.json - in which case
-tools/check-kernel-eol.sh needs updating - or the pin is in a state this
-check deliberately refuses to guess about."
+        die "Unknown support status is not support (ADR-009).
+If kernel.org changed releases.json, update tools/check-kernel-eol.sh."
         ;;
     MALFORMED)
         err "$message"
-        die "The release feed could not be parsed, so the pinned kernel's
-support status is unknown. That is a failure, not a pass: re-run, and if
-kernel.org has changed the format, update tools/check-kernel-eol.sh."
+        die "The release feed could not be parsed, so support status is unknown.
+Re-run; if kernel.org changed the format, update tools/check-kernel-eol.sh."
         ;;
     *)
         err "unrecognised classifier status: ${status}"
-        die "tools/check-kernel-eol.sh could not interpret its own result.
-Treat the kernel pin as unverified."
+        die "tools/check-kernel-eol.sh could not interpret its own result; the kernel pin is unverified."
         ;;
 esac
 
@@ -236,12 +220,9 @@ if [[ -n "${V_LINUX_HARDENED:-}" ]]; then
         ok "linux-hardened ${V_LINUX_HARDENED} matches the pinned kernel"
     else
         err "V_LINUX_HARDENED (${V_LINUX_HARDENED}) does not match V_LINUX (${V_LINUX})"
-        die "The linux-hardened patch is version-specific and will not apply.
-Find the matching release at
-https://github.com/anthraxx/linux-hardened/releases"
+        die "Pin the matching release from https://github.com/anthraxx/linux-hardened/releases"
     fi
 else
     err "V_LINUX_HARDENED is unset"
-    die "The hardened kernel patch is how Kryptik's kernel is hardened; an
-unset pin means the check above validated a kernel Kryptik does not build."
+    die "Kryptik builds its kernel with linux-hardened; pin the release matching V_LINUX."
 fi

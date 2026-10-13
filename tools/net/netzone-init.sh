@@ -1,18 +1,23 @@
 #!/bin/sh
-# The net zone's startup (docs/design/net-zone.md), run by kryptikd as the nic
-# zone's command: firewall and NAT, Wi-Fi, DHCP, the zones' resolver, the clock
-# offset and update fetching. Fails closed: forwarding stays off until the nft
-# policy is loaded and read back. Reports one line:
+# The net zone's command (docs/design/net-zone.md): firewall, Wi-Fi, DHCP, DNS, time and updates.
+# Fails closed: forwarding stays off until the nft policy is loaded and read back. Reports:
 #
-#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|connecting|unconfigured|none>
+#   netzone: READY uplink=<addr|none> nat=yes dns=<yes|no> wifi=<ssid|refused:ssid|connecting|unconfigured|off|none>
 #                  time=<offset|no-answer|no-uplink|...> ...
 #   netzone: NOT READY <reason>            (forwarding is off)
 set -u
-say() { echo "netzone: $*"; }
+# printf, not echo: a word from the network (an SSID, a server's reason for a
+# refusal) is printed as it came, and dash's echo would act on its backslashes.
+say() { printf 'netzone: %s\n' "$*"; }
 BR=kryptik0
 STATUS=/run/netzone-status
-WPA_CONF=/etc/wpa_supplicant.conf
-WPA_CTRL=/run/wpa_supplicant
+WPA_CONF=/etc/wpa_supplicant.conf   # bound in read-only from zone 0 (kryptik wifi add)
+WPA_CTRL=/run/wpa_supplicant       # the supplicant's own: kryptikd makes it for its user alone
+SCAN=/run/netzone-scan             # the networks in range, when zone 0 asks (kryptikd wifi scan)
+# zone 0 asks with SIGUSR1, which carries nothing; the main loop answers, so a scan asked for
+# while the zone starts waits for it.
+scan_wanted=0
+trap 'scan_wanted=1' USR1
 
 forwarding() {   # forwarding on|off
     v=0; [ "$1" = on ] && v=1
@@ -23,6 +28,8 @@ report() {   # report READY|NOT READY ...: on stdout and in a file for the tests
     say "$*"
     printf '%s\n' "$*" > "$STATUS.new" 2>/dev/null && mv -f "$STATUS.new" "$STATUS" 2>/dev/null || true
 }
+# The zone definitions, on the root this zone shares read-only with zone 0.
+ZONES="${1:-/usr/lib/kryptik/zones}"
 
 [ -d /proc/sys/net/ipv4 ] || { report "NOT READY no network stack"; exit 1; }
 # Nothing forwards until the policy is in place, whatever zone 0 set.
@@ -31,10 +38,9 @@ ip link show "$BR" >/dev/null 2>&1 || { report "NOT READY no bridge ${BR}; zone 
 command -v nft >/dev/null 2>&1 || { report "NOT READY no nft in this image; refusing to route without a firewall"; exit 1; }
 
 # --- the uplinks: what zone 0 moved in ---------------------------------------
-# Every interface on a bus device, the rule kryptikd moves them by, so never
-# the bridge or a zone's veth; radios are those with phy80211. From here on
-# they are "$@", a POSIX sh's only list.
-set --
+
+# Interfaces on a bus device, the rule kryptikd moves them by: never the bridge or a zone's veth.
+set --   # the uplinks from here on: "$@" is POSIX sh's only list
 WIRELESS=""
 for d in /sys/class/net/*; do
     n="${d##*/}"
@@ -51,12 +57,86 @@ NICSET=""
 for n in "$@"; do NICSET="${NICSET:+$NICSET, }\"$n\""; done
 NICSET="{ $NICSET }"
 
+# Every routed zone by its host number K, which gives it 10.19.0.K and fd19::K
+# (netzone.rs, host_number), and whether its definition says [network]
+# local = true. A file this zone cannot read names nobody.
+routed_zones() {   # routed_zones DIR: "K 1|0" for each
+    for f in "$1"/*.toml; do
+        [ -r "$f" ] || continue
+        awk '
+            { sub(/#.*/, ""); gsub(/[ \t]/, "") }
+            /^\[/ { section = $0; next }
+            section == "[network]" && ($0 == "local=true" || $0 == "local=\"true\"") { claims = 1 }
+            section == "[network]" && $0 == "mode=\"routed\"" { routed = 1 }
+            section == "[identity]" && /^uid_base="?[0-9]+"?$/ { base = $0; gsub(/[^0-9]/, "", base) }
+            END {
+                k = (base - 131072) / 65536 + 2
+                if (routed && base != "" && k == int(k) && k >= 2 && k < 250) printf "%d %d\n", k, claims
+            }' "$f"
+    done
+}
+local_zones() {   # local_zones DIR: "10.19.0.K fd19::K" for each that claims local
+    routed_zones "$1" | awk '$2 == 1 { printf "10.19.0.%d fd19::%x\n", $1, $1 }'
+}
+LOCAL4="$(local_zones "$ZONES" | awk '{ print $1 }' | tr '\n' ',' | sed 's/,$//')"
+LOCAL6="$(local_zones "$ZONES" | awk '{ print $2 }' | tr '\n' ',' | sed 's/,$//')"
+SET4="set local4 { type ipv4_addr; }"; SET6="set local6 { type ipv6_addr; }"
+[ -z "$LOCAL4" ] || SET4="set local4 { type ipv4_addr; elements = { ${LOCAL4} } }"
+[ -z "$LOCAL6" ] || SET6="set local6 { type ipv6_addr; elements = { ${LOCAL6} } }"
+# IPV6_FREEBIND sends from any address, so the bridge takes 10.19.0.K and fd19::K
+# only from host K's MAC, 02:19:00:00:00:K (netzone.rs zone_mac), which no zone can change.
+PIN4="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%s10.19.0.%d . 02:19:00:00:00:%02x", (k > 2 ? ", " : ""), k, k }')"
+PIN6="$(awk 'BEGIN { for (k = 2; k < 250; k++) printf "%sfd19::%x . 02:19:00:00:00:%02x", (k > 2 ? ", " : ""), k, k }')"
+
+# A routed zone may hold an eighth of the conntrack table every zone's flows
+# share, so no one zone fills it for the others: counted by the MAC both its
+# addresses are pinned to, for flows through the net zone and to it.
+FLOWCAP="$(( $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 131072) / 8 ))"
+[ "$FLOWCAP" -ge 1024 ] 2>/dev/null || FLOWCAP=1024
+
+# Zone K's own resolver takes its queries on the bridge's addresses at port 5300 + K.
+DNS_PORT_BASE=5300
+ZONE_DNS_PORTS="$((DNS_PORT_BASE + 2))-$((DNS_PORT_BASE + 249))"
+
+# A zone goes out by a gateway (gw4, gw6) and never to the gateway itself:
+# the rest of what an uplink reaches is the network it sits on, open to local4
+# and local6 alone. With no gateway in the sets nothing goes out, so a new
+# lease opens no way in before sync_gateways has seen it. From the bridge the
+# net zone takes in only what it serves there, DNS and echo on the bridge's
+# addresses, and neighbour discovery: whatever else listens in it, such as
+# dhcpcd on every address once it holds two uplinks, is no zone's to reach.
+# A zone's DNS goes to a resolver of its own where the dns chain sends it
+# (sync_dnsnat), and a resolver's own port takes nothing that chain did not.
+# No resolver answers an uplink: Linux takes a packet for 10.19.0.1 on any
+# interface, so a host on the uplink's network could otherwise ask one.
 RULES="table inet kryptik {
+    set gw4 { type ipv4_addr; }
+    set gw6 { type ipv6_addr; }
+    ${SET4}
+    ${SET6}
+    set pin4 { type ipv4_addr . ether_addr; elements = { ${PIN4} } }
+    set pin6 { type ipv6_addr . ether_addr; elements = { ${PIN6} } }
+    set flows { type ether_addr; size 256; flags dynamic; }
+    chain prerouting {
+        type filter hook prerouting priority raw; policy accept;
+        iifname \"${BR}\" ip saddr . ether saddr != @pin4 drop
+        iifname \"${BR}\" ip6 saddr . ether saddr @pin6 accept
+        iifname \"${BR}\" ip6 saddr fe80::/10 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+        iifname \"${BR}\" meta nfproto ipv6 drop
+    }
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
-        iifname \"${BR}\" oifname ${NICSET} accept
+        iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
+        iifname \"${BR}\" oifname ${NICSET} ip saddr @local4 accept
+        iifname \"${BR}\" oifname ${NICSET} ip6 saddr @local6 accept
+        iifname \"${BR}\" oifname ${NICSET} rt ip nexthop @gw4 ip daddr != @gw4 accept
+        iifname \"${BR}\" oifname ${NICSET} rt ip6 nexthop @gw6 ip6 daddr != @gw6 accept
+        iifname \"${BR}\" oifname ${NICSET} reject with icmpx type admin-prohibited
         iifname \"${BR}\" oifname \"${BR}\" drop
+    }
+    chain dns {
+        type nat hook prerouting priority dstnat; policy accept;
     }
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
@@ -65,27 +145,63 @@ RULES="table inet kryptik {
     }
     chain input {
         type filter hook input priority filter; policy accept;
-        iifname ${NICSET} ct state new tcp dport 53 drop
-        iifname ${NICSET} ct state new udp dport 53 drop
+        iifname \"${BR}\" ct state new add @flows { ether saddr ct count over ${FLOWCAP} } drop
+        iifname ${NICSET} ct state new meta l4proto { tcp, udp } th dport { 53, ${ZONE_DNS_PORTS} } drop
+        iifname \"${BR}\" ct state established,related accept
+        iifname \"${BR}\" ip daddr 10.19.0.1 meta l4proto { tcp, udp } th dport 53 accept
+        iifname \"${BR}\" ip6 daddr fd19::1 meta l4proto { tcp, udp } th dport 53 accept
+        iifname \"${BR}\" ct status dnat ip daddr 10.19.0.1 meta l4proto { tcp, udp } th dport ${ZONE_DNS_PORTS} accept
+        iifname \"${BR}\" ct status dnat ip6 daddr fd19::1 meta l4proto { tcp, udp } th dport ${ZONE_DNS_PORTS} accept
+        iifname \"${BR}\" ip daddr 10.19.0.1 icmp type echo-request accept
+        iifname \"${BR}\" ip6 daddr fd19::1 icmpv6 type echo-request accept
+        iifname \"${BR}\" icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+        iifname \"${BR}\" drop
     }
 }"
 
-# Load the ruleset atomically (one nft -f is one transaction), then read it
-# back: the policy is what the kernel holds, not what we sent.
+# One nft -f is one transaction; reading it back checks what the kernel holds, not what was sent.
 load_policy() {
     printf '%s\n' "$RULES" | nft -c -f - 2>/tmp/nft.err || { say "nftables: ruleset does not validate: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
     nft flush ruleset 2>/dev/null || true
     printf '%s\n' "$RULES" | nft -f - 2>/tmp/nft.err || { say "nftables: load FAILED: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
     live="$(nft list table inet kryptik 2>/dev/null)"
-    case "$live" in
-        *"policy drop"*"masquerade"*) ;;
-        *) say "nftables: the loaded table is not the policy (missing drop policy or masquerade)"; nft flush ruleset 2>/dev/null; return 1 ;;
-    esac
+    for want in "@pin6 accept" "policy drop" "masquerade" "iifname \"${BR}\" drop"; do
+        case "$live" in
+            *"$want"*) ;;
+            *) say "nftables: the loaded table is not the policy (no \"${want}\")"; nft flush ruleset 2>/dev/null; return 1 ;;
+        esac
+    done
+    GATEWAYS=""; DNSNAT=""
     return 0
 }
 
+# The gateways the uplinks' routes go by, as "4 ADDRESS" or "6 ADDRESS".
+uplink_gateways() {   # uplink_gateways <uplink>...
+    for n in "$@"; do
+        ip -4 route show dev "$n" 2>/dev/null | awk '$2 == "via" { print 4, $3 }'
+        ip -6 route show dev "$n" 2>/dev/null | awk '$2 == "via" { print 6, $3 }'
+    done | sort -u
+}
+# Put them in gw4 and gw6 when they have changed: one transaction, so the
+# sets are never seen half filled. 1 when nft refuses it.
+GATEWAYS=""
+sync_gateways() {   # sync_gateways <uplink>...
+    now="$(uplink_gateways "$@")"
+    [ "$now" = "$GATEWAYS" ] && return 0
+    gw4="$(printf '%s\n' "$now" | sed -n 's/^4 //p' | tr '\n' ',' | sed 's/,$//')"
+    gw6="$(printf '%s\n' "$now" | sed -n 's/^6 //p' | tr '\n' ',' | sed 's/,$//')"
+    {
+        echo "flush set inet kryptik gw4"
+        echo "flush set inet kryptik gw6"
+        [ -z "$gw4" ] || echo "add element inet kryptik gw4 { $gw4 }"
+        [ -z "$gw6" ] || echo "add element inet kryptik gw6 { $gw6 }"
+    } | nft -f - 2>/tmp/nft.err || { say "nftables: the gateways could not be set: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
+    GATEWAYS="$now"
+    say "nftables: zones go out by ${gw4:-no IPv4 gateway} and ${gw6:-no IPv6 gateway}; the uplinks' own networks are refused${LOCAL4:+ but to $LOCAL4}"
+}
+
 policy_ok=0
-if load_policy; then
+if load_policy && sync_gateways "$@"; then
     policy_ok=1
     forwarding on || { report "NOT READY cannot enable forwarding"; policy_ok=0; }
     [ "$policy_ok" = 1 ] && say "nftables: masquerade 10.19.0.0/24 and fd19::/64 via ${NICSET}; forward bridge->uplink only; forwarding enabled"
@@ -95,61 +211,93 @@ else
 fi
 
 # --- wireless: associate before asking for a lease ---------------------------
-# /etc/wpa_supplicant.conf is bound in read-only from zone 0 (`kryptik wifi
-# add`). One supplicant per radio, each with a pid file so the loop below can
-# tell a dead one from a slow one.
-wpa_pid() { cat "/run/wpa_supplicant.$1.pid" 2>/dev/null; }
+
+# One supplicant per radio, each with a pid file so the loop can tell a dead one from a slow one.
+# It runs as its own user, which this root cannot signal: its /proc entry says whether it lives.
+wpa_pid() { cat "$WPA_CTRL/$1.pid" 2>/dev/null; }
+wpa_alive() { p="$(wpa_pid "$1")"; [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = wpa_supplicant ]; }
 start_wifi() {   # start_wifi <radio>: 0 started or already running, 1 not
     n="$1"
-    p="$(wpa_pid "$n")"
-    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then return 0; fi
+    if wpa_alive "$n"; then return 0; fi
     command -v wpa_supplicant >/dev/null 2>&1 || { say "wifi: no wpa_supplicant in this image; ${n} stays unassociated"; return 1; }
     [ -r "$WPA_CONF" ] || { say "wifi: ${n}: no ${WPA_CONF} (nothing added with 'kryptik wifi add'); unconfigured"; return 1; }
-    mkdir -p "$WPA_CTRL" 2>/dev/null
-    if wpa_supplicant -B -i "$n" -c "$WPA_CONF" -C "$WPA_CTRL" -P "/run/wpa_supplicant.$n.pid" 2>/tmp/wpa.err; then
+    # Not as root: kryptikd gives it its own user, CAP_NET_ADMIN and CAP_NET_RAW, and no nf_tables.
+    if kryptikd supplicant -- wpa_supplicant -B -i "$n" -c "$WPA_CONF" -C "$WPA_CTRL" -P "$WPA_CTRL/$n.pid" 2>/tmp/wpa.err; then
         say "wifi: wpa_supplicant on ${n} (pid $(wpa_pid "$n"))"
+        # Why a join fails is said only to a listener on the supplicant's socket: this one, as
+        # its user, names the network that refused the passphrase until one is joined. It ends
+        # with the supplicant, and a supplicant started again gets one of its own.
+        kryptikd supplicant --watch "$n" &
+        # A scan while no network is joined goes out from a new random address each time, not
+        # the last network's. A driver that offers none scans from the station's address: the
+        # one kryptikd made for this start, or the last network's after one. The socket is the
+        # supplicant's, so its user asks.
+        rs="$(kryptikd supplicant -- wpa_cli -s "$WPA_CTRL" -p "$WPA_CTRL" -i "$n" mac_rand_scan all enable=1 2>&1)"
+        if [ "$rs" = OK ]; then
+            say "wifi: ${n}: scans go out from random addresses"
+        else
+            say "wifi: ${n}: no random scan addresses ($(printf '%s' "$rs" | tr '\n' ' ')); scans go out from the station's address"
+        fi
         return 0
     fi
     say "wifi: wpa_supplicant did not start on ${n}: $(tr '\n' ' ' < /tmp/wpa.err)"
     return 1
 }
-# The readiness line's wifi=: none (no radio), unconfigured (no credentials),
-# connecting, or the associated SSID.
+# Is a radio switched off by rfkill, its switch or an airplane-mode key (soft or hard)?
+radio_off() {
+    for k in /sys/class/net/"$1"/phy80211/rfkill*/soft /sys/class/net/"$1"/phy80211/rfkill*/hard; do
+        [ "$(cat "$k" 2>/dev/null)" = 1 ] && return 0
+    done
+    return 1
+}
+# The status line's wifi=: none (no radio), off (every radio switched off), unconfigured (no
+# credentials), connecting, refused:SSID while nothing is joined and that network refused the
+# passphrase last (its listener's file), or the SSID. Read from the kernel, as the supplicant's control socket
+# is its own user's: a link the supplicant holds dormant until it has the keys, then up, and the
+# SSID it is associated with.
 wifi_state() {
     [ -n "$WIRELESS" ] || { echo none; return; }
+    on=""
+    for n in $WIRELESS; do radio_off "$n" || on=1; done
+    [ -n "$on" ] || { echo off; return; }
     [ -r "$WPA_CONF" ] || { echo unconfigured; return; }
     st=connecting
     for n in $WIRELESS; do
-        s="$(wpa_cli -p "$WPA_CTRL" -i "$n" status 2>/dev/null)" || continue
-        case "$s" in
-            *"wpa_state=COMPLETED"*)
-                st="$(printf '%s\n' "$s" | sed -n 's/^ssid=//p' | head -1)"
-                [ -n "$st" ] || st=associated
-                break ;;
-        esac
+        [ "$(cat "/sys/class/net/$n/operstate" 2>/dev/null)" = up ] || continue
+        s="$(iw dev "$n" link 2>/dev/null)" || continue
+        st="$(printf '%s\n' "$s" | sed -n 's/^[[:space:]]*SSID: //p' | head -1)"
+        [ -n "$st" ] || st=associated
+        break
     done
+    if [ "$st" = connecting ]; then
+        for n in $WIRELESS; do
+            r="$(cat "$WPA_CTRL/$n.refused" 2>/dev/null)"
+            [ -n "$r" ] && { st="refused:$r"; break; }
+        done
+    fi
     echo "$st"
 }
-for n in $WIRELESS; do start_wifi "$n"; done
+# A radio switched off already gets no supplicant, which fails to bring its link up and ends:
+# it is held, and the loop starts one once the radio is switched on.
+wifi_held=""
+for n in $WIRELESS; do
+    if ! start_wifi "$n" && [ -r "$WPA_CONF" ] && radio_off "$n"; then wifi_held="$wifi_held $n"; fi
+done
 wifi_last="$(wifi_state)"
 
 # --- uplink: DHCP if anyone answers, else what zone 0 carried over ---------
-# /run and /var/lib are this zone's own writable tmpfs mounts. dhcpcd runs
-# unseparated as the zone's root (the zone has no dhcpcd user), with the zone
-# as its sandbox; its one complaint about that is filtered out.
 uplink_addr() {   # the first IPv4 address any uplink holds
     for n in "$@"; do
-        a="$(ip -4 -o addr show "$n" 2>/dev/null | awk '{print $4}' | head -1)"
+        a="$(ip -4 -o addr show dev "$n" 2>/dev/null | awk '{print $4}' | head -1)"
         [ -n "$a" ] && { echo "$a"; return; }
     done
 }
 if command -v dhcpcd >/dev/null 2>&1; then
-    mkdir -p /run/dhcpcd /var/lib/dhcpcd 2>/dev/null
-    # -b: background at once and keep trying; --nodev: no device manager here.
-    # Only the uplinks are named. The resolv.conf hook stays on: it writes this
-    # zone's own /etc/resolv.conf, which the resolver below forwards to.
-    if dhcpcd -b -q --nodev "$@" 2>/tmp/dhcpcd.err; then
-        grep -v 'no such user dhcpcd' /tmp/dhcpcd.err
+    mkdir -p /run/dhcpcd /var/lib/dhcpcd 2>/dev/null   # the zone's own tmpfs mounts
+    # -b: background and retry; --nodev: no device manager. Its parsers drop to the dhcpcd user;
+    # Kryptik's hook, which trusts nothing it is handed, writes the zone's resolv.conf.
+    if dhcpcd -b -q --nodev -c /usr/libexec/kryptik/dhcpcd-hook "$@" 2>/tmp/dhcpcd.err; then
+        cat /tmp/dhcpcd.err
         # Up to 15 s for a lease, so the resolver starts with its servers.
         i=0
         while [ "$i" -lt 30 ] && [ -z "$(uplink_addr "$@")" ]; do sleep 0.5; i=$((i+1)); done
@@ -162,31 +310,47 @@ if command -v dhcpcd >/dev/null 2>&1; then
 else
     say "no dhcpcd; keeping the carried-over configuration"
 fi
+# The lease named a gateway: until it is in the sets, only local zones go out.
+[ "$policy_ok" = 1 ] && { sync_gateways "$@" || { forwarding off; policy_ok=0; }; }
 
 # --- the resolver routed zones already point at ----------------------------
 DNSPID=""
+RESOLV=/etc/resolv.conf            # this zone's own: dhcpcd's hook, or zone 0's static copy
+UPSTREAM=/run/uplink-resolv.conf   # what dnsmasq forwards to
+# sync_upstream: the uplink's servers, written for dnsmasq; 0 when they are
+# other servers than the file held. A lease can come after the wait above, and
+# another network names other servers. A resolv.conf that names none leaves
+# the file as it is: a lease that lapsed is no reason to forget the last ones.
+sync_upstream() {
+    new="$(grep '^nameserver' "$RESOLV" 2>/dev/null)"
+    [ -n "$new" ] || return 1
+    [ "$new" != "$(cat "$UPSTREAM" 2>/dev/null)" ] || return 1
+    # 644: dnsmasq reads it as nobody.
+    printf '%s\n' "$new" > "$UPSTREAM.new" 2>/dev/null && chmod 644 "$UPSTREAM.new" && mv -f "$UPSTREAM.new" "$UPSTREAM" 2>/dev/null
+}
+# dnsmasq runs as nobody, whom this zone's root cannot signal, so kill -0 cannot tell.
+dns_alive() { [ -n "$1" ] && [ -d "/proc/$1" ] && ! grep -q '^State:.*zombie' "/proc/$1/status" 2>/dev/null; }   # dns_alive PID
 start_dns() {
     command -v dnsmasq >/dev/null 2>&1 || { say "no dnsmasq; routed zones have no resolver"; return 1; }
-    up=/run/uplink-resolv.conf
-    # The uplink's servers, from dhcpcd's hook or zone 0's static copy. printf,
-    # not ':': a failed redirection on a special builtin exits a POSIX sh.
-    if [ -r /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then
-        grep '^nameserver' /etc/resolv.conf > "$up"
-    else
-        printf '' > "$up"
-    fi
+    sync_upstream
     # QEMU user networking's resolver, when nothing else is known
-    grep -q '^nameserver' "$up" || echo "nameserver 10.0.2.3" >> "$up"
-    # --local=/test/: the test TLD (RFC 6761) is never forwarded; the guest
-    # check resolves kryptik.test here to prove a zone reaches this resolver.
-    dnsmasq --keep-in-foreground --no-daemon --no-hosts --bind-interfaces \
+    grep -q '^nameserver' "$UPSTREAM" 2>/dev/null || { echo "nameserver 10.0.2.3" > "$UPSTREAM"; chmod 644 "$UPSTREAM"; }
+    # --local=/test/ (RFC 6761) stays here: the guest check resolves kryptik.test through it.
+    # It binds as root and then drops to nobody, which --no-daemon would stop. A changed
+    # file is read before the next query, at most once a second. It answers every zone
+    # without a resolver of its own, so it keeps no cache and no CHAOS records (--no-ident):
+    # an answer it kept comes back sooner, with less TTL, to the next zone asking, and
+    # hits.bind and misses.bind count every zone's lookups. --pid-file with no path writes none.
+    # Its queries go out from ports above the zones' resolvers' (--min-port), so none holds
+    # the port one of them is about to listen on.
+    dnsmasq --keep-in-foreground --log-facility=- --no-hosts --bind-interfaces \
             --listen-address=10.19.0.1 --listen-address=fd19::1 --listen-address=127.0.0.1 \
-            --resolv-file="$up" --no-poll --cache-size=1000 --local-service --local=/test/ \
-            --pid-file=/run/dnsmasq.pid --user=root &
+            --resolv-file="$UPSTREAM" --cache-size=0 --no-ident --local-service --local=/test/ \
+            --min-port="$((DNS_PORT_BASE + 250))" --pid-file --user=nobody --group=nogroup &
     DNSPID=$!
     sleep 1
-    if kill -0 "$DNSPID" 2>/dev/null; then
-        say "dnsmasq listening on 10.19.0.1/fd19::1, forwarding to $(grep '^nameserver' "$up" | tr '\n' ' ')"
+    if dns_alive "$DNSPID"; then
+        say "dnsmasq (pid ${DNSPID}) listening on 10.19.0.1/fd19::1, forwarding to $(grep '^nameserver' "$UPSTREAM" | tr '\n' ' ')"
         return 0
     fi
     say "dnsmasq exited at once"; DNSPID=""; return 1
@@ -194,10 +358,64 @@ start_dns() {
 dns_ok=0
 start_dns && dns_ok=1
 
+# Each routed zone's own resolver, on port 5300 + K, where the dns chain sends
+# 10.19.0.K's and fd19::K's queries: its cache, the lookups it has in flight and
+# the 150 it forwards at once are that zone's alone. One for every routed zone
+# defined when this zone starts; a zone defined later, or whose resolver could
+# not start, asks the shared one. The same flags as that one's, but its cache.
+ZONEDNS=""   # "K:PID ..."; no PID once one did not start
+zone_dns_set() {   # zone_dns_set K PID
+    ZONEDNS="$(for e in $ZONEDNS; do [ "${e%%:*}" = "$1" ] || printf '%s ' "$e"; done)$1:$2"
+}
+zone_dns_pid() { for e in $ZONEDNS; do [ "${e%%:*}" = "$1" ] && echo "${e#*:}"; done; }   # zone_dns_pid K
+start_zone_dns() {   # start_zone_dns K: started; zone_dns_said tells whether it stayed
+    dnsmasq --keep-in-foreground --log-facility=- --no-hosts --bind-interfaces \
+            --listen-address=10.19.0.1 --listen-address=fd19::1 --port="$((DNS_PORT_BASE + $1))" \
+            --resolv-file="$UPSTREAM" --no-ident --local-service --local=/test/ \
+            --min-port="$((DNS_PORT_BASE + 250))" --pid-file --user=nobody --group=nogroup &
+    zone_dns_set "$1" "$!"
+}
+zone_dns_said() {   # zone_dns_said K: a second after its start
+    zp="$(zone_dns_pid "$1")"
+    if dns_alive "$zp"; then
+        say "dnsmasq (pid ${zp}) for 10.19.0.${1} on port $((DNS_PORT_BASE + $1))"
+        return 0
+    fi
+    say "dnsmasq for 10.19.0.${1} exited at once; that zone asks the shared resolver"
+    zone_dns_set "$1" ""
+    return 1
+}
+# The dns chain: each zone whose resolver runs is sent to it, in one transaction,
+# rewritten only when that set changes; every other query stays on port 53.
+DNSNAT=""
+sync_dnsnat() {
+    up=""
+    for e in $ZONEDNS; do dns_alive "${e#*:}" && up="${up} ${e%%:*}"; done
+    [ "$up" = "$DNSNAT" ] && return 0
+    {
+        echo "flush chain inet kryptik dns"
+        for k in $up; do
+            for l4 in udp tcp; do
+                echo "add rule inet kryptik dns iifname \"${BR}\" ip saddr 10.19.0.${k} ip daddr 10.19.0.1 ${l4} dport 53 counter dnat ip to 10.19.0.1:$((DNS_PORT_BASE + k))"
+                echo "add rule inet kryptik dns iifname \"${BR}\" ip6 saddr fd19::$(printf %x "$k") ip6 daddr fd19::1 ${l4} dport 53 counter dnat ip6 to [fd19::1]:$((DNS_PORT_BASE + k))"
+            done
+        done
+    } | nft -f - 2>/tmp/nft.err || { say "nftables: the zones' own resolvers could not be set: $(tr '\n' ' ' < /tmp/nft.err)"; return 1; }
+    DNSNAT="$up"
+    names="$(for k in $up; do printf ' 10.19.0.%s' "$k"; done)"
+    say "nftables: zones with a resolver of their own:${names:- none}"
+}
+if command -v dnsmasq >/dev/null 2>&1; then
+    ZONE_HOSTS="$(routed_zones "$ZONES" | awk '{ print $1 }')"
+    for k in $ZONE_HOSTS; do start_zone_dns "$k"; done
+    [ -z "$ZONE_HOSTS" ] || sleep 1
+    for k in $ZONE_HOSTS; do zone_dns_said "$k"; done
+    [ "$policy_ok" = 1 ] && sync_dnsnat
+fi
+
 # --- the time: measured here, decided in zone 0 (docs/design/time.md) --------
-# This zone cannot set the clock (no CAP_SYS_TIME): it measures the offset and
-# sends it to zone 0 as an untrusted claim. Zone 0 names the sources in
-# time.conf (`server HOST` or `pool HOST` per line); without it, the pool.
+
+# Zone 0's source list, `server HOST` or `pool HOST` per line; without it, pool.ntp.org.
 TIME_CONF=/etc/kryptik/time.conf
 SNTP="${KRYPTIK_SNTP:-/usr/libexec/kryptik/sntp-offset.py}"
 # The zone's broker socket; overridable so the offline suite can stand one up.
@@ -213,8 +431,7 @@ time_sources() {
 ask_time() {   # ask_time <uplink>...: sets TIME_STATE
     { command -v python3 >/dev/null 2>&1 && [ -r "$SNTP" ]; } || { TIME_STATE=no-client; return; }
     [ -n "$(uplink_addr "$@")" ] || { TIME_STATE=no-uplink; return; }
-    # The sources become "$@", a flag and a name each, so no name is ever
-    # split or expanded.
+    # The sources become "$@", a flag and a name each, so no name is split or expanded.
     set --
     while read -r kind host; do
         [ -n "$host" ] || continue
@@ -225,8 +442,7 @@ ask_time() {   # ask_time <uplink>...: sets TIME_STATE
 $(time_sources)
 EOF
     [ $# -gt 0 ] || { TIME_STATE=unconfigured; say "time: ${TIME_CONF} names no server or pool"; return; }
-    # "OFFSET N": seconds to add to the clock, the median of N servers. No
-    # output means no answer, never a zero offset.
+    # "OFFSET N": seconds to add, the median of N servers; no output means no answer, not zero.
     out="$(python3 "$SNTP" --timeout "${KRYPTIK_SNTP_TIMEOUT:-8}" "$@" 2>/dev/null)"
     off="${out%% *}"; nsrc="${out##* }"
     case "$off" in
@@ -246,22 +462,24 @@ print(s.recv(4096).decode("utf-8", "replace").strip())' "$off" "$nsrc" "$BROKER"
 ask_time "$@"
 time_ticks=0
 
-# --- updates ---------------------------------------------------------------------
-# Zone 0 has no network, so this zone asks it (docs/design/update-channel.md).
-# update-fetch.py only carries bytes; zone 0 names the channel in update.conf
-# and verifies everything. Without update.conf nothing is fetched.
+# --- updates (docs/design/update-channel.md) ---------------------------------
+
+# Zone 0 has no network: update-fetch.py carries the bytes; zone 0 names the channel and verifies.
 UPDATE_CONF=/etc/kryptik/update.conf
 UPDATE_FETCH="${KRYPTIK_UPDATE_FETCH:-/usr/libexec/kryptik/update-fetch.py}"
 UPDATE_BROUGHT=/run/kryptik-update-statement-brought
 UPDATE_PID=""
-update_run() {   # update_run latest|poll: in the background, one at a time
+update_run() {   # update_run latest|poll: in the background, one at a time; 1 while the last one runs
     { command -v python3 >/dev/null 2>&1 && [ -r "$UPDATE_FETCH" ] && [ -r "$UPDATE_CONF" ]; } || return 0
-    [ -n "$UPDATE_PID" ] && kill -0 "$UPDATE_PID" 2>/dev/null && return 0
+    [ -n "$UPDATE_PID" ] && kill -0 "$UPDATE_PID" 2>/dev/null && return 1
     (
-        out="$(python3 "$UPDATE_FETCH" "$1" --broker "$BROKER" 2>&1 | tail -1)"
-        case "$1:$out" in
-            poll:idle|*:) ;;
-            latest:ok*) : > "$UPDATE_BROUGHT"; say "update: zone 0 on the statement of what is current: ${out}" ;;
+        out="$(python3 "$UPDATE_FETCH" "$1" --broker "$BROKER" 2>&1)"; rc=$?
+        out="$(printf '%s\n' "$out" | tail -1)"
+        # Zone 0's answer counts only from a fetch that ended well: the last
+        # line of one that failed is the far host's words.
+        case "$rc:$1:$out" in
+            0:poll:idle|*:*:) ;;
+            0:latest:ok*) : > "$UPDATE_BROUGHT"; say "update: zone 0 on the statement of what is current: ${out}" ;;
             *) say "update $1: ${out}" ;;
         esac
     ) &
@@ -280,44 +498,119 @@ status_line() {
 }
 status_line "$@"
 
-# Run until kryptikd sends SIGTERM: retry a policy that failed to load, restart
-# a dead resolver or supplicant, and report again on any change.
+# --- what is in range, when zone 0 asks (kryptikd wifi scan) -----------------
+
+# iw's listing reduced to a line per network heard: its signal in dBm, its security, and its
+# SSID as iw prints one (printable ASCII but a backslash, \xHH for any other byte), with tabs
+# between. zone 0 checks each line again: this zone's word is not taken on trust.
+scan_lines() {
+    awk -v OFS='\t' '
+        function out() {
+            if (!bss) return
+            sec = "open"
+            if (rsn != "") {
+                if (rsn ~ / SAE/) sec = (rsn ~ / PSK/) ? "wpa2/wpa3" : "wpa3"
+                else if (rsn ~ / OWE/) sec = "owe"
+                else if (rsn ~ / PSK/) sec = "wpa2"
+                else if (rsn ~ /802\.1X/) sec = "enterprise"
+                else sec = "other"
+            } else if (wpa) sec = "wpa"
+            else if (priv) sec = "wep"
+            print sig, sec, ssid
+        }
+        /^BSS / { out(); bss = 1; sig = "?"; ssid = ""; rsn = ""; wpa = 0; priv = 0; sect = ""; next }
+        /^\t[^\t]/ { sect = $1 }
+        /^\tsignal: / { sig = $2; sub(/\..*/, "", sig) }
+        /^\tcapability: / { priv = ($0 ~ / Privacy /) }
+        /^\tSSID: / { ssid = substr($0, 8) }
+        /^\tWPA:/ { wpa = 1 }
+        sect == "RSN:" && /Authentication suites:/ { s = $0; sub(/.*suites:/, "", s); rsn = rsn s }
+        END { out() }'
+}
+# Every radio's networks in range. A scan goes out from a random address while no network is
+# joined. Once one is, the kernel refuses a random address, as a driver without them always
+# does, and the scan only listens, so nothing goes out from an address a network knows. A
+# radio its supplicant is scanning with answers busy, and the kernel's last results are read
+# instead. A radio rfkill holds off is named.
+scan_radios() {
+    {
+        echo "radios ${WIRELESS:-none}"
+        for n in $WIRELESS; do
+            radio_off "$n" && echo "off $n"
+            ip link set dev "$n" up 2>/dev/null
+            { iw dev "$n" scan randomise 2>/dev/null || iw dev "$n" scan passive 2>/dev/null || iw dev "$n" scan dump 2>/dev/null; } | scan_lines
+        done
+    } > "$SCAN.new" 2>/dev/null && mv -f "$SCAN.new" "$SCAN"
+}
+
+# Until SIGTERM: retry a failed policy, restart a dead resolver or supplicant, report any change.
 cleanup() {
     say "stopping"
     forwarding off
-    [ -n "$DNSPID" ] && kill "$DNSPID" 2>/dev/null
+    # The supplicant, dnsmasq and dhcpcd's parsers run as users this root cannot signal; the
+    # zone's end ends them.
     [ -n "$UPDATE_PID" ] && kill "$UPDATE_PID" 2>/dev/null
-    for n in $WIRELESS; do p="$(wpa_pid "$n")"; [ -n "$p" ] && kill "$p" 2>/dev/null; done
-    command -v dhcpcd >/dev/null 2>&1 && dhcpcd -x 2>/dev/null
     exit 0
 }
 trap cleanup TERM INT
 while :; do
     changed=0
+    # A scan zone 0 asked for: its signal ends the wait below at once.
+    if [ "$scan_wanted" = 1 ]; then scan_wanted=0; scan_radios; fi
     if [ "$policy_ok" != 1 ]; then
-        if load_policy && forwarding on; then policy_ok=1; changed=1; say "nftables: policy loaded on retry; forwarding enabled"; fi
+        if load_policy && sync_gateways "$@" && forwarding on; then policy_ok=1; changed=1; say "nftables: policy loaded on retry; forwarding enabled"; fi
     elif ! nft list table inet kryptik >/dev/null 2>&1; then
         # The policy vanished (a flush inside the zone, say): close the path.
         forwarding off; policy_ok=0; changed=1; say "nftables: the policy is gone; forwarding disabled"
+    elif ! sync_gateways "$@"; then
+        forwarding off; policy_ok=0; changed=1
     fi
-    if [ -n "$DNSPID" ] && ! kill -0 "$DNSPID" 2>/dev/null; then
+    if [ -n "$DNSPID" ] && ! dns_alive "$DNSPID"; then
         say "dnsmasq died; restarting"; DNSPID=""; dns_ok=0; changed=1
         start_dns && dns_ok=1
+    elif [ -n "$DNSPID" ] && sync_upstream; then
+        say "dnsmasq: forwarding to $(tr '\n' ' ' < "$UPSTREAM")from its next query"
     fi
+    # A zone's resolver that died is started once more; until it answers, the dns chain
+    # leaves that zone on the shared one.
+    for e in $ZONEDNS; do
+        zp="${e#*:}"
+        [ -n "$zp" ] && ! dns_alive "$zp" || continue
+        say "dnsmasq for 10.19.0.${e%%:*} died; restarting"
+        start_zone_dns "${e%%:*}"; sleep 1; zone_dns_said "${e%%:*}"
+    done
+    [ "$policy_ok" = 1 ] && sync_dnsnat
     for n in $WIRELESS; do
-        p="$(wpa_pid "$n")"
-        if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then
-            say "wifi: wpa_supplicant on ${n} died; restarting"; rm -f "/run/wpa_supplicant.$n.pid"; start_wifi "$n"; changed=1
+        # Its stale pid file is its own user's to replace, which the next one does.
+        if [ -n "$(wpa_pid "$n")" ] && ! wpa_alive "$n"; then
+            say "wifi: wpa_supplicant on ${n} died; restarting"; start_wifi "$n"; changed=1
+        fi
+        # Switching a radio off takes its interface down, and its supplicant, which cannot
+        # read rfkill's events here, would leave it so once it is switched on again: up it goes,
+        # and the supplicant carries on.
+        flags="$(cat "/sys/class/net/$n/flags" 2>/dev/null)"
+        if [ -n "$flags" ] && [ $((flags & 1)) = 0 ] && wpa_alive "$n" && ! radio_off "$n" \
+           && ip link set dev "$n" up 2>/dev/null; then
+            say "wifi: ${n} is switched on again; up"
         fi
     done
+    # A radio held since the start gets its supplicant once switched on, tried once, so one
+    # that fails for another reason says so and is not tried every pass.
+    held=""
+    for n in $wifi_held; do
+        if radio_off "$n"; then held="$held $n"; continue; fi
+        say "wifi: ${n} is switched on; starting its supplicant"
+        start_wifi "$n"; changed=1
+    done
+    wifi_held="$held"
     wifi_now="$(wifi_state)"
     if [ "$wifi_now" != "$wifi_last" ]; then
         wifi_last="$wifi_now"; changed=1; say "wifi: ${wifi_now}"
         # A radio that just associated: ask the time now.
-        case "$wifi_now" in none|unconfigured|connecting) ;; *) time_ticks=999999 ;; esac
+        case "$wifi_now" in none|unconfigured|connecting|refused:*) ;; *) time_ticks=999999 ;; esac
     fi
-    # A tick is 10 s. The time: hourly once measured, else every 5 minutes
-    # (zone 0 takes at most one claim per 10 minutes anyway).
+    # 10 s ticks: the time hourly once measured, else every 5 min (zone 0 takes a claim per 10 min).
+    # A scan's signal ends a wait early, so each scan brings what follows forward by up to 10 s.
     time_ticks=$((time_ticks + 1))
     case "$TIME_STATE" in
         -*|+*|[0-9]*) time_every=360 ;;
@@ -328,18 +621,21 @@ while :; do
         ask_time "$@"
         [ "$TIME_STATE" != "$time_was" ] && changed=1
     fi
-    # Updates: the statement daily once zone 0 has taken one, else every 30
-    # minutes; a poll every minute, which is how `kryptik update fetch` is seen.
+    # Statement daily once zone 0 took one, else half-hourly; a poll a minute sees `update fetch`.
     update_ticks=$((update_ticks + 1)); statement_ticks=$((statement_ticks + 1))
     if [ -n "$(uplink_addr "$@")" ]; then
         if [ -e "$UPDATE_BROUGHT" ]; then statement_every=8640; else statement_every=180; fi
         if [ "$statement_ticks" -ge "$statement_every" ]; then
-            statement_ticks=0; update_run latest
+            # Asked again at the next pass when a poll was still running.
+            update_run latest && statement_ticks=0
         elif [ "$update_ticks" -ge 6 ]; then
             update_ticks=0; update_run poll
         fi
     fi
     [ "$changed" = 1 ] && status_line "$@"
+    # A scan asked for while this pass ran (its signal lands once a foreground step such as the
+    # time query ends) is answered now, not after the wait.
+    [ "$scan_wanted" = 1 ] && continue
     sleep 10 &
     wait $!
 done

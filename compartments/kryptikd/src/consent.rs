@@ -5,9 +5,8 @@
 //!   /run/kryptik-consent/<id>.code     the code the window asks for (the chrome's)
 //!   /run/kryptik-consent/<id>.answer   yes | no        (written by the chrome)
 //!
-//! No zone can reach the directory (root:kryptik 2770, made by sysinit), but
-//! the session's group can write to it, so nothing found there is trusted.
-//! Anything but a plain-file `yes` before the deadline is a refusal.
+//! No zone reaches the directory (root:kryptik 2770, made by sysinit), but the session's
+//! group writes to it: anything but a plain-file `yes` before the deadline is a refusal.
 
 use std::ffi::CString;
 use std::io::{self, Read, Write};
@@ -42,8 +41,7 @@ fn timeout() -> Duration {
         .unwrap_or(Duration::from_secs(TIMEOUT_SECS))
 }
 
-/// Open the channel directory without following a link; every later access
-/// is relative to it. It must be root's (or ours) and not world-writable.
+/// Open the channel directory, no symlink followed: root's (or ours) and not world-writable.
 fn open_channel(d: &Path) -> Result<OwnedFd, String> {
     use std::os::unix::ffi::OsStrExt;
     let c = CString::new(d.as_os_str().as_bytes())
@@ -51,7 +49,7 @@ fn open_channel(d: &Path) -> Result<OwnedFd, String> {
     let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
     if fd < 0 {
         return Err(format!(
-            "no consent channel at {}: nothing in zone 0 can approve this transfer ({})",
+            "no consent channel at {}: nothing in zone 0 can approve this request ({})",
             d.display(),
             io::Error::last_os_error()
         ));
@@ -105,9 +103,9 @@ fn nonce() -> Result<u64, String> {
     Ok(u64::from_ne_bytes(b))
 }
 
-/// Whether the chrome is watching: its lock is a plain file that someone
-/// holds exclusively. O_NONBLOCK keeps a FIFO at that name from hanging us.
+/// Whether the chrome is watching: someone holds its lock, a plain file, exclusively.
 fn watched(dfd: RawFd) -> bool {
+    // O_NONBLOCK: a FIFO at that name must not hang us.
     let Ok(f) = open_entry(dfd, WATCHER_LOCK, libc::O_RDONLY | libc::O_NONBLOCK, 0) else { return false };
     let Ok(st) = stat_of(f.as_raw_fd()) else { return false };
     if !is_regular(&st) {
@@ -119,9 +117,8 @@ fn watched(dfd: RawFd) -> bool {
     io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
 }
 
-/// Write the question to a fresh O_EXCL temporary, skipping taken names, make
-/// it group-readable for the chrome, and rename it to `<id>.ask`. The id's
-/// random nonce means no answer can be waiting under it in advance.
+/// Write the question to an O_EXCL temporary, group-readable for the chrome, and rename it to
+/// `<id>.ask`. The id's random nonce means no answer can be waiting under it in advance.
 fn place_question(dfd: RawFd, text: &str) -> Result<String, String> {
     for _ in 0..8 {
         let id = format!("{}-{}-{:016x}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst), nonce()?);
@@ -171,8 +168,7 @@ fn read_answer(dfd: RawFd, name: &str) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-/// Why a question got no `yes`, and whether the user saw it: only a question
-/// placed took focus in zone 0, so only that one pauses the next.
+/// Why a question got no `yes`, and whether it was shown (only a shown one pauses the next).
 #[derive(Debug)]
 pub struct Refusal {
     pub why: String,
@@ -198,8 +194,7 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// May this file cross? `Ok(())` only on an explicit `yes`. `asking` runs ten
-/// times a second while the question is open; `false` withdraws it.
+/// May this file cross? `asking` runs ten times a second while it is open; `false` withdraws it.
 pub fn ask(from: &str, to: &str, name: &str, bytes: u64, asking: &dyn Fn() -> bool) -> Result<(), Refusal> {
     ask_text(&format!("from={from}\nto={to}\nname={name}\nbytes={bytes}\n"), asking)
 }
@@ -209,8 +204,7 @@ pub fn keep() -> bool {
     true
 }
 
-/// May the clock be set? Asked past the unasked bound (docs/design/time.md).
-/// `kind=clock` tells the chrome which question to draw; no kind is a transfer.
+/// May the clock be set (docs/design/time.md)? `kind=clock` tells the chrome what to draw.
 pub fn ask_clock(now: &str, proposed: &str, sources: u8, asking: &dyn Fn() -> bool) -> Result<(), String> {
     ask_text(&format!("kind=clock\nnow={now}\nproposed={proposed}\nsources={sources}\n"), asking).map_err(|r| r.why)
 }
@@ -222,8 +216,7 @@ fn ask_text(text: &str, asking: &dyn Fn() -> bool) -> Result<(), Refusal> {
     let dfd = channel.as_raw_fd();
     if !watched(dfd) {
         return Err(Refusal::unseen(format!(
-            "no consent channel: nothing in zone 0 is watching {} (no trusted window to ask); \
-             refused for want of consent",
+            "no consent channel: no trusted window in zone 0 is watching {}; refused",
             d.display()
         )));
     }
@@ -247,8 +240,7 @@ fn ask_text(text: &str, asking: &dyn Fn() -> bool) -> Result<(), Refusal> {
         if Instant::now() >= deadline {
             break Err(format!("no answer from zone 0 within {} s; treated as a refusal", timeout().as_secs()));
         }
-        /* The asker's turn: this wait holds up its launcher's loop, which
-         * relays the zone's output and notices the zone ending. */
+        // This wait holds its launcher's loop: `asking` relays the zone's output and sees it end.
         if !asking() {
             break Err("the asking zone went away while the question was open; withdrawn".to_string());
         }

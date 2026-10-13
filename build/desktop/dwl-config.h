@@ -1,8 +1,8 @@
-/* Kryptik's dwl configuration. A border's colour comes from the zone in the
- * `kryptik.<zone>.` app_id prefix the proxy stamps (dwl-zone-borders.py adds
- * that to dwl.c); focus widens the coloured part but never changes the colour.
- * Programs start in a zone through kryptik-launch; only the chrome's menu
- * runs on the session's own display. */
+/* Kryptik's dwl configuration. A border's colour comes from the zone whose
+ * socket the window's client came through (dwl-zone-borders.py adds a socket
+ * per zone to dwl.c); focus widens the coloured part but never changes the
+ * colour. Programs start in a zone through kryptik-launch; only the chrome's
+ * menu runs on the session's own display. */
 #include "zone-colours.h"
 
 #define COLOR(hex)    { ((hex >> 24) & 0xFF) / 255.0f, \
@@ -14,17 +14,18 @@ static const int sloppyfocus               = 1;  /* focus follows mouse */
 static const int bypass_surface_visibility = 0;
 static const unsigned int borderpx         = 6;  /* the identity channel: wide */
 static const unsigned int bandpx           = 2;  /* how much narrower an unfocused border's colour is */
+static const unsigned int barpx            = 22; /* the bar naming a fullscreen window's zone */
+static const unsigned int barscale         = 2;  /* its 5x7 lettering, magnified */
 static const float rootcolor[]             = COLOR(0x101418ff);
 static const float urgentcolor[]           = COLOR(KRYPTIK_URGENT_BORDER);
 static const float fullscreen_bg[]         = {0.0f, 0.0f, 0.0f, 1.0f};
 
-/* zone -> border colour; see zone-colours.h */
-#define ZONE_ENTRY(name, border) { name, COLOR(border) },
+/* zone -> border colour and proxy uid, and a socket each; see zone-colours.h */
+#define ZONE_ENTRY(name, border, proxy) { name, COLOR(border), proxy },
 static const ZoneColor zonecolors_table[] = {
 	KRYPTIK_ZONE_COLOURS(ZONE_ENTRY)
 };
 static const float unzonedcolor[] = COLOR(KRYPTIK_UNZONED_BORDER);
-static const float unknownzonecolor[] = COLOR(KRYPTIK_UNKNOWN_BORDER);
 
 /* tagging - TAGCOUNT must be no greater than 31 */
 #define TAGCOUNT (9)
@@ -83,13 +84,14 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
 	{ MODKEY|WLR_MODIFIER_SHIFT, SKEY,           tag,             {.ui = 1 << TAG} }, \
 	{ MODKEY|WLR_MODIFIER_CTRL|WLR_MODIFIER_SHIFT,SKEY,toggletag, {.ui = 1 << TAG} }
 
-/* commands: zone launches, where --ask has the chrome prompt for a passphrase
- * if the zone needs one, and the chrome's own menu, a text program that needs
- * a zone 0 terminal of its own, as its window at login has */
+/* commands: zone launches (the chrome asks for a passphrase if needed) and the
+ * chrome's menu, a text program in a zone 0 terminal of its own */
 static const char *termcmd[]      = { "kryptik-launch", "--ask", "work",      "--", "havoc", NULL };
 static const char *personalcmd[]  = { "kryptik-launch", "--ask", "personal",  "--", "havoc", NULL };
 static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "havoc", "lynx", NULL };
 static const char *menucmd[]      = { "havoc", "/usr/bin/kryptik-chrome", "--menu", NULL };
+/* The screen lock, opened by the login password (docs/design/laptop.md). */
+static const char *lockcmd[]      = { "kryptik-lock", NULL };
 
 static const Key keys[] = {
 	/* modifier                  key                  function          argument */
@@ -97,6 +99,7 @@ static const Key keys[] = {
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_Return,      spawn,            {.v = termcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_p,           spawn,            {.v = personalcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_u,           spawn,            {.v = untrustedcmd} },
+	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_l,           spawn,            {.v = lockcmd} },
 	{ MODKEY,                    XKB_KEY_j,           focusstack,       {.i = +1} },
 	{ MODKEY,                    XKB_KEY_k,           focusstack,       {.i = -1} },
 	{ MODKEY,                    XKB_KEY_i,           incnmaster,       {.i = +1} },

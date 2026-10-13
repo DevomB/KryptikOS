@@ -1,6 +1,4 @@
-# Kryptik compositor layer (docs/roadmap.md, Compositor and GUI isolation).
-# A workspace apart from compartments/kryptikd, so no desktop dependency can
-# reach the privileged daemon's lockfile (ADR-010).
+# Apart from kryptikd's workspace, so no desktop dependency reaches its lockfile (ADR-010).
 [workspace]
 resolver = "2"
 members = ["zoneid", "wlproxy"]

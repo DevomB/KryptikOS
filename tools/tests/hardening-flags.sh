@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
-# Check that the hardening flags build an executable, a shared library, and a
-# program linking the two.
+# Check that the hardening flags build an executable, a shared library, and a program linking both.
 #
 #   tools/tests/hardening-flags.sh          test with $CC (default gcc)
 #   CC=x86_64-kryptik-linux-gnu-gcc ...    test the cross compiler
 #
-# -pie must stay out of the flags: it links Scrt1.o, whose _start needs main(),
-# so every shared library fails with "undefined reference to `main'". GCC is
-# --enable-default-pie, so executables are PIE anyway. Run inside the chroot to
-# test the flags as stage 04 applies them.
+# Run it in the chroot to test the flags as stage 04 applies them.
+# No -pie: it links Scrt1.o, whose _start needs main(), so shared libraries fail; GCC is default-PIE.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../../build/lib/common.sh"
 
-# Probes fail by design; the ERR trap would abort on the first one.
+# Some probes fail; the ERR trap would abort on the first one.
 trap - ERR
 set +e
 
@@ -34,12 +31,15 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 HCFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
+HCXXFLAGS="${HCFLAGS} ${KRYPTIK_CXXFLAGS_HARDENING}"
 HLDFLAGS="${KRYPTIK_LDFLAGS_HARDENING}"
+CXX="${CXX:-g++}"
 
 echo "Hardening flag verification"
 echo "  compiler : ${CC} ($("$CC" -dumpmachine 2>/dev/null))"
 echo "  version  : $("$CC" --version 2>/dev/null | head -1)"
 echo "  CFLAGS   : ${HCFLAGS}"
+echo "  CXXFLAGS : ${HCXXFLAGS}"
 echo "  LDFLAGS  : ${HLDFLAGS}"
 echo
 
@@ -80,7 +80,7 @@ int copy(const char *src) {
 int main(void) { printf("exe-ok %d\n", copy("kryptik")); return 0; }
 C
 
-# shellcheck disable=SC2086  # flags are deliberately word-split
+# shellcheck disable=SC2086  # the flags are word-split
 "$CC" $HCFLAGS $HLDFLAGS -o "$WORK/exe" "$WORK/exe.c" 2> "$WORK/exe.err"
 if [[ $? -eq 0 ]]; then
     green "executable links under the full flag set"
@@ -131,6 +131,32 @@ else
 fi
 echo
 
+echo "-- C++"
+cat > "$WORK/oob.cc" <<'CPP'
+#include <vector>
+int main(int argc, char **) { std::vector<int> v(1); return v[argc]; }
+CPP
+if ! have "$CXX"; then
+    note "no ${CXX}: the C++ checks did not run"
+else
+    # shellcheck disable=SC2086
+    "$CXX" $HCXXFLAGS $HLDFLAGS -o "$WORK/oob" "$WORK/oob.cc" 2> "$WORK/oob.err"
+    if [[ $? -ne 0 ]]; then
+        red "a C++ program does NOT link under the full flag set"
+        sed 's/^/         /' "$WORK/oob.err"
+    else
+        # The braces take the shell's own "Aborted" line along with the program's message.
+        { "$WORK/oob"; } 2> /dev/null
+        rc=$?
+        if [[ "$rc" -eq 134 ]]; then
+            green "an index past a vector's end aborts (-D_GLIBCXX_ASSERTIONS)"
+        else
+            red "an index past a vector's end did not abort (exit ${rc})"
+        fi
+    fi
+fi
+echo
+
 # An accepted flag can still produce nothing, so check the ELF.
 echo "-- what landed in the binaries"
 
@@ -177,9 +203,8 @@ else
                 red "exe: compiler claims --enable-default-pie but produced a non-PIE binary"
             fi
         else
-            note "exe: ${CC} is not built --enable-default-pie, so this binary is"
-            note "      not PIE. Kryptik's own GCC is (stages 01 and 02); run this"
-            note "      test inside the chroot for the authoritative answer."
+            note "exe: ${CC} is not built --enable-default-pie, so this binary is not PIE"
+            note "      Kryptik's GCC is (stages 01 and 02): run this in the chroot to check it"
         fi
     fi
 
@@ -188,8 +213,7 @@ else
         if nm -u "$WORK/exe" 2>/dev/null | grep -q "__strncpy_chk\|__memcpy_chk\|_chk@"; then
             green "exe: _FORTIFY_SOURCE is active (checked libc call emitted)"
         else
-            note "exe: no *_chk symbol - this probe may be optimised out; check a"
-            note "      real package before concluding _FORTIFY_SOURCE is inert"
+            note "exe: no *_chk symbol; the probe may be optimised out, so check a built package"
         fi
         if nm -u "$WORK/exe" 2>/dev/null | grep -q "__stack_chk_fail"; then
             green "exe: stack protector is active (__stack_chk_fail referenced)"
@@ -200,7 +224,7 @@ else
 fi
 echo
 
-# Each exception must drop one flag that is really in the set.
+# Each exception must drop a flag that is in the set.
 echo "-- hardening exceptions"
 EXC="${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt"
 if [[ ! -f "$EXC" ]]; then
@@ -229,8 +253,7 @@ fi
 echo
 if [[ "$FAIL" -gt 0 ]]; then
     echo "${FAIL} check(s) failed, ${PASS} passed."
-    echo "Do not work around this by deleting flags from hardening.env. Find"
-    echo "which flag broke what, and add a justified per-package exception."
+    echo "Do not delete flags from hardening.env: find which flag broke what, and add a justified exception."
     exit 1
 fi
 echo "All ${PASS} checks passed."

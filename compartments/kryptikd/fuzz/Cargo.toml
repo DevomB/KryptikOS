@@ -1,0 +1,33 @@
+# The broker's request parser under libFuzzer, run weekly by
+# .github/workflows/fuzz.yml. A package and lockfile of its own, so
+# libfuzzer-sys never reaches kryptikd's dependencies or Cargo.lock (ADR-010).
+[package]
+name = "kryptikd-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libc = "0.2"
+libfuzzer-sys = "0.4"
+
+# The daemon itself: under cfg(fuzzing) main.rs takes broker_request.rs in place of main.
+[[bin]]
+name = "broker_request"
+path = "../src/main.rs"
+test = false
+doc = false
+bench = false
+
+# The release build's overflow checks, and debug assertions as well.
+[profile.release]
+debug-assertions = true
+overflow-checks = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
+[workspace]

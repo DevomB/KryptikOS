@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Check that commits are authored and committed by the one permitted identity.
-# This is the only place it is written; both hooks and CI run this script.
+# Check that commits are authored and committed by the one permitted identity (hooks and CI run it).
 #
 #   tools/check-commit-identity.sh --pending      what the next commit would record
 #   tools/check-commit-identity.sh <rev-range>    every commit in the range
 #   tools/check-commit-identity.sh                every commit on every ref
-#
-# No $(...) in the per-commit loop: a fork per commit is slow on Windows.
 
 set -uo pipefail
 
@@ -54,10 +51,10 @@ else
     sep=$'\x1f'
     checked=0
     excepted=0
+    # No $(...) in this loop: a fork per commit is slow on Windows.
     while IFS="$sep" read -r sha an ae cn ce; do
         [[ -z "$sha" ]] && continue
-        # PR #130 was merged by GitHub, which wrote this immutable merge
-        # commit with platform identities. Future commits still need ours.
+        # A merge commit GitHub wrote under its own identities, which cannot be rewritten.
         if [[ "$sha" == f7fe5749efe77fe43c889d8b1459d190c03a4832 ]]; then
             excepted=$((excepted + 1))
             continue

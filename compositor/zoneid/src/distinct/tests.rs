@@ -37,7 +37,7 @@ fn pattern_rescues_nothing() {
 }
 
 #[test]
-fn zone_in_a_compositor_colour() {
+fn zone_in_compositor_colour() {
     for (name, hex) in COMPOSITOR_COLOURS {
         let r = analyze(&[id("x", hex)], Thresholds::default());
         assert!(r.critical().any(|c| c.a == "x" && c.b == name), "{name}");
@@ -60,7 +60,7 @@ fn missing_channels() {
 }
 
 #[test]
-fn low_contrast_reported_per_background() {
+fn low_contrast_per_background() {
     // Near-black: invisible on the dark desktop, fine on the light one.
     let z = [id("ink", "#101010")];
     let r = analyze(&z, Thresholds::default());
@@ -69,7 +69,7 @@ fn low_contrast_reported_per_background() {
 }
 
 #[test]
-fn duplicate_glyphs_and_labels_reported() {
+fn duplicate_glyphs_and_labels() {
     let a = ZoneIdentity::new("a", "#aa3333", None, Some("!"), Some("WORK")).unwrap();
     let b = ZoneIdentity::new("b", "#2f6f9f", None, Some("!"), Some("w-o-r-k")).unwrap();
     let r = analyze(&[a, b], Thresholds::default());
@@ -97,7 +97,7 @@ fn single_zone() {
 /// A known-bad palette must keep failing, worst under deuteranopia.
 #[test]
 fn known_bad_palette_fails() {
-    let shipped = [
+    let palette = [
         id("dev", "#b5651d"),
         id("net", "#2f6f9f"),
         id("personal", "#7a4fa3"),
@@ -105,12 +105,8 @@ fn known_bad_palette_fails() {
         id("vault", "#c9a227"),
         id("work", "#3a7d44"),
     ];
-    let r = analyze(&shipped, Thresholds::default());
-    assert!(
-        r.is_fatal(),
-        "the original palette is expected to fail; if this now passes, the \
-             metric has changed and needs looking at"
-    );
+    let r = analyze(&palette, Thresholds::default());
+    assert!(r.is_fatal(), "this palette must fail; a pass means the metric changed");
 
     let pair = |a: &str, b: &str, v: Vision| {
         r.critical().any(|c| {
@@ -124,7 +120,6 @@ fn known_bad_palette_fails() {
     );
     assert!(
         pair("untrusted", "work", Vision::Deuteranopia),
-        "untrusted/work under deuteranopia is the pair that matters to the \
-             threat model: sketchy links and your job, same window edge"
+        "untrusted/work should collide under deuteranopia too"
     );
 }

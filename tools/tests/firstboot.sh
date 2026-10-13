@@ -38,10 +38,25 @@ is "a user and root who can both authenticate: done"
 state "svc:x:999:999::/:/bin/false" "root:${HASH}:1:::::: svc:${HASH}:1::::::"
 not "a system account is not the desktop user"
 
+# A preseeded password the screen lock could not check would leave the user a lock that
+# never opens: only SHA-512 and SHA-256 crypt are set.
+sed -n '/^lockable_hash() /p' "$SRC" > "$T/lockable.sh"
+# shellcheck source=/dev/null
+. "$T/lockable.sh"
+declare -F lockable_hash >/dev/null || { echo "no lockable_hash in $SRC"; exit 1; }
+for h in "$HASH" '$5$salt$abcdefghijklmnopqrstuvwxyz'; do
+    lockable_hash "$h" && ok "a preseeded ${h:0:3} hash is set" || bad "a preseeded ${h:0:3} hash is refused"
+done
+for h in '$y$j9T$salt$hash' '$2b$10$abcdefghijklmnopqrstuv' '$1$salt$hash' 'abJnggxhB/yWI' ''; do
+    lockable_hash "$h" && bad "a preseeded '${h:0:3}' hash is set, which the lock cannot check" || ok "a preseeded '${h:0:3}' hash is refused"
+done
+grep -q 'if lockable_hash "$hash"; then' "$SRC" && ok "the preseed's user hash goes through it" || bad "the preseed sets the user's hash without lockable_hash"
+
 # Every question has a time limit: the service holds up the login prompt and
 # boot-success, so an unanswered one would hang a headless boot.
 unbounded="$(grep -nE '\$\(ask ' "$SRC" | grep -vE '\$\(ask (-s )?"\$PROMPT_SECS" ')"
 [[ -z "$unbounded" ]] && ok "every question has a time limit" || bad "a question waits forever: ${unbounded}"
+grep -qx 'PROMPT_SECS=600' "$SRC" && ok "which is ten minutes, as the user guide says" || bad "the time limit is not 600 s: $(grep '^PROMPT_SECS=' "$SRC")"
 
 # set_password, with chpasswd recording what it was given, and ask and tell
 # (ask.sh, which test-ask.py covers) reduced to a FIFO of answers and a file
@@ -70,6 +85,26 @@ answer '\n\n\n\n\n\n'
 [[ "$RC|$GOT" == "1|" ]] && ok "three empty answers set nothing" || bad "empty answers: rc=$RC chpasswd got '$GOT'"
 start=$SECONDS; answer ''
 [[ "$RC|$GOT" == "1|" && $((SECONDS - start)) -le 3 ]] && ok "no answer: the question gives up at its time limit" || bad "no answer: rc=$RC after $((SECONDS - start)) s"
+
+# new_user, with useradd recording the name it was given.
+sed -n '/^create_user() /,/^}/p; /^new_user() /,/^}/p' "$SRC" > "$T/newuser.sh"
+# shellcheck source=/dev/null
+. "$T/newuser.sh"
+declare -F create_user >/dev/null || { echo "no create_user in $SRC"; exit 1; }
+declare -F new_user >/dev/null || { echo "no new_user in $SRC"; exit 1; }
+say() { echo "kryptik-firstboot: $*"; }
+getent() { return 0; }
+useradd() { printf '%s' "${@: -1}" > "$T/useradd.in"; }
+names() { rm -f "$T/useradd.in"; : > "$T/screen"; name=""; printf '%b' "$1" >&7; new_user; RC=$?; GOT="$(cat "$T/useradd.in" 2>/dev/null)"; }
+names 'ana\n'
+[[ "$RC|$GOT|$name" == "0|ana|ana" ]] && ok "a name of lower-case letters makes the user" || bad "a plain name: rc=$RC useradd got '$GOT', name '$name'"
+names 'Ana\nana\n'
+[[ "$RC|$GOT" == "0|ana" ]] && grep -qF "refusing user name 'Ana': lower-case" "$T/screen" \
+    && ok "a refused name is told why and asked for again" || bad "a refused name: rc=$RC useradd got '$GOT', screen: $(tr '\n' '|' < "$T/screen")"
+names 'A\n-b\n\n'
+[[ "$RC|$GOT" == "1|" ]] && ok "three refused names make no user" || bad "three refused names: rc=$RC useradd got '$GOT'"
+start=$SECONDS; names ''
+[[ "$RC|$GOT" == "1|" && $((SECONDS - start)) -le 3 ]] && ok "no name: the question gives up at its time limit" || bad "no name: rc=$RC after $((SECONDS - start)) s"
 exec 7<&-
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

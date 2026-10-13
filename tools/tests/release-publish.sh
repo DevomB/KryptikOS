@@ -153,7 +153,7 @@ N="${S}/NOTES.md"
 zsum="$(sha "${S}/kryptik-0.1.0-usb.img.zst")"; bsum="$(sha "${S}/source-${REV:0:12}.tar")"
 if [[ "$(head -1 "$N")" == "# Kryptik 0.1.0" ]] && grep -qF 'built from `'"${REV}"'`' "$N" && grep -qx '## Downloads' "$N" \
     && grep -qF "| \`kryptik-0.1.0-usb.img.zst\` | " "$N" && grep -qF "| \`${zsum}\` |" "$N" && grep -qF "| \`${bsum}\` |" "$N" \
-    && grep -qF -- '-s kryptik-0.1.0.SHA256SUMS.sig < kryptik-0.1.0.SHA256SUMS' "$N" && grep -qF 'sha256sum -c kryptik-0.1.0.SHA256SUMS' "$N"; then
+    && grep -qF -- '-s kryptik-0.1.0.SHA256SUMS.sig < kryptik-0.1.0.SHA256SUMS' "$N" && grep -qF 'sha256sum -c --ignore-missing kryptik-0.1.0.SHA256SUMS' "$N"; then
     green "the page's text is the release notes, then each upload's size and hash and how to check a download"
 else
     red "NOTES.md"; sed 's/^/        /' "$N"
@@ -231,6 +231,32 @@ if [[ "$rc" -ne 0 ]] && refused "is not empty"; then
     green "a stage directory that already holds files is refused"
 else
     red "the used stage directory (exit ${rc})"; show
+fi
+
+# --- from 1.0.0 on: a production build, signed by the keys the tree names -----------------
+git -C "$T" tag v1.0.0 "$REV"
+P="${T}/build/config/release"; mkdir -p "$P"
+cp "${K}/release-signers" "$P/"; printf 'cert\n' > "$P/kryptik-sb.crt"
+E8="${W}/export-1.0.0"; make_export "$E8" 1.0.0 production PASS "$REV"
+publish "$E8" "${W}/stage-1.0.0"; rc=$?
+if [[ "$rc" -eq 0 ]] && has "staged v1.0.0, a release"; then
+    green "1.0.0 signed by the tree's keys stages as a release"
+else
+    red "1.0.0 with the tree's keys (exit ${rc})"; show
+fi
+make_export "$E8" 1.0.0 development PASS "$REV"
+publish "$E8" "${W}/stage-1.0.0-dev"; rc=$?
+if [[ "$rc" -ne 0 ]] && refused "1.0.0 is a production version"; then
+    green "1.0.0 built as a development release is refused"
+else
+    red "a development 1.0.0 (exit ${rc})"; show
+fi
+make_export "$E8" 1.0.0 production PASS "$REV"; printf 'another cert\n' > "$P/kryptik-sb.crt"
+publish "$E8" "${W}/stage-1.0.0-cert"; rc=$?
+if [[ "$rc" -ne 0 ]] && refused "kryptik-sb.crt is not"; then
+    green "1.0.0 whose certificate is not the tree's is refused"
+else
+    red "a 1.0.0 with another certificate (exit ${rc})"; show
 fi
 
 echo

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Remove from the sources directory every file the manifest no longer names.
+# Remove from the sources directory every file the manifest does not name.
 #
 #   ./tools/prune-sources.sh            remove them
 #   ./tools/prune-sources.sh --dry-run  say what would go
 #
-# Keeps CI's restored source cache from growing by a tarball per version bump.
-# Only regular files directly under KRYPTIK_SOURCES are touched.
+# Keeps CI's source cache from growing by a tarball per version bump; subdirectories are left alone.
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config

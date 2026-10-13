@@ -12,6 +12,9 @@ Steps (each one argument):
                             whose order among the others is not fixed)
     send:TEXT               send TEXT followed by Enter
     login:USER:PASSWORD     wait for "login:", authenticate, wait for a prompt
+    knock:REGEX             send an empty line every 5 seconds until REGEX
+                            matches, for a getty that prompts only after
+                            input; consumes like expect
     run:CMD                 run CMD at the shell, require exit status 0; what
                             it printed stays for the steps that follow
     run!:CMD                run CMD, any exit status
@@ -20,8 +23,15 @@ Steps (each one argument):
     grab:NAME:CMD           run CMD and record its output under NAME in --record
     sleep:SECONDS
     screendump:FILE         ask QEMU (QMP) for a PPM screenshot
+    screendump-head:N:FILE  the same of the GPU's output N (0 is the first)
+    head:SOCKET:WxH         plug a monitor of that size into the output whose
+                            VNC socket this is (run-ovmf.sh --second-head);
+                            0x0 pulls it out again
     key:NAME[+NAME...]      press keys on the guest's keyboard through QMP
                             (qcodes, e.g. key:y  key:ret  key:alt+e)
+    pointer:DX,DY           move the guest's mouse by DX,DY through QMP; it is
+                            relative and accelerated, so a large move ends at
+                            the screen's edge
     type-from:REGEX         wait for REGEX on a line that has ended (REGEX
                             names no line end), then type what its first
                             group matched (digits and letters) and Enter
@@ -32,7 +42,7 @@ With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
 state passphrase prompt at every boot; no step names it. Exits 0 when every
 step succeeded, else names the failing step. Standard library only.
 """
-import json, os, re, socket, sys, time
+import json, os, re, socket, struct, sys, time
 
 UNLOCK = re.compile(rb"passphrase for the state partition \(try \d of 3\): ")
 
@@ -63,8 +73,7 @@ class Drive:
         if self.log:
             self.log.write(d); self.log.flush()
         if self.passphrase:
-            # From the last answer, or just before this read: a prompt may
-            # straddle two reads, and none is answered twice.
+            # A prompt may straddle reads: search back a little, but never before the last answer.
             for m in UNLOCK.finditer(self.all, max(self.answered, len(self.all) - len(d) - 80)):
                 self.answered = m.end()
                 self.send_secret(self.passphrase)
@@ -148,9 +157,7 @@ class Drive:
             self._read()
 
     def login(self, user, password):
-        # agetty (built with AGETTY_RELOAD) prints "login:" only after input,
-        # and flushes input that arrives within a second of starting or waking,
-        # so one Enter can be lost: knock until the prompt appears.
+        # agetty prints "login:" only after input and may drop an early Enter, so keep knocking.
         self.drain(1)
         self.knock(r"login: ?$", self.timeout)
         self.send(user)
@@ -185,10 +192,7 @@ class Drive:
         return self.finish(tag, cmd)
 
     def finish(self, tag, cmd):
-        # Wait for the exit marker but leave the command's output for the
-        # steps that follow; only the marker is dropped. A shutdown message
-        # that matches instead stays, and is returned in place of a status.
-        # The status is read once its line has ended, as line_value's is.
+        # Only the marker goes, once its line ends; a shutdown message stays, returned in its place.
         rx = re.compile(rf"{tag}=(\d+)(?=\r?\n)|Power down|reboot: Restarting|Restarting system".encode(), re.M)
         deadline = time.time() + self.timeout
         while True:
@@ -203,6 +207,38 @@ class Drive:
                 tail = self.buf[-600:].decode("utf-8", "replace")
                 raise RuntimeError(f"timeout ({self.timeout}s) waiting for the end of: {cmd}; last output:\n{tail}")
             self._read()
+
+def vnc_open(path):
+    """An RFB 3.8 client on a display's VNC socket, as far as the server's
+    init: QEMU turns a virtio-gpu output on when a display asks for a size."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(15)
+    s.connect(path)
+    def need(n):
+        b = b""
+        while len(b) < n:
+            d = s.recv(n - len(b))
+            if not d: raise RuntimeError("the VNC server closed the connection")
+            b += d
+        return b
+    need(12)                                   # the server's version line
+    s.sendall(b"RFB 003.008\n")
+    types = need(need(1)[0])
+    if 1 not in types: raise RuntimeError(f"the VNC server offers no open access (types {list(types)})")
+    s.sendall(b"\x01")                         # security type None
+    if struct.unpack(">I", need(4))[0] != 0: raise RuntimeError("the VNC server refused the connection")
+    s.sendall(b"\x01")                         # ClientInit, shared
+    need(20)                                   # the size and pixel format
+    need(struct.unpack(">I", need(4))[0])      # the name
+    s.sendall(struct.pack(">BBHi", 2, 0, 1, -308))   # SetEncodings: ExtendedDesktopSize
+    return s
+
+def vnc_size(s, w, h):
+    """SetDesktopSize: one screen of w x h, or none, which turns the output off."""
+    n = 1 if w and h else 0
+    msg = struct.pack(">BBHHBB", 251, 0, w, h, n, 0)
+    if n: msg += struct.pack(">IHHHHI", 0, 0, 0, w, h, 0)
+    s.sendall(msg)
 
 def qmp(path, cmd, args=None):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -233,11 +269,13 @@ def main():
         print(__doc__); return 2
     d = Drive(serial, log, timeout)
     grabbed = {}
+    heads = {}   # VNC connections, kept: an output stays on while its display is there
     for i, st in enumerate(steps, 1):
         kind, _, rest = st.partition(":")
         try:
             if kind == "expect": d.expect(rest)
             elif kind == "seen": d.seen(rest)
+            elif kind == "knock": d.knock(rest)
             elif kind == "send": d.send(rest)
             elif kind == "login":
                 u, _, p = rest.partition(":"); d.login(u, p)
@@ -267,11 +305,29 @@ def main():
                 if not qmpsock: raise RuntimeError("screendump needs --qmp")
                 r = qmp(qmpsock, "screendump", {"filename": rest})
                 if "error" in r: raise RuntimeError(f"screendump: {r['error']}")
+            elif kind == "screendump-head":
+                if not qmpsock: raise RuntimeError("screendump-head needs --qmp")
+                head, _, fn = rest.partition(":")
+                r = qmp(qmpsock, "screendump", {"filename": fn, "device": "gpu0", "head": int(head)})
+                if "error" in r: raise RuntimeError(f"screendump of head {head}: {r['error']}")
+            elif kind == "head":
+                path, _, size = rest.rpartition(":")
+                w, _, h = size.partition("x")
+                if path not in heads: heads[path] = vnc_open(path)
+                vnc_size(heads[path], int(w), int(h))
             elif kind == "key":
                 if not qmpsock: raise RuntimeError("key needs --qmp")
                 keys = [{"type": "qcode", "data": k} for k in rest.split("+")]
                 r = qmp(qmpsock, "send-key", {"keys": keys, "hold-time": 80})
                 if "error" in r: raise RuntimeError(f"send-key {rest}: {r['error']}")
+                time.sleep(0.3)
+            elif kind == "pointer":
+                if not qmpsock: raise RuntimeError("pointer needs --qmp")
+                dx, dy = (int(v) for v in rest.split(","))
+                events = [{"type": "rel", "data": {"axis": "x", "value": dx}},
+                          {"type": "rel", "data": {"axis": "y", "value": dy}}]
+                r = qmp(qmpsock, "input-send-event", {"events": events})
+                if "error" in r: raise RuntimeError(f"input-send-event {rest}: {r['error']}")
                 time.sleep(0.3)
             elif kind == "type-from":
                 if not qmpsock: raise RuntimeError("type-from needs --qmp")

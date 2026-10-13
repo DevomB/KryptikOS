@@ -62,14 +62,13 @@ fn six_colour_palette_passes() {
     assert!(p.score >= MIN_DELTA_E + 0.5, "default search reached only {:.2}", p.score);
 }
 
-/// The coarse grid alone does not reach the floor (13.98 at step 17);
-/// refinement does.
+/// The coarse grid alone stays under the floor (13.98 at step 17); refinement reaches it.
 #[test]
 fn refinement_reaches_floor() {
     let coarse = propose_with(6, SearchOptions { refine: 0, ..SearchOptions::default() }).unwrap();
     let refined = default_six();
     assert!(coarse.score < refined.score, "coarse {:.2} vs refined {:.2}", coarse.score, refined.score);
-    assert!(coarse.score < MIN_DELTA_E, "the coarse grid now passes on its own ({:.2}); update this comment and the doc on SearchOptions::refine", coarse.score);
+    assert!(coarse.score < MIN_DELTA_E, "the coarse grid passes alone ({:.2}): update the docs here and on SearchOptions::refine", coarse.score);
 }
 
 #[test]

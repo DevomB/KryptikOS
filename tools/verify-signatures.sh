@@ -4,12 +4,11 @@
 #   ./tools/verify-signatures.sh [--strict] [--refresh] [--fetch-unknown-keys]
 #                                [--report=FILE] [--notes=FILE]
 #     --strict              release gate: anything unverified or unaudited fails,
-#                           except a signer no publisher states, when
-#                           tools/source-notes.tsv says so (no-usable-key)
+#                           except an unheld key the notes record as no-usable-key
 #     --refresh             discard cached keys and re-import
 #     --fetch-unknown-keys  import keys the signatures name (unaudited)
 #     --report=FILE         per-source results to FILE
-#     --notes=FILE          the caveats, not tools/source-notes.tsv
+#     --notes=FILE          caveats from FILE, not tools/source-notes.tsv
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
@@ -18,11 +17,10 @@ have gpg || die "gpg not found. Install gnupg."
 
 KEYDIR="${KRYPTIK_ROOT}/build/work/keys"
 SIGDIR="${KRYPTIK_SOURCES}/.signatures"
-# With the sources, so a cache of them carries it (tools/fetch-sources.sh).
+# Kept with the sources so their cache carries it; tools/fetch-sources.sh fetches it too.
 GNU_KEYRING="${KRYPTIK_SOURCES}/.keys/gnu-keyring.gpg"
 
-# A private GNUPGHOME, not --keyring: GnuPG 2.4 with keyboxd silently ignores
-# --keyring and verifies against the user's own store.
+# Not --keyring: GnuPG 2.4 with keyboxd ignores it and verifies against the user's own store.
 export GNUPGHOME="${KEYDIR}/gnupg"
 
 FETCH_UNKNOWN=0
@@ -42,9 +40,7 @@ for a in "$@"; do
 done
 [[ -n "$REPORT" ]] && : > "$REPORT"
 
-# A signer no publisher states, accepted deliberately: the note names the
-# routes that were tried. Such a source is not held against --strict; a note
-# for a source whose key is held is stale, and --strict fails on it.
+# no-usable-key notes let their sources pass --strict; --strict fails a note whose key is held.
 declare -A NOTED_NO_KEY=()
 if [[ -f "$NOTES" ]]; then
     while read -r n_pkg n_kind _; do
@@ -56,28 +52,23 @@ NOTED_LIST=()
 declare -A NOTE_USED=()
 declare -A SEEN_SOURCE=()
 
-# report <source> <class> <detail>
-# One tab-separated line per source, for provenance-inventory.sh. The class is
-# an assurance class (which kind of key verified it), not a pass/fail.
+# report SOURCE CLASS DETAIL for the inventory; CLASS is an assurance class, not pass or fail.
 report() {
     [[ -n "$REPORT" ]] || return 0
     printf '%s\t%s\t%s\n' "$1" "$2" "${3//$'\t'/ }" >> "$REPORT"
 }
 
-# Keys accepted without audit, awaiting out-of-band confirmation. Read on every
-# run, not only with --fetch-unknown-keys (see UNAUDITED_FPRS).
+# Unaudited keys awaiting out-of-band confirmation, read on every run (see UNAUDITED_FPRS).
 KEYS_MANIFEST="${KRYPTIK_ROOT}/keys.manifest"
 
 mkdir -p "$KEYDIR" "$SIGDIR" "$GNUPGHOME" "$(dirname "$GNU_KEYRING")"
 chmod 700 "$GNUPGHOME"
 
 IMPORTED_MARK="${GNUPGHOME}/.kryptik-imported"
-# This GNUPGHOME has the GNU keyring in it: kept beside the keys, not beside
-# the keyring file, which outlives any one checkout's keys.
+# Beside the keys, not the keyring file, which outlives any one checkout's keys.
 GNU_IMPORTED="${GNUPGHOME}/.gnu-keyring-imported"
 
-# A host that throttles (freedesktop.org answers 418 to a busy runner, others
-# 429 or 503) is asked again after a pause; a 404 is an answer.
+# Throttling answers (418 from freedesktop.org, 429, 503) are retried after a pause; a 404 is final.
 quiet_fetch() {   # quiet_fetch URL OUT
     local code try
     for try in 1 2 3; do
@@ -112,7 +103,7 @@ manifest_source() {
     "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list
 }
 
-# recv_key <keyid>: from a keyserver, or KRYPTIK_SIGCHECK_KEYSOURCE in tests.
+# recv_key KEYID: from a keyserver, or KRYPTIK_SIGCHECK_KEYSOURCE in tests.
 recv_key() {
     local keyid="$1" f
     if [[ -n "${KRYPTIK_SIGCHECK_KEYSOURCE:-}" ]]; then
@@ -152,10 +143,8 @@ import_keys() {
         return 0
     fi
 
-    # Fetched over the network, so it gives "signed by whoever the keyring
-    # says" unless its keys are checked out of band (docs/supply-chain.md).
-    # The keyring counts as imported only when the GNU keyring and every
-    # pinned key are in it; what a run could not fetch, the next fetches again.
+    # Fetched over the network: it vouches for whoever the keyring says until checked out of band
+    # (docs/supply-chain.md). It counts as imported once it and every pinned key are in.
     local count
     log "fetching GNU keyring"
     if [[ ! -s "$GNU_KEYRING" ]]; then
@@ -167,8 +156,6 @@ import_keys() {
         count="$(gpg --batch --list-keys 2>/dev/null | grep -c '^pub' || true)"
         [[ "$count" =~ ^[0-9]+$ && "$count" -ge 100 ]] && : > "$GNU_IMPORTED"
     fi
-    # Without it nothing a GNU maintainer signed can be checked: a run that
-    # could not fetch it is not a pass.
     if [[ ! -f "$GNU_IMPORTED" ]]; then
         rm -f "$IMPORTED_MARK"
         if [[ "$STRICT" -eq 1 ]]; then
@@ -180,13 +167,13 @@ Run again: what was fetched is kept."
         warn "the GNU keyring could not be fetched: what GNU maintainers signed is unverifiable this run"
     fi
 
-    # Safe from a keyserver: it cannot serve another key under a full
-    # fingerprint. One it does not serve is fetched again next run, and the
-    # sources that key signs are unverifiable until then.
+    # Safe from a keyserver, which cannot serve another key under a full fingerprint.
     log "fetching pinned maintainer keys (${#PINNED_FPRS[@]})"
     local fpr missing=0
     for fpr in "${PINNED_FPRS[@]}"; do
         gpg --batch --list-keys "$fpr" >/dev/null 2>&1 && continue
+        # Its publisher serves it when a source needs it.
+        has_provenance_row "$fpr" && continue
         recv_key "$fpr" || { warn "could not fetch pinned key ${fpr}"; missing=$((missing + 1)); }
     done
 
@@ -220,10 +207,7 @@ mark_unverifiable() {
     UNVERIFIABLE_LIST+=("$1")
 }
 
-# Upstream signs with nothing OpenPGP, by the manifest's own declaration or
-# by a listing that holds none: the lock pins the file, and
-# tools/verify-provenance.sh checks whatever else upstream publishes. A
-# declared signature that is missing or is not a signature stays unverifiable.
+# No OpenPGP signature upstream: the lock pins the file and verify-provenance.sh checks the rest.
 UNSIGNED=0
 UNSIGNED_LIST=()
 mark_unsigned() {
@@ -231,8 +215,7 @@ mark_unsigned() {
     UNSIGNED_LIST+=("$1")
 }
 
-# Unaudited keys, from keys.manifest. Once cached, such a key gives a plain
-# GOODSIG, so the manifest (read on every run) is what keeps it marked.
+# keys.manifest's keys: a cached one gives a plain GOODSIG, so only this list keeps it unaudited.
 declare -a UNAUDITED_FPRS=()
 if [[ -f "$KEYS_MANIFEST" ]]; then
     while read -r _pkg fpr _rest; do
@@ -240,24 +223,20 @@ if [[ -f "$KEYS_MANIFEST" ]]; then
     done < <(grep -v '^[[:space:]]*#' "$KEYS_MANIFEST" || true)
 fi
 
-# Keys trusted by fingerprint in the tree, reported as a stronger class than the
-# fetched GNU keyring. Each must be a fingerprint the project publishes on its
-# own origin, with that source noted here so it can be rechecked.
+# Pinned keys outrank the GNU keyring. Each is a fingerprint its project publishes on its own
+# origin, noted with it so it can be rechecked.
 PINNED_FPRS=(
-    # kernel.org mainline and stable.
+    # kernel.org mainline and stable: pgpkeys.git and kernel.org's WKD serve both (2026-10-02; key-provenance.tsv).
     "ABAF11C65A2970B130ABE3C479BE3E4300411886"   # Linus Torvalds, mainline
     "647F28654894E3BD457199BE38DBBDC86092693E"   # Greg Kroah-Hartman, stable
 
-    # Signs CPython 3.12.x and 3.13.x, per
-    # https://www.python.org/downloads/metadata/pgp/ (retrieved 2026-09-11).
+    # CPython 3.12.x and 3.13.x, per https://www.python.org/downloads/metadata/pgp/ (retrieved 2026-09-11)
     "7169605F62C751356D054A26A821E680E5FA6305"   # Thomas Wouters, CPython 3.12/3.13
 
     # From https://openssl-library.org/source/ (retrieved 2026-09-11): the page
-    # names the 2026 key as the release trust anchor, and the OMC key is in the
-    # pubkeys.asc it links. Both rest on TLS to that site alone. The OMC key has
-    # expired, so its signature on 3.3.1 verifies as EXPKEYSIG.
-    "EFC0A467D613CB83C7ED6D30D894E2CE8B3D79F5"   # OpenSSL OMC, signs 3.3.1
-    "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.8
+    # names the 2026 key as the release trust anchor. It rests on TLS to that
+    # site alone.
+    "B146647E45A7B33947AB226B2A2C87D161692D40"   # OpenSSL 2026 key, signs 3.5.x
 
     # From https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/RELEASE_KEY.asc
     # (retrieved 2026-09-27), the key file beside the releases. Of its five
@@ -265,31 +244,21 @@ PINNED_FPRS=(
     # release statement, so openssh is on the update path.
     "7168B983815A5EEF59A4ADFD2A3F414E736060BA"   # Damien Miller, OpenSSH
 
-    # From https://www.greenwoodsoftware.com/less/pubkey.asc (retrieved
-    # 2026-09-27), linked from the download page beside each release's .sig.
-    # DSA-1024 signing with SHA-1: weak, as docs/supply-chain.md says.
-    "AE27252BD6846E7D6EAE1DD6F153A7C833235259"   # Mark Nudelman, less
+    # https://www.greenwoodsoftware.com/less/pubkey.asc (retrieved 2026-09-27)
+    "AE27252BD6846E7D6EAE1DD6F153A7C833235259"   # Mark Nudelman, less (DSA-1024 with SHA-1: weak)
 
-    # From https://www.netfilter.org/files/coreteam-gpg-key-0xD70D1A666ACF2B21.txt
-    # (retrieved 2026-09-27), the "key" linked beside each release on the
-    # download pages. https://www.netfilter.org/about.html names it the current
-    # key, valid until 2028-10-12, and the older keys revoked.
+    # https://www.netfilter.org/files/coreteam-gpg-key-0xD70D1A666ACF2B21.txt (retrieved 2026-09-27);
+    # https://www.netfilter.org/about.html names it the current key, valid until 2028-10-12.
     "8C5F7146A1757A65E2422A94D70D1A666ACF2B21"   # Netfilter Core Team, libnftnl and nftables
 
-    # From https://cmake.org/download/ (retrieved 2026-09-27): beside each
-    # release's SHA-256.txt.asc the page names the signer 2D2CEF1034921684 and
-    # links it to the keyserver's lookup of this primary, whose signing
-    # subkey that is.
+    # https://cmake.org/download/ (retrieved 2026-09-27) names its signing subkey 2D2CEF1034921684
     "CBA23971357C2E6590D9EFD3EC8FEF3A7BFB4EDA"   # Brad King, cmake checksum lists
 
-    # libexpat names no release signer. This is the key gentoo.org's WKD serves
-    # for sping@gentoo.org, and the pin means only that; tools/source-notes.tsv
-    # carries the undesignated-signer caveat.
+    # libexpat names no signer: gentoo.org's WKD serves this for sping@gentoo.org (source-notes.tsv)
     "3176EF7DB2367F1FCA4F306B1F9B0E909AF37285"   # Sebastian Pipping, expat
 )
 
-# Primary and subkey fingerprints. GOODSIG names the signing subkey, while the
-# pins and keys.manifest record primaries.
+# Primaries and subkeys: GOODSIG names a subkey, while pins and keys.manifest hold primaries.
 key_fingerprints() {
     gpg --batch --with-colons --fingerprint --fingerprint "$1" 2>/dev/null \
         | awk -F: '$1=="fpr"{print $10}'
@@ -317,11 +286,12 @@ key_is_pinned() { _key_in "$1" "${PINNED_FPRS[@]}"; }
 
 # --- published key provenance ----------------------------------------------
 
-# Per key, where a publisher states its fingerprint by a route independent of
-# the signature. Tool data, not tree data, so it is found via BASH_SOURCE.
+# Where publishers state key fingerprints; tool data, not tree data, so found via BASH_SOURCE.
 KEY_PROVENANCE="${KRYPTIK_SIGCHECK_PROVENANCE:-$(dirname "${BASH_SOURCE[0]}")/key-provenance.tsv}"
 
 declare -a PROV_FPR=() PROV_KIND=() PROV_LOC=() PROV_SIGNS=()
+# The one page of GNU Savannah that serves a project's release keyring.
+SAVANNAH_LOCATOR='^https://savannah\.gnu\.org/project/release-gpgkeys\.php\?group=[a-z0-9-]+&download=1$'
 
 load_key_provenance() {
     [[ -f "$KEY_PROVENANCE" ]] || return 0
@@ -354,10 +324,18 @@ load_key_provenance() {
                     else
                         why="a github locator must be https://github.com/<account>.gpg"
                     fi
-                    # Without the release-author tie the row says only
-                    # "GitHub hosts this key".
+                    # Without the release-author tie the row says only "GitHub hosts this key".
                     [[ "$rest" == *published\ by* ]] \
                         || why="a github row must record which account published the release"
+                    ;;
+                savannah)
+                    if [[ "$l" =~ $SAVANNAH_LOCATOR ]]; then
+                        :
+                    elif [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" && "$l" == file://* ]]; then
+                        :
+                    else
+                        why="a savannah locator must be the project's release-gpgkeys.php?group=<project>&download=1"
+                    fi
                     ;;
                 wkd)  [[ "$l" == *@*.* ]]     || why="a wkd locator must be an email address" ;;
                 *)    why="unknown kind '${k}'" ;;
@@ -388,11 +366,8 @@ primaries_in() {
         | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print toupper($10); p = 0 }' || true
 }
 
-# anchored_import FPR FILE: merge the key FPR from FILE into the keyring, with
-# the revocations, subkeys and signatures FILE carries for it, and nothing else
-# FILE holds. A keyring of its own picks it out, and the export is checked to
-# be that key alone. Prints FILE's primary fingerprints. Returns 1 when FILE
-# lacks FPR, and 2 when FPR is there but cannot be taken alone.
+# anchored_import FPR FILE: merge key FPR alone from FILE and print FILE's primary fingerprints;
+# returns 1 when FILE lacks FPR, and 2 when FPR is there but cannot be taken alone.
 anchored_import() {
     local fpr="$1" file="$2" home found rc=1
     found="$(primaries_in "$file" | tr '\n' ' ')"
@@ -416,36 +391,42 @@ anchored_import() {
 # not, so a revocation or a new subkey published there is seen. The recorded
 # fingerprint is the anchor: only that key is taken from what a locator
 # serves, and a locator no longer serving it is refused, which fails every
-# source the key signs, even with a copy held. Once a run each.
-declare -A PROV_FETCHED=() PROV_REFUSED=()
+# source the row signs, even with a copy held. Each row once a run; a row
+# that could not be read is remembered, and gives no class this run.
+declare -A PROV_FETCHED=() PROV_REFUSED=() PROV_MISSED=()
 import_provenance_keys_for() {
-    local name="$1" i fpr tmp home got rc
+    local name="$1" i fpr tmp home got rc try
     for i in "${!PROV_FPR[@]}"; do
         case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
+        [[ -z "${PROV_FETCHED[$i]:-}" ]] || continue
+        PROV_FETCHED[$i]=1
         fpr="${PROV_FPR[$i]}"
-        [[ -z "${PROV_FETCHED[$fpr]:-}" ]] || continue
-        PROV_FETCHED[$fpr]=1
 
         tmp="$(mktemp)"
         case "${PROV_KIND[$i]}" in
-            korg|github)
-                if ! curl -fsSL --max-time 30 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
+            korg|github|savannah)
+                if ! curl -fsSL --max-time 30 --retry 2 --retry-delay 5 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
                     warn "${name}: could not fetch the published key from ${PROV_LOC[$i]}"
+                    PROV_MISSED[$i]=1
                     rm -f "$tmp"; continue
                 fi
                 ;;
             wkd)
                 # --locate-external-key imports what it finds, so it runs in a
                 # keyring of its own and only its export is read.
-                home="$(mktemp -d)"; chmod 700 "$home"
-                if GNUPGHOME="$home" gpg --batch --quiet --auto-key-locate clear,wkd \
-                       --locate-external-key "${PROV_LOC[$i]}" >/dev/null 2>&1; then
-                    GNUPGHOME="$home" gpg --batch --export > "$tmp" 2>/dev/null || true
-                fi
-                GNUPGHOME="$home" gpgconf --kill all >/dev/null 2>&1 || true
-                rm -rf "$home"
+                for try in 1 2; do
+                    home="$(mktemp -d)"; chmod 700 "$home"
+                    if GNUPGHOME="$home" gpg --batch --quiet --auto-key-locate clear,wkd \
+                           --locate-external-key "${PROV_LOC[$i]}" >/dev/null 2>&1; then
+                        GNUPGHOME="$home" gpg --batch --export > "$tmp" 2>/dev/null || true
+                    fi
+                    GNUPGHOME="$home" gpgconf --kill all >/dev/null 2>&1 || true
+                    rm -rf "$home"
+                    [[ -s "$tmp" ]] && break
+                done
                 if [[ ! -s "$tmp" ]]; then
                     warn "${name}: no WKD answer for ${PROV_LOC[$i]}"
+                    PROV_MISSED[$i]=1
                     rm -f "$tmp"; continue
                 fi
                 ;;
@@ -465,47 +446,49 @@ import_provenance_keys_for() {
             err "  not the recorded ${fpr}. REFUSING it: a key that"
             err "  changed at a published location is a finding, not an update."
         fi
-        PROV_REFUSED[$fpr]="${PROV_LOC[$i]}"
+        PROV_REFUSED[$i]="${PROV_LOC[$i]}"
     done
     return 0
 }
 
-# The locator of a refused key that signs NAME; fails if there is none.
+# The locator of a refused row that signs NAME; fails if there is none.
 refused_locator_for() {
     local name="$1" i
     for i in "${!PROV_FPR[@]}"; do
         case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
-        if [[ -n "${PROV_REFUSED[${PROV_FPR[$i]}]:-}" ]]; then
-            printf '%s' "${PROV_REFUSED[${PROV_FPR[$i]}]}"
+        if [[ -n "${PROV_REFUSED[$i]:-}" ]]; then
+            printf '%s' "${PROV_REFUSED[$i]}"
             return 0
         fi
     done
     return 1
 }
 
-# korg, wkd, github or empty: the provenance of the key that made a signature.
-key_provenance_kind() {
-    local keyid="$1" fpr i
-    [[ -n "$keyid" ]] || return 0
-    [[ "${#PROV_FPR[@]}" -gt 0 ]] || return 0
+# The row recording the key behind KEYID for NAME; fails if there is none.
+# A row speaks only for the sources it names.
+provenance_row() {
+    local name="$1" keyid="$2" fpr i
+    [[ -n "$keyid" && "${#PROV_FPR[@]}" -gt 0 ]] || return 1
     while IFS= read -r fpr; do
         for i in "${!PROV_FPR[@]}"; do
-            if [[ "${fpr^^}" == "${PROV_FPR[$i]}" ]]; then
-                printf '%s' "${PROV_KIND[$i]}"
+            if [[ "${fpr^^}" == "${PROV_FPR[$i]}" && "${PROV_SIGNS[$i]}" == *",${name},"* ]]; then
+                printf '%s' "$i"
                 return 0
             fi
         done
     done < <(key_fingerprints "$keyid")
-    return 0
+    return 1
+}
+
+has_provenance_row() {
+    local i
+    for i in "${!PROV_FPR[@]}"; do [[ "${PROV_FPR[$i]}" == "$1" ]] && return 0; done
+    return 1
 }
 
 load_key_provenance
 
-# check_sig <name> <sigfile> <datafile> [how]: classify gpg's status output.
-# An empty datafile checks a signed message, which carries its own data.
-# EXPKEYSIG counts as verified: the signature is valid and only the keyring's
-# copy of the key has expired (maintainers extend expiry; the keyring lags).
-# how, when given, ends each report detail.
+# check_sig NAME SIG DATA [HOW]: classify gpg's status; an empty DATA checks a signed message.
 check_sig() {
     local name="$1" sigfile="$2" datafile="$3" how="${4:+; $4}"
     local out signer keyid
@@ -526,15 +509,28 @@ check_sig() {
 
     out="$(gpg --batch --status-fd 1 --verify "${signed[@]}" 2>/dev/null || true)"
 
+    # EXPKEYSIG counts: the signature is valid and only the keyring's copy of the key has expired.
     if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
         local kind
         kind="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) .*/\1/p' | head -1)"
         signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
         keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) \([0-9A-F]*\).*/\2/p' | head -1)"
 
-        # A published or pinned key is no longer unaudited.
-        local pkind
-        pkind="$(key_provenance_kind "$keyid")"
+        # A published or pinned key is no longer unaudited. A row gives its
+        # class only once its published copy was read this run.
+        local row pkind=""
+        if row="$(provenance_row "$name" "$keyid")"; then
+            if [[ -z "${PROV_MISSED[$row]:-}" ]]; then
+                pkind="${PROV_KIND[$row]}"
+            elif [[ "$STRICT" -eq 1 ]]; then
+                warn "${name}: signature valid  [${signer:-unknown}], but the key's published copy was not read"
+                mark_unverifiable "${name} (its key's published copy at ${PROV_LOC[$row]} not read this run)"
+                report "$name" published-key-unread "${signer:-unknown} (${keyid}); ${PROV_LOC[$row]}${how}"
+                return 0
+            else
+                how="${how}; published copy at ${PROV_LOC[$row]} not read this run"
+            fi
+        fi
 
         if [[ -z "$pkind" ]] && ! key_is_pinned "$keyid" \
            && key_is_unaudited "$keyid"; then
@@ -548,6 +544,7 @@ check_sig() {
         local klass=signature-keyring-key
         case "$pkind" in
             korg)   klass=signature-korg-published-key ;;
+            savannah) klass=signature-savannah-published-key ;;
             wkd)    klass=signature-wkd-published-key ;;
             github) klass=signature-platform-published-key ;;
         esac
@@ -581,25 +578,25 @@ check_sig() {
     if printf '%s' "$out" | grep -q "^\[GNUPG:\] NO_PUBKEY"; then
         keyid="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] NO_PUBKEY //p' | head -1)"
 
-        # The key the signature names is circular trust: it proves only who
-        # signed. So it goes to keys.manifest for an out-of-band audit and is
-        # never counted as verified.
+        # A key the signature names proves only who signed: recorded for audit, never verified.
         if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
             if recv_key "$keyid"; then
                 out="$(gpg --batch --status-fd 1 --verify "${signed[@]}" 2>/dev/null || true)"
                 if printf '%s' "$out" | grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG)"; then
                     signer="$(printf '%s' "$out" | sed -n 's/^\[GNUPG:\] \(GOODSIG\|EXPKEYSIG\) [0-9A-F]* //p' | head -1)"
                     local fpr
-                    fpr="$(gpg --batch --with-colons --fingerprint "$keyid" 2>/dev/null                            | awk -F: '$1=="fpr"{print $10; exit}')"
+                    fpr="$(gpg --batch --with-colons --fingerprint "$keyid" 2>/dev/null \
+                           | awk -F: '$1=="fpr"{print $10; exit}')"
                     warn "${name}: signature valid  [${signer:-unknown}] but by an UNAUDITED key"
                     if ! grep -qiF -- "${fpr:-$keyid}" "$KEYS_MANIFEST" 2>/dev/null; then
-                        printf '%-18s %-42s %s
-' "$name" "${fpr:-$keyid}" "${signer:-unknown}"                             >> "$KEYS_MANIFEST"
+                        printf '%-18s %-42s %s\n' "$name" "${fpr:-$keyid}" "${signer:-unknown}" \
+                            >> "$KEYS_MANIFEST"
                     fi
                     # So later sources signed by this key count as unaudited too.
                     [[ -n "$fpr" ]] && UNAUDITED_FPRS+=("${fpr^^}")
                     FETCHED=$((FETCHED + 1))
                     FETCHED_LIST+=("${name} - ${signer:-unknown} (${fpr:-$keyid})")
+                    report "$name" signature-unaudited-key "${signer:-unknown} (${fpr:-$keyid})${how}"
                     return 0
                 fi
             fi
@@ -656,7 +653,6 @@ verify_gnu() {
     check_sig "$name" "$sig" "${KRYPTIK_SOURCES}/${file}" || true
 }
 
-# A suffix is not a format: python.org's .sig is Sigstore, its .asc OpenPGP.
 # A signed message carries its data; a detached signature does not.
 is_signed_message() {
     local packets
@@ -664,13 +660,13 @@ is_signed_message() {
     grep -q ':literal data packet:' <<< "$packets"
 }
 
+# A suffix is not a format: python.org's .sig is Sigstore, its .asc OpenPGP.
 is_pgp_signature() {
     [[ -s "$1" ]] || return 1
     gpg --batch --list-packets "$1" 2>/dev/null | grep -q ':signature packet:'
 }
 
-# Try .sig, .asc and .sign; one that is not OpenPGP passes the turn on. The
-# report names the suffix found, which the manifest can then declare.
+# Try .sig, .asc and .sign, skipping any that is not OpenPGP; the report names the suffix found.
 verify_any() {
     local name="$1" url="$2" file="$3"
     local suffix sig
@@ -701,8 +697,7 @@ verify_any() {
     report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
 }
 
-# verify_detached <name> <data> <sigurl> [how]: the detached signature at
-# sigurl over the file data, cached under its own name.
+# verify_detached NAME DATA SIGURL [HOW]: the signature at SIGURL over DATA, cached under its name.
 verify_detached() {
     local name="$1" data="$2" sigurl="$3" how="${4:-}"
     local sig="${SIGDIR}/${sigurl##*/}" suffix=".${sigurl##*.}"
@@ -714,8 +709,7 @@ verify_detached() {
         report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
         return
     fi
-    # A host can answer a busy runner with a page in place of the file: what
-    # came back is not kept, and the file is asked for once more.
+    # A busy host can answer with a page instead of the file: drop it and ask once more.
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
         [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || sleep 5
@@ -728,8 +722,7 @@ verify_detached() {
         report "$name" signature-not-openpgp "published ${suffix} is not an OpenPGP signature"
         return
     fi
-    # A signed message carries its data: it vouches for this data only if
-    # what it carries is exactly this data.
+    # A signed message vouches for DATA only if it carries DATA byte for byte.
     if is_signed_message "$sig"; then
         local carried="${sig}.carried"
         gpg --batch --quiet --yes --output "$carried" --decrypt "$sig" >/dev/null 2>&1 || true
@@ -747,8 +740,7 @@ verify_detached() {
     check_sig "$name" "$sig" "$data" "$how" || true
 }
 
-# The digest LIST gives FILE: the first field of the line naming it (a
-# leading * marks binary mode), or of a list that is one bare digest.
+# FILE's digest in LIST: from the line naming it (* marks binary mode), or a lone bare digest.
 listed_digest() {  # listed_digest LIST FILE
     awk -v f="$2" '
         NF >= 2 { n = $NF; sub(/^\*/, "", n); if (n == f) { print tolower($1); hit = 1; exit } }
@@ -756,10 +748,7 @@ listed_digest() {  # listed_digest LIST FILE
         END { if (!hit && NR == 1 && bare != "") print bare }' "$1"
 }
 
-# verify_sums <name> <url> <file> <signature>: a detached signature beside
-# the file over a checksum list, named for the signature without its
-# suffix. The file must match its digest in the list, and the signature the
-# list.
+# verify_sums NAME URL FILE SIG: FILE must match the list SIG signs (named SIG minus its suffix).
 verify_sums() {
     local name="$1" url="$2" file="$3" signame="$4"
     local listname="${signame%.*}"
@@ -787,8 +776,8 @@ verify_sums() {
     verify_detached "$name" "$list" "${url%/*}/${signame}" "signs ${listname}"
 }
 
-# kernel.org signs the uncompressed tar (<name>.tar.sign), for the kernel and
-# for util-linux, kbd, kmod, iproute2, libcap and e2fsprogs.
+# kernel.org signs the uncompressed tar (<name>.tar.sign): the kernel, util-linux, kbd, kmod,
+# iproute2, libcap and e2fsprogs.
 verify_kernel() {
     local name="$1" url="$2" file="$3"
     local sign="${SIGDIR}/${file%.xz}.sign"
@@ -830,10 +819,8 @@ if [[ "$FETCH_UNKNOWN" -eq 1 ]]; then
     # Never truncate: this is the only record of unaudited keys, and a later
     # run finds them already cached and would not add them back.
     if [[ ! -s "$KEYS_MANIFEST" ]]; then
-        printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.
-' >> "$KEYS_MANIFEST"
-        printf '# package           fingerprint                                signer
-' >> "$KEYS_MANIFEST"
+        printf '# Keys fetched by --fetch-unknown-keys. AUDIT THESE.\n' >> "$KEYS_MANIFEST"
+        printf '# package           fingerprint                                signer\n' >> "$KEYS_MANIFEST"
     fi
 fi
 import_keys
@@ -841,8 +828,8 @@ echo
 
 # The manifest's sig column says how upstream vouches for each file.
 while read -r name _ver url sig _; do
-    SEEN_SOURCE[$name]=1
     [[ -z "$name" ]] && continue
+    SEEN_SOURCE[$name]=1
     file="$(basename "$url")"
 
     # A kind this script does not know fails: skipping it would pass the row.
@@ -940,8 +927,7 @@ if [[ "$NOTED" -gt 0 ]]; then
     warn "${NOTED} source(s) signed by a key no publisher states, accepted by note (${NOTES#"$KRYPTIK_ROOT"/}):"
     printf '  - %s\n' "${NOTED_LIST[@]}"
 fi
-# A note that no unheld key needed: the key is held now, or the source went.
-# A signature that could not be checked this run tried no note.
+# An unused note is stale, unless its source is outside the manifest or went unchecked this run.
 untried_this_run() {   # untried_this_run NAME
     local u
     for u in "${UNVERIFIABLE_LIST[@]}"; do [[ "$u" == "$1 ("* ]] && return 0; done

@@ -8,14 +8,13 @@ import hashlib, sys, xml.etree.ElementTree as ET
 SIMPLE = {"int": "Arg::Int", "uint": "Arg::Uint", "fixed": "Arg::Fixed", "array": "Arg::Array", "fd": "Arg::Fd"}
 
 def args_of(msg):
-    """The message's arguments as Rust, in wire order, and how many are descriptors.
-    A type this does not know stops the generator."""
+    """The message's arguments as Rust, in wire order, and its fd count; an unknown type raises."""
     args, fds = [], 0
     for a in msg.findall("arg"):
         t = a.get("type"); nullable = "true" if a.get("allow-null") == "true" else "false"
         if t == "new_id":
             iface = a.get("interface")
-            # No interface (wl_registry.bind): the id follows the interface name and version on the wire.
+            # No interface (wl_registry.bind): the client names it on the wire, before the id.
             args.append(f'Arg::NewId {{ iface: Some("{iface}") }}' if iface else "Arg::NewId { iface: None }")
         elif t in ("string", "object"):
             args.append(f"Arg::{t.capitalize()} {{ nullable: {nullable} }}")

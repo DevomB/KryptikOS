@@ -1,25 +1,21 @@
-//! The update channel's rules (docs/design/update-channel.md): which pointers
-//! zone 0 accepts, and which bytes it takes from the net zone for a release
-//! the user asked for.
-//!
-//! Signatures are checked by `kryptik-update` (`Checks`), and only verified
-//! text reaches the parsers. Decided here: role, replay, staleness, and that
-//! each staged byte is one the signed manifest provides for, at its place.
+//! Zone 0's side of the update channel (docs/design/update-channel.md): which pointers it accepts
+//! and which bytes it stages; signatures are checked first, by `kryptik-update` (`Checks`).
 
 use std::cmp::Ordering;
 use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 pub const POINTER_MAGIC: &str = "KRYPTIK-LATEST-1";
-/// The pointer and its signature, each.
+/// Byte limit for the pointer and for its signature.
 pub const POINTER_MAX: usize = 8 * 1024;
-/// The manifest and its signature, each.
+/// Byte limit for the manifest and for its signature.
 pub const MANIFEST_MAX: u64 = 64 * 1024;
 /// Past this age a pointer is reported stale: it is re-issued on a schedule.
 pub const STALE_AFTER_SECS: i64 = 30 * 86400;
-/// How far ahead of this machine's clock a statement may be dated, allowing
-/// for skew. One dated later would make every genuine statement a replay.
+/// Where a stale pointer is also reported: agetty prints its issue.d drop-ins above every login prompt.
+pub const LOGIN_NOTICE: &str = "/run/issue.d/kryptik-update.issue";
+/// Skew allowed in a statement's date; one dated later would make every genuine one a replay.
 pub const MAX_AHEAD_SECS: i64 = 86400;
 /// One pointer is considered per hour; the rest are refused unread.
 pub const POINTER_INTERVAL_SECS: u64 = 3600;
@@ -39,8 +35,7 @@ fn is_version(s: &str) -> bool {
     !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-' | b'~'))
 }
 
-/// The pointer's text: the magic line, then each key exactly once. An unknown
-/// key is refused, so an older system never half-understands a newer format.
+/// The magic line, then each key once; an unknown key is refused, never half-understood.
 pub fn parse_pointer(text: &str) -> Result<Pointer, String> {
     let mut lines = text.lines();
     if lines.next() != Some(POINTER_MAGIC) {
@@ -77,9 +72,8 @@ pub fn parse_pointer(text: &str) -> Result<Pointer, String> {
     Ok(Pointer { role, version, issued, manifest_sha256: sha, base })
 }
 
-/// Where a release's files are fetched from: an absolute base as is, a relative
-/// one under the `CONF` channel address, never under what the net zone reports.
-/// Plain http only for a development image, a privacy matter: the hash is signed.
+/// A release's URL: an absolute base as is, a relative one under the `CONF` channel, never under
+/// what the net zone reports.
 pub fn resolve_base(channel: &str, base: &str, role: &str) -> Result<String, String> {
     let mut url = if base.contains("://") {
         base.to_string()
@@ -94,6 +88,7 @@ pub fn resolve_base(channel: &str, base: &str, role: &str) -> Result<String, Str
     }
     match url.split_once("://").map(|(scheme, _)| scheme) {
         Some("https") => Ok(url),
+        // Plain http costs privacy, not integrity: the hash is signed.
         Some("http") if role == "development" => Ok(url),
         Some("http") => Err("a production image does not fetch over plain http".into()),
         _ => Err(format!("{url:?} is neither https nor http")),
@@ -126,17 +121,15 @@ pub fn version_cmp(a: &str, b: &str) -> Ordering {
     (a.len() - i).cmp(&(b.len() - j))
 }
 
-/// What an accepted pointer says about this machine.
+/// Where this machine stands against an accepted pointer.
 #[derive(Debug, PartialEq)]
 pub enum Standing {
-    /// It names the running release, or an older one.
+    /// The pointer's release is the running one, or older.
     Current,
     Available(String),
 }
 
-/// Whether zone 0 accepts a verified pointer: it must be for this image's role,
-/// not issued before the newest already accepted (a replay), and not dated more
-/// than `MAX_AHEAD_SECS` after `now`.
+/// Accept a verified pointer for this image's role unless it is a replay or dated too far ahead.
 pub fn accept_pointer(p: &Pointer, required_role: &str, running: &str, newest_issued: Option<i64>, now: i64) -> Result<Standing, String> {
     if p.role != required_role {
         return Err(format!("the pointer's role is '{}'; this image requires '{required_role}'", p.role));
@@ -152,11 +145,15 @@ pub fn accept_pointer(p: &Pointer, required_role: &str, running: &str, newest_is
     Ok(if version_cmp(&p.version, running) == Ordering::Greater { Standing::Available(p.version.clone()) } else { Standing::Current })
 }
 
-/// How many whole days old the newest accepted pointer is, and whether that
-/// is past the bound. A clock behind the pointer reads as zero days.
+/// Whole days since `issued`, and whether that is stale; a clock behind it reads as zero.
 pub fn staleness(now: i64, issued: i64) -> (i64, bool) {
     let age = (now - issued).max(0);
     (age / 86400, age > STALE_AFTER_SECS)
+}
+
+/// Whole days the clock reads before `then`, once that is more than the day a statement may lead it.
+fn behind(now: i64, then: i64) -> Option<i64> {
+    (then > now.saturating_add(MAX_AHEAD_SECS)).then(|| (then - now) / 86400)
 }
 
 /// One file of a release, from the verified manifest.
@@ -166,8 +163,7 @@ pub struct Entry {
     pub size: u64,
 }
 
-/// Parses `check-manifest`'s output: `file <size> <name>` lines, others
-/// ignored. Names must pass the broker's transfer-name check.
+/// Parse `check-manifest`'s `file <size> <name>` lines; names must pass the broker's check.
 pub fn parse_file_list(text: &str) -> Result<Vec<Entry>, String> {
     let mut out: Vec<Entry> = Vec::new();
     for line in text.lines() {
@@ -190,10 +186,9 @@ pub fn total_bytes(files: &[Entry]) -> u64 {
     files.iter().fold(0, |sum, e| sum.saturating_add(e.size))
 }
 
-/// Whether `len` bytes for `name` at `offset` may be written, `held` being
-/// there already. Until the manifest verifies (`files` is `None`) only it and
-/// its signature are taken, whole and small; then only listed names, at exactly
-/// `held` (resumable, never out of order), never past the signed size.
+/// Whether `len` bytes of `name` may be written at `offset`, with `held` already there.
+/// Until the manifest verifies, only it and its signature, whole and small; then listed files,
+/// appended in order, never past the signed size.
 pub fn may_put(files: Option<&[Entry]>, name: &str, offset: u64, len: u64, held: u64) -> Result<(), String> {
     if len == 0 {
         return Err("nothing to put".into());
@@ -219,7 +214,7 @@ pub fn may_put(files: Option<&[Entry]>, name: &str, offset: u64, len: u64, held:
     Ok(())
 }
 
-/// What is still missing and from which byte: the answer to `update-poll`.
+/// Each missing file and the byte it resumes at, for `update-poll`.
 pub fn still_needed(files: &[Entry], held: impl Fn(&str) -> u64) -> Vec<(String, u64)> {
     files.iter().filter_map(|e| { let h = held(&e.name); (h < e.size).then(|| (e.name.clone(), h)) }).collect()
 }
@@ -229,51 +224,191 @@ pub fn still_needed(files: &[Entry], held: impl Fn(&str) -> u64) -> Vec<(String,
  *   pointer             the newest statement accepted, as signed
  *   considered          when a statement was last looked at (rate limit)
  *   refused             when a manifest was last refused (rate limit)
- *   wanted              the version the user asked for (`kryptik update fetch`)
+ *   wanted              the version asked for (`kryptik update fetch`, or `auto`)
+ *   auto                `on` while each newer release is asked for unprompted
  *   files               `check-manifest`'s output for it, once verified
  *   incoming/<version>/ the staged release, the directory `apply` is given
  *
  * Functions take the directory and the checks, so tests supply their own.
  */
-
-
 pub const STATE_DIR: &str = "/var/lib/kryptik/update";
 pub const TOOL: &str = "/usr/sbin/kryptik-update";
 pub const ROLE_FILE: &str = "/usr/share/kryptik/trust/required-role";
 pub const CONF: &str = "/etc/kryptik/update.conf";
-/// The most one `update-put` carries. The launcher answers each between two
-/// looks at its zone, so supervision is never more than one piece away.
+/// What the installer wrote on the state partition, once: its age is how long a machine that has
+/// never accepted a statement has gone without one.
+pub const INSTALL_RECORD: &str = "/var/lib/kryptik/install.json";
+/// The trial `kryptik-update apply` arms and boot-success settles.
+pub const TRIAL: &str = "/var/lib/kryptik/boot/trial";
+/// Largest `update-put`, so the launcher never goes long without checking its zone.
 pub const PUT_MAX: usize = 1 << 20;
 
-/// The signature checks, as functions so a test can stand in for
-/// `kryptik-update`. `manifest` returns what `check-manifest` printed.
+/// The signature checks, as functions so a test can stand in for `kryptik-update`.
 pub struct Checks<'a> {
     pub pointer: &'a dyn Fn(&Path, &Path) -> Result<(), String>,
+    /// Returns what `check-manifest` printed.
     pub manifest: &'a dyn Fn(&Path) -> Result<String, String>,
 }
 
-fn run_tool(args: &[&std::ffi::OsStr]) -> Result<String, String> {
-    let out = std::process::Command::new(TOOL)
-        .args(args)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("{TOOL}: {e}"))?;
-    if out.status.success() {
-        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+/// Who the checks run as. They read what the net zone sent, with ssh-keygen and the shell's text
+/// tools, and need nothing of root's, so a flaw in those parsers is not root's either.
+const CHECKER: u32 = 65534;
+/// Where the checks' copies go: a tmpfs only root writes and every account may search, which
+/// zone 0's /run/kryptik (0700) is not.
+const CHECK_BASE: &str = "/run";
+/// One check at a time, so what is left of one can be ended without touching another.
+const CHECK_LOCK: &str = "/run/kryptik/check.lock";
+/// How long a check may take, ample for 64 KiB: one that hangs holds the lock every check waits on.
+const CHECK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `tool VERB` on copies of `inputs`, each a file and the name its copy takes, in a directory of
+/// their own under `base`, passed whole when `whole` and one by one otherwise. Under root it runs
+/// as `CHECKER` with no new privileges, in a directory it owns and takes as its TMPDIR, one check
+/// at a time, and nothing it started outlives it or `deadline`.
+fn run_check(tool: &Path, base: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool, deadline: std::time::Duration) -> Result<String, String> {
+    let root = unsafe { libc::geteuid() } == 0;
+    let _one = if root { Some(check_lock()?) } else { None };
+    let dir = make_scratch(base)?;
+    let ran = check_in(tool, &dir, verb, inputs, whole, deadline);
+    let _ = std::fs::remove_dir_all(&dir);
+    ran
+}
+
+/// The lock that keeps checks one at a time; held while the returned file is open.
+fn check_lock() -> Result<std::fs::File, String> {
+    lock(Path::new(CHECK_LOCK))
+}
+
+/// An exclusive flock on `path`, made if missing; held while the returned file is open.
+fn lock(path: &Path) -> Result<std::fs::File, String> {
+    use std::os::unix::io::AsRawFd;
+    let f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } < 0 {
+        return Err(format!("{}: {}", path.display(), std::io::Error::last_os_error()));
     }
-    let err = String::from_utf8_lossy(&out.stderr);
+    Ok(f)
+}
+
+/// Kill whatever still runs as `CHECKER`: a checker taken over through a parser could leave a
+/// process behind, which would sit beside the next check in the directory that check owns. No
+/// other process on the host runs as that uid (a zone's nobody is its own base + 65534).
+fn end_checker() {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new("/usr/bin/true");
+    cmd.env_clear().uid(CHECKER).gid(CHECKER).stdin(std::process::Stdio::null());
+    // SAFETY: only kill runs between fork and exec, as CHECKER, which spares the caller.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::kill(-1, libc::SIGKILL);
+            Ok(())
+        });
+    }
+    let _ = cmd.status();
+}
+
+fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole: bool, deadline: std::time::Duration) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    let root = unsafe { libc::geteuid() } == 0;
+    for (from, name) in inputs {
+        let to = dir.join(name);
+        std::fs::copy(from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+        std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o644)).map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    if root {
+        std::os::unix::fs::chown(dir, Some(CHECKER), Some(CHECKER)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut cmd = std::process::Command::new(tool);
+    cmd.arg(verb);
+    if whole {
+        cmd.arg(dir);
+    } else {
+        cmd.args(inputs.iter().map(|(_, name)| dir.join(name)));
+    }
+    cmd.env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin").env("TMPDIR", dir).stdin(std::process::Stdio::null());
+    if root {
+        cmd.uid(CHECKER).gid(CHECKER);
+        // SAFETY: only prctl runs between fork and exec, after the uid has changed.
+        unsafe {
+            cmd.pre_exec(|| match libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) {
+                0 => Ok(()),
+                _ => Err(std::io::Error::last_os_error()),
+            });
+        }
+    }
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", tool.display()))?;
+    // Its answer is a few lines, which the pipes hold until it ends.
+    let until = std::time::Instant::now() + deadline;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < until => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(e) => return Err(format!("{}: {e}", tool.display())),
+        }
+    };
+    // Nothing the checker started outlives it, or holds its pipes open.
+    if root {
+        end_checker();
+    }
+    let Some(status) = status else {
+        return Err(format!("{verb} gave no answer within {} s", deadline.as_secs()));
+    };
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_end(&mut stdout);
+    }
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_end(&mut stderr);
+    }
+    if status.success() {
+        return Ok(String::from_utf8_lossy(&stdout).into_owned());
+    }
+    let err = String::from_utf8_lossy(&stderr);
     Err(err.lines().last().unwrap_or("refused").trim_start_matches("kryptik-update: ").to_string())
 }
 
-/// The checks the installed system uses: `kryptik-update`, with the trust
-/// anchor on the verified root and nothing from this process's environment.
+/// A fresh directory that mkdtemp names under `base`, or under the system's temporary directory.
+fn make_scratch(base: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    let parent = if base.is_dir() { base.to_path_buf() } else { std::env::temp_dir() };
+    let mut template = parent.join("kryptik-check.XXXXXX").as_os_str().as_bytes().to_vec();
+    template.push(0);
+    if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+        return Err(format!("{}: {}", parent.display(), std::io::Error::last_os_error()));
+    }
+    template.pop();
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(template)))
+}
+
+/// `kryptik-update VERB DIR` on the manifest and signature in `dir`, all it reads there.
+fn check_signed_pair(verb: &str, dir: &Path) -> Result<String, String> {
+    let (m, s) = (dir.join("manifest"), dir.join("manifest.sig"));
+    run_check(Path::new(TOOL), Path::new(CHECK_BASE), verb, &[(&m, "manifest"), (&s, "manifest.sig")], true, CHECK_DEADLINE)
+}
+
+/// The installed system's checks: `kryptik-update`, on copies, as `CHECKER`.
 pub fn tool_checks() -> Checks<'static> {
     Checks {
-        pointer: &|p, s| run_tool(&["check-pointer".as_ref(), p.as_os_str(), s.as_os_str()]).map(|_| ()),
-        manifest: &|d| run_tool(&["check-manifest".as_ref(), d.as_os_str()]),
+        pointer: &|p, s| {
+            let pair = [(p, "latest"), (s, "latest.sig")];
+            run_check(Path::new(TOOL), Path::new(CHECK_BASE), "check-pointer", &pair, false, CHECK_DEADLINE).map(|_| ())
+        },
+        manifest: &|d| check_signed_pair("check-manifest", d),
     }
+}
+
+/// `kryptik-update check-release` on the manifest and signature in `dir`:
+/// its version and signed date once both verify, in any version order.
+pub fn check_release(dir: &Path) -> Result<String, String> {
+    check_signed_pair("check-release", dir)
 }
 
 /// The role this image requires. A missing file is refused, never read as
@@ -293,9 +428,8 @@ pub fn running_version() -> String {
     text.lines().find_map(|l| l.strip_prefix("VERSION_ID=")).map(|v| v.trim_matches('"').to_string()).unwrap_or_default()
 }
 
-/// `channel = <address>` from `CONF`. A copy written under /etc does not
-/// survive the next boot (sysinit.sh, `prune_etc_upper`), and the address is
-/// only where to ask: answers are believed on the trust anchor's signature.
+/// `channel = <address>` from `CONF`, the image's own: sysinit prunes a copy written under /etc.
+/// The address is only where to ask; answers stand on their signatures.
 pub fn channel_from(conf: &str) -> Option<String> {
     conf.lines().find_map(|l| {
         let (k, v) = l.split_once('=')?;
@@ -312,12 +446,25 @@ fn put_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     crate::files::write_atomic(path, &[bytes], 0o600, None).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Held by `put`, `want`, `forget` and the discards while they read and change the request and
+/// its stage, so a piece checked against one stage never lands in the next.
+fn stage_lock(dir: &Path) -> Result<std::fs::File, String> {
+    private_dir(dir)?;
+    lock(&dir.join("stage.lock"))
+}
+
 fn stored_pointer(dir: &Path) -> Option<Pointer> {
     parse_pointer(&std::fs::read_to_string(dir.join("pointer")).ok()?).ok()
 }
 
 fn wanted(dir: &Path) -> Option<String> {
     let v = std::fs::read_to_string(dir.join("wanted")).ok()?.trim().to_string();
+    is_version(&v).then_some(v)
+}
+
+/// A release the user dropped (`forget`), which automatic fetching then leaves alone.
+fn declined(dir: &Path) -> Option<String> {
+    let v = std::fs::read_to_string(dir.join("declined")).ok()?.trim().to_string();
     is_version(&v).then_some(v)
 }
 
@@ -334,9 +481,7 @@ fn verified_files(dir: &Path, version: &str) -> Option<Vec<Entry>> {
     (text.lines().next() == Some(&format!("version: {version}"))).then(|| parse_file_list(&text).ok()).flatten()
 }
 
-/// `update-latest`: a pointer and its signature from the net zone. One is
-/// looked at per interval, whatever its fate, so a hostile zone cannot keep
-/// zone 0 verifying signatures.
+/// `update-latest`: one pointer per interval, so a hostile zone cannot keep zone 0 verifying.
 pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, pointer: &[u8], sig: &[u8]) -> Result<Standing, String> {
     private_dir(dir)?;
     let last: Option<i64> = std::fs::read_to_string(dir.join("considered")).ok().and_then(|s| s.trim().parse().ok());
@@ -360,22 +505,68 @@ pub fn latest(dir: &Path, checks: &Checks, now: i64, role: &str, running: &str, 
     Ok(standing)
 }
 
-/// `kryptik update fetch`: the user asks for the release the newest accepted
-/// statement names. Nothing is fetched that was not asked for, and nothing is
-/// asked for that this image would not fetch: the poll would only say `idle`.
+/// `kryptik update fetch`, or the poll with `auto` on: asks for the release the
+/// newest accepted statement names. Nothing is fetched that was not asked for,
+/// and nothing is asked for that this image would not fetch: the poll would
+/// only say `idle`.
 pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Result<String, String> {
     let p = stored_pointer(dir).ok_or("no statement of what is current has been accepted yet")?;
     if version_cmp(&p.version, running) != Ordering::Greater {
         return Err(format!("{} is the newest release known, and this machine runs {running}", p.version));
     }
     let channel = channel.ok_or_else(|| format!("this image names no update channel ({CONF})"))?;
+    // Refused here if this image would not fetch it: the poll would only say `idle`.
     resolve_base(channel, &p.base, role).map_err(|e| format!("{} cannot be fetched: {e}", p.version))?;
+    let _lock = stage_lock(dir)?;
     if wanted(dir).as_deref() != Some(p.version.as_str()) {
-        let _ = std::fs::remove_file(dir.join("files"));
-        let _ = std::fs::remove_dir_all(dir.join("incoming"));
+        clear_stage(dir);
     }
     put_file(&dir.join("wanted"), p.version.as_bytes())?;
+    // Asked for again: a forgotten version is no longer passed over.
+    let _ = std::fs::remove_file(dir.join("declined"));
     Ok(p.version)
+}
+
+/// `kryptik update forget`: drop the release asked for and what has arrived of it. Automatic
+/// fetching then passes that version over; a newer one, or `fetch`, asks again.
+pub fn forget(dir: &Path) -> Result<String, String> {
+    let _lock = stage_lock(dir)?;
+    let v = wanted(dir).ok_or("no release has been asked for")?;
+    // Recorded first, so the next poll never asks for it again in between.
+    put_file(&dir.join("declined"), v.as_bytes())?;
+    let _ = std::fs::remove_file(dir.join("wanted"));
+    if !clear_stage(dir) {
+        return Err(format!("{v} is no longer asked for, but what had arrived of it could not be deleted"));
+    }
+    Ok(v)
+}
+
+/// Anything but `on` is off, a damaged block among them.
+fn auto(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("auto")).is_ok_and(|s| s.trim() == "on")
+}
+
+/// `kryptik update auto on|off`. Off asks for nothing more; what was asked
+/// for keeps arriving, as after a `fetch`.
+pub fn set_auto(dir: &Path, on: bool, channel: Option<&str>) -> Result<(), String> {
+    private_dir(dir)?;
+    let path = dir.join("auto");
+    if !on {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", path.display())),
+            _ => Ok(()),
+        };
+    }
+    if channel.is_none() {
+        return Err(format!("this image names no update channel ({CONF}), so there is nothing to fetch"));
+    }
+    put_file(&path, b"on\n")
+}
+
+/// Whether a manifest was refused less than an interval before `now`.
+fn refused_lately(dir: &Path, now: i64) -> bool {
+    let t: Option<i64> = std::fs::read_to_string(dir.join("refused")).ok().and_then(|s| s.trim().parse().ok());
+    t.is_some_and(|t| (now - t).unsigned_abs() < POINTER_INTERVAL_SECS)
 }
 
 /// A wanted release: its pointer, its base, and the files still missing with their sizes.
@@ -383,7 +574,7 @@ type Outstanding = (Pointer, String, Vec<(String, u64)>);
 
 /// What is wanted, where from, and what of it is still missing: `None` when
 /// nothing is, which the broker says as `idle`.
-fn outstanding(dir: &Path, channel: &str, role: &str, running: &str) -> Option<Outstanding> {
+fn outstanding(dir: &Path, channel: &str, role: &str, running: &str, now: i64) -> Option<Outstanding> {
     let version = wanted(dir)?;
     let p = stored_pointer(dir).filter(|p| p.version == version)?;
     if version_cmp(&version, running) != Ordering::Greater {
@@ -393,14 +584,24 @@ fn outstanding(dir: &Path, channel: &str, role: &str, running: &str) -> Option<O
     let stage = staging(dir, &version);
     let need = match verified_files(dir, &version) {
         Some(files) => still_needed(&files, |n| held(&stage, n)),
+        // The next pair would be refused unread, so none is fetched.
+        None if refused_lately(dir, now) => return None,
         None => ["manifest", "manifest.sig"].iter().filter(|n| held(&stage, n) == 0).map(|n| (n.to_string(), 0)).collect(),
     };
     Some((p, base, need))
 }
 
-/// `update-poll`: the net zone asks, because nothing can call it.
-pub fn poll(dir: &Path, channel: &str, role: &str, running: &str) -> String {
-    match outstanding(dir, channel, role, running) {
+/// `update-poll`: the net zone asks, because nothing can call it. With `auto`
+/// on, the release the newest statement names is first asked for, as `fetch`
+/// would ask for it.
+pub fn poll(dir: &Path, channel: &str, role: &str, running: &str, now: i64) -> String {
+    if auto(dir)
+        && stored_pointer(dir).is_some_and(|p| wanted(dir).as_ref() != Some(&p.version) && declined(dir).as_ref() != Some(&p.version))
+    {
+        // Refused as `fetch` would be: nothing newer, or not fetchable here.
+        let _ = want(dir, Some(channel), role, running);
+    }
+    match outstanding(dir, channel, role, running, now) {
         Some((p, base, need)) if !need.is_empty() => {
             let list: Vec<String> = need.iter().map(|(n, o)| format!("{n} {o}")).collect();
             format!("fetch {} {base} need {}", p.version, list.join(" "))
@@ -416,10 +617,9 @@ fn free_bytes(path: &Path) -> Option<u64> {
     (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
 }
 
-/// `update-put`: bytes for the wanted release, under `may_put`'s rule. Once
-/// both manifest and signature are in, they must verify, match the pointer's
-/// hash and fit the free space before any file they list is accepted.
+/// `update-put`: bytes for the wanted release, under `may_put`'s rule.
 pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes: &[u8]) -> Result<String, String> {
+    let lock = stage_lock(dir)?;
     let version = wanted(dir).ok_or("no release has been asked for")?;
     let p = stored_pointer(dir).filter(|p| p.version == version).ok_or("the release asked for is not the one the newest statement names")?;
     let stage = staging(dir, &version);
@@ -443,14 +643,14 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
     if held(&stage, "manifest") == 0 || held(&stage, "manifest.sig") == 0 {
         return Ok(format!("{name} complete"));
     }
+    // The pair is in: it must verify, match the pointer's hash and fit the free space.
     let refuse = |why: String| -> Result<String, String> {
         let _ = std::fs::remove_dir_all(&stage);
         Err(why)
     };
     /* One refused manifest per interval: a refusal clears the stage, so a
      * hostile zone could otherwise feed the verifier pairs as fast as it sends. */
-    let refused: Option<i64> = std::fs::read_to_string(dir.join("refused")).ok().and_then(|s| s.trim().parse().ok());
-    if refused.is_some_and(|t| (now - t).unsigned_abs() < POINTER_INTERVAL_SECS) {
+    if refused_lately(dir, now) {
         return refuse(format!("a manifest was refused less than {} minutes ago", POINTER_INTERVAL_SECS / 60));
     }
     // Every refusal below starts the interval: each cost a download and a verification.
@@ -458,7 +658,16 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
         put_file(&dir.join("refused"), now.to_string().as_bytes())?;
         refuse(why)
     };
-    let listing = match (checks.manifest)(&stage) {
+    /* Checked unlocked, so `forget` and `fetch` need not wait for it; the stage held open
+     * meanwhile shows whether one of them cleared it. */
+    let held_open = std::fs::File::open(&stage).map_err(|e| format!("{}: {e}", stage.display()))?;
+    drop(lock);
+    let checked = (checks.manifest)(&stage);
+    let _lock = stage_lock(dir)?;
+    if !held_open.metadata().is_ok_and(|m| m.nlink() > 0) {
+        return Err(format!("the stage of {version} was cleared while its manifest was checked"));
+    }
+    let listing = match checked {
         Ok(l) => l,
         Err(why) => return refuse_checked(why),
     };
@@ -480,23 +689,25 @@ pub fn put(dir: &Path, checks: &Checks, now: i64, name: &str, offset: u64, bytes
     Ok(format!("{name} complete; the manifest verifies, {} file(s), {need} bytes", files.len()))
 }
 
-/// `kryptik update status`, as lines for the user.
-pub fn status(dir: &Path, now: i64, running: &str) -> String {
+/// `kryptik update status`, as lines for the user; `since` as for `stale_line`.
+pub fn status(dir: &Path, now: i64, running: &str, since: Option<i64>) -> String {
     let mut out = format!("running    {running}\n");
     match stored_pointer(dir) {
         None => out.push_str("newest     unknown: no statement of what is current has been accepted\n"),
-        Some(p) => {
-            let (days, stale) = staleness(now, p.issued);
-            out.push_str(&format!("newest     {} (stated {days} day(s) ago)\n", p.version));
-            if stale {
-                out.push_str(&format!(
-                    "           no statement from the release key for {days} days: either nothing has been published,\n           or something is keeping it from this machine\n"
-                ));
-            }
-        }
+        Some(p) => match behind(now, p.issued) {
+            Some(days) => out.push_str(&format!("newest     {} (dated {days} day(s) after this machine's clock)\n", p.version)),
+            None => out.push_str(&format!("newest     {} (stated {} day(s) ago)\n", p.version, staleness(now, p.issued).0)),
+        },
     }
+    if let Some(line) = stale_line(dir, now, since) {
+        out.push_str(&format!("           {line}\n"));
+    }
+    out.push_str(if auto(dir) { "fetching   automatically, as each release is announced\n" } else { "fetching   only when asked\n" });
     match wanted(dir) {
-        None => out.push_str("staged     nothing asked for\n"),
+        None => match declined(dir).filter(|v| version_cmp(v, running) == Ordering::Greater) {
+            Some(v) => out.push_str(&format!("staged     nothing asked for; {v} was forgotten, and `kryptik update fetch` asks for it again\n")),
+            None => out.push_str("staged     nothing asked for\n"),
+        },
         Some(v) => {
             let stage = staging(dir, &v);
             match verified_files(dir, &v) {
@@ -513,6 +724,86 @@ pub fn status(dir: &Path, now: i64, running: &str) -> String {
     out
 }
 
+/// What `status` and the login prompt say of a statement older than `STALE_AFTER_SECS`.
+fn overdue(days: i64) -> String {
+    format!("no statement from the release key for {days} days: either nothing has been published, or something is keeping it from this machine")
+}
+
+/// The same for a machine that has never accepted one, counted from its install.
+fn never_heard(days: i64) -> String {
+    format!("no statement from the release key since this machine was installed, {days} days ago: either nothing has been published, or something is keeping it from this machine")
+}
+
+/// A clock that reads more than a day before `what` refuses every newer statement as dated
+/// ahead of it, so none would ever go stale.
+fn clock_behind(days: i64, what: &str) -> String {
+    let lag = if days == 1 { "1 day".to_string() } else { format!("{days} days") };
+    format!("no statement from the release key can be accepted while this machine's clock reads {lag} before {what}: set the clock")
+}
+
+/// `overdue` for the newest accepted statement once it is stale. With none accepted, `never_heard`
+/// once `since` is as old: the install, where the image names a channel. `clock_behind` while the
+/// clock reads more than a day before either.
+pub fn stale_line(dir: &Path, now: i64, since: Option<i64>) -> Option<String> {
+    if let Some(p) = stored_pointer(dir) {
+        if let Some(days) = behind(now, p.issued) {
+            return Some(clock_behind(days, "the newest one it accepted"));
+        }
+        let (days, stale) = staleness(now, p.issued);
+        return stale.then(|| overdue(days));
+    }
+    let since = since?;
+    if let Some(days) = behind(now, since) {
+        return Some(clock_behind(days, "its install"));
+    }
+    let (days, stale) = staleness(now, since);
+    stale.then(|| never_heard(days))
+}
+
+/// When the record was written, which is when the machine was installed.
+pub fn installed_at(record: &Path) -> Option<i64> {
+    let t = std::fs::metadata(record).ok()?.modified().ok()?;
+    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+}
+
+/// The install, if this image names a channel: from then on, statements are expected.
+pub fn expecting_since() -> Option<i64> {
+    channel_from(&std::fs::read_to_string(CONF).unwrap_or_default())?;
+    installed_at(Path::new(INSTALL_RECORD))
+}
+
+/// Write `stale_line` to `notice` for the login prompt, or remove it once there is none.
+pub fn refresh_login_notice(dir: &Path, notice: &Path, now: i64, since: Option<i64>) -> Result<(), String> {
+    let Some(line) = stale_line(dir, now, since) else {
+        return match std::fs::remove_file(notice) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", notice.display())),
+            _ => Ok(()),
+        };
+    };
+    if let Some(parent) = notice.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let text = format!("kryptik update: {line}\n");
+    crate::files::write_atomic(notice, &[text.as_bytes()], 0o644, None).map_err(|e| format!("{}: {e}", notice.display()))
+}
+
+/// Forget what has arrived of the wanted release: its files and the manifest
+/// verified for it. The request stands, so the next poll names everything
+/// again. False when the stage could not be removed.
+pub fn discard_stage(dir: &Path) -> bool {
+    let Ok(_lock) = stage_lock(dir) else { return false };
+    clear_stage(dir)
+}
+
+/// `discard_stage` for a caller that holds the lock.
+fn clear_stage(dir: &Path) -> bool {
+    let _ = std::fs::remove_file(dir.join("files"));
+    match std::fs::remove_dir_all(dir.join("incoming")) {
+        Ok(()) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 /// The staged release's directory once complete, for `kryptik-update apply`.
 pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
     let v = wanted(dir).ok_or("no release has been asked for")?;
@@ -524,13 +815,46 @@ pub fn complete_stage(dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// Once the machine runs what was staged, the staging area has no job.
+/// The slot this boot runs, from the signed kernel's command line.
+pub fn running_slot() -> Option<String> {
+    let line = std::fs::read_to_string("/proc/cmdline").ok()?;
+    line.split_whitespace().find_map(|w| w.strip_prefix("kryptik.slot=")).filter(|s| matches!(*s, "a" | "b")).map(str::to_string)
+}
+
+/// `status`'s line for a trial: one armed for the next boot or running now (`booted`, the slot
+/// this boot runs, tells which), or one that failed, from the record boot-success set aside as
+/// `trial.failed` with its `why=`. Either way the release still reads as staged and complete.
+pub fn trial_line(trial: &Path, running: &str, booted: Option<&str>) -> Option<String> {
+    if let Some(armed) = std::fs::read_to_string(trial).ok().and_then(|t| t.lines().next().filter(|s| matches!(*s, "a" | "b")).map(str::to_string)) {
+        return Some(if booted == Some(armed.as_str()) {
+            format!("trial      slot {armed} is on trial: it stays once it comes up healthy\n")
+        } else {
+            format!("trial      slot {armed} is armed: the next boot tries it, and it stays once it comes up healthy\n")
+        });
+    }
+    let text = std::fs::read_to_string(trial.with_file_name("trial.failed")).ok()?;
+    let slot = text.lines().next().filter(|s| matches!(*s, "a" | "b"))?;
+    // A record from before boot-success said why reads as failed.
+    let why: String = text.lines().find_map(|l| l.strip_prefix("why=")).unwrap_or("failed").chars().filter(|c| !c.is_control()).take(300).collect();
+    Some(format!("trial      the trial of slot {slot} {why}; this machine runs {running} again, and `kryptik update apply` says how to try once more\n"))
+}
+
+/// Clear the staged release once the machine runs it or a newer one.
 pub fn forget_if_installed(dir: &Path, running: &str) {
+    forget_unless_trial(dir, running, Path::new(TRIAL));
+}
+
+/// forget_if_installed while no trial is still to be judged and none has just failed: a failed
+/// one has `kryptik-update` name this stage for `--retry`. boot-success renames the record to
+/// `trial.failed` before it reboots, or instead of rebooting; arming a trial again removes that.
+fn forget_unless_trial(dir: &Path, running: &str, trial: &Path) {
+    if trial.exists() || trial.with_file_name("trial.failed").exists() {
+        return;
+    }
+    let Ok(_lock) = stage_lock(dir) else { return };
     if wanted(dir).is_some_and(|v| version_cmp(&v, running) != Ordering::Greater) {
-        for f in ["wanted", "files"] {
-            let _ = std::fs::remove_file(dir.join(f));
-        }
-        let _ = std::fs::remove_dir_all(dir.join("incoming"));
+        let _ = std::fs::remove_file(dir.join("wanted"));
+        clear_stage(dir);
     }
 }
 

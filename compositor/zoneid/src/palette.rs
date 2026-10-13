@@ -1,9 +1,6 @@
-//! Palette search, which shows the floor can be met.
-//!
-//! A palette scores its smallest difference between any two colours under any
-//! vision model (a minimum, as an average hides one colliding pair). The
-//! search is farthest-point traversal, then steepest ascent from fixed
-//! restarts: reproducible, and a lower bound rather than an optimum.
+//! Palette search, to show the floor can be met. A palette scores its smallest difference under
+//! any vision model (an average would hide one colliding pair). Farthest-point traversal, then
+//! steepest ascent from fixed restarts: reproducible, and a lower bound, not an optimum.
 
 use crate::color::{contrast_ratio, ciede2000, Lab, Srgb};
 use crate::cvd::{simulate, Vision};
@@ -26,16 +23,12 @@ struct Candidate {
 /// Search parameters, for measuring which constraint binds.
 #[derive(Clone, Copy, Debug)]
 pub struct SearchOptions {
-    /// Minimum contrast against both backgrounds. 1.0 drops the constraint,
-    /// which models a border drawn with a contrasting keyline.
+    /// Minimum contrast against both backgrounds; 1.0 models a border with a contrasting keyline.
     pub min_contrast: f64,
-    /// Sampling step through each sRGB axis for the coarse search. 17 gives
-    /// 16 levels per channel.
+    /// Sampling step along each sRGB axis for the coarse search; 17 gives 16 levels per channel.
     pub step: u32,
-    /// Sampling step for refining each colour around the coarse result; 0
-    /// disables it. In a release build the coarse grid alone reaches 13.98 at
-    /// step 17 (15.42 at step 6, in 3.1 s); step 17 refined every 3 reaches
-    /// 15.70 in 1.8 s.
+    /// Refinement step around the coarse result, 0 for none. In a release build step 17 alone
+    /// reaches 13.98 (step 6: 15.42 in 3.1 s); refined every 3 it reaches 15.70 in 1.8 s.
     pub refine: u32,
 }
 
@@ -53,8 +46,7 @@ impl Default for SearchOptions {
 const REFINE_RADIUS: i32 = 17;
 
 impl Candidate {
-    /// The candidate for an 8-bit sRGB triple, or `None` if it fails the
-    /// contrast floor against any background.
+    /// The candidate for an 8-bit sRGB triple; `None` if out of range or below the contrast floor.
     fn from_rgb8(r: i32, g: i32, b: i32, backgrounds: &[Srgb], min_contrast: f64) -> Option<Candidate> {
         if !(0..=255).contains(&r) || !(0..=255).contains(&g) || !(0..=255).contains(&b) {
             return None;
@@ -116,8 +108,7 @@ fn distance(a: &Labs, b: &Labs) -> f64 {
     worst
 }
 
-/// `start` lowered to `c`'s distance from each of `others`, stopping early
-/// once it is at or below `floor` (the best score so far).
+/// `start` lowered to `c`'s distance from each of `others`; stops once at or below `floor`.
 fn nearest<'a>(c: &Labs, others: impl IntoIterator<Item = &'a Labs>, start: f64, floor: f64) -> f64 {
     let mut near = start;
     for o in others {
@@ -129,8 +120,7 @@ fn nearest<'a>(c: &Labs, others: impl IntoIterator<Item = &'a Labs>, start: f64,
     near
 }
 
-/// A palette's score: its smallest difference, between two members or
-/// between a member and a compositor colour.
+/// A palette's score: the smallest difference among its members and the compositor's colours.
 fn score(pal: &[Labs], fixed: &[Labs]) -> f64 {
     let mut s = f64::INFINITY;
     for (i, a) in pal.iter().enumerate() {
@@ -139,17 +129,15 @@ fn score(pal: &[Labs], fixed: &[Labs]) -> f64 {
     s
 }
 
-/// The palette without member `slot`, and its score, so scoring a replacement
-/// is `nearest(colour, others, rest, ..)`: one distance per member.
+/// The palette without `slot`, and its score, so a replacement costs one distance per member.
 fn without(pal: &[Labs], slot: usize, fixed: &[Labs]) -> (Vec<Labs>, f64) {
     let others: Vec<Labs> = pal.iter().enumerate().filter(|&(i, _)| i != slot).map(|(_, l)| *l).collect();
     let rest = score(&others, fixed);
     (others, rest)
 }
 
-/// Move each colour to the best point within `REFINE_RADIUS`, sampled every
-/// `fine` levels, until nothing improves. Candidates are made on demand; fixed
-/// order and strict improvement keep it deterministic.
+/// Move each colour to the best point within `REFINE_RADIUS`, every `fine` levels, until nothing
+/// improves; fixed order and strict improvement keep it deterministic.
 fn refine(pal: &mut [Candidate], fixed: &[Labs], min_contrast: f64, fine: u32) {
     if fine == 0 {
         return;
@@ -204,8 +192,7 @@ pub struct Proposal {
     pub worst_per_vision: Vec<(Vision, f64)>,
 }
 
-/// Search for `n` maximally distinguishable colours. `None` if `n` is 0 or
-/// fewer than `n` colours meet the contrast requirement.
+/// Search for `n` distinguishable colours; `None` if `n` is 0 or too few clear the contrast floor.
 pub fn propose(n: usize) -> Option<Proposal> {
     propose_with(n, SearchOptions::default())
 }
@@ -231,9 +218,8 @@ pub fn propose_with(n: usize, opts: SearchOptions) -> Option<Proposal> {
         // Membership of `chosen` by candidate index, asked once per candidate below.
         let mut in_set = vec![false; cands.len()];
         in_set[seed] = true;
-        /* Farthest-point traversal: take the candidate furthest from
-         * everything picked and from the compositor's colours. `near[c]` is
-         * that distance, kept current by one pass against the newest pick. */
+        /* Farthest-point traversal: `near[c]` is c's distance to everything picked and to the
+         * compositor's colours, kept current by one pass against the newest pick. */
         let mut near: Vec<f64> =
             cands.iter().zip(&to_fixed).map(|(c, &f)| f.min(distance(&c.lab, &cands[seed].lab))).collect();
         while chosen.len() < n {

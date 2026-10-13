@@ -20,10 +20,10 @@ the release key made offline. The dated builds CI makes of every push to main
 
 | | development, a pre-release on the page | production |
 | --- | --- | --- |
-| keys | made by that build and then gone | the key medium, kept offline |
+| keys | made by that build and then gone | the release keys, from the `release` environment |
 | Secure Boot | a certificate per release, enrolled by hand | one certificate, enrolled once |
 | the next release | a reinstall from its medium | an update from the channel, signed by the release key |
-| built by | the Distro workflow, from the tag | you, with the medium attached, and `KRYPTIK_CHANNEL=https://<owner>.github.io/<repo>/stable/` |
+| built by | the Distro workflow, from the tag | the Distro workflow, from the tag, signed once the maintainer approves |
 
 ## Cutting one
 
@@ -42,19 +42,14 @@ the release key made offline. The dated builds CI makes of every push to main
    no cached tree, so the release holds only what a clean build makes: about
    three hours. It
    builds it as the release under test, over a `0.0.0` build the update
-   suite updates from, and runs every suite on the images. For a development
-   release (`v0.x`) its last job drafts the release: the export, the
-   corresponding source (`make source-bundle`) and the acceptance logs, with
-   the release notes as the page's text. Read the draft and publish it from
-   the page.
-4. A production release (`v1.0.0` and up) is built by hand with the key
-   medium ([release keys](release-keys.md#using-them)). Its tag's run builds
-   and tests the revision the same way, signed with a throwaway key medium,
-   and drafts nothing from that: the page takes your export, with the same
-   tool, once the tag is pushed:
-   `tools/release-publish.sh DIR --source-bundle FILE --publish`. Its payload
-   goes up with it, and the `Update channel` workflow, run with the tag,
-   makes it what installed machines update to.
+   suite updates from, and runs every suite on the images. A production
+   release (`v1.0.0` and up) is signed in a job of its own, once the
+   maintainer approves it ([release keys](release-keys.md#using-them)). The
+   last job drafts the release: the export, the corresponding source
+   (`make source-bundle`) and the acceptance logs, with the release notes as
+   the page's text. Read the draft and publish it from the page.
+4. A production release's payload goes up with it, and the `Update channel`
+   workflow, run with the tag, makes it what installed machines update to.
 
 ## What the page carries
 
@@ -64,6 +59,7 @@ the release key made offline. The dated builds CI makes of every push to main
 | `kryptik-VERSION.SHA256SUMS`, `.sig`, `release-signers` | the media's hashes, the release key's signature over them, and the anchor that checks it |
 | `kryptik-sb.crt`, `kryptik-sb.der` | the Secure Boot certificate that signed the kernels |
 | `root.json`, `manifest-VERSION`, `.sig` | the root's dm-verity record and the signed release manifest |
+| `manifest`, `manifest.sig`, the root image, `kryptik-a.efi`, `kryptik-b.efi` | the update payload under the names its manifest gives: a channel's base, and with `root.json` the directory a release brought by hand holds ([user guide](user-guide.md), section 4) |
 | `source-REVISION.tar` | the corresponding source: every tarball with its signatures, the crates the Rust binaries link, and the tree |
 | `RELEASE.txt`, `REVISION.txt`, `RELEASE-NOTES.md`, `INSTRUCTIONS.md`, `ACCEPTANCE-REPORT.md`, `SHA256SUMS`, `kryptik-VERSION-acceptance-logs.tar.zst` | the record: the verdict, the revision, the notes, the instructions, and every item's result and log |
 
@@ -74,10 +70,10 @@ a download after decompressing it:
 zstd -d kryptik-VERSION-usb.img.zst
 ssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \
     -s kryptik-VERSION.SHA256SUMS.sig < kryptik-VERSION.SHA256SUMS
-sha256sum -c kryptik-VERSION.SHA256SUMS
+sha256sum -c --ignore-missing kryptik-VERSION.SHA256SUMS
 ```
 
 The anchor comes with the download, so this proves the files belong
-together, not who made them: a machine that runs Kryptik holds the same file
-at `/usr/share/kryptik/trust/release-signers`, and a production release's
-anchor is the one on the key medium.
+together, not who made them. A production release's anchor is also in the
+tree at `build/config/release/release-signers`, and a machine that runs one
+holds it at `/usr/share/kryptik/trust/release-signers`.

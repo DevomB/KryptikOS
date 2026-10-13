@@ -19,15 +19,13 @@ memory_max = "8G"
 pids_max   = 1024
 
 [identity]
-# Host uid/gid range: root inside maps to 262144, nobody to 327678. Fixed,
-# never derived from zone order (docs/design/privileged-launch.md).
+# Root inside maps to host uid/gid 262144, nobody to 327678; fixed, never derived from zone order.
 uid_base = 262144
 
 [ui]
-# Colour, glyph and label must differ from every other zone's; the pattern
-# is checked but nothing draws it. Pick colours with `zoneid propose`;
-# `zoneid audit` checks the set, `zoneid explain` the rule.
+# Colour, glyph and label must be unique; `zoneid propose` picks colours, `zoneid audit` checks.
 border_color   = "#009b79"
+# The pattern is checked, but nothing draws it.
 border_pattern = "dashed"
 glyph          = "●"
 label          = "PERSONAL"

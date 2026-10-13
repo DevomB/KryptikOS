@@ -1,8 +1,6 @@
 #!/bin/bash
-# Feed every registered watchdog while this process gets scheduled, and check
-# nothing else: rebooting over a crashed service is worse than a hang.
-# WATCHDOG_NOWAYOUT: closing a device does not stop it, so the supervisor must
-# restart this within the timeout, and a shutdown that hangs gets reset.
+# Only feed the watchdogs: rebooting over a crashed service is worse than a hang.
+# With NOWAYOUT a closed device keeps counting, so a hung shutdown resets the machine.
 set -u
 fds=()
 for dev in /dev/watchdog[0-9]*; do

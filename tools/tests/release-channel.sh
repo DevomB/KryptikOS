@@ -186,8 +186,7 @@ else
     red "an unreadable date was signed (exit ${rc})"; show
 fi
 
-# Another manifest of the same version put in place: reissue must not vouch for it.
-# The files are links into the payload, so they are removed, not written over.
+# Another manifest of the same version swapped in (removed first: the files are links into p4).
 make_payload "${W}/p4b" 1.0.4 rebuilt
 rm "${CH}/1.0.4/manifest" "${CH}/1.0.4/manifest.sig"
 cp "${W}/p4b/manifest" "${W}/p4b/manifest.sig" "${CH}/1.0.4/"

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Test acceptance.sh's release choice, verdict and export list, running the
-# script's own code on a staged images/ directory of empty files.
+# Test acceptance.sh's own release choice, verdict and export code on staged empty images.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ACC="$ROOT/tools/acceptance.sh"
@@ -164,13 +163,23 @@ item boot record M post 0 runs > /dev/null
 R_RES[0]=SKIPPED; R_RES[1]=PASS
 [[ "$(verdict_of)" == INCOMPLETE ]] && ok "a result the verdict does not know keeps it from PASS" || bad "verdict over an unknown result: $(verdict_of)"
 
-# Every part must have tested this revision on these media, and all of them
-# on one firmware and one QEMU; the merging machine's own may differ.
+# Parts must share revision, media, firmware and QEMU; the merging machine's own may differ.
 # shellcheck disable=SC2034  # read by tested and ran_on
 { REV=abc; REV_DESC=abc; H_USB=u1; H_ISO=i1; H_FW=f1; FW_PKG="ovmf 1"; QEMU_VER="QEMU 9"; KVM=yes; }
 part() { { tested; ran_on; } > "$T/parts/$1/identity"; }
 part a; part b
 [[ -z "$(parts_disagree)" ]] && ok "parts that tested one revision on one medium are one run" || bad "parts disagree: $(parts_disagree)"
+# A shallow part's describe is shorter than the merge's full clone gives; the revision is the same.
+# shellcheck disable=SC2034  # the describe a part's clone and the merge's would print
+{ REV_DESC=abc1234; part a; REV_DESC=abc12345; }
+[[ -z "$(parts_disagree)" ]] && ok "a part whose describe is shorter than the merge's, of the same revision, is one run with it" || bad "describe length: '$(parts_disagree)'"
+# shellcheck disable=SC2034  # read by tested
+{ DIRTY=" M tools/acceptance.sh"; }
+[[ "$(parts_disagree)" == "the part in $T/parts/a tested revision abc;"* ]] && ok "a merge over a dirty tree does not take a clean tree's parts" || bad "dirty merge: '$(parts_disagree)'"
+# shellcheck disable=SC2034  # read by tested
+{ part a; DIRTY=""; }
+[[ "$(parts_disagree)" == "the part in $T/parts/a tested revision abc (dirty);"* ]] && ok "nor a clean merge a dirty tree's part" || bad "dirty part: '$(parts_disagree)'"
+part a
 sed -i 's/^usb .*/usb u2/' "$T/parts/b/identity"
 [[ "$(parts_disagree)" == "the part in $T/parts/b tested"*"usb u2"* ]] && ok "a part that tested another medium is refused, by name" || bad "another medium: '$(parts_disagree)'"
 part b
@@ -186,6 +195,14 @@ rm "$T/parts/a/identity"
 [[ "$(parts_disagree)" == *"no identity"* ]] && ok "a results.tsv with no identity beside it is refused" || bad "no identity: '$(parts_disagree)'"
 # shellcheck disable=SC2034  # back to a run of its own
 PARTS=()
+
+# --- the report's suite list holds every suite an item names -------------------
+named="$(sed -n 's/^ *item  *\([a-z]*\)  *.*/\1/p' "$ACC" | sort -u | tr '\n' ' ')"
+listed="$(sed -n 's/^ *for g in \(.*\); do$/\1/p' "$ACC")"
+unlisted=""
+for s in $named; do [[ " $listed " == *" $s "* ]] || unlisted="$unlisted $s"; done
+[[ -n "$named" && -n "$listed" && -z "$unlisted" ]] && ok "REPORT.md's suite list holds every suite an item names" \
+    || bad "suites with items and no line in the report's list:${unlisted:- the lists could not be read}"
 
 # --- the export's list covers every file in it but itself ---------------------
 E="$T/export"; mkdir -p "$E/acceptance-logs"

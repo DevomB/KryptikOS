@@ -1,4 +1,3 @@
 #!/bin/sh
-# The launch daemon: the only path from the desktop session (group kryptik) to
-# zone creation, which needs root. Supervised, so a crash restarts it.
+# The launch daemon: the session's only way to zone creation, which needs root.
 exec /usr/bin/kryptikd serve --zones /usr/lib/kryptik/zones --rootfs /var/lib/kryptik/zones

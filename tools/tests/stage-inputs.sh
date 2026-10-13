@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# What the later stages' stamps are built from, read from the stage files
-# themselves: stage 06 builds on the last build steps of stages 04 and 05, the
-# checks after them being no links in the chain, and stage 05's config and
-# hardening-check steps pass as arguments what their function text cannot
-# show, so their fingerprints move when it changes.
+# Tests of what the later stages' stamps are built from, read from the stage files themselves.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0
@@ -12,8 +8,7 @@ bad() { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 
-# Stage 04's last build step, by its own --list, which exits before the chroot
-# check and marks the checks.
+# Stage 04's last build step, from its --list, which exits before the chroot check and marks checks.
 list="$(cd "$ROOT" && NO_COLOR=1 bash build/stages/04-base-system.sh --list 2>/dev/null)"
 last="$(awk '$1 ~ /^[0-9]+\.$/ && $3 != "(check)" { n = $2 } END { print n }' <<< "$list")"
 [[ -n "$last" ]] && ok "stage 04 lists its steps; the last build step is ${last}" || bad "stage 04 --list named no steps"
@@ -36,8 +31,7 @@ step_line() {
         on { line = $0; more = sub(/\\$/, "", line); printf "%s ", line; if (!more) exit }' \
         "$ROOT/build/stages/05-kernel.sh"
 }
-# args_of NAME TREE [VAR=VALUE...]: the arguments that command passes after the
-# recipe's name, evaluated with TREE as the repository.
+# args_of NAME TREE [VAR=VALUE...]: that step's arguments after the recipe, with TREE as the repository.
 args_of() {
     local name="$1" tree="$2"; shift 2
     env "$@" KRYPTIK_ROOT="$tree" bash -c 'source "$1/build/lib/common.sh" || exit 1

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# tools/check-rust-licences.sh against a staged Rust dist, cargo registry and
-# repository: it passes when every text matches, and names each one that does
-# not, a crate with no text or a stale one, and a musl it was not taken from.
+# tools/check-rust-licences.sh against a staged Rust dist, cargo registry and repository.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASS=0; FAIL=0

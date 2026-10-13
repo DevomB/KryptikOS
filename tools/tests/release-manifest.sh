@@ -35,12 +35,7 @@ printf 'release@kryptik.test %s\n' "$(cut -d' ' -f1,2 < "${W}/keys/rel.pub")" \
 
 # Half-made keys would show up as a dozen misleading failures below.
 for _f in "${W}/keys/rel" "${W}/keys/rel.pub" "${W}/keys/out" "$SIGNERS"; do
-    if [[ ! -s "$_f" ]]; then
-        echo "FATAL: test prerequisite missing or empty: ${_f}" >&2
-        echo "ssh-keygen did not produce the fixture keys, so nothing below" >&2
-        echo "would be testing what it claims to test." >&2
-        exit 1
-    fi
+    [[ -s "$_f" ]] || { echo "FATAL: ssh-keygen did not make ${_f}" >&2; exit 1; }
 done
 
 REL="${W}/release"
@@ -165,10 +160,10 @@ bash "$TOOL" sign --key "${W}/keys/out" "$MAN" > /dev/null 2>&1
 verify
 expect_fail "a signature by a key that is not enrolled is rejected" \
     "the signing key is not enrolled"
-if grep -qF "no verification" "$OUT"; then
-    green "an unenrolled signature is called no verification, not weak verification"
+if grep -qF "no principal in ${SIGNERS} holds the key" "$OUT"; then
+    green "the refusal says which allowed-signers file lacks the key"
 else
-    red "the unenrolled case was not described precisely"; show
+    red "the refusal does not say which allowed-signers file lacks the key"; show
 fi
 
 build_release; make_signed
@@ -309,6 +304,24 @@ else
     red "create did not warn that the manifest is unsigned"; show
 fi
 
+# Two builds of one commit write the same text: the date is SOURCE_DATE_EPOCH's, not the run's.
+for n in 1 2; do
+    SOURCE_DATE_EPOCH=1700000000 bash "$TOOL" create --out "${W}/epoch${n}.manifest" --root "$REL" \
+        --version 6.0 boot usr > /dev/null 2>&1
+done
+if cmp -s "${W}/epoch1.manifest" "${W}/epoch2.manifest" && grep -qx 'created: 2023-11-14T22:13:20Z' "${W}/epoch1.manifest"; then
+    green "with SOURCE_DATE_EPOCH, create dates the manifest by it, and two runs write the same bytes"
+else
+    red "SOURCE_DATE_EPOCH did not date the manifest"; grep '^created' "${W}"/epoch*.manifest | sed 's/^/        /'
+fi
+NO_COLOR=1 SOURCE_DATE_EPOCH=yesterday bash "$TOOL" create --out "${W}/epoch3.manifest" --root "$REL" boot \
+    > "$OUT" 2>&1
+if [[ "$?" -ne 0 ]] && grep -qF "whole seconds since 1970" "$OUT" && [[ ! -e "${W}/epoch3.manifest" ]]; then
+    green "create refuses a SOURCE_DATE_EPOCH that is not a count of seconds"
+else
+    red "create accepted SOURCE_DATE_EPOCH=yesterday"; show
+fi
+
 # An unlisted file at the root is refused, whatever its name.
 build_release; make_signed
 printf 'x\n' > "${REL}/.kryptik-update"
@@ -317,8 +330,7 @@ expect_fail "--exact refuses an unlisted file at the root" \
     "present but NOT in the manifest: .kryptik-update"
 rm -f "${REL}/.kryptik-update"
 
-# Names are compared as the manifest spells them: two spaces are not one, and
-# characters a lookup could treat specially are plain names.
+# Names match as the manifest spells them: two spaces are not one, and glob characters are plain.
 build_release
 mkdir -p "${REL}/doc"
 for n in "two  spaces" "@" "*" "a]b" "[x]"; do printf '%s\n' "$n" > "${REL}/doc/${n}"; done
@@ -335,8 +347,7 @@ verify --exact
 expect_fail "--exact refuses an unlisted name that differs from a listed one only by its spaces" \
     "present but NOT in the manifest: doc/two spaces"
 
-# pointer: its output must pass kryptik-update's own check-pointer, under an
-# anchor shaped like the image's (each key honoured in one namespace only).
+# pointer's output must pass kryptik-update's check-pointer under an anchor like the image's.
 build_release
 make_signed 1.0.3 development
 ssh-keygen -q -t ed25519 -N '' -C latest -f "${W}/keys/latest" </dev/null

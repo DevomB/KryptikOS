@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# hardened-malloc: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_hardened_malloc() {
     # ADR-005. Built here so it exists before anything links against it.
     local src; src="$(unpack "${V_HARDENED_MALLOC}.tar.gz" "hardened_malloc-${V_HARDENED_MALLOC}")"
     cd "$src"
 
-    # CONFIG_NATIVE=false overrides upstream's -march=native: in the system
-    # allocator, an instruction an older CPU lacks kills every process.
+    # Not upstream's -march=native: an instruction an older CPU lacks would kill every process.
     make VARIANT=default CONFIG_NATIVE=false
 
     # Check the command line beat config/default.mk.
@@ -25,7 +22,6 @@ s_hardened_malloc() {
 
     install -Dm755 out/libhardened_malloc.so /usr/lib/libhardened_malloc.so
 
-    # Not preloaded here, or every later package would build on it: stage 06
-    # writes /etc/ld.so.preload into the image's root only.
+    # Not preloaded here, or every later package would build on it; stage 06 preloads it.
     echo "installed to /usr/lib/libhardened_malloc.so (not yet preloaded)"
 }

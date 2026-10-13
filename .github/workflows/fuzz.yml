@@ -1,0 +1,74 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the two parsers of zone bytes (docs/design/broker.md), weekly on a pinned nightly.
+
+on:
+  schedule:
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: broker_request
+            dir: compartments/kryptikd
+            seeds: compartments/kryptikd/fuzz-corpus/broker-requests
+            max_len: 4096
+          - target: wire
+            dir: compositor/wlproxy
+            seeds: ''
+            max_len: 8192
+    env:
+      # A dated nightly, so a new finding is never a new compiler's.
+      RUSTUP_TOOLCHAIN: nightly-2026-09-28
+      FUZZ_TARGET: ${{ matrix.target }}
+      CRATE_DIR: ${{ matrix.dir }}
+      SEEDS: ${{ matrix.seeds }}
+      MAX_LEN: ${{ matrix.max_len }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Nightly Rust and cargo-fuzz
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          cargo +stable install cargo-fuzz --version 0.13.2 --locked
+
+      # libfuzzer-sys comes from the fuzz crate's own lockfile, never from what ships.
+      - name: The fuzz crate's lockfile holds
+        run: cargo fetch --locked --manifest-path "$CRATE_DIR/fuzz/Cargo.toml"
+
+      - name: Seeds from the corpus in the tree
+        run: |
+          mkdir -p "$RUNNER_TEMP/corpus"
+          # The tree keeps one request per line; libFuzzer takes one input per file.
+          if [ -n "$SEEDS" ]; then
+            n=0
+            while IFS= read -r line || [ -n "$line" ]; do
+              n=$((n + 1))
+              printf '%s\n' "$line" > "$RUNNER_TEMP/corpus/seed-$n"
+            done < "$SEEDS"
+          fi
+          echo "$(find "$RUNNER_TEMP/corpus" -type f | wc -l) seeds"
+
+      # Safe Rust throughout, so no sanitizer: panics, overflow checks and the harness's asserts are the oracle.
+      - name: Twenty minutes of fuzzing
+        working-directory: ${{ matrix.dir }}
+        run: cargo fuzz run --sanitizer none "$FUZZ_TARGET" "$RUNNER_TEMP/corpus" -- -max_total_time=1200 -max_len="$MAX_LEN" -timeout=10 -print_final_stats=1
+
+      - name: Inputs that broke the parser
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: ${{ matrix.dir }}/fuzz/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore

@@ -20,10 +20,43 @@ fn capture_and_clipboard_are_hidden() {
     for shown in ["wl_compositor", "wl_shm", "wl_seat", "xdg_wm_base"] {
         assert!(allowed_version(shown).is_some(), "{shown} is what a window needs");
     }
+    // The data device a zone binds is the proxy's own, never the compositor's.
+    assert!(own_version("wl_data_device_manager").is_some() && served("wl_data_device_manager"));
 }
 
-/// Objects are forgotten only on delete_id, which names client-created ids,
-/// so no event a zone can reach may create one.
+/// The gesture carries the types the broker's clipboard takes, no more: a type only one of them
+/// knew would leave a payload one path can carry and the other cannot.
+#[test]
+fn move_types_are_the_brokers() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../compartments/kryptikd/src/broker.rs");
+    let broker = std::fs::read_to_string(&path).expect("broker.rs");
+    let start = broker.find("pub const MIME_TYPES: &[&str] = &[").expect("the broker's MIME list");
+    let end = start + broker[start..].find("];").expect("the end of that list");
+    let mut theirs: Vec<&str> = broker[start..end].split('"').skip(1).step_by(2).collect();
+    let mut ours = MOVE_TYPES.to_vec();
+    theirs.sort_unstable();
+    ours.sort_unstable();
+    assert_eq!(ours, theirs);
+    assert_eq!(MOVE_TYPES[0], "text/plain;charset=utf-8", "text with its charset is taken first");
+}
+
+/// dwl's zone sockets offer this list too (tools/desktop/dwl-zone-borders.py): the two never drift.
+#[test]
+fn dwl_zone_sockets_offer_the_same_list() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/desktop/dwl-zone-borders.py");
+    let patch = std::fs::read_to_string(&path).expect("dwl-zone-borders.py");
+    let start = patch.find("zoneglobals[] = {").expect("the zones' list in the dwl patch");
+    let end = start + patch[start..].find("};").expect("the end of that list");
+    let mut dwl: Vec<&str> = patch[start..end].split('"').skip(1).step_by(2).collect();
+    let mut proxy: Vec<&str> = ALLOWED.iter().map(|(n, _)| *n).collect();
+    dwl.sort_unstable();
+    proxy.sort_unstable();
+    assert_eq!(dwl, proxy);
+}
+
+/// Only delete_id frees objects, and only client-created ones: no event the compositor can send
+/// creates one. The server range is then the proxy's own, for the offers it makes (clipboard.rs);
+/// a global let through whose events create objects fails here before its ids could collide.
 #[test]
 fn no_compositor_created_objects() {
     use crate::protocol::{find, Arg};
@@ -76,7 +109,7 @@ fn title_controls_are_replaced() {
 
 /// The bound is in bytes; the cut must still land on a character boundary.
 #[test]
-fn multibyte_title_cut_on_char_boundary() {
+fn title_cut_on_char_boundary() {
     // 200 x U+00E9 is 400 bytes; byte 253 is inside a character.
     let t = title_for("vault", &"\u{00e9}".repeat(200));
     assert!(t.len() <= MAX_TITLE_BYTES, "{}", t.len());
@@ -92,7 +125,7 @@ fn multibyte_title_cut_on_char_boundary() {
     assert!(t.ends_with("..."));
     assert!(t.trim_end_matches("...").chars().skip(4).all(|c| c == '\u{1F600}'), "{t:?}");
 
-    // Mixed widths: an accented character exactly straddling the cut.
+    // Mixed widths: an accented character straddling the cut.
     let mut title = "x".repeat(MAX_TITLE_BYTES - 3 - "[work] ".len() - 1);
     title.push('\u{00e9}');
     title.push_str("tail");

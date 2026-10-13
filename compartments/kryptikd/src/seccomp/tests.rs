@@ -16,10 +16,11 @@ fn program_has_expected_shape() {
 #[test]
 fn jump_offsets_stay_small() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
-    // Arg-rule offsets reach 9, the rest are 0 or 1; all must land inside.
+    // Arg-rule offsets reach 10, the jump past ioctl's ten instructions; the rest are 0 or 1;
+    // all must land inside.
     for (i, ins) in p.iter().enumerate() {
-        assert!(ins.jt <= 9, "instruction {i} has jt={}", ins.jt);
-        assert!(ins.jf <= 9, "instruction {i} has jf={}", ins.jf);
+        assert!(ins.jt <= 10, "instruction {i} has jt={}", ins.jt);
+        assert!(ins.jf <= 10, "instruction {i} has jf={}", ins.jf);
         if ins.code & 0x07 == BPF_JMP {
             assert!((i + 1 + ins.jt as usize) < p.len(), "instruction {i} jt runs off the end");
             assert!((i + 1 + ins.jf as usize) < p.len(), "instruction {i} jf runs off the end");
@@ -41,8 +42,7 @@ fn arch_checked_before_syscall_number() {
     assert!(p.iter().take(3).any(|i| i.k == AUDIT_ARCH_X86_64));
 }
 
-/// Interprets the BPF subset `build_program` emits, so tests check what the
-/// filter does rather than which constants it holds.
+/// Interprets what `build_program` emits, so tests check what the filter does, not its constants.
 fn evaluate(prog: &[SockFilter], arch: u32, nr: u32) -> u32 {
     evaluate_args(prog, arch, nr, [0; 6])
 }
@@ -69,6 +69,9 @@ fn evaluate_args(prog: &[SockFilter], arch: u32, nr: u32, args: [u64; 6]) -> u32
             }
             c if c == BPF_JMP | BPF_JEQ | BPF_K => {
                 pc += 1 + if acc == ins.k { ins.jt as usize } else { ins.jf as usize };
+            }
+            c if c == BPF_JMP | BPF_JGT | BPF_K => {
+                pc += 1 + if acc > ins.k { ins.jt as usize } else { ins.jf as usize };
             }
             c if c == BPF_JMP | BPF_JGE | BPF_K => {
                 pc += 1 + if acc >= ins.k { ins.jt as usize } else { ins.jf as usize };
@@ -190,9 +193,7 @@ fn whole_allowlist_evaluates_correctly() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
     for &nr in BASE_ALLOWLIST {
         let r = evaluate(&p, AUDIT_ARCH_X86_64, nr as u32);
-        /* With zero arguments clone3 gets ENOSYS and family 0 is refused
-         * to socket and socketpair; nothing listed is killed, and the rest
-         * are allowed. */
+        // With zero arguments clone3 gets ENOSYS and family 0 is refused; nothing listed is killed.
         assert_ne!(r, SECCOMP_RET_KILL_PROCESS, "allowlisted syscall {nr} was killed");
         if ![libc::SYS_clone3, libc::SYS_socket, libc::SYS_socketpair].contains(&nr) {
             assert_eq!(r, SECCOMP_RET_ALLOW, "allowlisted syscall {nr} was not allowed");
@@ -254,9 +255,9 @@ fn with_arg(i: usize, v: u64) -> [u64; 6] {
 }
 
 #[test]
-fn clone_without_namespace_flags_is_allowed() {
+fn plain_clone_allowed() {
     let p = build_program(BASE_ALLOWLIST).unwrap();
-    // What pthread_create and fork() actually pass.
+    // What pthread_create and fork() pass.
     let thread = 0x3d0f00u64; // VM|FS|FILES|SIGHAND|THREAD|SYSVSEM|SETTLS|PARENT_SETTID|CHILD_CLEARTID
     let fork = 0x1200011u64; // CHILD_SETTID|CHILD_CLEARTID|SIGCHLD
     for f in [thread, fork, 17] {
@@ -269,7 +270,8 @@ fn clone_without_namespace_flags_is_allowed() {
 }
 
 #[test]
-fn clone_with_any_namespace_flag_is_killed() {
+fn namespace_clone_fails_with_eperm() {
+    // As unshare(2) does: a program probing for user namespaces lives on.
     let p = build_program(BASE_ALLOWLIST).unwrap();
     for f in [
         libc::CLONE_NEWUSER, libc::CLONE_NEWNS, libc::CLONE_NEWPID,
@@ -279,15 +281,67 @@ fn clone_with_any_namespace_flag_is_killed() {
         let flags = (f as u32 | libc::SIGCHLD as u32) as u64;
         assert_eq!(
             evaluate_args(&p, X86, libc::SYS_clone as u32, with_arg(0, flags)),
-            SECCOMP_RET_KILL_PROCESS,
-            "clone flags {flags:#x} must be killed"
+            errno_action(EPERM),
+            "clone flags {flags:#x} must fail with EPERM"
         );
         // Legacy clone ignores the high word, and so does the filter.
         assert_eq!(
             evaluate_args(&p, X86, libc::SYS_clone as u32, with_arg(0, flags | (1 << 40))),
-            SECCOMP_RET_KILL_PROCESS
+            errno_action(EPERM)
         );
     }
+}
+
+#[test]
+fn unshare_fails_setns_killed() {
+    // Both stay on the denied list: no policy may allow either.
+    let p = build_program(BASE_ALLOWLIST).unwrap();
+    for f in [0, libc::CLONE_NEWUSER as u64, CLONE_NS_MASK as u64] {
+        let r = evaluate_args(&p, X86, libc::SYS_unshare as u32, with_arg(0, f));
+        assert_eq!(r, errno_action(EPERM), "unshare flags {f:#x}");
+    }
+    let r = evaluate_args(&p, X86, libc::SYS_setns as u32, with_arg(1, libc::CLONE_NEWUSER as u64));
+    assert_eq!(r, SECCOMP_RET_KILL_PROCESS);
+    for nr in [libc::SYS_unshare, libc::SYS_setns] {
+        assert!(is_denied(nr) && widened(&[nr]).is_err(), "syscall {nr} can be allowed");
+    }
+}
+
+#[test]
+fn trace_names_namespace_refusals() {
+    // Named like any soft refusal, while a plain clone runs.
+    let p = build_program_with(BASE_ALLOWLIST, libc::SECCOMP_RET_USER_NOTIF).unwrap();
+    let ns = with_arg(0, (libc::CLONE_NEWUSER | libc::SIGCHLD) as u64);
+    assert_eq!(evaluate_args(&p, X86, libc::SYS_clone as u32, ns), libc::SECCOMP_RET_USER_NOTIF);
+    assert_eq!(evaluate_args(&p, X86, libc::SYS_unshare as u32, ns), libc::SECCOMP_RET_USER_NOTIF);
+    let fork = with_arg(0, libc::SIGCHLD as u64);
+    assert_eq!(evaluate_args(&p, X86, libc::SYS_clone as u32, fork), SECCOMP_RET_ALLOW);
+}
+
+#[test]
+fn trace_answers_as_a_zone() {
+    /* seccomp-trace hears of every call the zone filter refuses, and answers
+     * each as a zone hears it: a soft refusal's errno, or ENOSYS where a zone
+     * is killed. */
+    let zone = build_program(BASE_ALLOWLIST).unwrap();
+    let trace = build_program_with(BASE_ALLOWLIST, libc::SECCOMP_RET_USER_NOTIF).unwrap();
+    let ns = with_arg(0, (libc::CLONE_NEWUSER | libc::SIGCHLD) as u64);
+    let mut calls: Vec<(libc::c_long, [u64; 6])> = DENIED_RATIONALE
+        .iter()
+        .map(|&(nr, _)| nr)
+        .chain(REFUSED_SOFTLY.iter().map(|&(nr, _)| nr))
+        .map(|nr| (nr, [0; 6]))
+        .collect();
+    calls.extend([(libc::SYS_clone, ns), (libc::SYS_unshare, ns), (libc::SYS_ioctl, with_arg(1, TIOCSTI as u64))]);
+    for (nr, args) in calls {
+        assert_eq!(evaluate_args(&trace, X86, nr as u32, args), libc::SECCOMP_RET_USER_NOTIF, "syscall {nr} is not named");
+        let call = libc::seccomp_data { nr: nr as i32, arch: X86, instruction_pointer: 0, args };
+        let heard = soft_errno(&call).map_or(SECCOMP_RET_KILL_PROCESS, errno_action);
+        assert_eq!(evaluate_args(&zone, X86, nr as u32, args), heard, "syscall {nr}");
+    }
+    // Another architecture is killed in a zone whatever the number.
+    let i386 = libc::seccomp_data { nr: libc::SYS_unshare as i32, arch: 0x4000_0003, instruction_pointer: 0, args: ns };
+    assert_eq!(soft_errno(&i386), None);
 }
 
 #[test]
@@ -314,6 +368,27 @@ fn tty_injection_ioctls_are_killed() {
         SECCOMP_RET_KILL_PROCESS
     );
     for cmd in [libc::TCGETS, libc::TIOCGWINSZ, libc::FIONREAD, libc::FIOCLEX] {
+        assert_eq!(
+            evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
+            SECCOMP_RET_ALLOW,
+            "ioctl {cmd:#x} should be allowed"
+        );
+    }
+}
+
+/// With CAP_NET_ADMIN, which the nic zone keeps, these write a NIC's EEPROM, flash or PHY.
+#[test]
+fn nic_writing_ioctls_are_refused() {
+    let p = build_program(BASE_ALLOWLIST).unwrap();
+    for cmd in [SIOCETHTOOL, SIOCSMIIREG, SIOCDEVPRIVATE, SIOCDEVPRIVATE + 15] {
+        assert_eq!(
+            evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
+            errno_action(EPERM),
+            "ioctl {cmd:#x} must be refused"
+        );
+    }
+    // Their neighbours, readers among them, still pass.
+    for cmd in [SIOCSMIIREG - 1, SIOCDEVPRIVATE - 1, SIOCDEVPRIVATE + 16, 0x8913, 0x8B01] {
         assert_eq!(
             evaluate_args(&p, X86, libc::SYS_ioctl as u32, with_arg(1, cmd as u64)),
             SECCOMP_RET_ALLOW,
@@ -362,9 +437,8 @@ fn socketpair_unix_only() {
 
 #[test]
 fn tsync_failure_is_error() {
-    /* A thread with a filter of its own cannot take another by TSYNC: the
-     * kernel returns its id and attaches nothing. In a forked child, which
-     * exits while that thread still waits. */
+    /* TSYNC fails on a thread with a filter of its own: the kernel returns its id and attaches
+     * nothing. Run in a forked child, which exits while that thread still waits. */
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0);
     if pid == 0 {
@@ -399,8 +473,7 @@ fn tsync_failure_is_error() {
 
 #[test]
 fn arg_rules_leave_allowlist_alone() {
-    /* A non-matching rule block must leave the syscall number in the
-     * accumulator; these arguments would trip any rule consulted. */
+    // A skipped rule block must leave the syscall number loaded; these arguments trip any rule.
     let p = build_program(BASE_ALLOWLIST).unwrap();
     let args = [CLONE_NS_MASK as u64, TIOCSTI as u64, 40, 7, 1 << 33, 9];
     for &nr in BASE_ALLOWLIST {
@@ -416,8 +489,37 @@ fn arg_rules_leave_allowlist_alone() {
 }
 
 #[test]
+fn kept_capabilities_open_their_calls() {
+    let calls = [libc::SYS_setuid, libc::SYS_capset, libc::SYS_setgid, libc::SYS_setgroups, libc::SYS_chroot];
+    // Kept by no zone, nothing changes.
+    assert_eq!(widened_for(&[], &[]).unwrap(), widened(&[]).unwrap());
+    let all = widened_for(&[], crate::caps::PRIVSEP).unwrap();
+    for nr in calls {
+        assert!(is_denied(nr) && !BASE_ALLOWLIST.contains(&nr), "{nr} is denied to every other zone");
+        assert!(all.contains(&nr), "{nr} is opened by its capability");
+    }
+    assert_eq!(all.len(), BASE_ALLOWLIST.len() + calls.len());
+    // Each capability opens its own calls and no other.
+    let chroot = widened_for(&[], &[crate::caps::cap::SYS_CHROOT]).unwrap();
+    assert!(chroot.contains(&libc::SYS_chroot) && !chroot.contains(&libc::SYS_setuid) && !chroot.contains(&libc::SYS_setgroups));
+    let setuid = widened_for(&[], &[crate::caps::cap::SETUID]).unwrap();
+    assert!(setuid.contains(&libc::SYS_capset) && !setuid.contains(&libc::SYS_setgid));
+    let p = build_program(&all).unwrap();
+    for nr in calls {
+        assert_eq!(evaluate(&p, X86, nr as u32), SECCOMP_RET_ALLOW, "{nr}");
+    }
+    // Every other zone's program still refuses them as before.
+    let base = build_program(BASE_ALLOWLIST).unwrap();
+    assert_eq!(evaluate(&base, X86, libc::SYS_setuid as u32), errno_action(EPERM));
+    assert_eq!(evaluate(&base, X86, libc::SYS_setgroups as u32), errno_action(EPERM));
+    assert_eq!(evaluate(&base, X86, libc::SYS_capset as u32), errno_action(EPERM));
+    assert_eq!(evaluate(&base, X86, libc::SYS_chroot as u32), SECCOMP_RET_KILL_PROCESS);
+}
+
+#[test]
 fn widened_refuses_denied() {
-    assert!(widened(&[libc::SYS_ptrace]).is_err());
+    let e = widened(&[libc::SYS_ptrace]).unwrap_err();
+    assert!(matches!(e, SeccompError::Denied(libc::SYS_ptrace)) && e.to_string().contains("ptrace"), "{e}");
     let w = widened(&[libc::SYS_sched_setscheduler, libc::SYS_read]).unwrap();
     assert_eq!(w.len(), BASE_ALLOWLIST.len() + 1, "a base call is not added twice");
     assert!(w.contains(&libc::SYS_sched_setscheduler));
@@ -425,8 +527,7 @@ fn widened_refuses_denied() {
 
 #[test]
 fn everyday_calls_allowed() {
-    /* Each killed a common program in a zone: tar, gzip, cp -a, rsync,
-     * install, asyncio, timeout, mmap.flush, chrt -p. */
+    // tar, gzip, cp -a, rsync, install, asyncio, timeout, mmap.flush and chrt -p need these.
     let allowed: HashSet<libc::c_long> = BASE_ALLOWLIST.iter().copied().collect();
     for nr in [
         libc::SYS_chmod, libc::SYS_fchmod, libc::SYS_fchmodat, libc::SYS_fchmodat2,
@@ -445,18 +546,15 @@ fn everyday_calls_allowed() {
 // --- zone policy widenings ---------------------------------------------
 
 #[test]
-fn widened_socket_rule_allows_named_extras() {
+fn socket_policy_extras() {
     let sp = SocketPolicy { families: vec![17], netlink_protocols: vec![12], netlink_all: false };
     let p = build_program_full(BASE_ALLOWLIST, SECCOMP_RET_KILL_PROCESS, &sp).unwrap();
-    // The base families still pass...
     for fam in [AF_UNIX, AF_INET, AF_INET6] {
         assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, fam as u64)), SECCOMP_RET_ALLOW, "{fam}");
     }
-    // ...the extra family passes...
     assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 17)), SECCOMP_RET_ALLOW);
-    // ...an unnamed family still does not...
     assert_eq!(evaluate_args(&p, X86, libc::SYS_socket as u32, with_arg(0, 40)), errno_action(EAFNOSUPPORT));
-    // ...NETLINK_ROUTE and the extra protocol pass, another does not.
+    // NETLINK_ROUTE and the extra protocol pass, another does not.
     let mut a = [0u64; 6];
     a[0] = AF_NETLINK as u64;
     for (proto, want) in [(0u64, SECCOMP_RET_ALLOW), (12, SECCOMP_RET_ALLOW), (9, errno_action(EAFNOSUPPORT))] {
@@ -518,4 +616,83 @@ fn each_call_named_once() {
         assert!(!is_denied(nr) && !BASE_ALLOWLIST.contains(&nr), "{name} is on a list already");
     }
     assert_eq!(name_of(libc::SYS_futex), Some("futex"));
+}
+
+#[test]
+fn the_proxy_makes_its_calls_alone() {
+    let p = proxy_program();
+    assert!(p.len() <= 4096);
+    let call = |nr: libc::c_long, args: [u64; 6]| evaluate_args(&p, AUDIT_ARCH_X86_64, nr as u32, args);
+    let mut seen = HashSet::new();
+    for &nr in PROXY_ALLOWLIST {
+        assert!(seen.insert(nr), "{} listed twice", name_of(nr).unwrap_or("?"));
+        assert!(BASE_ALLOWLIST.contains(&nr), "{} is not a zone's call either", name_of(nr).unwrap_or("?"));
+        // Each with the arguments the proxy passes: a Unix socket, FIONBIO, readable memory.
+        let args = match nr {
+            libc::SYS_socket => [1, 1 | 0x8_0000, 0, 0, 0, 0],
+            libc::SYS_ioctl => [4, 0x5421, 0, 0, 0, 0],
+            libc::SYS_mmap | libc::SYS_mprotect => [0, 4096, 3, 0, 0, 0],
+            libc::SYS_sendto => [5, 0x1000, 12, 0x4000, 0, 0],
+            _ => [0; 6],
+        };
+        assert_eq!(call(nr, args), SECCOMP_RET_ALLOW, "{}", name_of(nr).unwrap_or("?"));
+    }
+    for nr in [
+        libc::SYS_openat, libc::SYS_open, libc::SYS_clone, libc::SYS_clone3, libc::SYS_fork,
+        libc::SYS_execveat, libc::SYS_bind, libc::SYS_listen, libc::SYS_kill,
+        libc::SYS_memfd_create, libc::SYS_splice, libc::SYS_unshare, libc::SYS_ptrace, libc::SYS_seccomp,
+    ] {
+        assert_eq!(call(nr, [0; 6]), SECCOMP_RET_KILL_PROCESS, "{}", name_of(nr).unwrap_or("?"));
+    }
+    for (family, why) in [(2, "IPv4"), (10, "IPv6"), (16, "netlink"), (17, "packet"), (40, "vsock")] {
+        assert_eq!(call(libc::SYS_socket, [family, 1, 0, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "{why}");
+    }
+    // The command is 32 bits to the kernel, so the high half is no way past the rule.
+    assert_eq!(call(libc::SYS_ioctl, [4, 0x1_0000_5421, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
+    for (cmd, why) in [(0x5412, "TIOCSTI"), (0x5451, "FIOCLEX"), (0x8946, "SIOCETHTOOL"), (0x541B, "FIONREAD")] {
+        assert_eq!(call(libc::SYS_ioctl, [4, cmd, 0, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "{why}");
+    }
+    // A datagram to an address it names: another socket on the machine, not its peer.
+    assert_eq!(call(libc::SYS_sendto, [5, 0x1000, 12, 0, 0x2000, 16]), SECCOMP_RET_KILL_PROCESS);
+    for nr in [libc::SYS_mmap, libc::SYS_mprotect] {
+        assert_eq!(call(nr, [0, 4096, 0, 0, 0, 0]), SECCOMP_RET_ALLOW, "PROT_NONE, the stack guard");
+        assert_eq!(call(nr, [0, 4096, 4, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "PROT_EXEC");
+        assert_eq!(call(nr, [0, 4096, 7, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "read, write and execute");
+    }
+    assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, X32_SYSCALL_BIT | libc::SYS_read as u32), SECCOMP_RET_KILL_PROCESS, "x32");
+    assert_eq!(evaluate(&p, 0x4000_0003, libc::SYS_read as u32), SECCOMP_RET_KILL_PROCESS, "another arch");
+}
+
+#[test]
+fn supplicant_sockets_only_as_it_opens_them() {
+    let p = supplicant_program();
+    let socket = |family: u64, kind: u64, protocol: u64| {
+        evaluate_args(&p, AUDIT_ARCH_X86_64, libc::SYS_socket as u32, [family, kind, protocol, 0, 0, 0])
+    };
+    let refused = SECCOMP_RET_ERRNO | EPERM;
+    for (family, kind, protocol, why) in [
+        (1, 1 | 0x8_0000, 0, "its control socket"),
+        (17, 3, 0x888e, "EAPOL"),
+        (16, 3 | 0x8_0000, 16, "nl80211"),
+        (16, 3, 0, "link events"),
+        (2, 2, 0, "the driver's ioctl socket"),
+        (2, 2 | 0x8_0000 | 0x800, 0, "the same, close-on-exec and non-blocking"),
+    ] {
+        assert_eq!(socket(family, kind, protocol), SECCOMP_RET_ALLOW, "{why}");
+    }
+    for (family, kind, protocol, why) in [
+        (16, 3, 12, "nf_tables"),
+        (16, 3, 9, "audit"),
+        (2, 1, 0, "TCP"),
+        (2, 3, 0, "raw IP"),
+        (2, 2 | 0x10, 0, "a datagram type with an unknown flag"),
+        (10, 2, 0, "IPv6"),
+        (40, 1, 0, "vsock"),
+    ] {
+        assert_eq!(socket(family, kind, protocol), refused, "{why}");
+    }
+    // Every other call is its zone filter's to decide.
+    assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, libc::SYS_read as u32), SECCOMP_RET_ALLOW);
+    assert_eq!(evaluate(&p, AUDIT_ARCH_X86_64, X32_SYSCALL_BIT | 41), SECCOMP_RET_KILL_PROCESS, "x32");
+    assert_eq!(evaluate(&p, 0x4000_0003, libc::SYS_read as u32), SECCOMP_RET_KILL_PROCESS, "another arch");
 }

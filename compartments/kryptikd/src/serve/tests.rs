@@ -1,12 +1,80 @@
 use super::*;
 
 #[test]
+fn net_summary_passes_on_known_fields_only() {
+    let line = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=Cafe Wifi time=+0.5 bridge=kryptik0 uplinks=eth0 wlan0";
+    assert_eq!(net_summary(line).as_deref(), Some("ready: Wi-Fi \"Cafe Wifi\", uplink 10.0.2.15/24, DNS"));
+    let wired = "READY uplink=none nat=yes dns=no wifi=none time=no-uplink bridge=kryptik0 uplinks=eth0";
+    assert_eq!(net_summary(wired).as_deref(), Some("ready: no uplink address, no DNS"));
+    let joining = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=connecting time=-2";
+    assert_eq!(net_summary(joining).as_deref(), Some("ready: Wi-Fi connecting, uplink 10.0.2.15/24, DNS"));
+    let off = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=off time=-2";
+    assert_eq!(net_summary(off).as_deref(), Some("ready: Wi-Fi switched off, uplink 10.0.2.15/24, DNS"));
+    let down = "NOT READY firewall policy not loaded; forwarding off; uplink=none dns=no wifi=none time=x";
+    assert_eq!(net_summary(down).as_deref(), Some("not ready: forwarding is off"));
+    // An SSID is any access point's: what a terminal would act on comes out escaped, and words
+    // in it that look like fields do not stand for the line's own.
+    let hostile = "READY uplink=10.0.2.15/24 nat=yes dns=yes wifi=\\x1b[2J x time=0 dns=no time=+1 bridge=k";
+    let s = net_summary(hostile).unwrap();
+    assert!(!s.contains('\u{1b}') && s.contains("\\u{1b}[2J x time=0 dns=no"), "{s}");
+    assert!(s.ends_with(", uplink 10.0.2.15/24, DNS"), "{s}");
+    for bad in [
+        "",
+        "READY",
+        "anything else",
+        "READY uplink=10.0.2.300/24 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=10.0.2.15/33 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=10.0.2.15 nat=yes dns=yes wifi=none time=0",
+        "READY uplink=none nat=yes dns=maybe wifi=none time=0",
+        "READY uplink=none nat=yes dns=yes wifi= time=0",
+        "READY uplink=none nat=yes dns=yes wifi=an SSID of thirty-three bytes!!!! time=0",
+        "READY uplink=none nat=yes dns=yes time=0 wifi=late",
+        // iw prints no control character as itself.
+        "READY uplink=none nat=yes dns=yes wifi=\u{1b}[2J time=0",
+    ] {
+        assert_eq!(net_summary(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn net_summary_reads_an_ssid_back_from_iw() {
+    let line = |printed: &str| format!("READY uplink=none nat=yes dns=yes wifi={printed} time=0");
+    // iw prints each byte past ASCII as \xHH, four characters for one byte: a name of sixteen
+    // bytes is sixty-four characters long, and comes back whole.
+    let cyrillic = line("\\xd0\\xa0\\xd0\\xb5\\xd1\\x81\\xd1\\x82\\xd0\\xbe\\xd1\\x80\\xd0\\xb0\\xd0\\xbd");
+    assert_eq!(net_summary(&cyrillic).as_deref(), Some("ready: Wi-Fi \"Ресторан\", no uplink address, DNS"));
+    let full = line(&"\\xc3\\xa9".repeat(16));
+    assert_eq!(net_summary(&full), Some(format!("ready: Wi-Fi \"{}\", no uplink address, DNS", "é".repeat(16))));
+    assert_eq!(net_summary(&line(&format!("{}x", "\\xc3\\xa9".repeat(16)))), None, "33 bytes");
+    // A name that is not UTF-8 keeps its escapes; one that turns text around is escaped.
+    assert_eq!(net_summary(&line("Caf\\xe9")).as_deref(), Some("ready: Wi-Fi \"Caf\\xe9\", no uplink address, DNS"));
+    let s = net_summary(&line("\\xe2\\x80\\xaegnp.exe")).unwrap();
+    assert!(!s.contains('\u{202e}') && s.contains("\\u{202e}gnp.exe"), "{s}");
+    for bad in ["\\x", "\\xd", "\\xzz", "\\q", "tail\\", "\\x00\\x00"] {
+        assert_eq!(net_summary(&line(bad)), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn net_summary_names_the_network_that_refused_the_passphrase() {
+    let line = |wifi: &str| format!("READY uplink=none nat=yes dns=no wifi={wifi} time=no-uplink");
+    let refused = line("refused:Home net");
+    assert_eq!(net_summary(&refused).as_deref(), Some("ready: Wi-Fi \"Home net\" refused the passphrase, no uplink address, no DNS"));
+    let cafe = line("refused:Caf\\xc3\\xa9");
+    assert_eq!(net_summary(&cafe).as_deref(), Some("ready: Wi-Fi \"Café\" refused the passphrase, no uplink address, no DNS"));
+    for bad in ["refused:", "refused:\\q", "refused:an SSID of thirty-three bytes!!!!"] {
+        assert_eq!(net_summary(&line(bad)), None, "{bad:?}");
+    }
+}
+
+#[test]
 fn parse_run_refuses_bad_requests() {
-    let r = parse_run("run work wayland=/run/user/1000/kryptik/work/wayland-0 pass=fd\narg havoc\narg -e\narg sh\nend\n").unwrap();
+    let r = parse_run("run work wayland pass=fd\narg havoc\narg -e\narg sh\nend\n").unwrap();
     assert_eq!(r.zone, "work");
     assert_eq!(r.argv, vec!["havoc", "-e", "sh"]);
     assert!(r.wants_fd);
-    assert_eq!(r.wayland.as_deref(), Some(Path::new("/run/user/1000/kryptik/work/wayland-0")));
+    assert!(r.wayland);
+    assert!(!parse_run("run work\narg a\nend\n").unwrap().wayland);
     for bad in [
         "",
         "run\n",
@@ -14,6 +82,8 @@ fn parse_run_refuses_bad_requests() {
         "run work\nend\n",
         "run work\narg a\n",
         "run work bogus=1\narg a\nend\n",
+        // The proxy's socket is serve's to choose, never the asker's.
+        "run work wayland=/run/user/1000/kryptik/work/wayland-0\narg a\nend\n",
         "stop work\n",
     ] {
         assert!(parse_run(bad).is_err(), "{bad:?} must be refused");
@@ -40,14 +110,23 @@ fn request_complete_at_terminator() {
 }
 
 #[test]
-fn parse_wifi_keeps_values_hides_psk() {
+fn parse_wifi_hides_psk() {
     let r = parse_wifi("wifi-add\nssid Cafe Wifi \npsk pass word\nend\n").unwrap();
     assert_eq!(r.ssid, "Cafe Wifi ");
     assert_eq!(r.psk.as_deref(), Some("pass word"));
     let r = parse_wifi("wifi-forget\nssid Home\nend\n").unwrap();
     assert_eq!((r.ssid.as_str(), r.psk), ("Home", None));
+    let r = parse_wifi("wifi-add\nssid Cafe\nopen\nend\n").unwrap();
+    assert_eq!((r.ssid.as_str(), r.psk, r.open, r.hidden), ("Cafe", None, true, false));
+    let r = parse_wifi("wifi-add\nssid Attic\npsk pass word\nhidden\nend\n").unwrap();
+    assert_eq!((r.ssid.as_str(), r.open, r.hidden), ("Attic", false, true));
     for bad in [
         "wifi-add\nssid a\nend\n",                    // no psk
+        "wifi-add\nssid a\npsk secret\nopen\nend\n",  // a psk and open
+        "wifi-add\nssid a\nopen\nopen\nend\n",        // one open
+        "wifi-forget\nssid a\nopen\nend\n",           // forget takes no open
+        "wifi-add\nssid a\nopen\nhidden\nhidden\nend\n", // one hidden
+        "wifi-forget\nssid a\nhidden\nend\n",         // forget takes no hidden
         "wifi-add\npsk secret\nend\n",                // no ssid
         "wifi-add\nssid a\npsk se\ncret\nend\n",      // a newline in the psk
         "wifi-add\nssid a\npsk secret\n",             // no end
@@ -60,25 +139,36 @@ fn parse_wifi_keeps_values_hides_psk() {
     }
 }
 
-/// The path rule: only the session's own `<zone>/wayland-0` is considered.
+/// dwl's directory for a session's zone sockets: the session's own, and others may only pass.
 #[test]
-fn proxy_path_must_be_sessions_own() {
-    let bad = |p: &str, uid: u32, zone: &str| {
-        let e = verify_proxy_socket(Path::new(p), uid, zone, None).unwrap_err();
-        assert!(e.contains("must be") || e.contains("path"), "{p}: {e}");
+fn the_compositor_directory_is_made_traversable_and_never_through_a_link() {
+    let dir = std::env::temp_dir().join(format!("kryptik-compositor-dir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = ServeConfig {
+        socket: dir.join("launch.sock"),
+        group: GROUP.into(),
+        zones_dir: dir.clone(),
+        rootfs: String::new(),
+        log_dir: dir.clone(),
+        proxy_exe: PathBuf::from(PROXY_EXE),
+        wifi_dir: dir.clone(),
+        developer: true,
+        shadow: dir.join("shadow"),
     };
-    bad("/run/user/1000/kryptik/work/wayland-0", 1001, "work");
-    bad("/run/user/1000/kryptik/work/wayland-0", 1000, "vault");
-    bad("/run/user/1000/wayland-0", 1000, "work");
-    bad("/run/user/1000/kryptik/../wayland-0", 1000, "work");
-    bad("/tmp/wayland-0", 1000, "work");
-    bad("/run/user/1000/kryptik/work/wayland-0/", 1000, "work");
+    compositor_dir(&cfg, 1000).unwrap();
+    let md = std::fs::metadata(dir.join("kryptik-compositor/1000")).unwrap();
+    assert!(md.is_dir());
+    assert_eq!(md.permissions().mode() & 0o777, 0o711);
+    compositor_dir(&cfg, 1000).expect("one already there is kept");
+    std::fs::remove_dir(dir.join("kryptik-compositor/1000")).unwrap();
+    std::os::unix::fs::symlink(&dir, dir.join("kryptik-compositor/1000")).unwrap();
+    assert!(compositor_dir(&cfg, 1000).is_err(), "a link in its place is refused");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
-// The ownership and listener checks run against the daemon in compartments/tests/serve.sh.
-
 #[test]
-fn open_nofollow_refuses_links_and_non_sockets() {
+fn open_nofollow_refusals() {
     let dir = std::env::temp_dir().join(format!("kryptik-nofollow-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("real")).unwrap();
@@ -95,36 +185,24 @@ fn open_nofollow_refuses_links_and_non_sockets() {
 }
 
 #[test]
-fn full_proxy_backlog_does_not_block() {
-    let dir = std::env::temp_dir().join(format!("kryptik-backlog-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("socket");
-    let listener = UnixListener::bind(&path).unwrap();
-    assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
-    let queued = UnixStream::connect(&path).unwrap();
-    let sock = open_nofollow(&path, true).unwrap();
-    let (done, completion) = std::sync::mpsc::channel();
-    let worker = std::thread::spawn(move || {
-        let result = verify_proxy_listener(&sock, unsafe { libc::geteuid() }, "work", None);
-        let _ = done.send(result);
-    });
-    let result = completion.recv_timeout(Duration::from_secs(2));
-    // Closing the listener releases a blocking connect, so a regression fails instead of hanging.
-    drop(listener);
-    drop(queued);
-    worker.join().unwrap();
-    std::fs::remove_dir_all(dir).unwrap();
-    assert!(result.is_ok(), "a session-owned listener held the root daemon at connect");
-    assert!(result.unwrap().is_err(), "a full backlog must be refused");
-}
-
-#[test]
 fn identifiers() {
     assert!(ident_ok("work"));
     assert!(ident_ok("net-zone_2"));
     assert!(!ident_ok(""));
     assert!(!ident_ok("a/b"));
     assert!(!ident_ok(&"x".repeat(40)));
+}
+
+#[test]
+fn spoiled_stage_is_known_by_the_updater_words() {
+    // The two refusals kryptik-update gives a file that is not what its manifest signs.
+    let tool = include_str!("../../../../tools/update/kryptik-update");
+    for words in ["sha256 does not match the manifest", "truncated or altered"] {
+        assert!(tool.contains(words), "kryptik-update no longer says {words:?}");
+        assert!(spoiled(&format!("kryptik-update: FAILED: kryptik-root.img: {words}")));
+    }
+    assert!(!spoiled("kryptik-update: FAILED: another update is in progress (lock /run/kryptik/update.lock)"));
+    assert!(!spoiled("kryptik-update: FAILED: slot b is 1 bytes; the root image needs 2"));
 }
 
 #[test]
@@ -142,6 +220,71 @@ fn last_log_line_reads_tail() {
     large.write_all(b"\nlast launch error\n\n").unwrap();
     assert_eq!(last_log_line(&log), "last launch error");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn zone_log_starts_again_past_its_bound() {
+    let dir = std::env::temp_dir().join(format!("kryptik-serve-log-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("zone-x.log");
+    let old = dir.join("zone-x.log.old");
+    // Under the bound a launch appends to what is there.
+    std::fs::write(&log, "first launch\n").unwrap();
+    open_zone_log(&log).unwrap().write_all(b"second launch\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "first launch\nsecond launch\n");
+    assert!(!old.exists(), "a log under the bound was moved aside");
+    // Past it the file is kept as .old, in place of the one before, and a new one starts.
+    std::fs::write(&old, "the generation before\n").unwrap();
+    let grown = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    grown.set_len(ZONE_LOG_KEEP + 1).unwrap(); // sparse: no large allocation or disk write
+    drop(grown);
+    open_zone_log(&log).unwrap().write_all(b"third launch\n").unwrap();
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "third launch\n");
+    assert_eq!(std::fs::metadata(&old).unwrap().len(), ZONE_LOG_KEEP + 1, "the grown log is not the one kept");
+    // A link at the name is refused, and nothing is made through it.
+    let target = dir.join("elsewhere");
+    std::fs::remove_file(&log).unwrap();
+    std::os::unix::fs::symlink(&target, &log).unwrap();
+    assert!(open_zone_log(&log).is_err(), "a log was opened through a link");
+    assert!(!target.exists(), "a file was made through a link at the log's name");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_password_takes_the_peers_own_entry_alone() {
+    // "Hello world!" under SHA-512 crypt, the specification's example (password/tests.rs).
+    const HELLO: &str = "$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1";
+    let uid = unsafe { libc::geteuid() };
+    let user = user_of(uid).expect("the test's uid has a name");
+    let shadow = std::env::temp_dir().join(format!("kryptikd-serve-shadow-{}", std::process::id()));
+    std::fs::write(&shadow, format!("other:{HELLO}:20000:0:99999:7:::\n{user}:{HELLO}:20000:0:99999:7:::\n")).unwrap();
+    let cfg = ServeConfig {
+        socket: PathBuf::new(),
+        group: String::new(),
+        zones_dir: PathBuf::new(),
+        rootfs: String::new(),
+        log_dir: PathBuf::new(),
+        proxy_exe: PathBuf::new(),
+        wifi_dir: PathBuf::new(),
+        developer: true,
+        shadow: shadow.clone(),
+    };
+    let ask = |p: &str, a: &mut crate::password::Attempts| check_password(&cfg, uid, &format!("check-password\npassword {p}\nend\n"), a);
+    let mut a = crate::password::Attempts::default();
+    assert_eq!(ask("Hello world!", &mut a), "ok\n");
+    assert_eq!(ask("hello world!", &mut a), "error: wrong password\n");
+    // Within the pause even the right one is turned away unchecked.
+    assert_eq!(ask("Hello world!", &mut a), "error: wait 2 s\n");
+    for bad in ["check-password\npassword x\n", "check-password\npassword x\nend\nmore\n", "check-password\npass x\nend\n", "check-password\n"] {
+        assert!(check_password(&cfg, uid, bad, &mut a).starts_with("error: check-password: "), "{bad:?}");
+    }
+    std::fs::write(&shadow, format!("{user}:!:20000:0:99999:7:::\nother:{HELLO}:20000:0:99999:7:::\n")).unwrap();
+    assert_eq!(
+        ask("Hello world!", &mut crate::password::Attempts::default()),
+        format!("error: {user} has no SHA-512 or SHA-256 crypt password to check\n"),
+        "another account's hash is never tried"
+    );
+    let _ = std::fs::remove_file(&shadow);
 }
 
 #[test]

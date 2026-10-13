@@ -5,29 +5,33 @@
 # on a build host; every check runs before the first write.
 #
 #   kryptik-install --target DISK [--yes] [--dry-run] [--preseed FILE]
-#                   [--replace-kryptik]
+#                   [--replace-kryptik] [--slot-size MIB] [--keyboard NAME]
 set -eu
 
 PROG="kryptik-install"
 say()  { printf '%s: %s\n' "$PROG" "$*"; }
 die()  { printf '%s: FAILED: %s\n' "$PROG" "$*" >&2; exit 1; }
 
-# root.json is the medium's own record, not signed material: a rewritten
-# record must be able to make the install fail and nothing else, so every
-# field is checked for form before it is used, and what lands on the disk is
-# verified against the root hash the signed kernel carries.
-decimal_field() {   # decimal_field NAME VALUE: a bounded decimal, or die
-    case "$2" in ''|*[!0-9]*) die "root.json: $1 is not a number" ;; esac
-    [ "${#2}" -le 15 ] || die "root.json: $1 is too large"
+# A slot may be made larger than this image needs, never smaller.
+slot_size_ok() {   # slot_size_ok ASKED NEEDED: both in MiB, or die
+    case "$1" in ''|0*|*[!0-9]*) die "--slot-size takes a number of MiB" ;; esac
+    [ "${#1}" -le 9 ] || die "--slot-size $1 is too large"
+    [ "$1" -ge "$2" ] || die "--slot-size $1 is less than the $2 MiB a slot needs: the image, and room for a later, larger one"
 }
-hex_field() {   # hex_field NAME VALUE LENGTH: lowercase hex of that length, or die
-    case "$2" in *[!0-9a-f]*) die "root.json: $1 is not a hash" ;; esac
-    [ "${#2}" -eq "$3" ] || die "root.json: $1 is not a hash"
-}
-# The root's dm-verity table from the signed command line, as
-# "data_blocks hash_start_block root_hash salt"; empty when there is none.
-verity_of() {   # verity_of FILE
-    sed -n 's/.* verity 1 [^ ]* [^ ]* 4096 4096 \([0-9][0-9]*\) \([0-9][0-9]*\) sha256 \([0-9a-f]\{64\}\) \([0-9a-f]*\) .*/\1 \2 \3 \4/p' "$1" | head -1
+
+# First boot reads the preseed after the disk is written, so a preseed it
+# could not use is refused here, with the other refusals, by first boot's own
+# rules (firstboot.sh): the first user= is a name it would create, and each hash
+# a crypt hash, which a CRLF line end is not.
+preseed_ok() {   # preseed_ok FILE, or die
+    [ -r "$1" ] || die "cannot read the preseed ${1}; nothing was written"
+    _pu="$(sed -n 's/^user=//p' "$1" | head -1)"
+    _ph="$(sed -n 's/^password_hash=//p' "$1" | head -1)"
+    _pr="$(sed -n 's/^root_password_hash=//p' "$1" | head -1)"
+    case "$_pu" in ''|*[!a-z0-9_-]*|-*) die "the preseed ${1} names no user first boot would create (lower-case letters, digits, _ and -); nothing was written" ;; esac
+    case "$_ph" in '$'?*) ;; *) die "the preseed ${1} names no crypt password_hash=; nothing was written" ;; esac
+    case "$_ph$_pr" in *[!A-Za-z0-9./=\$]*) die "the preseed ${1} has a hash with characters no crypt hash has; nothing was written" ;; esac
+    case "$_pr" in ''|'$'?*) ;; *) die "the preseed ${1} names a root_password_hash= that is not a crypt hash; nothing was written" ;; esac
 }
 
 TARGET=""
@@ -35,6 +39,8 @@ ASSUME_YES=0
 REPLACE=0
 DRY_RUN=0
 PRESEED=""
+SLOT_ASKED=""
+KEYBOARD=""
 MNT_BASE=/run/kryptik-install
 
 while [ $# -gt 0 ]; do
@@ -44,11 +50,15 @@ while [ $# -gt 0 ]; do
         --dry-run) DRY_RUN=1; shift ;;
         --preseed) PRESEED="${2:-}"; shift 2 ;;
         --replace-kryptik) REPLACE=1; shift ;;
+        --slot-size) SLOT_ASKED="${2:-}"; [ -n "$SLOT_ASKED" ] || die "--slot-size needs a number of MiB"; shift 2 ;;
+        --keyboard) KEYBOARD="${2:-}"; [ -n "$KEYBOARD" ] || die "--keyboard needs a layout's name"; shift 2 ;;
         -h|--help)
-            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik]\n' "$PROG"
+            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik] [--slot-size MIB] [--keyboard NAME]\n' "$PROG"
             printf '\nInstalls the running medium onto --target. Destroys everything on it.\n'
             printf '%s\n' '--dry-run checks everything and writes nothing.'
             printf '%s\n' '--replace-kryptik allows a disk that holds an old Kryptik installation or medium.'
+            printf '%s\n' '--slot-size MIB makes each root slot that large, for later releases with larger images.'
+            printf '%s\n' '--keyboard NAME installs with that keyboard layout; kryptik keyboard lists them.'
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -59,8 +69,9 @@ done
 
 # --- every external tool, checked before the first write -------------------
 missing=""
-for tool in sfdisk partx blockdev blkid cryptsetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed \
-            readlink lsblk head cmp cp mkdir stat tr; do
+for tool in sfdisk partx blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
+            grep readlink lsblk head tail wc cmp cp mkdir stat tr cut basename mv mountpoint rmdir chmod rm cat sleep \
+            loadkeys chattr kryptik-efiboot; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}
@@ -75,9 +86,26 @@ part_dev() {
     esac
 }
 
-# The boot services' answers to which disk a device is on and which partitions
-# are this system's own.
+# A mount or swap table's sources, each compared by its canonical path: a disk
+# mounted by another name (by-id, by-uuid, a link of its own) is still that disk.
+mounted_on() {   # mounted_on DEVS < TABLE: "SOURCE on WHERE" for each source that is one of DEVS, one path a line
+    while read -r src where _; do
+        case "$src" in /*) ;; *) continue ;; esac
+        real="$(readlink -f "$src" 2>/dev/null)" || continue
+        printf '%s\n' "$1" | grep -qxF -- "$real" && printf '%s on %s\n' "$src" "$where"
+    done
+    return 0
+}
+
+# kryptik_root_disk and kryptik_part, as the boot services resolve them.
 . /usr/libexec/kryptik/devices.sh
+. /usr/libexec/kryptik/keyboard.sh
+# What the medium's root.json may be trusted for, shared with kryptik-recover.
+. /usr/libexec/kryptik/medium-root.sh
+# The ESP's kernels and records, written as every other tool writes them.
+. /usr/libexec/kryptik/esp-records.sh
+[ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
+[ -z "$PRESEED" ] || preseed_ok "$PRESEED"
 
 # --- refuse anything that is not a disposable whole disk -------------------
 [ -b "$TARGET" ] || die "${TARGET} is not a block device.
@@ -102,13 +130,18 @@ done
 [ "$(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null)" = "disk" ] || die "${TARGET} is not a whole disk (lsblk type: $(lsblk -dno TYPE "$TARGET_REAL" 2>/dev/null || echo unknown))"
 [ "$(cat "/sys/class/block/$tname/ro" 2>/dev/null || echo 0)" = "0" ] || die "${TARGET} is read-only"
 
-# Nothing on the target may be mounted or used as swap.
-mounted="$(awk -v d="${TARGET_REAL}" '$1 ~ "^" d { print $1 " on " $2 }' /proc/mounts)"
+# Nothing on the target may be mounted or used as swap, by whatever name.
+devs="$TARGET_REAL"
+for p in "/sys/class/block/$tname/$tname"*; do
+    [ -e "$p/partition" ] && devs="${devs}
+/dev/${p##*/}"
+done
+mounted="$(mounted_on "$devs" < /proc/mounts)"
 if [ -n "$mounted" ]; then
     printf '%s\n' "$mounted" | sed 's/^/  /'
     die "the target has mounted filesystems. Unmount them first, or pick another disk."
 fi
-if awk -v d="${TARGET_REAL}" 'NR>1 && $1 ~ "^" d { found=1 } END { exit !found }' /proc/swaps 2>/dev/null; then
+if [ -n "$(tail -n +2 /proc/swaps 2>/dev/null | mounted_on "$devs")" ]; then
     die "${TARGET} has active swap on it. Refusing."
 fi
 # Nor held open by device-mapper (an unlocked LUKS partition, LVM) or md.
@@ -118,9 +151,7 @@ for h in "/sys/class/block/$tname/holders/"* "/sys/class/block/$tname/$tname"*/h
 done
 [ -z "$held" ] || die "${TARGET} is in use: held open by${held}. Close them first, or pick another disk."
 
-# A disk that carries Kryptik (an old installation, a medium, a test-control
-# disk) may hold the only copy of someone's state: it is replaced only when
-# asked for by name.
+# A disk that carries Kryptik may hold the only copy of someone's state: replaced only on request.
 labels=""
 for p in "/sys/class/block/$tname/$tname"*; do
     [ -e "$p/partition" ] || continue
@@ -162,46 +193,40 @@ case "$media" in
         [ -b "$ROOT_SRC" ] || die "no single kryptik-media partition on the medium this system booted from"
         ESP_SRC="$(kryptik_part kryptik-esp)" || true
         [ -b "$ESP_SRC" ] || die "no single kryptik-esp partition on the medium this system booted from"
-        mount -o ro "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP"
+        mount -t vfat -o ro "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP"
         ROOT_JSON="$MNT_BASE/esp/kryptik/root.json"
         ;;
     iso)
         mount -t iso9660 -o ro /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
         ESP_SRC="$MNT_BASE/media/esp.img"
         [ -f "$ESP_SRC" ] || die "no esp.img on the medium"
+        # For its kernels, read before anything is written.
+        mount -t vfat -o ro,loop "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP image"
         ROOT_JSON="$MNT_BASE/media/root.json"
         ROOT_SRC=/dev/sr0
-        # The signed command line's linear table is "0 N linear /dev/sr0 START":
-        # the root image starts at sector START of the medium.
+        # The signed linear table "0 N linear /dev/sr0 START" puts the root image at sector START.
         ROOT_OFF="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"
         [ -n "$ROOT_OFF" ] || die "could not read the root image offset from the signed command line"
         ROOT_OFF=$(( ROOT_OFF * 512 ))
         ;;
     *) die "unknown medium type '${media}'" ;;
 esac
-[ -r "$ROOT_JSON" ] || die "no root.json on the medium"
-jget() { sed -n "s/^  \"$1\": \"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}\$/\1/p" "$ROOT_JSON" | head -1; }
-ROOT_BYTES="$(jget total_bytes)"; ROOT_SHA="$(jget sha256)"; VERSION="$(jget version)"
-[ -n "$ROOT_BYTES" ] && [ -n "$ROOT_SHA" ] || die "root.json is incomplete"
-decimal_field total_bytes "$ROOT_BYTES"
-hex_field sha256 "$ROOT_SHA" 64
-case "$VERSION" in *[!A-Za-z0-9._-]*) die "root.json: version has characters a version cannot" ;; esac
-# The record must name the root the signed kernel carries, and its size must
-# hold that root and its hash tree without being absurd.
-VERITY="$(verity_of /proc/cmdline)"
-[ -n "$VERITY" ] || die "could not read the root's verity table from the signed command line"
-read -r V_BLOCKS V_HASH_START V_HASH V_SALT <<EOF
-$VERITY
-EOF
-[ "$(jget root_hash)" = "$V_HASH" ] || die "root.json names root hash $(jget root_hash); the signed kernel carries ${V_HASH}"
-[ "$(jget data_blocks)" = "$V_BLOCKS" ] || die "root.json names $(jget data_blocks) data blocks; the signed kernel carries ${V_BLOCKS}"
-[ "$ROOT_BYTES" -ge $(( (V_HASH_START + 1) * 4096 )) ] || die "root.json: total_bytes is smaller than the root and its hash tree"
-[ "$ROOT_BYTES" -le $(( V_BLOCKS * 4096 + V_BLOCKS * 64 + 16777216 )) ] || die "root.json: total_bytes is larger than a root and its hash tree can be"
+medium_root "$ROOT_JSON" /proc/cmdline
+for s in a b; do
+    kernel_names_root "$MNT_BASE/esp/EFI/kryptik/kryptik-$s.efi" \
+        || die "the medium's kernel for slot $s does not carry the root hash its signed command line names; nothing was written"
+done
 ESP_BYTES="$(stat -c %s "$ESP_SRC" 2>/dev/null || blockdev --getsize64 "$ESP_SRC")"
 [ -b "$ESP_SRC" ] && ESP_BYTES="$(blockdev --getsize64 "$ESP_SRC")"
 
 size_bytes="$(blockdev --getsize64 "$TARGET_REAL" 2>/dev/null || echo 0)"
 [ "$size_bytes" -gt 0 ] || die "could not read the size of ${TARGET}"
+# The ESP is the medium's FAT, copied whole, and a FAT's sectors may not be smaller than the
+# disk's: on a disk with 4096-byte logical sectors (4Kn) Linux does not mount it, so neither the
+# install nor any update could write it, and firmware may not read it either.
+esp_ss="$(od -An -tu2 -j11 -N2 "$ESP_SRC" 2>/dev/null | tr -d ' ')"
+disk_ss="$(blockdev --getss "$TARGET_REAL" 2>/dev/null || echo 512)"
+[ "$disk_ss" -le "${esp_ss:-512}" ] || die "${TARGET} has ${disk_ss}-byte logical sectors, and the boot partition this medium copies is a FAT of ${esp_ss:-512}-byte sectors, which Linux does not mount there (and firmware may not read); give the disk a 512-byte sector format (an NVMe drive's LBA format), or pick another disk; nothing was written"
 MIB=1048576
 esp_mib=$(( (ESP_BYTES + MIB - 1) / MIB ))
 # A slot must also hold later, larger images: the image plus half again (at
@@ -211,6 +236,10 @@ slot_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
 room_mib=$(( slot_mib / 2 ))
 [ "$room_mib" -ge 512 ] || room_mib=512
 slot_mib=$(( (slot_mib + room_mib + 63) / 64 * 64 ))
+if [ -n "$SLOT_ASKED" ]; then
+    slot_size_ok "$SLOT_ASKED" "$slot_mib"
+    slot_mib="$SLOT_ASKED"
+fi
 # State gets the rest: at least one update payload (the image plus two
 # kernels, staged there while it is verified) and 1 GiB of user data.
 image_mib=$(( (ROOT_BYTES + MIB - 1) / MIB ))
@@ -220,8 +249,25 @@ have_mib=$(( size_bytes / MIB ))
 [ "$have_mib" -ge "$need_mib" ] || die "${TARGET} is ${have_mib} MiB; this layout needs at least ${need_mib} MiB
 (ESP ${esp_mib} + two root slots of ${slot_mib} + state ${state_min_mib})."
 
+# The disk by its model and what it holds, read before ERASE is typed: on a medium nothing is
+# mounted, so a backup disk passes every refusal above. Each partition is probed afresh, and
+# what a device or a filesystem calls itself reaches the terminal as printable bytes only.
+shown() { printf '%s' "$1" | LC_ALL=C tr -c '[:print:]' '?'; }
+model="$(shown "$(lsblk -dno MODEL "$TARGET_REAL" 2>/dev/null | sed 's/ *$//')")"
+holds=""
+for p in "/sys/class/block/$tname/$tname"*; do
+    [ -e "$p/partition" ] || continue
+    pn="${p##*/}"
+    fs="$(shown "$(blkid -p -o value -s TYPE "/dev/$pn" 2>/dev/null)")"
+    lb="$(shown "$(blkid -p -o value -s LABEL "/dev/$pn" 2>/dev/null)")"
+    sz="$(lsblk -dnro SIZE "/dev/$pn" 2>/dev/null || true)"   # raw: a column's padding left out
+    holds="${holds:+$holds; }${pn} ${fs:-unformatted}${lb:+ \"$lb\"} ${sz}"
+done
+pt="$(blkid -p -o value -s PTTYPE "$TARGET_REAL" 2>/dev/null || true)"
+
 say "medium       ${media} (version ${VERSION})"
-say "target       ${TARGET} -> ${TARGET_REAL}, ${have_mib} MiB"
+say "target       ${TARGET} -> ${TARGET_REAL}, ${have_mib} MiB${model:+, ${model}}"
+say "holds        ${pt:+${pt}: }${holds:-no partition}"
 say "running root ${root_src} on ${root_disks:-unknown}"
 say "layout       esp ${esp_mib} MiB, kryptik-a ${slot_mib} MiB, kryptik-b ${slot_mib} MiB, kryptik-state $(( have_mib - need_mib + state_min_mib )) MiB"
 say "root image   ${ROOT_BYTES} bytes, sha256 ${ROOT_SHA}"
@@ -231,6 +277,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
     say "dry run: every check passed; nothing was written"
     exit 0
 fi
+# Before the first thing typed: ERASE and the passphrase are typed under the
+# layout the installed system will ask the passphrase under.
+if [ -n "$KEYBOARD" ]; then
+    kb_load "$KEYBOARD" || die "could not load the keyboard layout ${KEYBOARD}; nothing was written"
+fi
+LAYOUT="$(kb_current)"
+say "keyboard     ${LAYOUT}: the state passphrase is asked under it at every boot"
 if [ "$ASSUME_YES" -ne 1 ]; then
     printf '%s: this DESTROYS everything on %s. Type ERASE to continue: ' "$PROG" "$TARGET"
     read -r answer
@@ -253,6 +306,13 @@ else
     IFS= read -r STATE_PASS || STATE_PASS=""
 fi
 [ -n "$STATE_PASS" ] || die "no state passphrase given; nothing was written"
+# A stolen disk is guessed at offline, slowed only by argon2id: a short passphrase is no lock.
+# Counted in characters, as the medium's shell runs in the C locale, where ${#} counts bytes.
+plen="$(LC_ALL=C.UTF-8; echo "${#STATE_PASS}")"
+[ "$plen" -ge 8 ] || die "the state passphrase is ${plen} characters; it needs at least 8, as a stolen disk can be guessed at offline; nothing was written"
+# Named in the firmware once nothing is left to refuse, and before anything
+# is written to the disk: an install refused above has changed nothing.
+kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOUT}; nothing was written"
 
 # --- partition -------------------------------------------------------------
 say "partitioning (sfdisk, GPT: kryptik-esp, kryptik-a, kryptik-b, kryptik-state)"
@@ -289,10 +349,7 @@ say "reading kryptik-a back"
 got="$(dd if="$P2" bs=4M iflag=count_bytes count="$ROOT_BYTES" status=none | sha256sum | cut -c1-64)"
 [ "$got" = "$ROOT_SHA" ] || die "kryptik-a does not verify: wrote ${got}, the medium says ${ROOT_SHA}"
 say "kryptik-a verifies (${got})"
-# The record can lie about itself; the kernel's root hash cannot.
-veritysetup verify --no-superblock --hash=sha256 --data-block-size=4096 --hash-block-size=4096 \
-    --data-blocks="$V_BLOCKS" --hash-offset=$(( V_HASH_START * 4096 )) --salt="$V_SALT" "$P2" "$P2" "$V_HASH" \
-    || die "kryptik-a does not verify against the root hash the signed kernel carries"
+root_verifies "$P2" || die "kryptik-a does not verify against the root hash the signed kernel carries"
 say "kryptik-a verifies against the signed kernel's root hash"
 say "clearing kryptik-b"
 dd if=/dev/zero of="$P3" bs=1M count=4 conv=fsync status=none || die "clearing kryptik-b failed"
@@ -305,21 +362,30 @@ STATE_PASS=""
 mkfs.ext4 -q -F -L kryptik-state "/dev/mapper/$MAPPING" || die "mkfs.ext4 inside ${P4} failed"
 
 # --- the target ESP: slot A is the committed boot file ----------------------
-mount -o rw "$P1" "$MNT_BASE/tesp" || die "could not mount the new ESP"
+mount -t vfat -o rw "$P1" "$MNT_BASE/tesp" || die "could not mount the new ESP"
 [ -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" ] || die "the copied ESP has no slot A kernel"
-cp "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" || die "could not stage BOOTX64.EFI"
-sync -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new"
-mv -f "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI.new" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" || die "could not install BOOTX64.EFI"
-cmp -s "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" || die "BOOTX64.EFI is not the slot A kernel"
-printf 'a\n' > "$MNT_BASE/tesp/kryptik/committed-slot"
+esp_place "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BOOTX64.EFI" \
+    || die "BOOTX64.EFI could not be made the slot A kernel"
+esp_put "$MNT_BASE/tesp/kryptik/committed-slot" a || die "slot A could not be recorded as committed"
 rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
 # The stick's hardware reports (kryptik-hwreport) are not the installation's.
 rm -rf "$MNT_BASE/tesp/kryptik-report"
+# Slot b was cleared above: the medium's kernel and version for it would name a release it does not hold.
+rm -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-b.efi" "$MNT_BASE/tesp/kryptik/version-b"
 sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
+# A firmware entry for slot a as well, last in BootOrder, as kryptik-recover and boot-success
+# leave one: some firmware boots an internal disk only from an entry, not by BOOTX64.EFI.
+# Entries of an earlier Kryptik go first, as they name a partition this install replaced.
+kryptik-efiboot forget > /dev/null 2>&1 || true
+if entry="$(kryptik-efiboot ensure a "$P1" 2>&1)"; then
+    say "firmware     $(printf '%s\n' "$entry" | tail -1)"
+else
+    say "firmware     no entry for slot a ($(printf '%s\n' "$entry" | tail -1)): the disk boots by BOOTX64.EFI alone"
+fi
 
 # --- the state partition: what installed this, and the first-boot preseed --
-mount -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"
+mount -t ext4 -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"
 mkdir -p "$MNT_BASE/state/lib/kryptik"
 cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
 {
@@ -333,9 +399,9 @@ cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
   "committed_slot": "a"
 }
 EOF
-if [ -n "$PRESEED" ] && [ -r "$PRESEED" ]; then
+if [ -n "$PRESEED" ]; then
     umask 077
-    cp "$PRESEED" "$MNT_BASE/state/lib/kryptik/firstboot.preseed"
+    cp "$PRESEED" "$MNT_BASE/state/lib/kryptik/firstboot.preseed" || die "could not install the preseed"
     chmod 0600 "$MNT_BASE/state/lib/kryptik/firstboot.preseed"
     say "first-boot preseed installed"
 fi

@@ -1,17 +1,19 @@
-//! `kryptikd serve`: the launch daemon the desktop session talks to.
-//!
-//! Zones are created by root and the session is an ordinary user; this socket
-//! is the one door between them. The daemon checks the peer (SO_PEERCRED) and
-//! the request, then runs `kryptikd run`, whose every refusal still applies.
+//! `kryptikd serve`: the root daemon the unprivileged desktop session asks to launch zones.
+//! It checks the peer (SO_PEERCRED) and the request; `kryptikd run` still applies its refusals.
 //!
 //!   socket   /run/kryptik-launch/launch.sock   (root:kryptik 0660)
 //!   request  one per connection, NUL-free text lines:
-//!              run <zone> [wayland=<path>] [pass=fd], `arg <word>` lines, `end`
-//!                (with pass=fd, one descriptor rides with the first bytes)
-//!              wifi-add, `ssid <ssid>`, `psk <passphrase>`, `end`
+//!              run <zone> [wayland] [pass=fd], `arg <word>` lines, `end`
+//!                (wayland: through the zone's proxy, which serve starts for the session;
+//!                with pass=fd, one descriptor rides with the first bytes)
+//!              wifi-add, `ssid <ssid>`, `psk <passphrase>` or `open`, `hidden` for a
+//!                network that hides its name, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
+//!              wifi-scan, answered once the nic zone has scanned
+//!              check-password, `password <password>`, `end` (the screen lock's)
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
-//!              runtime | wifi-list | update-status | update-fetch | update-apply
+//!              runtime | wifi-list | update-status | update-fetch | update-forget |
+//!              update-apply | update-auto on|off
 //!   reply    ok ...\n  |  error: <why>\n  |  lines ... end\n
 //!
 //! `run` replies `ok <launcher pid>` once the zone's pid 1 exists and the
@@ -28,10 +30,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use crate::proxy::Proxy;
+
 pub const SOCKET_DIR: &str = "/run/kryptik-launch";
 pub const SOCKET_PATH: &str = "/run/kryptik-launch/launch.sock";
 pub const GROUP: &str = "kryptik";
-/// The only program a session's proxy socket may be served by.
+/// The proxy serve starts for a zone's display.
 pub const PROXY_EXE: &str = "/usr/bin/kryptik-wlproxy";
 const MAX_REQUEST: usize = 16 * 1024;
 /// A request must be complete within this after the connection is accepted.
@@ -58,8 +62,7 @@ fn clear_cloexec(fd: RawFd) {
     }
 }
 
-/// One recvmsg into `buf`, owning the descriptors that came with it. Control
-/// data cut short is refused, and what did arrive is closed.
+/// One recvmsg into `buf`, owning any descriptors; truncated control data is refused.
 pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Vec<OwnedFd>)> {
     // Aligned for cmsghdr, with room for twelve, so an excess is refused by count.
     #[repr(C, align(8))]
@@ -107,6 +110,16 @@ fn gid_of_group(name: &str) -> Option<u32> {
     }
 }
 
+/// The login name of `uid`, as the password database has it.
+fn user_of(uid: u32) -> Option<String> {
+    let pw = unsafe { libc::getpwuid(uid) };
+    if pw.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr((*pw).pw_name) }.to_string_lossy().into_owned())
+    }
+}
+
 fn gid_of_uid(uid: u32) -> Option<u32> {
     let pw = unsafe { libc::getpwuid(uid) };
     if pw.is_null() {
@@ -116,8 +129,7 @@ fn gid_of_uid(uid: u32) -> Option<u32> {
     }
 }
 
-/// Is `uid` root, or a member (primary or supplementary) of `group`? Member
-/// names are copied out first in case getpwuid(3) reuses getgrnam(3)'s buffer.
+/// Is `uid` root, or a member (primary or supplementary) of `group`?
 fn in_group(uid: u32, group: &str) -> bool {
     if uid == 0 {
         return true;
@@ -128,6 +140,7 @@ fn in_group(uid: u32, group: &str) -> bool {
         return false;
     }
     let gid = unsafe { (*g).gr_gid };
+    // Copied out first: getpwuid(3) may reuse getgrnam(3)'s buffer.
     let mut members: Vec<String> = Vec::new();
     let mut mem = unsafe { (*g).gr_mem };
     unsafe {
@@ -160,8 +173,7 @@ pub fn peer_cred(fd: RawFd) -> std::io::Result<libc::ucred> {
 
 // --- the request -------------------------------------------------------------
 
-/// Whether the bytes so far are a whole request. `run`, `wifi-add` and
-/// `wifi-forget` end at an `end` line, other verbs at a newline.
+/// `run`, `wifi-add` and `wifi-forget` end at an `end` line, other verbs at a newline.
 fn request_complete(text: &[u8]) -> bool {
     if !text.ends_with(b"\n") {
         return false;
@@ -173,8 +185,7 @@ fn request_complete(text: &[u8]) -> bool {
     }
 }
 
-/// Read the request text and any descriptor that came with it, within
-/// `deadline`. At most one descriptor, and only with the first bytes.
+/// Read the request, and at most one descriptor (with its first bytes), within `deadline`.
 fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<OwnedFd>), String> {
     let mut text = Vec::new();
     let mut carried: Option<OwnedFd> = None;
@@ -235,7 +246,7 @@ fn ident_ok(s: &str) -> bool {
 
 struct Request {
     zone: String,
-    wayland: Option<PathBuf>,
+    wayland: bool,
     wants_fd: bool,
     argv: Vec<String>,
 }
@@ -251,10 +262,10 @@ fn parse_run(text: &str) -> Result<Request, String> {
     if !ident_ok(&zone) {
         return Err(format!("run: zone name {zone:?} is not a plain identifier"));
     }
-    let mut req = Request { zone, wayland: None, wants_fd: false, argv: Vec::new() };
+    let mut req = Request { zone, wayland: false, wants_fd: false, argv: Vec::new() };
     for opt in w {
-        if let Some(p) = opt.strip_prefix("wayland=") {
-            req.wayland = Some(PathBuf::from(p));
+        if opt == "wayland" {
+            req.wayland = true;
         } else if opt == "pass=fd" {
             req.wants_fd = true;
         } else {
@@ -281,20 +292,23 @@ fn parse_run(text: &str) -> Result<Request, String> {
     Ok(req)
 }
 
-/// Debug prints the SSID only: the passphrase is never formatted.
+/// Debug prints the SSID only: the passphrase is never formatted. `open`: a network saved
+/// with no passphrase, which `wifi-add` takes in place of `psk`; `hidden`: one asked for by name.
 struct WifiRequest {
     ssid: String,
     psk: Option<String>,
+    open: bool,
+    hidden: bool,
 }
 
 impl std::fmt::Debug for WifiRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WifiRequest {{ ssid: {:?}, psk: {} }}", self.ssid, if self.psk.is_some() { "<set>" } else { "None" })
+        let psk = if self.psk.is_some() { "<set>" } else { "None" };
+        write!(f, "WifiRequest {{ ssid: {:?}, psk: {psk}, open: {}, hidden: {} }}", self.ssid, self.open, self.hidden)
     }
 }
 
-/// Parse `wifi-add` or `wifi-forget`. A value is all after the first space; a
-/// refusal never repeats a line, which may hold the passphrase.
+/// Parse `wifi-add` or `wifi-forget`. A refusal never repeats a line: it may hold the passphrase.
 fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
     let mut lines = text.lines();
     let verb = lines.next().unwrap_or("");
@@ -302,8 +316,8 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
         let word = verb.split_whitespace().next().unwrap_or("wifi");
         return Err(format!("{word}: the verb stands alone on its line"));
     }
-    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>`, `end`" } else { "`ssid <SSID>`, `end`" };
-    let (mut ssid, mut psk, mut ended) = (None, None, false);
+    let shape = if verb == "wifi-add" { "`ssid <SSID>`, `psk <PASSPHRASE>` or `open`, maybe `hidden`, `end`" } else { "`ssid <SSID>`, `end`" };
+    let (mut ssid, mut psk, mut open, mut hidden, mut ended) = (None, None, false, false, false);
     for l in lines {
         if l == "end" {
             ended = true;
@@ -317,6 +331,14 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
             if psk.replace(v.to_string()).is_some() {
                 return Err(format!("{verb}: two psk lines"));
             }
+        } else if l == "open" && verb == "wifi-add" {
+            if std::mem::replace(&mut open, true) {
+                return Err(format!("{verb}: two open lines"));
+            }
+        } else if l == "hidden" && verb == "wifi-add" {
+            if std::mem::replace(&mut hidden, true) {
+                return Err(format!("{verb}: two hidden lines"));
+            }
         } else {
             return Err(format!(
                 "{verb}: unexpected line; the request is {shape}, one per line, and neither value may hold a newline"
@@ -327,10 +349,10 @@ fn parse_wifi(text: &str) -> Result<WifiRequest, String> {
         return Err(format!("{verb}: request not terminated by `end`"));
     }
     let ssid = ssid.ok_or_else(|| format!("{verb}: no ssid line"))?;
-    if verb == "wifi-add" && psk.is_none() {
-        return Err("wifi-add: no psk line".into());
+    if verb == "wifi-add" && psk.is_some() == open {
+        return Err("wifi-add: a psk line or an open line, one of them".into());
     }
-    Ok(WifiRequest { ssid, psk })
+    Ok(WifiRequest { ssid, psk, open, hidden })
 }
 
 // --- the proxy socket ----------------------------------------------------------
@@ -353,9 +375,7 @@ fn openat_component(dir: RawFd, name: &str, flags: libc::c_int) -> Result<OwnedF
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// A verified proxy socket. `_fd` pins the inode while the launch is set up;
-/// the launcher gets the path and inode, reopens the path and refuses any
-/// other inode (spawn.rs, StagedSocket).
+/// A verified proxy socket; `_fd` pins its inode while the launch is set up.
 #[derive(Debug)]
 pub struct ProxySocket {
     pub _fd: OwnedFd,
@@ -363,8 +383,7 @@ pub struct ProxySocket {
     pub inode: InodeId,
 }
 
-/// (device, inode) of a verified object, passed to the launcher as `DEV:INO`
-/// and checked again after each later open.
+/// (device, inode) of a verified object, passed as `DEV:INO` and checked after each later open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InodeId {
     pub dev: u64,
@@ -399,8 +418,8 @@ impl std::str::FromStr for InodeId {
     }
 }
 
-/// Open `path` as O_PATH a component at a time, following no symlink. With
-/// `want_socket` the last component must be a socket.
+/// Open `path` O_PATH one component at a time, following no symlink; with `want_socket` the
+/// last component must be a socket.
 pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<OwnedFd, String> {
     if !path.is_absolute() {
         return Err(format!("{}: not an absolute path", path.display()));
@@ -429,87 +448,75 @@ pub fn open_nofollow(path: &Path, want_socket: bool) -> Result<OwnedFd, String> 
     Ok(dir)
 }
 
-/// Accept only `/run/user/<uid>/kryptik/<zone>/wayland-0`, walked without
-/// following symlinks. `<uid>/`, `kryptik/`, `<zone>/` and the socket must be
-/// the session's, the last two directories private, and the listener its proxy.
-fn verify_proxy_socket(p: &Path, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<ProxySocket, String> {
-    let want = PathBuf::from(format!("/run/user/{uid}/kryptik/{zone}/wayland-0"));
-    if p != want {
-        return Err(format!("wayland socket must be {}", want.display()));
+/// Where kryptik-proxy/ and kryptik-compositor/ are: /run, or a developer instance's own
+/// directory. Never /run/kryptik, which the zone registry keeps root's alone.
+fn run_dir(cfg: &ServeConfig) -> PathBuf {
+    if cfg.developer {
+        cfg.log_dir.clone()
+    } else {
+        PathBuf::from("/run")
     }
-    let root = openat_component(libc::AT_FDCWD, "/", libc::O_PATH | libc::O_DIRECTORY)?;
-    let mut dir = root;
-    let uid_s = uid.to_string();
-    for (i, comp) in ["run", "user", uid_s.as_str(), "kryptik", zone].iter().enumerate() {
-        let next = openat_component(dir.as_raw_fd(), comp, libc::O_PATH | libc::O_DIRECTORY)
-            .map_err(|e| format!("wayland socket path: {e}"))?;
-        if i >= 2 {
-            let st = fstat(next.as_raw_fd())?;
-            if st.st_uid != uid {
-                return Err(format!("wayland socket path: {comp}/ is owned by uid {}, not the session", st.st_uid));
-            }
-            if i >= 3 && st.st_mode & 0o077 != 0 {
-                return Err(format!("wayland socket path: {comp}/ is not private (mode {:o})", st.st_mode & 0o7777));
-            }
-        }
-        dir = next;
-    }
-    let sock = openat_component(dir.as_raw_fd(), "wayland-0", libc::O_PATH).map_err(|e| format!("wayland socket: {e}"))?;
-    let st = fstat(sock.as_raw_fd())?;
-    if st.st_mode & libc::S_IFMT != libc::S_IFSOCK {
-        return Err("wayland socket is not a socket".into());
-    }
-    if st.st_uid != uid {
-        return Err(format!("wayland socket is owned by uid {}, not the session", st.st_uid));
-    }
-    verify_proxy_listener(&sock, uid, zone, proxy_exe)?;
-    Ok(ProxySocket { _fd: sock, path: want, inode: InodeId::of(&st) })
 }
 
-/// Ask the kernel who listens on the socket's inode. SO_PEERCRED names the
-/// caller of listen(), which must be the session's uid running kryptik-wlproxy
-/// for this zone (the probe shows in its log as a client disconnect). A process
-/// handed the socket later goes unseen, but only that uid could hand it over,
-/// and it reaches the compositor directly anyway.
-fn verify_proxy_listener(sock: &OwnedFd, uid: u32, zone: &str, proxy_exe: Option<&Path>) -> Result<(), String> {
-    /* Non-blocking: the listener is the session's and may never accept; a
-     * full backlog must refuse at once, not block the root daemon. */
-    let s = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, 0) };
-    if s < 0 {
-        return Err(format!("socket: {}", std::io::Error::last_os_error()));
+/// `zone`'s proxy for `uid`'s session, started if none runs: its socket, held open and named by
+/// inode for the launcher. A zone's proxy has one uid whoever the session is, so while it serves
+/// one session's desktop another's is refused.
+fn proxy_socket(cfg: &ServeConfig, uid: u32, zone: &crate::zone::Zone, proxies: &mut Vec<Proxy>) -> Result<ProxySocket, String> {
+    let run = run_dir(cfg);
+    if let Some(i) = proxies.iter().position(|p| p.zone == zone.name) {
+        let p = &proxies[i];
+        let alive = running(p.pid);
+        if alive && p.session != uid {
+            return Err(format!("zone {:?} shows its windows on uid {}'s desktop, one desktop at a time", zone.name, p.session));
+        }
+        // One that has ended, or serves a dwl that has started again since, gives way.
+        let same = crate::proxy::upstream_of(&run, uid, &zone.name).is_ok_and(|(_, id)| id == p.upstream);
+        if !alive || !same {
+            unsafe { libc::kill(p.pid, libc::SIGTERM) };
+            proxies.remove(i);
+        }
     }
-    let s = unsafe { OwnedFd::from_raw_fd(s) };
-    let path = format!("/proc/self/fd/{}", sock.as_raw_fd());
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    addr.sun_family = libc::AF_UNIX as _;
-    for (i, b) in path.bytes().enumerate() {
-        addr.sun_path[i] = b as _;
+    let i = match proxies.iter().position(|p| p.zone == zone.name) {
+        Some(i) => i,
+        None => {
+            let p = crate::proxy::start(&run, &cfg.proxy_exe, uid, zone, !cfg.developer)?;
+            eprintln!("kryptikd serve: zone {:?}: proxy {} started", zone.name, p.pid);
+            proxies.push(p);
+            proxies.len() - 1
+        }
+    };
+    let path = proxies[i].socket.clone();
+    let fd = open_nofollow(&path, true)?;
+    let st = fstat(fd.as_raw_fd())?;
+    Ok(ProxySocket { _fd: fd, path, inode: InodeId::of(&st) })
+}
+
+/// Whether `pid`, a child of this daemon, still runs: a waitpid that reaps it says it does not.
+fn running(pid: libc::pid_t) -> bool {
+    let mut st = 0;
+    unsafe { libc::waitpid(pid, &mut st, libc::WNOHANG) == 0 }
+}
+
+/// Create /run/kryptik-compositor/<uid>, where dwl serves each zone a socket: root's above it, the
+/// session's own and 0711, so a zone's proxy reaches only the socket it is given.
+fn compositor_dir(cfg: &ServeConfig, uid: u32) -> Result<(), String> {
+    let top = run_dir(cfg).join("kryptik-compositor");
+    std::fs::create_dir_all(&top).map_err(|e| format!("{}: {e}", top.display()))?;
+    if !cfg.developer {
+        std::fs::set_permissions(&top, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("{}: {e}", top.display()))?;
     }
-    let len = (std::mem::size_of::<libc::sa_family_t>() + path.len() + 1) as libc::socklen_t;
-    if unsafe { libc::connect(s.as_raw_fd(), &addr as *const _ as *const libc::sockaddr, len) } < 0 {
-        return Err(format!("nothing usable is listening on the wayland socket: {}", std::io::Error::last_os_error()));
+    let dir = top.join(uid.to_string());
+    match std::fs::symlink_metadata(&dir) {
+        Ok(md) if !md.is_dir() => return Err(format!("{} exists and is not a directory", dir.display())),
+        Ok(_) => {}
+        Err(_) => std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?,
     }
-    let peer = peer_cred(s.as_raw_fd()).map_err(|e| format!("wayland socket: cannot identify the listener: {e}"))?;
-    if peer.uid != uid {
-        return Err(format!("wayland socket is served by uid {}, not the session", peer.uid));
-    }
-    let cmdline = std::fs::read(format!("/proc/{}/cmdline", peer.pid))
-        .map_err(|e| format!("wayland socket: cannot read the listener's command line: {e}"))?;
-    let argv: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
-    let is_proxy = argv.first().map(|a| a.ends_with(b"kryptik-wlproxy")).unwrap_or(false);
-    if !is_proxy {
-        return Err("wayland socket is not served by kryptik-wlproxy".into());
-    }
-    let zone_arg = argv.windows(2).any(|w| w[0] == b"--zone" && w[1] == zone.as_bytes());
-    if !zone_arg {
-        return Err(format!("wayland socket is served by a proxy for another zone, not {zone:?}"));
-    }
-    // A same-uid process named like the proxy is not it (developer instances skip this).
-    if let Some(want) = proxy_exe {
-        match std::fs::read_link(format!("/proc/{}/exe", peer.pid)) {
-            Ok(exe) if exe == want => {}
-            Ok(exe) => return Err(format!("wayland socket is served by {}, not {}", exe.display(), want.display())),
-            Err(e) => return Err(format!("wayland socket: cannot identify the listener's program: {e}")),
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o711)).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !cfg.developer {
+        let gid = gid_of_uid(uid).unwrap_or(uid);
+        let c = CString::new(dir.display().to_string()).map_err(|_| "NUL in path".to_string())?;
+        if unsafe { libc::chown(c.as_ptr(), uid, gid) } < 0 {
+            return Err(format!("chown {}: {}", dir.display(), std::io::Error::last_os_error()));
         }
     }
     Ok(())
@@ -523,8 +530,7 @@ struct Launch {
     log: PathBuf,
 }
 
-/// Start `kryptikd run` for the request; returns the readiness pipe's read end.
-/// The passphrase descriptor goes to the child; ours all close on every path.
+/// Start `kryptikd run` for the request; our copies of its descriptors close on every path.
 fn spawn_launcher(
     req: &Request,
     cfg: &ServeConfig,
@@ -545,9 +551,8 @@ fn spawn_launcher(
         "--ready-fd".into(),
         ready_w.as_raw_fd().to_string(),
     ];
-    /* The path, not a descriptor: one opened in this mount namespace cannot be
-     * bind-mounted from the zone's (EINVAL). The launcher reopens the path and
-     * refuses any other inode (spawn.rs, StagedSocket). */
+    /* The path, not a descriptor: one opened in this mount namespace cannot be bind-mounted
+     * from the zone's (EINVAL). The launcher refuses any other inode (spawn.rs, StagedSocket). */
     if let Some(w) = &wayland {
         args.push("--wayland-socket".into());
         args.push(w.path.display().to_string());
@@ -562,20 +567,13 @@ fn spawn_launcher(
     args.extend(req.argv.iter().cloned());
 
     let log = cfg.log_dir.join(format!("zone-{}.log", req.zone));
-    let logf = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&log)
-        .map_err(|e| format!("{}: {e}", log.display()))?;
+    let logf = open_zone_log(&log)?;
     let cexe = CString::new(exe.display().to_string()).map_err(|_| "NUL in exe path".to_string())?;
     let cargs: Vec<CString> = std::iter::once(CString::new("kryptikd").unwrap())
         .chain(args.iter().map(|a| CString::new(a.as_str()).unwrap_or_else(|_| CString::new("?").unwrap())))
         .collect();
     let path = CString::new("PATH=/usr/bin:/usr/sbin").unwrap();
-    /* A developer instance's registry is under XDG_RUNTIME_DIR (registry::base),
-     * and its launcher must use the same one or `status` and `stop` would not
-     * find the zone. Nothing else of the environment crosses. */
+    // Of our environment only XDG_RUNTIME_DIR crosses: a developer launcher's registry is under it.
     let runtime_dir = if unsafe { libc::geteuid() } != 0 {
         std::env::var("XDG_RUNTIME_DIR").ok().and_then(|v| CString::new(format!("XDG_RUNTIME_DIR={v}")).ok())
     } else {
@@ -616,6 +614,29 @@ fn spawn_launcher(
     Ok(Launch { pid, ready: ready_r, log })
 }
 
+/// A zone's log past this size starts again at its next launch.
+const ZONE_LOG_KEEP: u64 = 8 << 20;
+
+/// Open a zone's log for a launch. Each launch adds a bounded amount
+/// (spawn.rs, ZoneOutput) and nothing else trims the file, so past
+/// ZONE_LOG_KEEP it becomes `.old`, replacing the one before, and a new file
+/// starts: a zone keeps two files of that size and a launch's worth each.
+fn open_zone_log(log: &Path) -> Result<std::fs::File, String> {
+    if std::fs::symlink_metadata(log).map(|m| m.len() > ZONE_LOG_KEEP).unwrap_or(false) {
+        let mut old = log.as_os_str().to_owned();
+        old.push(".old");
+        let _ = std::fs::rename(log, old);
+    }
+    // Never through a link at the name, as last_log_line reads it.
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(log)
+        .map_err(|e| format!("{}: {e}", log.display()))
+}
+
 /// The launcher's last log line, printable and bounded, for an error reply.
 fn last_log_line(log: &Path) -> String {
     // Zone output can make the log any size and any bytes: read only the last 8 KiB.
@@ -634,6 +655,12 @@ fn last_log_line(log: &Path) -> String {
         out.push_str("...");
     }
     out
+}
+
+/// Whether a failed apply found a staged file that is not the one its manifest
+/// signs: kryptik-update's two refusals for that.
+fn spoiled(why: &str) -> bool {
+    why.contains("sha256 does not match the manifest") || why.contains("truncated or altered")
 }
 
 fn exit_text(status: i32) -> String {
@@ -666,9 +693,8 @@ impl Pending {
     }
 }
 
-/// A slow request (`stop`, `update-apply`), answered when `reap` sees its
-/// command end so the daemon keeps serving meanwhile. Not a thread: `reap`
-/// collects every child and would take the status a thread waited for.
+/// A slow request (`stop`, `update-apply`), answered once `reap` sees its command end. Not a
+/// thread: `reap` collects every child and would take the status a thread waited for.
 struct Job {
     conn: UnixStream,
     pid: libc::pid_t,
@@ -683,6 +709,7 @@ struct Job {
 enum JobKind {
     Stop { uid: u32, zone: String },
     UpdateApply,
+    WifiScan,
 }
 
 fn memfile(name: &str) -> Result<std::fs::File, String> {
@@ -706,7 +733,6 @@ fn start_job(conn: UnixStream, what: JobKind, cmd: &mut std::process::Command) -
         _ => return Err((conn, "could not hold the command's output".into())),
     };
     match cmd.stdin(std::process::Stdio::null()).stdout(o2).stderr(e2).spawn() {
-        // The Child is dropped without a wait: `reap` collects it.
         Ok(child) => Ok(Job { conn, pid: child.id() as libc::pid_t, what, out, err, exited: None }),
         Err(e) => Err((conn, e.to_string())),
     }
@@ -745,7 +771,21 @@ fn finish_job(j: &mut Job, st: i32) {
         }
         JobKind::UpdateApply => {
             let why = why(j, "kryptik-update apply failed");
-            eprintln!("kryptikd serve: update-apply failed: {why}");
+            /* A staged file that is not what the manifest signs can never be
+             * applied, and by its size the stage reads as complete for good:
+             * discarded, the release is named again at the net zone's next poll. */
+            let again = if spoiled(&why) && crate::update::discard_stage(Path::new(crate::update::STATE_DIR)) {
+                "; what had arrived was discarded and will be fetched again"
+            } else {
+                ""
+            };
+            eprintln!("kryptikd serve: update-apply failed: {why}{again}");
+            reply(&j.conn, &format!("error: {why}{again}\n"));
+        }
+        // `kryptikd wifi scan` printed its lines from what it made of the zone's answer.
+        JobKind::WifiScan if ok => reply(&j.conn, &format!("ok\n{}", read_back(&mut j.out))),
+        JobKind::WifiScan => {
+            let why = why(j, "the scan failed");
             reply(&j.conn, &format!("error: {why}\n"));
         }
     }
@@ -756,8 +796,7 @@ fn reply(mut c: &UnixStream, text: &str) {
     let _ = c.flush();
 }
 
-/// The write end of the pipe SIGCHLD writes to, so a launcher or job that
-/// ends is reaped at once rather than at the next request.
+/// Write end of the SIGCHLD wake pipe, so a launcher or job that ends is reaped at once.
 static CHILD_WAKE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 extern "C" fn on_child(_sig: libc::c_int) {
@@ -771,8 +810,9 @@ extern "C" fn on_child(_sig: libc::c_int) {
     }
 }
 
-/// Reap children: record a pending launcher's or a job's status, log any other.
-fn reap(pending: &mut [Pending], jobs: &mut [Job]) {
+/// Reap children: record a pending launcher's or a job's status, forget an ended proxy, log any
+/// other.
+fn reap(pending: &mut [Pending], jobs: &mut [Job], proxies: &mut Vec<Proxy>) {
     loop {
         let mut st = 0;
         let p = unsafe { libc::waitpid(-1, &mut st, libc::WNOHANG) };
@@ -783,15 +823,19 @@ fn reap(pending: &mut [Pending], jobs: &mut [Job]) {
             j.exited = Some(st);
             continue;
         }
+        if let Some(i) = proxies.iter().position(|x| x.pid == p) {
+            let x = proxies.remove(i);
+            eprintln!("kryptikd serve: zone {:?}'s proxy for uid {} (pid {p}) {}", x.zone, x.session, exit_text(st));
+            continue;
+        }
         match pending.iter_mut().find(|x| x.launch.pid == p) {
             Some(x) => x.exited = Some(st),
-            None => eprintln!("kryptikd serve: launcher {p} {}", exit_text(st)),
+            None => eprintln!("kryptikd serve: child {p} {}", exit_text(st)),
         }
     }
 }
 
-/// Wait up to 500 ms for a launcher's status once its pipe has closed: the
-/// close can reach us before the exit does.
+/// Wait up to 500 ms for a launcher's status after its pipe closed: the close can come first.
 fn wait_exit(p: &mut Pending) -> Option<i32> {
     if p.exited.is_some() {
         return p.exited;
@@ -836,12 +880,14 @@ pub struct ServeConfig {
     pub zones_dir: PathBuf,
     pub rootfs: String,
     pub log_dir: PathBuf,
-    /// The program that must be listening on a session's proxy socket.
+    /// The proxy serve starts for a zone's display.
     pub proxy_exe: PathBuf,
     /// The net zone's Wi-Fi credentials (wifi.rs), bound into the nic zone.
     pub wifi_dir: PathBuf,
     /// Unprivileged instance: serves its own uid only.
     pub developer: bool,
+    /// The shadow file the screen lock's password is checked against.
+    pub shadow: PathBuf,
 }
 
 fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String> {
@@ -868,6 +914,7 @@ fn config_from(zones_dir: &Path, args: &[String]) -> Result<ServeConfig, String>
         proxy_exe: PathBuf::from(opt("--proxy-exe").unwrap_or_else(|| PROXY_EXE.to_string())),
         wifi_dir: crate::wifi_dir_from(args),
         developer,
+        shadow: PathBuf::from(opt("--shadow").unwrap_or_else(|| crate::password::SHADOW.to_string())),
     })
 }
 
@@ -892,8 +939,8 @@ fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
     }
     let gid = gid_of_group(&cfg.group).ok_or_else(|| format!("no group {:?}; nobody could connect", cfg.group))?;
     let dir = cfg.socket.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(SOCKET_DIR));
-    /* Only the default directory is made root:kryptik 0750, so the group alone
-     * reaches the socket; a directory named with --socket is left as found. */
+    // Only the default directory becomes root:kryptik 0750, so the group alone reaches the socket;
+    // a --socket one is left as found.
     if dir == Path::new(SOCKET_DIR) {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750));
@@ -909,8 +956,7 @@ fn bind(cfg: &ServeConfig) -> Result<UnixListener, String> {
     Ok(l)
 }
 
-/// Create the session's /run/user/<uid> (0700, the user's). With no logind,
-/// the daemon is the one root process the session can ask.
+/// Create the session's /run/user/<uid> (0700, the user's): with no logind, nothing else can.
 fn runtime_dir(cfg: &ServeConfig, uid: u32) -> Result<PathBuf, String> {
     let dir = if cfg.developer {
         cfg.log_dir.join(format!("run-user-{uid}"))
@@ -953,9 +999,88 @@ fn zone_running(name: &str) -> bool {
     matches!(crate::registry::state(name), Ok(crate::registry::State::Running { .. }))
 }
 
-/// Serve one connection. A started launch is returned to be watched and a
-/// slow command pushed to `jobs`; anything else is answered here.
-fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pending> {
+/// The nic zone's word on the network: the line its program wrote last
+/// (tools/net/netzone-init.sh, `report`) in its own /run. The zone is untrusted, so only
+/// `net_summary`'s words leave here, and zone 0's window shows nothing else of the line.
+pub(crate) fn net_status(name: &str) -> Option<String> {
+    let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(name) else {
+        return None;
+    };
+    let mut text = String::new();
+    init.file_in_root("run/netzone-status")?.take(1024).read_to_string(&mut text).ok()?;
+    net_summary(text.lines().next()?)
+}
+
+/// The words for a net zone's status line, or none for a line of another form: whether it is
+/// ready, the Wi-Fi network joined or the one that refused the passphrase (an SSID as iw prints
+/// one, read back to its bytes and shown as `wifi::shown` shows them, so nothing unprintable
+/// reaches a terminal), the uplink's address and whether there is DNS.
+fn net_summary(line: &str) -> Option<String> {
+    if line.starts_with("NOT READY") {
+        return Some("not ready: forwarding is off".into());
+    }
+    let rest = line.strip_prefix("READY ")?;
+    // The fields before wifi= come first under their names; an SSID may hold spaces and words
+    // that look like fields, so it runs from wifi= to the last time=.
+    let field = |key: &str| rest.split(' ').find_map(|w| w.strip_prefix(key));
+    let uplink = match field("uplink=")? {
+        "none" => "no uplink address".to_string(),
+        a => {
+            let (ip, len) = a.split_once('/')?;
+            let ip: std::net::Ipv4Addr = ip.parse().ok()?;
+            let len: u8 = len.parse().ok().filter(|l| *l <= 32)?;
+            format!("uplink {ip}/{len}")
+        }
+    };
+    let dns = match field("dns=")? {
+        "yes" => "DNS",
+        "no" => "no DNS",
+        _ => return None,
+    };
+    let from = rest.find(" wifi=")? + " wifi=".len();
+    let to = rest.rfind(" time=").filter(|t| *t >= from)?;
+    let wifi = match &rest[from..to] {
+        "none" => None,
+        "unconfigured" => Some("Wi-Fi with no network saved".to_string()),
+        "off" => Some("Wi-Fi switched off".to_string()),
+        "connecting" => Some("Wi-Fi connecting".to_string()),
+        "associated" => Some("Wi-Fi joined".to_string()),
+        printed => {
+            let named = |p: &str| crate::wifi::ssid_from_iw(p).map(|b| crate::wifi::shown(&b));
+            Some(match printed.strip_prefix("refused:") {
+                Some(p) => format!("Wi-Fi {} refused the passphrase", named(p)?),
+                None => format!("Wi-Fi {}", named(printed)?),
+            })
+        }
+    };
+    Some(match wifi {
+        Some(w) => format!("ready: {w}, {uplink}, {dns}"),
+        None => format!("ready: {uplink}, {dns}"),
+    })
+}
+
+/// `check-password`, the screen lock's: the password on a line of its own, checked against the
+/// peer's own login entry. The reply never repeats it.
+fn check_password(cfg: &ServeConfig, uid: u32, text: &str, attempts: &mut crate::password::Attempts) -> String {
+    let mut lines = text.lines();
+    let password = match (lines.next(), lines.next().and_then(|l| l.strip_prefix("password ")), lines.next(), lines.next()) {
+        (Some("check-password"), Some(p), Some("end"), None) => p,
+        _ => return "error: check-password: the request is `password <PASSWORD>` and `end`, one per line\n".into(),
+    };
+    let Some(user) = user_of(uid) else {
+        return format!("error: no account has uid {uid}\n");
+    };
+    match crate::password::check(&cfg.shadow, &user, password.as_bytes(), attempts, Instant::now()) {
+        Ok(()) => "ok\n".into(),
+        Err(e) => {
+            eprintln!("kryptikd serve: uid {uid}: the screen lock's password: {e}");
+            format!("error: {e}\n")
+        }
+    }
+}
+
+/// Serve one connection; a started launch is returned and a slow command pushed to `jobs`.
+fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, attempts: &mut crate::password::Attempts, proxies: &mut Vec<Proxy>) -> Option<Pending> {
     let fd = conn.as_raw_fd();
     let Ok(peer) = peer_cred(fd) else {
         reply(&conn, "error: unidentified peer\n");
@@ -967,7 +1092,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
         eprintln!("kryptikd serve: refused uid {uid} (pid {})", peer.pid);
         return None;
     }
-    let (text, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
+    let (mut raw, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("kryptikd serve: uid {uid}: {e}");
@@ -975,7 +1100,17 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             return None;
         }
     };
-    let text = String::from_utf8_lossy(&text).into_owned();
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    // The bytes as read are wiped once copied: a request may carry a password or a passphrase.
+    raw.fill(0);
+    if text.lines().next() == Some("check-password") {
+        let said = check_password(cfg, uid, &text, attempts);
+        let mut text = text;
+        // SAFETY: zero bytes are valid UTF-8.
+        unsafe { text.as_bytes_mut() }.fill(0);
+        reply(&conn, &said);
+        return None;
+    }
     let first = text.lines().next().unwrap_or("");
     let verb = first.split_whitespace().next().unwrap_or("");
     match verb {
@@ -998,20 +1133,23 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             match zone_named(cfg, name) {
                 Ok(z) => {
                     let enc = z.storage == crate::zone::StorageMode::Encrypted;
+                    // The nic zone's own status, for the chrome's network line.
+                    let net = (z.network == crate::zone::NetworkMode::Nic).then(|| net_status(name)).flatten();
                     reply(
                         &conn,
                         &format!(
-                            "encrypted {}\nrunning {}\nlabel {}\nend\n",
+                            "encrypted {}\nrunning {}\nlabel {}\n{}end\n",
                             if enc { "yes" } else { "no" },
                             if zone_running(name) { "yes" } else { "no" },
                             z.label.as_deref().unwrap_or(&z.name),
+                            net.map_or(String::new(), |n| format!("network {n}\n")),
                         ),
                     );
                 }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
             }
         }
-        "runtime" => match runtime_dir(cfg, uid) {
+        "runtime" => match runtime_dir(cfg, uid).and_then(|d| compositor_dir(cfg, uid).map(|()| d)) {
             Ok(d) => reply(&conn, &format!("ok {}\n", d.display())),
             Err(e) => reply(&conn, &format!("error: {e}\n")),
         },
@@ -1037,29 +1175,80 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 reply(&conn, "error: bad zone name\n");
                 return None;
             }
+            // A stopped zone shows no window: its proxy goes with it, and the next start makes one.
+            if let Some(i) = proxies.iter().position(|p| p.zone == zone) {
+                unsafe { libc::kill(proxies[i].pid, libc::SIGTERM) };
+                proxies.remove(i);
+            }
             let what = JobKind::Stop { uid, zone: zone.to_string() };
             match start_job(conn, what, std::process::Command::new("/proc/self/exe").args(["stop", zone])) {
                 Ok(j) => jobs.push(j),
                 Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
             }
         }
-        /* The user's side of the update channel (update.rs). Until `fetch` the
-         * net zone is told `idle`; `apply` hands the stage to kryptik-update,
-         * which verifies it all again before writing a slot. */
-        "update-status" | "update-fetch" | "update-apply" => {
+        // The networks in range: the nic zone scans for seconds, so a job answers, one at a time.
+        "wifi-scan" => {
+            if jobs.iter().any(|j| j.what == JobKind::WifiScan) {
+                reply(&conn, "error: a scan is already running\n");
+                return None;
+            }
+            let mut cmd = std::process::Command::new("/proc/self/exe");
+            cmd.args(["wifi", "scan", "--zones"]).arg(&cfg.zones_dir).arg("--wifi-dir").arg(&cfg.wifi_dir);
+            match start_job(conn, JobKind::WifiScan, &mut cmd) {
+                Ok(j) => jobs.push(j),
+                Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
+            }
+        }
+        /* The user's side of the update channel (update.rs). Until `fetch`, or
+         * with `auto on` a newer statement, the net zone is told `idle`;
+         * `apply` hands the stage to kryptik-update, which verifies it all
+         * again before writing a slot. */
+        "update-status" | "update-fetch" | "update-forget" | "update-apply" | "update-auto" => {
             use crate::update as up;
             let dir = std::path::Path::new(up::STATE_DIR);
             let running = up::running_version();
+            let mut said = verb.to_string();
             let done = match verb {
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                    Ok(up::status(dir, now, &running))
+                    let mut out = up::status(dir, now, &running, up::expecting_since());
+                    out.extend(up::trial_line(Path::new(up::TRIAL), &running, up::running_slot().as_deref()));
+                    Ok(out)
                 }
                 "update-fetch" => {
                     let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
                     up::required_role()
                         .and_then(|role| up::want(dir, up::channel_from(&conf).as_deref(), &role, &running))
                         .map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n"))
+                }
+                "update-forget" => {
+                    // kryptik-update reads the stage while it applies it.
+                    if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
+                        reply(&conn, "error: an update is being applied\n");
+                        return None;
+                    }
+                    up::forget(dir).map(|v| {
+                        format!("{v} is no longer fetched, and what had arrived of it is deleted; automatic fetching passes it over, and `kryptik update fetch` asks for it again\n")
+                    })
+                }
+                "update-auto" => {
+                    let on = match first.split_whitespace().collect::<Vec<_>>().as_slice() {
+                        [_, "on"] => true,
+                        [_, "off"] => false,
+                        _ => {
+                            reply(&conn, "error: update-auto takes on or off\n");
+                            return None;
+                        }
+                    };
+                    said = format!("{verb} {}", if on { "on" } else { "off" });
+                    let conf = std::fs::read_to_string(up::CONF).unwrap_or_default();
+                    up::set_auto(dir, on, up::channel_from(&conf).as_deref()).map(|()| {
+                        if on {
+                            "automatic fetching is on: each newer release is fetched as it is announced, and waits for `kryptik update apply`\n".to_string()
+                        } else {
+                            "automatic fetching is off: a release is fetched only when you ask (`kryptik update fetch`)\n".to_string()
+                        }
+                    })
                 }
                 _ => {
                     // Started, not waited for; one at a time.
@@ -1083,7 +1272,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
             };
             match done {
                 Ok(text) => {
-                    eprintln!("kryptikd serve: {verb}");
+                    eprintln!("kryptikd serve: {said}");
                     reply(&conn, &format!("ok\n{text}"));
                 }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
@@ -1117,20 +1306,18 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 }
             };
             let done = if verb == "wifi-add" {
-                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref().unwrap_or("")).map(|a| match a {
-                    crate::wifi::Added::New => "added network",
-                    crate::wifi::Added::Replaced => "replaced the passphrase of network",
-                })
+                crate::wifi::add(&cfg.wifi_dir, owner, &req.ssid, req.psk.as_deref(), req.hidden)
+                    .map(|(a, hidden)| crate::wifi::said(&req.ssid, a, req.open, hidden))
             } else {
-                crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| "forgot network")
+                crate::wifi::forget(&cfg.wifi_dir, owner, &req.ssid).map(|()| format!("forgot network {:?}", req.ssid))
             };
             match done {
                 Ok(what) => {
                     /* The file is bound in at zone start, so a restart applies it. A
                      * restart that cannot happen is reported, not a failure. */
                     let restart = crate::wifi::restart_net_zone(&cfg.wifi_dir);
-                    eprintln!("kryptikd serve: uid {uid} {what} {:?}; {restart}", req.ssid);
-                    reply(&conn, &format!("ok {what} {:?}; {restart}\n", req.ssid));
+                    eprintln!("kryptikd serve: uid {uid} {what}; {restart}");
+                    reply(&conn, &format!("ok {what}; {restart}\n"));
                 }
                 Err(e) => {
                     eprintln!("kryptikd serve: uid {uid} {verb} {:?} refused: {e}", req.ssid);
@@ -1147,20 +1334,24 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
                 }
             };
             // Check the zone exists before forking, so a bad name is answered now.
-            if let Err(e) = zone_named(cfg, &req.zone) {
-                reply(&conn, &format!("error: {e}\n"));
-                return None;
-            }
-            let wayland = match &req.wayland {
-                None => None,
-                Some(w) => match verify_proxy_socket(w, uid, &req.zone, if cfg.developer { None } else { Some(&cfg.proxy_exe) }) {
+            let zone = match zone_named(cfg, &req.zone) {
+                Ok(z) => z,
+                Err(e) => {
+                    reply(&conn, &format!("error: {e}\n"));
+                    return None;
+                }
+            };
+            let wayland = if req.wayland {
+                match proxy_socket(cfg, uid, &zone, proxies) {
                     Ok(sock) => Some(sock),
                     Err(e) => {
                         eprintln!("kryptikd serve: uid {uid} zone {:?}: {e}", req.zone);
                         reply(&conn, &format!("error: {e}\n"));
                         return None;
                     }
-                },
+                }
+            } else {
+                None
             };
             let pass = if req.wants_fd {
                 match carried {
@@ -1204,6 +1395,9 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>) -> Option<Pe
     None
 }
 
+/// How often the login prompt's update notice is checked.
+const NOTICE_EVERY: Duration = Duration::from_secs(3600);
+
 pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     let cfg = match config_from(zones_dir, args) {
         Ok(c) => c,
@@ -1240,8 +1434,26 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
+    // Wrong passwords at the screen lock, kept across connections.
+    let mut attempts = crate::password::Attempts::default();
+    let mut proxies: Vec<Proxy> = Vec::new();
+    if !cfg.developer {
+        crate::proxy::kill_leftovers();
+    }
+    // The login prompt carries what `kryptik update status` says of a stale statement, on the
+    // installed system's instance: checked as it starts, then hourly, as days are what count.
+    let mut notice_due = (!cfg.developer).then(Instant::now);
     loop {
-        reap(&mut pending, &mut jobs);
+        if notice_due.is_some_and(|due| Instant::now() >= due) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let notice = Path::new(crate::update::LOGIN_NOTICE);
+            let since = crate::update::expecting_since();
+            if let Err(e) = crate::update::refresh_login_notice(Path::new(crate::update::STATE_DIR), notice, now, since) {
+                eprintln!("kryptikd serve: {e}");
+            }
+            notice_due = Some(Instant::now() + NOTICE_EVERY);
+        }
+        reap(&mut pending, &mut jobs, &mut proxies);
         jobs.retain_mut(|j| match j.exited {
             Some(st) => {
                 finish_job(j, st);
@@ -1261,6 +1473,10 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
                 watched.push(i);
             }
             let left = p.deadline().saturating_duration_since(now).as_millis() as i32;
+            timeout = if timeout < 0 { left } else { timeout.min(left) };
+        }
+        if let Some(due) = notice_due {
+            let left = due.saturating_duration_since(now).as_millis().min(i32::MAX as u128) as i32;
             timeout = if timeout < 0 { left } else { timeout.min(left) };
         }
         // Last: a child that ends wakes the loop, and `reap` at its top collects it.
@@ -1344,7 +1560,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             match listener.accept() {
                 Ok((conn, _)) => {
                     let _ = conn.set_nonblocking(false);
-                    if let Some(p) = handle(&cfg, conn, &mut jobs) {
+                    if let Some(p) = handle(&cfg, conn, &mut jobs, &mut attempts, &mut proxies) {
                         pending.push(p);
                     }
                 }

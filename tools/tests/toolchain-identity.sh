@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the rule in build/stages/01-toolchain.sh that clears a sysroot
-# another toolchain built. The block runs under the stage's errexit and ERR
-# trap, as it does there; only the mounts file path is substituted. Then the
-# toolchain's identity, from the stage's own --toolchain-id.
+# Tests for stage 01's rule that clears a sysroot another toolchain built, and for its --toolchain-id.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
@@ -13,8 +10,7 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS + 1)); echo "  PASS  $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL  $1"; [[ -f "$W/out" ]] && sed 's/^/        /' "$W/out"; }
 
-# run ID: the block, in a shell set up as common.sh sets the stage's, for a
-# toolchain whose identity is ID.
+# run ID: the block, under errexit and an ERR trap as in the stage, for toolchain identity ID.
 run() {
     ( set -Eeuo pipefail; trap 'echo "ERR trap at line $LINENO"; exit 8' ERR
       warn() { echo "warn: $*"; }; die() { echo "die: $*"; exit 9; }
@@ -46,8 +42,7 @@ LFS="$W/d/sysroot"; STAMPS="$W/d/stamps"; populate
 printf 'proc %s/proc proc rw 0 0\n' "$LFS" > "$MOUNTS"
 run 14; RC=$?; expect "a tree with something mounted under it is refused" 9 kept
 
-# The mount test alone: /proc/mounts writes a space as \040 and names the
-# resolved path, and the path is not a pattern.
+# The mount test alone: /proc/mounts holds resolved paths, a space written \040; none is a glob.
 mkdir -p "$W/m/with space/sysroot" "$W/m/br[ack]et/sysroot" "$W/m/real/sysroot" "$W/m/sysroot-other"; ln -s "$W/m/real" "$W/m/link"
 for p in "$W/m/with space/sysroot/kryptik" "$W/m/br[ack]et/sysroot/kryptik" "$W/m/real/sysroot/kryptik" "$W/m/sysroot-other/x"; do
     printf '/dev/sda1 %s ext4 rw 0 0\n' "${p// /\\040}"

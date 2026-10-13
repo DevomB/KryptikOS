@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn parse_policy_accepts_and_refuses() {
+fn policy_parsing() {
     let p = parse_policy("# c\nread-exec /\nread-write /tmp\n\nread /usr/share # trailing\n", "t").unwrap();
     assert_eq!(p.len(), 3);
     assert_eq!(p[0].path, "/");
@@ -93,19 +93,19 @@ fn second_layer_narrows_never_widens() {
 }
 
 #[test]
-fn packed_attr_is_twelve_bytes() {
+fn packed_attr_size() {
     // Same layout as the kernel's packed struct.
     assert_eq!(std::mem::size_of::<PathBeneathAttr>(), 12);
 }
 
 #[test]
-fn ruleset_attrs_have_expected_sizes() {
+fn ruleset_attr_sizes() {
     assert_eq!(std::mem::size_of::<RulesetAttrV1>(), 8);
     assert_eq!(std::mem::size_of::<RulesetAttrV4>(), 16);
 }
 
 #[test]
-fn access_mask_grows_with_abi() {
+fn access_mask_by_abi() {
     let v3 = access_mask_for(MIN_ABI);
     let v5 = access_mask_for(5);
     assert_eq!(v3 & (FS_REFER | FS_TRUNCATE), FS_REFER | FS_TRUNCATE, "REFER and TRUNCATE at the minimum ABI");
@@ -114,13 +114,13 @@ fn access_mask_grows_with_abi() {
 }
 
 #[test]
-fn read_access_includes_dirs_and_files() {
+fn read_access_bits() {
     assert_ne!(ACCESS_READ & FS_READ_FILE, 0);
     assert_ne!(ACCESS_READ & FS_READ_DIR, 0);
 }
 
 #[test]
-fn write_access_includes_truncate_and_refer() {
+fn write_access_bits() {
     assert_ne!(ACCESS_WRITE & FS_TRUNCATE, 0);
     assert_ne!(ACCESS_WRITE & FS_REFER, 0);
     assert_ne!(ACCESS_WRITE_FILE & FS_TRUNCATE, 0);
@@ -128,7 +128,7 @@ fn write_access_includes_truncate_and_refer() {
 }
 
 #[test]
-fn device_node_creation_is_never_granted() {
+fn no_device_node_creation() {
     // MAKE_CHAR and MAKE_BLOCK are handled, so denied, and no rule grants them.
     for r in zone_rules("/home/t") {
         assert_eq!(r.access & (FS_MAKE_CHAR | FS_MAKE_BLOCK), 0, "{}", r.path);
@@ -137,7 +137,7 @@ fn device_node_creation_is_never_granted() {
 }
 
 #[test]
-fn root_rule_never_grants_write() {
+fn root_never_writable() {
     // Rules are additive: write on "/" would be write on every mount under it.
     let rules = zone_rules("/home/t");
     let root = rules.iter().find(|r| r.path == "/").expect("no rule for /");
@@ -163,7 +163,7 @@ fn root_rule_never_grants_write() {
 }
 
 #[test]
-fn nic_zone_adds_state_dirs_without_exec() {
+fn nic_zone_state_dirs() {
     let extra = nic_zone_rules();
     let paths: Vec<&str> = extra.iter().map(|r| r.path.as_str()).collect();
     assert_eq!(paths, vec!["/run", "/var/lib"]);
@@ -177,7 +177,7 @@ fn nic_zone_adds_state_dirs_without_exec() {
 }
 
 #[test]
-fn ruleset_can_be_created_when_supported() {
+fn ruleset_creation() {
     match abi_version() {
         Some(v) if v >= MIN_ABI => {
             let rs = Ruleset::new().expect("ruleset creation should succeed");

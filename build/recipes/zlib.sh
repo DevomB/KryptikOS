@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# zlib: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
 s_zlib() {
     local src; src="$(unpack "zlib-${V_ZLIB}.tar.gz" "zlib-${V_ZLIB}")"

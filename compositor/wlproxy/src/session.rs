@@ -1,16 +1,11 @@
-//! One proxied connection, zone client to compositor: framed (wire.rs) against
-//! the tables (protocol.rs), checked, rewritten and forwarded.
-//!
-//! Every live object id is mapped to its interface. A message the map or the
-//! tables cannot account for, a hidden bind or an exceeded bound ends the
-//! session with one wl_display.error. Received descriptors queue in arrival
-//! order; a message takes as many as its signature has `h` arguments, waiting
-//! if they have not arrived, and sends them with its own bytes.
+//! One proxied connection, zone client to compositor. A message the object map or the tables
+//! cannot account for, a hidden bind or an exceeded bound ends it with one wl_display.error.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
+use crate::clipboard::{Action, Clipboard, Selection};
 use crate::policy;
 use crate::protocol::{self, Message};
 use crate::wire::{ArgReader, Header, MessageWriter, WireError, HEADER_LEN, MAX_MESSAGE_LEN, SERVER_ID_BASE};
@@ -81,8 +76,7 @@ impl From<io::Error> for SessionError {
 
 /// Bytes gathered into one outbound batch: the largest message.
 const BATCH_BYTES: usize = MAX_MESSAGE_LEN;
-/// Descriptors in one sendmsg: libwayland reads at most 28 per message
-/// (MAX_FDS_OUT) and ends the connection on more.
+/// Descriptors per sendmsg: libwayland reads at most 28 (MAX_FDS_OUT) and hangs up on more.
 pub(crate) const BATCH_FDS: usize = 28;
 
 /// One socket: inbound bytes and descriptors, outbound batches with theirs.
@@ -109,8 +103,7 @@ impl Endpoint {
         &self.inbuf[self.in_pos..]
     }
 
-    /// Move the next `n` pending bytes (one message) into the caller's reused
-    /// buffer; the caller has checked they are present.
+    /// Move the next `n` pending bytes into `out`; the caller has checked they are there.
     fn take(&mut self, n: usize, out: &mut Vec<u8>) {
         out.clear();
         out.extend_from_slice(&self.inbuf[self.in_pos..self.in_pos + n]);
@@ -130,8 +123,7 @@ impl Endpoint {
         bytes
     }
 
-    /// One recvmsg with room for descriptors. Returns bytes read: 0 is EOF,
-    /// usize::MAX that it would block.
+    /// One recvmsg with room for descriptors: bytes read, 0 at EOF, usize::MAX if it would block.
     pub fn read(&mut self) -> io::Result<usize> {
         let mut buf = [0u8; 4096];
         let mut cmsg = [0usize; 32]; // cmsghdr needs native alignment
@@ -149,7 +141,7 @@ impl Endpoint {
             }
             return Err(e);
         }
-        // Collect descriptors before the bytes, in order.
+        // Queue the descriptors in order before any check, so a refused read cannot leak them.
         unsafe {
             let mut c = libc::CMSG_FIRSTHDR(&msg);
             while !c.is_null() {
@@ -164,8 +156,7 @@ impl Endpoint {
                 c = libc::CMSG_NXTHDR(&msg, c);
             }
         }
-        /* Bounds hold at ingress too, even while pump waits for a missing
-         * descriptor: nothing may accumulate behind it. */
+        // Bounds hold at ingress too, so nothing piles up while pump waits for a descriptor.
         if msg.msg_flags & libc::MSG_CTRUNC != 0
             || self.in_fds.len() > policy::MAX_PENDING_FDS
             || self.pending_in().len() + n as usize > policy::MAX_PENDING_BYTES
@@ -175,7 +166,7 @@ impl Endpoint {
         if n == 0 {
             return Ok(0);
         }
-        // One compaction per read, here, rather than one per message.
+        // Compact once per read, not once per message.
         if self.in_pos > 0 {
             self.inbuf.drain(..self.in_pos);
             self.in_pos = 0;
@@ -217,8 +208,7 @@ impl Endpoint {
                 return Err(e);
             }
             let n = n as usize;
-            /* The descriptors went with the first byte and must not go again
-             * with the rest: close our copies. */
+            // The descriptors went with the first byte: close ours, so the rest goes without them.
             self.pending_fds -= fds.len();
             for fd in fds.drain(..) {
                 unsafe { libc::close(fd) };
@@ -233,9 +223,7 @@ impl Endpoint {
         Ok(false)
     }
 
-    /// Queue one message, joining the last batch while it has room. Its
-    /// descriptors go with that batch, so they arrive in order and no later
-    /// than the message, which is all libwayland asks.
+    /// Add to the last batch if it fits; fds ride with it, in order and never after their message.
     fn queue(&mut self, bytes: &[u8], fds: Vec<RawFd>) {
         self.pending_out += bytes.len();
         self.pending_fds += fds.len();
@@ -270,10 +258,7 @@ impl Endpoint {
 /// A live object: its interface from the tables and its negotiated version.
 type Obj = (&'static protocol::Interface, u32);
 
-/// Live objects by id. libwayland hands out ids densely, the client's from 1
-/// and the compositor's from SERVER_ID_BASE, and libwayland-server refuses a
-/// new id past the next unused slot. So each range is a vector, and an id that
-/// skips ahead is refused here as the compositor would refuse it.
+/// Live objects, a vector per id range: libwayland ids are dense, and one that skips is refused.
 struct Objects {
     client: Vec<Option<Obj>>,
     server: Vec<Option<Obj>>,
@@ -322,6 +307,12 @@ impl Objects {
         }
     }
 
+    /// The lowest free server id, for an object the proxy creates itself.
+    fn free_server_id(&self) -> Option<u32> {
+        let i = self.server.iter().position(Option::is_none).unwrap_or(self.server.len());
+        (i < policy::MAX_ID_SLOTS).then(|| SERVER_ID_BASE + i as u32)
+    }
+
     /// A client-range object where a test wants it, gaps and all.
     #[cfg(test)]
     fn place(&mut self, id: u32, o: Obj) {
@@ -335,28 +326,65 @@ impl Objects {
     }
 }
 
-/// The proxied connection.
+/// A wl_shm pool's charge on the budgets, kept until the pool and its buffers are all deleted
+/// and no surface may still show one: the compositor holds a committed buffer past both.
 struct Pool {
     size: usize,
     buffers: usize,
     deleted: bool,
+    held: usize,
 }
 
+/// The pools a wl_surface may hold in the compositor: the last one it committed, and each one a
+/// subsurface committed while synchronized, which wlroots 0.19 caches until the cache is applied
+/// (types/wlr_subcompositor.c, mirrored below).
+#[derive(Default)]
+struct Surface {
+    /// While it is a subsurface: the wl_subsurface that made it one, its parent, and that
+    /// subsurface's own sync flag.
+    role: Option<u32>,
+    parent: Option<u32>,
+    sync: bool,
+    /// What it committed is cached, not yet applied.
+    cached: bool,
+    children: Vec<u32>,
+    /// What the last attach named since the last commit: a pool, or no shm buffer.
+    pending: Option<Option<u64>>,
+    held: Vec<Option<u64>>,
+}
+
+/// The proxied connection.
 pub struct Session {
     pub zone: String,
+    /// The main loop's number for this connection, by which the clipboard names it.
+    pub id: u64,
     pub client: Endpoint,
     pub server: Endpoint,
     objects: Objects,
     pools: HashMap<u64, Pool>,
     pool_ids: HashMap<u32, u64>,
     buffer_pools: HashMap<u32, u64>,
+    surfaces: HashMap<u32, Surface>,
+    /// wl_subsurface object -> its wl_surface.
+    subsurfaces: HashMap<u32, u32>,
     next_pool: u64,
     pub shm_pool_bytes: usize,
     pub shm_pool_count: usize,
     pub toplevels: usize,
-    /// Globals the server advertised and we let through: name -> (interface, version)
+    pub popups: usize,
+    /// Globals let through to the client: name -> (interface, version cap).
     globals: HashMap<u32, (&'static str, u32)>,
-    /// How many globals were hidden from the client.
+    /// wl_output object -> the global it was bound from, which names the output to the zone.
+    outputs: HashMap<u32, u32>,
+    /// The data device objects the proxy serves (clipboard.rs): each source's types, the
+    /// devices, and the selection each offer describes, by its number.
+    sources: HashMap<u32, Vec<String>>,
+    devices: Vec<u32>,
+    offers: HashMap<u32, u64>,
+    /// Client ids the compositor holds a wl_display.sync callback for, sent in place of a served
+    /// object's creation so the ids it sees stay dense; its answer is not the client's to see.
+    /// Counted, as the client can make an id a served object again before the answer comes.
+    placeholders: HashMap<u32, u32>,
     pub hidden_count: usize,
     pub forwarded_c2s: u64,
     pub forwarded_s2c: u64,
@@ -364,8 +392,14 @@ pub struct Session {
 }
 
 const WL_DISPLAY: u32 = 1;
+const WL_DISPLAY_SYNC: u16 = 0; // request
 const WL_DISPLAY_ERROR: u16 = 0; // event
 const WL_DISPLAY_DELETE_ID: u16 = 1; // event
+const WL_DATA_OFFER_OFFER: u16 = 0; // event
+const WL_DATA_SOURCE_SEND: u16 = 1; // event
+const WL_DATA_SOURCE_CANCELLED: u16 = 2; // event
+const WL_DATA_DEVICE_DATA_OFFER: u16 = 0; // event
+const WL_DATA_DEVICE_SELECTION: u16 = 5; // event
 const WL_REGISTRY_BIND: u16 = 0; // request
 const WL_REGISTRY_GLOBAL: u16 = 0; // event
 const WL_REGISTRY_GLOBAL_REMOVE: u16 = 1; // event
@@ -374,17 +408,26 @@ impl Session {
     pub fn new(zone: &str, client_fd: RawFd, server_fd: RawFd) -> Session {
         Session {
             zone: zone.to_string(),
+            id: 0,
             client: Endpoint::new(client_fd),
             server: Endpoint::new(server_fd),
             objects: Objects::new((protocol::find("wl_display").expect("wl_display in tables"), 1)),
             pools: HashMap::new(),
             pool_ids: HashMap::new(),
             buffer_pools: HashMap::new(),
+            surfaces: HashMap::new(),
+            subsurfaces: HashMap::new(),
             next_pool: 0,
             shm_pool_bytes: 0,
             shm_pool_count: 0,
             toplevels: 0,
+            popups: 0,
             globals: HashMap::new(),
+            outputs: HashMap::new(),
+            sources: HashMap::new(),
+            devices: Vec::new(),
+            offers: HashMap::new(),
+            placeholders: HashMap::new(),
             hidden_count: 0,
             forwarded_c2s: 0,
             forwarded_s2c: 0,
@@ -416,30 +459,265 @@ impl Session {
         if !ok || id == 0 {
             return Err(SessionError::IdOutOfRange { id, dir });
         }
-        /* An interface missing from the tables cannot be tracked. Binds are
-         * checked against the allowlist, so only a compositor newer than the
-         * tables can create one: refuse rather than guess. */
+        /* Refuse an interface the tables lack: binds are allowlisted, so only a
+         * compositor newer than the tables can name one. */
         let iface = protocol::find(iface_name).ok_or_else(|| SessionError::HiddenInterface(iface_name.to_string()))?;
         if iface.name == "xdg_toplevel" && self.toplevels >= policy::MAX_TOPLEVELS_PER_SESSION {
             return Err(SessionError::ResourceLimit("too many toplevels in one session"));
         }
+        if iface.name == "xdg_popup" && self.popups >= policy::MAX_POPUPS_PER_SESSION {
+            return Err(SessionError::ResourceLimit("too many popups in one session"));
+        }
         self.objects.insert(id, (iface, version))?;
-        if iface.name == "xdg_toplevel" {
-            self.toplevels += 1;
+        match iface.name {
+            "xdg_toplevel" => self.toplevels += 1,
+            "xdg_popup" => self.popups += 1,
+            _ => {}
         }
         Ok(())
     }
 
     fn release_pool_if_unused(&mut self, generation: u64) {
-        if self.pools.get(&generation).is_some_and(|p| p.deleted && p.buffers == 0) {
+        if self.pools.get(&generation).is_some_and(|p| p.deleted && p.buffers == 0 && p.held == 0) {
             let pool = self.pools.remove(&generation).unwrap();
             self.shm_pool_bytes -= pool.size;
             self.shm_pool_count -= 1;
         }
     }
 
+    fn unhold(&mut self, generation: u64) {
+        if let Some(p) = self.pools.get_mut(&generation) {
+            p.held -= 1;
+        }
+        self.release_pool_if_unused(generation);
+    }
+
+    /// `id` and the surfaces above it, nearest first; bounded, as the client names the parents.
+    fn up(&self, id: u32) -> impl Iterator<Item = u32> + '_ {
+        std::iter::successors(Some(id), |s| self.surfaces.get(s).and_then(|sf| sf.parent)).take(self.subsurfaces.len() + 1)
+    }
+
+    /// wlroots' subsurface_is_synchronized: its own flag or an ancestor subsurface's.
+    fn synced(&self, id: u32) -> bool {
+        self.up(id).any(|s| self.surfaces.get(&s).is_some_and(|sf| sf.sync))
+    }
+
+    /// A surface's state applied: it keeps only its last commit, and each subsurface under it with
+    /// its own flag set and a cache is applied in turn, as wlroots' parent commit does.
+    fn apply(&mut self, id: u32) {
+        let (mut todo, mut freed) = (vec![id], Vec::new());
+        while let Some(s) = todo.pop() {
+            let Some(sf) = self.surfaces.get_mut(&s) else { continue };
+            let keep = sf.held.pop();
+            freed.extend(sf.held.drain(..).flatten());
+            sf.held.extend(keep);
+            sf.cached = false;
+            let kids = &self.surfaces[&s].children;
+            todo.extend(kids.iter().copied().filter(|k| self.surfaces.get(k).is_some_and(|c| c.sync && c.cached)));
+        }
+        for g in freed {
+            self.unhold(g);
+        }
+    }
+
+    /// A subsurface's role ends; wlroots applies what it cached first.
+    fn detach(&mut self, id: u32) {
+        if self.surfaces.get(&id).is_some_and(|sf| sf.cached) {
+            self.apply(id);
+        }
+        let Some(sf) = self.surfaces.get_mut(&id) else { return };
+        let parent = sf.parent.take();
+        sf.role = None;
+        sf.sync = false;
+        if let Some(p) = parent.and_then(|p| self.surfaces.get_mut(&p)) {
+            p.children.retain(|&c| c != id);
+        }
+    }
+
+    /// A commit holds the attached buffer's pool; a synchronized subsurface's is cached, any
+    /// other surface's applied.
+    fn commit(&mut self, id: u32) -> Result<(), SessionError> {
+        if let Some(sf) = self.surfaces.get_mut(&id) {
+            if let Some(p) = sf.pending.take() {
+                if sf.held.last() != Some(&p) {
+                    if sf.held.len() >= policy::MAX_HELD_PER_SURFACE {
+                        return Err(SessionError::ResourceLimit("commits cached on one surface"));
+                    }
+                    sf.held.push(p);
+                    if let Some(g) = p {
+                        if let Some(pool) = self.pools.get_mut(&g) {
+                            pool.held += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if self.synced(id) {
+            if let Some(sf) = self.surfaces.get_mut(&id) {
+                sf.cached = true;
+            }
+        } else {
+            self.apply(id);
+        }
+        Ok(())
+    }
+
+    /// A message of the proxy's own to the client, within the client's bounds.
+    fn emit(&mut self, msg: Option<Vec<u8>>, fds: Vec<OwnedFd>) -> Result<(), SessionError> {
+        let msg = msg.ok_or(SessionError::ResourceLimit("a message of the proxy's own does not fit"))?;
+        if self.client.pending_out + msg.len() > policy::MAX_PENDING_BYTES {
+            return Err(SessionError::TooMuchPending(Dir::ServerToClient));
+        }
+        if self.client.pending_fds + fds.len() > policy::MAX_PENDING_FDS {
+            return Err(SessionError::TooManyFds);
+        }
+        self.client.queue(&msg, fds.into_iter().map(IntoRawFd::into_raw_fd).collect());
+        Ok(())
+    }
+
+    /// The compositor is sent a wl_display.sync on the id of an object the proxy serves, so the
+    /// ids it sees stay dense; the callback's answer and its delete_id stop here (pump).
+    fn placeholder(&mut self, id: u32) -> Result<(), SessionError> {
+        let m = MessageWriter::new(WL_DISPLAY, WL_DISPLAY_SYNC).u32(id).finish();
+        let m = m.ok_or(SessionError::ResourceLimit("a placeholder does not fit"))?;
+        if self.server.pending_out + m.len() > policy::MAX_PENDING_BYTES {
+            return Err(SessionError::TooMuchPending(Dir::ClientToServer));
+        }
+        self.server.queue(&m, Vec::new());
+        *self.placeholders.entry(id).or_insert(0) += 1;
+        Ok(())
+    }
+
+    /// A delete_id for a placeholder, counted off: the id is free at the compositor, while the
+    /// client's object, the proxy's, is freed when the client destroys it.
+    fn end_placeholder(&mut self, id: u32) -> bool {
+        let Some(n) = self.placeholders.get_mut(&id) else { return false };
+        *n -= 1;
+        if *n == 0 {
+            self.placeholders.remove(&id);
+        }
+        true
+    }
+
+    /// A served object the client destroyed: the proxy, its server, frees the id.
+    fn served_gone(&mut self, id: u32) -> Result<(), SessionError> {
+        self.objects.remove(id);
+        self.emit(MessageWriter::new(WL_DISPLAY, WL_DISPLAY_DELETE_ID).u32(id).finish(), Vec::new())
+    }
+
+    fn cancel(&mut self, source: u32) -> Result<(), SessionError> {
+        self.emit(MessageWriter::new(source, WL_DATA_SOURCE_CANCELLED).finish(), Vec::new())
+    }
+
+    /// The zone's selection offered to these data devices of the client's: a new wl_data_offer
+    /// with each type, then the selection event naming it, or naming none.
+    fn offer_selection(&mut self, clip: &Clipboard, devices: &[u32]) -> Result<(), SessionError> {
+        for &dev in devices {
+            let Some((_, version)) = self.objects.get(dev) else { continue };
+            let mut offer = 0;
+            if let Some(sel) = &clip.selection {
+                offer = self.objects.free_server_id().ok_or(SessionError::TooManyObjects)?;
+                self.register(offer, "wl_data_offer", version, Dir::ServerToClient)?;
+                self.offers.insert(offer, clip.generation);
+                self.emit(MessageWriter::new(dev, WL_DATA_DEVICE_DATA_OFFER).u32(offer).finish(), Vec::new())?;
+                for t in &sel.mimes {
+                    self.emit(MessageWriter::new(offer, WL_DATA_OFFER_OFFER).string(t).finish(), Vec::new())?;
+                }
+            }
+            self.emit(MessageWriter::new(dev, WL_DATA_DEVICE_SELECTION).u32(offer).finish(), Vec::new())?;
+        }
+        Ok(())
+    }
+
+    /// A request on a data device object, answered by the proxy: a copy is taken only from the
+    /// client with the keyboard, and a paste is passed to the copy's client as wl_data_source.send.
+    fn serve(&mut self, iface: &str, request: &str, object: u32, body: &[u8], fds: &mut Vec<OwnedFd>, clip: &mut Clipboard) -> Result<(), SessionError> {
+        let mut r = ArgReader::new(body);
+        match (iface, request) {
+            ("wl_data_device_manager", "create_data_source") => {
+                if self.sources.len() >= policy::MAX_DATA_SOURCES_PER_SESSION {
+                    return Err(SessionError::ResourceLimit("too many data sources in one session"));
+                }
+                self.sources.insert(r.u32()?, Vec::new());
+            }
+            ("wl_data_device_manager", "get_data_device") => self.devices.push(r.u32()?),
+            ("wl_data_source", "offer") => {
+                let mime = r.string()?.unwrap_or("");
+                let types = self.sources.get_mut(&object).ok_or(SessionError::UnknownObject(object))?;
+                if types.len() >= policy::MAX_MIME_TYPES || mime.len() > policy::MAX_MIME_BYTES {
+                    return Err(SessionError::ResourceLimit("a data source's types"));
+                }
+                if !types.iter().any(|t| t == mime) {
+                    types.push(mime.to_string());
+                }
+            }
+            ("wl_data_source", "destroy") => {
+                self.sources.remove(&object);
+                clip.source_gone(self.id, object);
+                self.served_gone(object)?;
+            }
+            ("wl_data_device", "set_selection") => {
+                let source = r.u32()?;
+                if source != 0 && !self.sources.contains_key(&source) {
+                    return Err(SessionError::Forbidden("set_selection names no data source of this client's"));
+                }
+                if clip.focus == Some(self.id) {
+                    clip.set((source != 0).then(|| Selection { owner: self.id, source, mimes: self.sources[&source].clone(), data: None }));
+                } else if source != 0 && !clip.selection.as_ref().is_some_and(|s| s.owner == self.id && s.source == source) {
+                    // Without the keyboard there is no copy: this source never held the selection.
+                    self.cancel(source)?;
+                }
+            }
+            ("wl_data_device", "start_drag") => {
+                // Drag and drop is not served: its source hears at once that nothing took it.
+                let source = r.u32()?;
+                if self.sources.contains_key(&source) {
+                    self.cancel(source)?;
+                }
+            }
+            ("wl_data_device", "release") => {
+                self.devices.retain(|&d| d != object);
+                self.served_gone(object)?;
+            }
+            ("wl_data_offer", "receive") => {
+                let mime = r.string()?.unwrap_or("");
+                let fd = fds.pop();
+                // An older selection's offer, or a type not offered: the reader just gets end of file.
+                if let (Some(sel), Some(fd)) = (&clip.selection, fd) {
+                    if self.offers.get(&object) == Some(&clip.generation) && sel.mimes.iter().any(|t| t == mime) {
+                        let send = Action::Send(sel.owner, sel.source, mime.to_string(), fd);
+                        clip.actions.push(send);
+                    }
+                }
+            }
+            ("wl_data_offer", "destroy") => {
+                // A server id, which the proxy may give out again: no delete_id.
+                self.offers.remove(&object);
+                self.objects.remove(object);
+            }
+            // Drag and drop's own, and the actions it negotiates.
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// What another session's messages asked of this one (clipboard.rs).
+    pub fn act(&mut self, a: Action, clip: &Clipboard) -> Result<(), SessionError> {
+        match a {
+            Action::Offer(_) if clip.focus == Some(self.id) => {
+                let devices = self.devices.clone();
+                self.offer_selection(clip, &devices)
+            }
+            Action::Cancel(_, source) if self.sources.contains_key(&source) => self.cancel(source),
+            Action::Send(_, source, mime, fd) if self.sources.contains_key(&source) => {
+                self.emit(MessageWriter::new(source, WL_DATA_SOURCE_SEND).string(&mime).finish(), vec![fd])
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Process every complete message in one direction; Ok(()) when more input is needed.
-    pub fn pump(&mut self, dir: Dir) -> Result<(), SessionError> {
+    pub fn pump(&mut self, dir: Dir, clip: &mut Clipboard) -> Result<(), SessionError> {
         // Reused for every message of this pass.
         let mut msg: Vec<u8> = Vec::new();
         loop {
@@ -456,6 +734,11 @@ impl Session {
             if src.pending_in().len() < size {
                 return Ok(());
             }
+            // A placeholder's wl_callback.done: the client made no callback.
+            if dir == Dir::ServerToClient && self.placeholders.contains_key(&h.object) {
+                src.take(size, &mut msg);
+                continue;
+            }
             let (iface, m, version) = self.lookup(h.object, dir, h.opcode)?;
             let needed = m.fd_count();
             let src = match dir {
@@ -467,7 +750,7 @@ impl Session {
             }
             src.take(size, &mut msg);
             // Owned, so a rejection before queueing closes them.
-            let fds: Vec<OwnedFd> = src.in_fds.drain(..needed).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }).collect();
+            let mut fds: Vec<OwnedFd> = src.in_fds.drain(..needed).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) }).collect();
             let decoded = protocol::decode(m, &msg[HEADER_LEN..])?;
 
             // --- policy, per message ---------------------------------------
@@ -478,13 +761,15 @@ impl Session {
             let mut stamp: Option<Vec<u8>> = None;
             match dir {
                 Dir::ClientToServer => {
-                    // get_registry needs nothing here: its registry is registered below like any child.
+                    // get_registry needs no check here; its new registry is registered below.
                     if iface.name == "wl_registry" && h.opcode == WL_REGISTRY_BIND {
                         let (name, version) = match (decoded.new_object, decoded.bind_version) {
                             (Some((_, n)), Some(v)) => (n, v),
                             _ => return Err(SessionError::Wire(WireError::ArgOverrun)),
                         };
-                        let max = policy::allowed_version(name).ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
+                        let max = policy::allowed_version(name)
+                            .or_else(|| policy::own_version(name))
+                            .ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
                         // The global's number pins one advertised interface and version cap.
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let gname = r.u32()?;
@@ -497,6 +782,16 @@ impl Session {
                         if version > max {
                             return Err(SessionError::VersionTooHigh { interface: name.to_string(), asked: version, max });
                         }
+                        if name == "wl_output" {
+                            if let Some((id, _)) = decoded.new_object {
+                                self.outputs.insert(id, gname);
+                            }
+                        }
+                        forward = !policy::served(name);
+                    }
+                    if policy::served(iface.name) {
+                        forward = false;
+                        self.serve(iface.name, m.name, h.object, &msg[HEADER_LEN..], &mut fds, clip)?;
                     }
                     if iface.name == "xdg_toplevel" && (m.name == "set_title" || m.name == "set_app_id") {
                         if let Some((_, s)) = decoded.strings.first() {
@@ -510,9 +805,6 @@ impl Session {
                             }
                         }
                     }
-                    if iface.name == "xdg_surface" && m.name == "get_popup" {
-                        return Err(SessionError::Forbidden("xdg_surface.get_popup"));
-                    }
                     if iface.name == "wl_shm" && m.name == "create_pool" {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
@@ -524,13 +816,13 @@ impl Session {
                             || self.shm_pool_bytes + size as usize > policy::MAX_SHM_BYTES_PER_SESSION {
                             return Err(SessionError::ResourceLimit("wl_shm pool budget in one session"));
                         }
-                        // A destroyed pool may still back buffers. Its generation keeps
-                        // those buffers separate if Wayland later reuses the object id.
+                        /* A destroyed pool may still back buffers; the generation keeps
+                         * them apart from a new pool on the same object id. */
                         self.next_pool += 1;
                         self.shm_pool_count += 1;
                         self.shm_pool_bytes += size as usize;
                         self.pool_ids.insert(id, self.next_pool);
-                        self.pools.insert(self.next_pool, Pool { size: size as usize, buffers: 0, deleted: false });
+                        self.pools.insert(self.next_pool, Pool { size: size as usize, buffers: 0, deleted: false, held: 0 });
                     }
                     if iface.name == "wl_shm_pool" && m.name == "resize" {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
@@ -553,13 +845,57 @@ impl Session {
                         self.buffer_pools.insert(id, generation);
                         self.pools.get_mut(&generation).unwrap().buffers += 1;
                     }
-                    /* Every toplevel gets the zone's app_id right behind the
-                     * get_toplevel that creates it: the compositor draws a toplevel
-                     * with no app_id as zone 0's own, with the trusted border. A
-                     * later set_app_id from the client is rewritten and replaces it. */
+                    if iface.name == "wl_surface" && m.name == "attach" {
+                        let buffer = ArgReader::new(&msg[HEADER_LEN..]).u32()?;
+                        let pool = self.buffer_pools.get(&buffer).copied();
+                        self.surfaces.entry(h.object).or_default().pending = Some(pool);
+                    }
+                    if iface.name == "wl_surface" && m.name == "commit" {
+                        self.commit(h.object)?;
+                    }
+                    if iface.name == "wl_subcompositor" && m.name == "get_subsurface" {
+                        if self.subsurfaces.len() >= policy::MAX_SUBSURFACES_PER_SESSION {
+                            return Err(SessionError::ResourceLimit("too many subsurfaces in one session"));
+                        }
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
+                        let (id, surface, parent) = (r.u32()?, r.u32()?, r.u32()?);
+                        // The compositor refuses these as well; refused here, the parents never loop.
+                        if self.surfaces.get(&surface).is_some_and(|sf| sf.role.is_some()) || self.up(parent).any(|s| s == surface) {
+                            return Err(SessionError::Forbidden("get_subsurface on a subsurface or above its parent"));
+                        }
+                        let sf = self.surfaces.entry(surface).or_default();
+                        sf.role = Some(id);
+                        sf.parent = Some(parent);
+                        sf.sync = true;
+                        self.surfaces.entry(parent).or_default().children.push(surface);
+                        self.subsurfaces.insert(id, surface);
+                    }
+                    if iface.name == "wl_subsurface" {
+                        // One whose surface or parent is gone is inert, in wlroots as here.
+                        let live = self.subsurfaces.get(&h.object).copied()
+                            .filter(|s| self.surfaces.get(s).is_some_and(|sf| sf.role == Some(h.object)));
+                        match (m.name, live) {
+                            ("set_sync", Some(s)) => self.surfaces.get_mut(&s).unwrap().sync = true,
+                            ("set_desync", Some(s)) => {
+                                let sf = self.surfaces.get_mut(&s).unwrap();
+                                if std::mem::take(&mut sf.sync) && sf.cached && !self.synced(s) {
+                                    self.apply(s);
+                                }
+                            }
+                            ("destroy", _) => {
+                                self.subsurfaces.remove(&h.object);
+                                if let Some(s) = live {
+                                    self.detach(s);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    /* Stamp the zone's app_id right behind get_toplevel: the compositor draws
+                     * a toplevel with no app_id as zone 0's own, with the trusted border. */
                     if iface.name == "xdg_surface" && m.name == "get_toplevel" {
                         if let Some((id, _)) = decoded.new_object {
-                            // Resolved once; tables without set_app_id refuse rather than guess an opcode.
+                            // Looked up once, not hardcoded; tables without set_app_id refuse.
                             static SET_APP_ID: std::sync::OnceLock<Option<u16>> = std::sync::OnceLock::new();
                             let opcode = SET_APP_ID
                                 .get_or_init(|| {
@@ -567,8 +903,10 @@ impl Session {
                                         .and_then(|i| i.requests.iter().position(|r| r.name == "set_app_id"))
                                         .map(|p| p as u16)
                                 })
-                                .ok_or(SessionError::Wire(WireError::ArgOverrun))?;
-                            stamp = MessageWriter::new(id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
+                                .ok_or(SessionError::Forbidden("no xdg_toplevel.set_app_id in the tables"))?;
+                            // Unstamped it would be drawn as zone 0's: refused, should the name not fit.
+                            let app_id = MessageWriter::new(id, opcode).string(&policy::app_id_for(&self.zone, "")).finish();
+                            stamp = Some(app_id.ok_or(SessionError::Forbidden("the zone's app_id does not fit a message"))?);
                         }
                     }
                 }
@@ -598,12 +936,45 @@ impl Session {
                          * a bind racing the removal is the compositor's to answer. */
                         forward = self.globals.contains_key(&gname); // hidden: never seen
                     }
-                    if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
+                    /* A monitor's make and model, and its serial, which wlroots puts in the
+                     * description, would follow the machine from zone to zone: blank, and the
+                     * output named by its global's number, the same in every client. */
+                    if iface.name == "wl_output" && matches!(m.name, "geometry" | "name" | "description") {
+                        let mut r = ArgReader::new(&msg[HEADER_LEN..]);
+                        let w = MessageWriter::new(h.object, h.opcode);
+                        let w = if m.name == "geometry" {
+                            let (x, y, mm_w, mm_h, subpixel) = (r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?);
+                            let _ = (r.string()?, r.string()?);
+                            let transform = r.u32()?;
+                            w.u32(x).u32(y).u32(mm_w).u32(mm_h).u32(subpixel).string("").string("").u32(transform)
+                        } else {
+                            w.string(&format!("output-{}", self.outputs.get(&h.object).copied().unwrap_or(0)))
+                        };
+                        rewritten = Some(w.finish().ok_or(SessionError::Wire(WireError::BadSize(h.size)))?);
+                    }
+                    /* The zone's selection reaches a client just before the keyboard does, as a
+                     * compositor's would; while the keyboard is there, that client alone copies. */
+                    if iface.name == "wl_keyboard" && m.name == "enter" {
+                        clip.focus = Some(self.id);
+                        let devices = self.devices.clone();
+                        self.offer_selection(clip, &devices)?;
+                    }
+                    if iface.name == "wl_keyboard" && m.name == "leave" && clip.focus == Some(self.id) {
+                        clip.focus = None;
+                    }
+                    let placeholder_end = h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID
+                        && self.end_placeholder(ArgReader::new(&msg[HEADER_LEN..]).u32()?);
+                    if placeholder_end {
+                        forward = false;
+                    } else if h.object == WL_DISPLAY && h.opcode == WL_DISPLAY_DELETE_ID {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);
                         let id = r.u32()?;
-                        if self.objects.get(id).is_some_and(|(i, _)| i.name == "xdg_toplevel") {
-                            self.toplevels -= 1;
+                        match self.objects.get(id).map(|(i, _)| i.name) {
+                            Some("xdg_toplevel") => self.toplevels -= 1,
+                            Some("xdg_popup") => self.popups -= 1,
+                            _ => {}
                         }
+                        self.outputs.remove(&id);
                         if let Some(generation) = self.pool_ids.remove(&id) {
                             self.pools.get_mut(&generation).unwrap().deleted = true;
                             self.release_pool_if_unused(generation);
@@ -612,14 +983,40 @@ impl Session {
                             self.pools.get_mut(&generation).unwrap().buffers -= 1;
                             self.release_pool_if_unused(generation);
                         }
+                        // A surface's end ends its subsurfaces' roles too, applying their caches.
+                        if let Some(sf) = self.surfaces.remove(&id) {
+                            for c in sf.children {
+                                self.detach(c);
+                            }
+                            if let Some(p) = sf.parent.and_then(|p| self.surfaces.get_mut(&p)) {
+                                p.children.retain(|&c| c != id);
+                            }
+                            for g in sf.held.into_iter().flatten() {
+                                self.unhold(g);
+                            }
+                        }
                         self.objects.remove(id);
                     }
                 }
             }
-            /* The new object, whichever side created it. A registry binding
-             * chooses its version; any other child inherits its parent's. */
+            // A bind picks the new object's version; any other new object inherits its parent's.
             if let Some((id, name)) = decoded.new_object {
                 self.register(id, name, decoded.bind_version.unwrap_or(version), dir)?;
+                // A new registry hears of the proxy's own globals first, then the compositor's.
+                if name == "wl_registry" {
+                    for (i, &(iface, v)) in policy::OWN_GLOBALS.iter().enumerate() {
+                        let gname = policy::OWN_GLOBAL_BASE + i as u32;
+                        self.globals.insert(gname, (iface, v));
+                        self.emit(MessageWriter::new(id, WL_REGISTRY_GLOBAL).u32(gname).string(iface).u32(v).finish(), Vec::new())?;
+                    }
+                }
+                // A served object's creation reaches the compositor as a placeholder only.
+                if dir == Dir::ClientToServer && !forward {
+                    self.placeholder(id)?;
+                    if name == "wl_data_device" && clip.focus == Some(self.id) {
+                        self.offer_selection(clip, &[id])?;
+                    }
+                }
             }
             let msg: &[u8] = rewritten.as_deref().unwrap_or(&msg);
             let dst = match dir {
@@ -647,8 +1044,7 @@ impl Session {
         }
     }
 
-    /// Tell the client why with a fatal wl_display.error (code 3,
-    /// implementation), then close both sides.
+    /// Tell the client why in a fatal wl_display.error (code 3, implementation); close both sides.
     pub fn refuse(&mut self, why: &str) {
         let text = format!("kryptik-wlproxy: {why}");
         if let Some(m) = MessageWriter::new(WL_DISPLAY, WL_DISPLAY_ERROR).u32(WL_DISPLAY).u32(3).string(&text).finish() {

@@ -10,9 +10,8 @@ fn normal_vision_is_identity() {
 }
 
 #[test]
-fn greys_unchanged_by_any_model() {
-    /* Each matrix's rows sum to about 1, so greys pass through; a
-     * transcription error in a matrix makes them drift. */
+fn greys_unchanged() {
+    // Each matrix's rows sum to about 1, so greys pass; a transcription error makes them drift.
     for hex in ["#000000", "#404040", "#808080", "#c0c0c0", "#ffffff"] {
         let c = Srgb::from_hex(hex).unwrap();
         for v in Vision::ALL {

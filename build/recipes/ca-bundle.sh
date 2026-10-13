@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# ca-bundle: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
-# which runs it in the order its list gives.
 
-# Mozilla's CA bundle, where OpenSSL 3 and python's ssl look by default, on the
-# verified root (zones see /etc/ssl/certs read-only). A release's authenticity
-# rests on its signature, not TLS, but the downloader still verifies servers.
+# Mozilla's CA bundle where OpenSSL and python look: releases are signed, but servers are verified.
 s_ca_bundle() {
     local pem="${KRYPTIK_SOURCES}/cacert-${V_CA_BUNDLE}.pem"
     [[ -f "$pem" ]] || { echo "FAIL: ${pem} was not fetched"; return 1; }
