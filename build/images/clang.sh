@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# LLVM's release build, for the libclang bindgen loads to read Firefox's C++ headers: the library,
+# clang's builtin headers, and clang, which names where they are. A layer that only builds use; no
+# zone gets it (docs/design/browser-and-graphics.md).
+# shellcheck disable=SC2034  # read by build/stages/04-images.sh
+image_version="${V_LLVM}"
+# shellcheck disable=SC2034
+image_ships=no
+# shellcheck disable=SC2034
+image_rows=(
+    "libclang" "s_clang_libclang"
+)
+
+# Some 6 GB unpacked: only what bindgen and Firefox's configure read, under /usr/lib/llvm-MAJOR.
+s_clang_libclang() {
+    local top="LLVM-${V_LLVM}-Linux-X64" dir="/usr/lib/llvm-${V_LLVM%%.*}"
+    mkdir -p "$dir"
+    tar --zstd --no-same-owner -xf "${KRYPTIK_SOURCES}/LLVM-${V_LLVM}-Linux-X64.tar.zst" -C "$dir" --strip-components=1 \
+        --wildcards "${top}/bin/clang" "${top}/bin/clang-[0-9]*" "${top}/lib/libclang.so*" \
+        "${top}/lib/clang/*/include/*" "${top}/LICENSE.TXT"
+    "${dir}/bin/clang" --version
+}

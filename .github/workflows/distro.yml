@@ -360,9 +360,10 @@ jobs:
           sudo sed -n 's/^\(name\|fingerprint\): //p' work/image-build/*/record | paste - - || true
 
       # After the stage 04-05 cache is packed, so no image tree or overlay reaches it; stage 06 packs what this builds.
+      # The browser takes some three hours when its tree is not cached; the toolkit some minutes.
       - name: Software images (over the base system, in the chroot)
         id: images
-        timeout-minutes: 90
+        timeout-minutes: 240
         run: make -o system images
 
       # Each image's tree and record, never an overlay's upper or work directory; saved when they changed.
