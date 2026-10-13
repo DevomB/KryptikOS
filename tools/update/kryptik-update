@@ -16,7 +16,8 @@
 #
 # DIR holds manifest, manifest.sig, kryptik-root.img.zst (the root image,
 # compressed for the trip), kryptik-a.efi, kryptik-b.efi and root.json, and
-# nothing else.
+# the release's software images if it has any (images.manifest, its .sig and
+# NAME.img.zst), and nothing else.
 set -eu
 
 PROG=kryptik-update
@@ -37,6 +38,8 @@ B=/var/lib/kryptik/boot
 ESP_MNT=/run/kryptik/update-esp
 LOCK=/run/kryptik/update.lock
 LOG=/var/log/kryptik/update.log
+# Software images, by the root they are built for (docs/design/software-delivery.md).
+IMAGES=/var/lib/kryptik/images
 # Where the manifest is copied. Never taken from the environment, since the
 # exit trap removes it; a variable only so the offline suite can set it.
 SNAP=""
@@ -346,6 +349,74 @@ unlist_slot() {   # unlist_slot SLOT
     umount_esp
 }
 
+# The payload's software images, before any slot is written: the list must be
+# for the root the payload carries, and each image is decompressed into the
+# store and checked there, on the copy, against the size and hash the list
+# signs. Only once every image has checked is any renamed into place.
+stage_images() {
+    [ -n "$(manifest_hash images.manifest)" ] || return 0
+    [ -n "$(manifest_hash images.manifest.sig)" ] || die "the payload lists images.manifest without its signature"
+    # A copy, read once and checked against the manifest: the payload directory is mutable.
+    l="$SNAP/images.manifest"; lsig="$SNAP/images.manifest.sig"
+    cp -- "$(payload_path images.manifest)" "$l" && cp -- "$(payload_path images.manifest.sig)" "$lsig" \
+        || die "cannot copy the image list"
+    [ "$(sha256sum "$l" | cut -c1-64)" = "$(manifest_hash images.manifest)" ] \
+        && [ "$(sha256sum "$lsig" | cut -c1-64)" = "$(manifest_hash images.manifest.sig)" ] \
+        || die "the image list changed after the manifest was checked"
+    [ "$(head -1 "$l")" = KRYPTIK-IMAGES-1 ] || die "images.manifest is not a KRYPTIK-IMAGES-1"
+    [ "$(sed -n 's/^base: //p' "$l")" = "$ROOT_HASH" ] || die "the payload's image list is for another root than the one it carries"
+    mkdir -p "$IMAGES" && chmod 0700 "$IMAGES" || die "cannot make $IMAGES"
+    staged=""
+    while read -r _ name _ bytes sha _ hash _; do
+        [ -n "$name" ] || continue
+        bytes="${bytes#bytes=}"; sha="${sha#sha256=}"; hash="${hash#root-hash=}"
+        case "$name" in ''|*[!a-z0-9-]*) die "the image list names '$name'" ;; esac
+        case "$hash$sha" in *[!0-9a-f]*) die "image $name: its hashes in the list are not hex" ;; esac
+        [ "${#hash}" = 64 ] && [ "${#sha}" = 64 ] || die "image $name: its hashes in the list are not 64 digits"
+        [ -n "$(manifest_hash "$name.img.zst")" ] || die "the list names image $name, and the payload does not carry $name.img.zst"
+        f="$IMAGES/$name/$hash.img"
+        if [ -f "$f" ] && [ "$(stat -c %s "$f")" = "$bytes" ] && [ "$(sha256sum "$f" | cut -c1-64)" = "$sha" ]; then
+            say "image $name: already kept"
+            continue
+        fi
+        mkdir -p "$IMAGES/$name" || die "cannot make $IMAGES/$name"
+        zstd -dcq < "$(payload_path "$name.img.zst")" > "$f.new" \
+            || { rm -f "$f.new"; die "image $name did not decompress into the store (is the state partition full?)"; }
+        sync -f "$f.new"
+        uncache "$f.new"
+        if [ "$(stat -c %s "$f.new")" != "$bytes" ] || [ "$(sha256sum "$f.new" | cut -c1-64)" != "$sha" ]; then
+            rm -f "$f.new"
+            die "image $name does not decompress to the bytes its list signs"
+        fi
+        staged="$staged $f"
+        say "image $name: staged and checked ($bytes bytes)"
+    done <<EOF
+$(grep '^image: ' "$l")
+EOF
+    for f in $staged; do mv -f "$f.new" "$f" || die "cannot keep $f"; done
+    cp "$l" "$IMAGES/$ROOT_HASH.manifest.new" && cp "$lsig" "$IMAGES/$ROOT_HASH.manifest.sig.new" \
+        && sync && mv -f "$IMAGES/$ROOT_HASH.manifest.new" "$IMAGES/$ROOT_HASH.manifest" \
+        && mv -f "$IMAGES/$ROOT_HASH.manifest.sig.new" "$IMAGES/$ROOT_HASH.manifest.sig" \
+        || die "the image list for $VERSION could not be kept"
+    say "the image list for $VERSION kept"
+}
+
+# The store keeps the lists for the roots in the two slots and the images they
+# name; a list for any other root, and an image no kept list names, goes.
+prune_images() {   # prune_images ROOT-HASH...
+    [ -d "$IMAGES" ] || return 0
+    keep=" $* "
+    for l in "$IMAGES"/*.manifest; do
+        [ -f "$l" ] || continue
+        case "$keep" in *" $(basename "$l" .manifest) "*) ;; *) rm -f "$l" "$l.sig" ;; esac
+    done
+    wanted="$(cat "$IMAGES"/*.manifest 2>/dev/null | sed -n 's/^image: \([a-z0-9-]*\) .* root-hash=\([0-9a-f]*\) .*/\1\/\2.img/p')"
+    for f in "$IMAGES"/*/*.img "$IMAGES"/*/*.img.new; do
+        [ -f "$f" ] || continue
+        printf '%s\n' "$wanted" | grep -Fxq -- "${f#"$IMAGES"/}" || rm -f "$f"
+    done
+}
+
 # Verify everything, then write only the inactive slot, read it back, install
 # its kernel and arm BootNext. BOOTX64.EFI is left to boot-success, which
 # commits once the new slot has come up. Zone data is never written.
@@ -382,6 +453,7 @@ cmd_apply() {
     [ -b "$tdev" ] || die "kryptik-$target ($tdev) is not a block device"
     tsize="$(blockdev --getsize64 "$tdev")"
     [ "$tsize" -ge "$ROOT_BYTES" ] || die "slot $target is $tsize bytes; the root image needs $ROOT_BYTES"
+    stage_images
 
     # --- writes begin: the inactive slot only -------------------------------
     unlist_slot "$target"
@@ -418,6 +490,10 @@ cmd_apply() {
 
     # --- arm one trial boot --------------------------------------------------
     arm_trial "$target"
+    # The running root's images stay for a rollback; those of the release this slot held go.
+    # A command line naming no root hash prunes nothing, rather than the running root's list.
+    running_hash="$(sed -n 's/.*sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
+    if [ -n "$running_hash" ]; then prune_images "$running_hash" "$ROOT_HASH"; fi
     printf '%s apply %s -> slot %s\n' "$(date -Iseconds 2>/dev/null)" "$VERSION" "$target" >> "$LOG"
     say "armed: the next boot tries slot $target ($VERSION) once. Reboot to try it."
     say "if it does not come up, the firmware falls back to the committed slot ($slot)."

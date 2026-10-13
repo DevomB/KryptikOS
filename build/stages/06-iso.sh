@@ -737,9 +737,20 @@ s_payload() {
     cp "${IMG}/kernels/slot-a.signed.efi" "$out/kryptik-a.efi"
     cp "${IMG}/kernels/slot-b.signed.efi" "$out/kryptik-b.efi"
     cp "${IMG}/root.json" "$out/"
+    # The release's software images, signed for this root and each compressed for the trip as the
+    # root image is: apply decompresses them into the state partition's store.
+    local images=() img
+    if [[ -f "${IMAGES}/images.manifest.sig" ]]; then
+        cp "${IMAGES}/images.manifest" "${IMAGES}/images.manifest.sig" "$out/"
+        images=(images.manifest images.manifest.sig)
+        for img in "${IMAGES}"/*.img; do
+            zstd -q -T0 -19 "$img" -o "$out/$(basename "$img").zst" || { echo "could not compress ${img}"; return 1; }
+            images+=("$(basename "$img").zst")
+        done
+    fi
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" create --out "$out/manifest" --name kryptik \
         --version "$KRYPTIK_VERSION" --role "$ROLE" --root "$out" \
-        kryptik-root.img.zst kryptik-a.efi kryptik-b.efi root.json
+        kryptik-root.img.zst kryptik-a.efi kryptik-b.efi root.json "${images[@]}"
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" sign --key "$RELEASE_KEY" "$out/manifest"
     # Verify as the guest will: the image's anchor, --exact.
     "${KRYPTIK_ROOT}/tools/release-manifest.sh" verify --signers "$ANCHOR" --principal kryptik-release \
@@ -887,7 +898,7 @@ step esp            s_esp "$(cat "${IMG}"/kernels/{slot-a,slot-b,media-usb}.sign
 step usb            s_usb "$(cat "${IMG}/esp-usb.img" | sha256_of_stdin)$(root_json sha256)$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "${IMAGES}/images.manifest.sig")"
 step iso            s_iso "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/kernels/media-iso.efi" "${IMG}/root.json" "${IMG}/iso-root-start" | sha256_of_stdin)$(_hash_file "${IMAGES}/images.manifest")$(_hash_file "${IMAGES}/images.manifest.sig")"
 step sums           s_sums "$(cat "${IMG}/kryptik-${KRYPTIK_VERSION}"{-usb.img,.iso}.sha256 | sha256_of_stdin)$(_hash_file "$ANCHOR")"
-step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)" "${LATEST_KEY:+with a statement key}"
+step payload        s_payload "$(cat "${IMG}"/kernels/{slot-a,slot-b}.signed.efi "${IMG}/root.json" "${KRYPTIK_ROOT}"/tools/release-{manifest,channel}.sh | sha256_of_stdin)$(_hash_file "${IMAGES}/images.manifest.sig")" "${LATEST_KEY:+with a statement key}"
 step export         s_export "$(cat "${IMG}"/kryptik-*.sha256 "${IMG}/payload-${KRYPTIK_VERSION}/manifest" "${IMG}/kryptik-${KRYPTIK_VERSION}.SHA256SUMS.sig" "$ANCHOR" | sha256_of_stdin)"
 echo
 ok "Stage 06 finished: ${KRYPTIK_OUT}/kryptik-${KRYPTIK_VERSION}"

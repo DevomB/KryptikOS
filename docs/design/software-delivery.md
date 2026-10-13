@@ -226,11 +226,21 @@ up ADR-001 in the zones where the applications run.
   release without images has neither. The controls stay with the build.
 - **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
   the list for each root as `<base>.manifest` and `.manifest.sig`, root
-  only. Zone 0 keeps the generation the committed root uses and, during a
-  trial, the one the trial root uses.
-- **Fetched** by the same verbs as a release. The statement of what is
-  current gains one line per image for each base it serves; zone 0 fetches
-  only images whose hash it does not hold, never past the signed size.
+  only. Zone 0 keeps the lists of the roots in the two slots and the images
+  they name, so a rollback finds its images; an image both lists name is
+  kept once.
+- **Shipped** with each release. Its payload carries `images.manifest`, the
+  signature and each image as `NAME.img.zst`, compressed for the trip as the
+  root is, all listed in the release manifest, so the channel fetches them
+  with the rest. `kryptik-update apply` checks, before it writes the slot,
+  that the list is for the root the payload carries, and decompresses each
+  image into the store, where the copy is checked against the size and hash
+  the list signs before it takes its name. Once the trial is armed, the
+  store drops the release the slot held.
+- **Fetched** alone for an image-only fix, by the same verbs as a release.
+  The statement of what is current gains one line per image for each base
+  it serves; zone 0 fetches only images whose hash it does not hold, never
+  past the signed size.
 - **Mounted** by kryptikd on first use: a read-only loop device, dm-verity
   with the manifest's root hash, and ext4 mounted read-only, `nosuid,nodev`
   under `/run/kryptik/images/<name>/`, one directory per root hash. Each
