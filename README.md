@@ -381,6 +381,7 @@ Designs of the individual parts:
 - [Removable storage](docs/design/removable-storage.md): a USB stick read in the zone the user gives it to
 - [Camera](docs/design/camera.md): a camera granted to one zone at a time, its driver loaded only for the grant
 - [Bluetooth](docs/design/bluetooth.md): none for 1.0, then a zone of its own for a headset's audio
+- [Input methods](docs/design/input-methods.md): one per zone, its virtual keyboard bound to the zone
 
 ## License
 

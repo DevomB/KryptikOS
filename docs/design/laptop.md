@@ -347,7 +347,9 @@ Recommendation: one input method per zone, with `zwp_text_input_v3` and
 (`[input] method = true`), and never the virtual keyboard. dwl has no
 input-method support upstream; wlroots has the protocol helpers, and the
 routing by zone is Kryptik's work. Whether fcitx5 or ibus work without the
-virtual keyboard is checked before either is chosen.
+virtual keyboard is checked before either is chosen. Checked: neither does,
+so [input methods](input-methods.md) binds the virtual keyboard to its zone
+instead.
 
 ### Check
 
