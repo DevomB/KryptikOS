@@ -40,9 +40,12 @@ timestamp counter, one instruction away, each give it; the free memory in
 `/proc/meminfo`, coarse, which programs need; and the idle counts of a CPU
 brought online after the zone started.
 Sound leaves the zone as one stream of samples to zone 0's mixer, which
-reads one word before them, runs as a user of its own in the cards' group
-alone and gives the zone nothing of any other zone's; the zone records only
-while the user has granted it the microphone.
+reads one word before them and runs as a user of its own in the cards' group
+alone; the zone records only while the user has granted it the microphone,
+and `vault` has no sound at all. Of other zones' sound it learns one thing:
+the card stays open five seconds after the last sound, so how soon its own
+first sound is taken tells it whether any zone played in that time, a bit
+two zones could also signal through.
 Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 

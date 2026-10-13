@@ -92,8 +92,8 @@ else
     fail "mixer-running" "$(uncaught | grep -a 'kryptik-sound' | tail -3 | tr '\n' ' ')"
 fi
 listed="$(sed -n 's/^zone \([a-z0-9_-]*\) .*/\1/p' "$LOG/status.out" 2>/dev/null | sort | tr '\n' ' ')"
-if [[ "$listed" == "dev personal untrusted vault work " ]]; then
-    pass "mixer-zones" "a socket for ${listed}and none for the net zone"
+if [[ "$listed" == "dev personal untrusted work " && ! -e /run/kryptik-sound/zones/vault ]]; then
+    pass "mixer-zones" "a socket for ${listed}and none for vault or the net zone"
 else
     fail "mixer-zones" "zones: ${listed:-none}"
 fi

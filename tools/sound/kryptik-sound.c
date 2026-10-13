@@ -46,6 +46,7 @@
 #define MAX_ZONES 32
 #define MAX_CONNS 64
 #define PER_ZONE 8                      /* streams one zone may hold, so it cannot take them all */
+#define CONTROL_SLOTS 8                 /* kept for control: the grant, revoke and the keys */
 #define HELLO_MS 2000                   /* a connection must say what it is within this */
 #define IDLE_MS 5000                    /* the card is closed after this with nothing to play */
 
@@ -57,6 +58,8 @@ struct zone {
 	int listen;
 	int volume;                         /* 0..100 */
 	int muted;
+	long long refused_at;               /* the last refusal logged, and those since unlogged */
+	int refused_since;
 };
 
 struct conn {
@@ -174,12 +177,31 @@ static void end_conn(struct conn *c)
 	*c = (struct conn){ 0 };
 }
 
+/* Streams of one zone or, with -1, of all of them. */
 static int streams_of(int zone)
 {
 	int n = 0;
 	for (int i = 0; i < MAX_CONNS; i++)
-		n += conns[i].fd && conns[i].zone == zone && conns[i].kind != CONTROL;
+		n += conns[i].fd && conns[i].kind != CONTROL && (zone < 0 || conns[i].zone == zone);
 	return n;
+}
+
+/* A refused peer, logged once a minute a zone with the count since, so a zone's root or
+ * nobody connecting in a loop cannot fill zone 0's log. */
+static void refused(struct zone *z, unsigned uid)
+{
+	long long now = now_ms();
+	if (z->refused_at && now - z->refused_at < 60000) {
+		z->refused_since++;
+		return;
+	}
+	if (z->refused_since)
+		say("zone %s: refused a peer that is not the zone (uid %u), and %d more in the minute before",
+		    z->name, uid, z->refused_since);
+	else
+		say("zone %s: refused a peer that is not the zone (uid %u)", z->name, uid);
+	z->refused_at = now;
+	z->refused_since = 0;
 }
 
 static void accept_on(int listen_fd, int zone)
@@ -191,11 +213,11 @@ static void accept_on(int listen_fd, int zone)
 		struct ucred cr = { 0 };
 		socklen_t len = sizeof cr;
 		if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &len) < 0 || cr.uid != zones[zone].uid) {
-			say("zone %s: refused a peer that is not the zone (uid %u)", zones[zone].name, (unsigned)cr.uid);
+			refused(&zones[zone], (unsigned)cr.uid);
 			close(fd);
 			return;
 		}
-		if (streams_of(zone) >= PER_ZONE) {
+		if (streams_of(zone) >= PER_ZONE || streams_of(-1) >= MAX_CONNS - CONTROL_SLOTS) {
 			close(fd);
 			return;
 		}

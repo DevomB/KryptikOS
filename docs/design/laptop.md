@@ -65,8 +65,10 @@ row.
 ### Recommendation: the mixer in zone 0, brokered like the clipboard
 
 - **The channel.** `kryptik-sound` keeps one listening socket per zone,
-  `/run/kryptik-sound/zones/NAME/socket`, for every zone but the nic zone
-  (`kryptikd sound zones`). Its service makes each socket's directory as
+  `/run/kryptik-sound/zones/NAME/socket`, for every zone whose file lets it
+  play (`kryptikd sound zones`): not the nic zone, and not `vault`, whose
+  file says `[sound] play = false`, as secrets have no use for a way out to
+  the room that nothing mediates. Its service makes each socket's directory as
   root, and kryptikd binds that directory into the zone at
   `/run/kryptik/sound` at launch, as it binds the broker and proxy sockets:
   the directory, so the socket a restarted mixer makes is the one a running
@@ -87,6 +89,10 @@ row.
   NAME` when its zone exits) or the user takes it back, and only one zone
   holds it at a time. The chrome shows which zone is recording (the
   control socket's `status`), and a zone hears nothing of any other zone.
+  It can tell one thing: the card stays open five seconds after the last
+  sound, so how soon its own first sound is taken says whether any zone
+  played in that time, a bit two zones could also signal through. Keeping
+  the card open always would close it, at the codec's power saving.
 - **Volume** and mute per zone are the chrome's, along with a key that mutes
   everything. The mixer applies them, squared so the steps sound even, and
   sets the card's own controls to unity when it opens it, so a card that
