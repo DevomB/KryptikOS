@@ -180,7 +180,8 @@ PACKAGES=(
     "wlroots"     "s_wlroots"
     # Software images build against the base system up to here (IMAGES_BASE in 04-images.sh). What
     # follows is zone 0's own, which no image links or runs while it builds, so changing it rebuilds
-    # no image: a library an image needs goes above this line.
+    # no image. A library, header or pkg-config file goes above this line: one added below rebuilds
+    # every image all the same, as the images' inputs list those the sysroot has.
     # dwl's three inputs are digests, so editing any of them rebuilds it.
     "dwl"         "s_dwl $(sha256_of "${KRYPTIK_ROOT}/build/desktop/dwl-config.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/build/desktop/zone-colours.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/dwl-zone-borders.py" 2>/dev/null || echo none)"
     "havoc"       "s_havoc"

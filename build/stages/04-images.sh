@@ -44,10 +44,20 @@ image_rows_of() {   # image_rows_of NAME
     )
 }
 
+# The names of what a build can find in the sysroot: headers, libraries and pkg-config files. A
+# configure check or a meson feature left on auto finds one a step past IMAGES_BASE added as surely
+# as one before it, so adding or removing one rebuilds every image; the base stamp covers the rest.
+link_surface() {
+    ( cd "$SYSROOT" && find usr/include usr/lib usr/share/pkgconfig \( -type f -o -type l \) \
+        \( -path 'usr/include/*' -o -name '*.so' -o -name '*.so.*' -o -name '*.a' -o -name '*.pc' \) 2>/dev/null ) \
+        | LC_ALL=C sort | sha256_of_stdin
+}
+
 # What an image is built from: its definition and files, the shared recipe helpers and the flags,
-# its pins, its rows' recipes, the base system up to IMAGES_BASE, and what the images it is built
-# over are built from, so a cached image needs none of them built to be found current. CHAIN is the
-# images it is being read under.
+# its pins and the manifest rows its licences are read by, its rows' recipes, the base system up to
+# IMAGES_BASE and the sysroot's headers and libraries, and what the images it is built over are
+# built from, so a cached image needs none of them built to be found current. CHAIN is the images it
+# is being read under.
 image_inputs() {   # image_inputs NAME [CHAIN]
     local f dep h chain="${2:-} ${1}"
     for f in "${DEFS}/${1}.sh" "${DEFS}/${1}"/* "${KRYPTIK_ROOT}/build/lib/recipes.sh" \
@@ -55,8 +65,10 @@ image_inputs() {   # image_inputs NAME [CHAIN]
              "${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt" "${DEFS}/versions.env" "${DEFS}/sources.lock"; do
         if [[ -f "$f" ]]; then printf '%s %s\n' "${f#"${KRYPTIK_ROOT}/"}" "$(sha256_of "$f")"; fi
     done
+    printf 'sources %s\n' "$("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list-image "$1" | sha256_of_stdin)"
     image_rows_of "$1"
     printf 'base %s %s\n' "$IMAGES_BASE" "$(_stamp_read "${KRYPTIK_WORK}/.stamps/bs-${IMAGES_BASE}")"
+    printf 'link surface %s\n' "$(link_surface)"
     for dep in $(image_setting "$1" image_over); do
         [[ " ${chain} " != *" ${dep} "* ]] || die "image ${dep} is built over itself:${chain} ${dep}"
         [[ -f "${DEFS}/${dep}.sh" ]] || die "image ${1} is built over ${dep}, which has no ${DEFS}/${dep}.sh"
