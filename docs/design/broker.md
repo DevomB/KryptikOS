@@ -162,9 +162,11 @@ kryptik-launch asks FROM's proxy for the selection on its control socket
 1 MiB and 2 s at most, gives it to TO's proxy, which holds it and serves its
 windows' pastes itself, and only then has FROM's proxy clear it, if nothing
 was copied there since. A stall, an overrun or a type off the list moves
-nothing. The control socket is 0600 beside the zone's own, in the directory
-whose `wayland-0` alone is bound into the zone, and a proxy refuses any peer
-but the session's user; it takes one move at a time, and its log names the
+nothing. The control socket is the session's, 0600, at
+`/run/kryptik-proxy/<uid>/<zone>.control`, beside the directory whose
+`wayland-0` alone is bound into the zone; the launch daemon makes it and
+hands it to the proxy listening, and a proxy refuses any peer but the
+session's user. It takes one move at a time, and its log names the
 type and the length, never the bytes. Both zones must be running. The
 payload leaves the source and replaces the destination's: one payload
 crosses, once, and a second gesture finds nothing to move. No zone can fetch another's payload or trigger

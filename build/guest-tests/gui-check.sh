@@ -146,8 +146,8 @@ elif [[ -n "$reached" ]]; then
 else
     pass "compositor-socket-unreached" "none of the zone's $(grep -c . <<<"$socks") sockets is one of dwl's ${#comps[@]} (${comps[*]}); it reaches the proxy's"
 fi
-# The move gesture's socket, beside the proxy's, is none of them either.
-door="$(stat -c '%d:%i' "$RT/kryptik/untrusted/control" 2>/dev/null)"
+# The move gesture's socket, beside the proxy's directory, is none of them either.
+door="$(stat -c '%d:%i' "/run/kryptik-proxy/$UID_/untrusted.control" 2>/dev/null)"
 if [[ -n "$door" ]] && socks_done && ! grep -q "^SOCK ${door} " <<<"$socks"; then
     pass "move-door-unreached" "none of the zone's sockets is the move gesture's (${door})"
 else
@@ -230,11 +230,11 @@ if [[ "$pcg" == */proxy.untrusted.* && "$(cat "/sys/fs/cgroup$pcg/memory.max" 2>
 else
     fail "proxy-cgroup" "cgroup ${pcg:-none}: memory.max $(cat "/sys/fs/cgroup$pcg/memory.max" 2>&1), pids.max $(cat "/sys/fs/cgroup$pcg/pids.max" 2>&1)"
 fi
-reach="$(python3 - "$P_UNTRUSTED" "$(getent passwd "$USER_NAME" | cut -d: -f6)" "$RT/wayland-0" "/run/kryptik-proxy/$UID_/untrusted/wayland-0" <<'PY'
+reach="$(python3 - "$P_UNTRUSTED" "$(getent passwd "$USER_NAME" | cut -d: -f6)" "$RT/wayland-0" "/run/kryptik-proxy/$UID_/untrusted/wayland-0" "/run/kryptik-proxy/$UID_/untrusted.control" <<'PY'
 import errno, os, socket, sys
-uid, home, own, proxy = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+uid, home, own, proxy, door = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 os.setgroups([]); os.setgid(uid); os.setuid(uid)
-for kind, path in (("dir", home), ("dir", "/run/kryptik-consent"), ("sock", "/run/kryptik-launch/launch.sock"), ("sock", own), ("sock", proxy)):
+for kind, path in (("dir", home), ("dir", "/run/kryptik-consent"), ("sock", "/run/kryptik-launch/launch.sock"), ("sock", own), ("sock", proxy), ("sock", door)):
     try:
         if kind == "dir":
             os.listdir(path)
@@ -247,7 +247,7 @@ for kind, path in (("dir", home), ("dir", "/run/kryptik-consent"), ("sock", "/ru
         print(f"refused {path} {errno.errorcode.get(e.errno, e.errno)}")
 PY
 )"
-if [[ "$(grep -c '^refused .* EACCES$' <<<"$reach")" -eq 5 ]]; then
+if [[ "$(grep -c '^refused .* EACCES$' <<<"$reach")" -eq 6 ]]; then
     pass "proxy-uid-reaches-nothing" "as uid $P_UNTRUSTED: $(tr '\n' ';' <<<"$reach")"
 else
     fail "proxy-uid-reaches-nothing" "as uid $P_UNTRUSTED: $(tr '\n' ';' <<<"$reach")"
@@ -813,15 +813,16 @@ else
     fail "move-leaves-nothing-behind" "$(since_mark moved untrusted | tail -4 | tr '\n' ' ')"
 fi
 # What moved is in no log of zone 0's: the proxies and the launcher name the type and length.
-if grep -q 'move: took 9 bytes of text/plain;charset=utf-8' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null \
-   && ! grep -rqsF moved4471 "$RT/kryptik" /run/uncaught-logs; then
-    pass "move-in-no-log" "$(grep -h 'move: ' "$RT/kryptik/untrusted/proxy.log" "$RT/kryptik/personal/proxy.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+PROXIES="/run/kryptik-proxy/$UID_"
+if grep -q 'move: took 9 bytes of text/plain;charset=utf-8' "$PROXIES/untrusted.log" 2>/dev/null \
+   && ! grep -rqsF moved4471 "$RT/kryptik" "$PROXIES" /run/uncaught-logs; then
+    pass "move-in-no-log" "$(grep -h 'move: ' "$PROXIES/untrusted.log" "$PROXIES/personal.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
 else
-    fail "move-in-no-log" "proxy lines: $(grep -h 'move' "$RT/kryptik/untrusted/proxy.log" 2>/dev/null | tail -2 | tr '\n' ' '); holding the text: $(grep -rlsF moved4471 "$RT/kryptik" /run/uncaught-logs | tr '\n' ' ')"
+    fail "move-in-no-log" "proxy lines: $(grep -h 'move' "$PROXIES/untrusted.log" 2>/dev/null | tail -2 | tr '\n' ' '); holding the text: $(grep -rlsF moved4471 "$RT/kryptik" "$PROXIES" /run/uncaught-logs | tr '\n' ' ')"
 fi
-# The gesture's socket answers the session's user alone: root, past the directory's 0700,
-# is refused like any zone's uid would be.
-door="$RT/kryptik/untrusted/control"
+# The gesture's socket answers the session's user alone: root, past the socket's 0600, is
+# refused as any other uid would be.
+door="$PROXIES/untrusted.control"
 refusal="$(python3 - "$door" 2>&1 <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX)
@@ -1007,7 +1008,7 @@ stop_zone untrusted
 # wrong one the next waits 2 s, the right one included, which the daemon does not check
 # then; the right one after the pause is taken; and no log holds what was typed.
 pw_try() { printf '%s\n' "$1" | as_user "kryptik-launch --check-password" 2>&1; echo "exit=$?"; }
-in_logs() { grep -rlsF -e "$1" -e "$2" /run/uncaught-logs "$RT/kryptik" /var/log/kryptik/zone-*.log; }
+in_logs() { grep -rlsF -e "$1" -e "$2" /run/uncaught-logs "$RT/kryptik" "/run/kryptik-proxy/$UID_" /var/log/kryptik/zone-*.log; }
 guess=lock-guess-4471
 t1="$(pw_try "$guess")"; t2="$(pw_try "$USER_PW")"; sleep 3; t3="$(pw_try "$USER_PW")"
 if [[ -z "$USER_PW" ]]; then
