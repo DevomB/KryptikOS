@@ -10,6 +10,7 @@ mod caps;
 mod cgroup;
 mod consent;
 mod files;
+mod images;
 mod isolate;
 mod landlock;
 mod netlink;
@@ -47,6 +48,8 @@ USAGE:
                    [--target]         and require what a Kryptik kernel must have:
                                       root, unprivileged userns restricted, cgroup2
                                       with memory+pids, every zone with [identity]
+                   [--images FILE]    and hold each zone's images to an image list:
+                                      listed, and what they need granted
     kryptikd list  [--zones DIR]      list configured zones
     kryptikd show  NAME [--zones DIR]
     kryptikd explain NAME             what starting this zone would do
@@ -139,7 +142,7 @@ fn main() -> ExitCode {
     let zone_dir = zone_dir_from(&args);
 
     match args[0].as_str() {
-        "check" => cmd_check(&zone_dir, args.iter().any(|a| a == "--target")),
+        "check" => cmd_check(&zone_dir, args.iter().any(|a| a == "--target"), value(&args, "--images").map(Path::new)),
         "list" if args.iter().any(|a| a == "--running") => cmd_list_running(&zone_dir),
         "list" => cmd_list(&zone_dir),
         "show" => match args.get(1) {
@@ -549,8 +552,12 @@ fn zone_dir_from(args: &[String]) -> PathBuf {
     PathBuf::from(value(args, "--zones").unwrap_or(DEFAULT_ZONE_DIR))
 }
 
-fn cmd_check(dir: &Path, target: bool) -> ExitCode {
+fn cmd_check(dir: &Path, target: bool, image_list: Option<&Path>) -> ExitCode {
     let mut failed = false;
+    // Read unsigned, as the build writes it before signing; a zone start checks the signature.
+    let list = image_list.map(|p| {
+        std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())).and_then(|t| images::parse(&t))
+    });
     let euid = unsafe { libc::geteuid() };
     if target {
         println!("target contract: required (--target)");
@@ -701,6 +708,32 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
                         Err(e) => {
                             eprintln!("             landlock {rel}: {e}");
                             failed = true;
+                        }
+                    }
+                }
+                if !z.images.is_empty() {
+                    let granted = z.seccomp.as_ref().and_then(|rel| policy::load(&policy::resolve(dir, rel)).ok());
+                    match &list {
+                        None => println!("             images {}: held to the signed list when the zone starts", z.images.join(" ")),
+                        Some(Err(e)) => {
+                            eprintln!("             images: {e}");
+                            failed = true;
+                        }
+                        Some(Ok(m)) => {
+                            for name in &z.images {
+                                let held = m.images.iter().any(|i| &i.name == name);
+                                match images::needs_met(m, name, granted.as_ref()) {
+                                    Ok(()) if held => println!("             image {name}: listed, and what it needs is granted"),
+                                    Ok(()) => {
+                                        eprintln!("             image {name}: the list holds no such image");
+                                        failed = true;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("             {e}");
+                                        failed = true;
+                                    }
+                                }
+                            }
                         }
                     }
                 }

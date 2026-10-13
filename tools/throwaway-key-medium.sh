@@ -19,7 +19,7 @@ ssh-keygen -q -t ed25519 -N '' -C kryptik-release -f "${m}/kryptik-release" < /d
 ssh-keygen -q -t ed25519 -N '' -C kryptik-latest -f "${m}/kryptik-latest" < /dev/null
 ssh-keygen -q -t ed25519 -N '' -C kryptik-testctl -f "${m}/kryptik-testctl" < /dev/null
 {
-    printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 "${m}/kryptik-release.pub")"
+    printf 'kryptik-release namespaces="kryptik-release,kryptik-media,kryptik-image" %s\n' "$(cut -d' ' -f1,2 "${m}/kryptik-release.pub")"
     printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "${m}/kryptik-latest.pub")"
     printf 'kryptik-testctl namespaces="kryptik-testctl" %s\n' "$(cut -d' ' -f1,2 "${m}/kryptik-testctl.pub")"
 } > "${m}/release-signers"
