@@ -1684,7 +1684,9 @@ else
     # page of the zone's own with no display, through its content process, its sandbox left on.
     ff_hash="$(sed -n 's/^image: browser .* root-hash=\([0-9a-f]\{64\}\) .*/\1/p' "$D/images.manifest")"
     if [[ -n "$ff_hash" && -n "$tk_hash" ]] && install -D -m 0644 "$D/browser.img" "$IMGS/browser/$ff_hash.img"; then
-        izone imgff 4259840 '#1b0a6c' "browser toolkit"
+        # Firefox's content sandbox installs a filter of its own, which the image's needs line asks for.
+        printf 'allow-syscall seccomp\n' > "$IZ/policy/imgff.seccomp"
+        izone imgff 4259840 '#1b0a6c' "browser toolkit" policy/imgff.seccomp
         irun imgff sh -c 'printf "<p>kryptik</p>" > /tmp/page.html && cd /tmp && HOME=/tmp firefox --headless --screenshot /tmp/shot.png file:///tmp/page.html && test -s /tmp/shot.png && echo SHOT-TAKEN'
         if [[ "$ZRC" -eq 0 && "$ZOUT" == *"SHOT-TAKEN"* ]]; then
             pass "image-browser" "a zone naming the browser and the toolkit draws a page with Firefox, headless"
