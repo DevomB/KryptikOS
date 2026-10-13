@@ -213,8 +213,9 @@ is the unlock instead: whoever knows it already owns the machine. The lock
 asks the daemon what unlocks (`unlock-kind`) when it starts, at the first
 key of each entry and before it sends what was typed; it shows LOCKED or
 STATE PASSPHRASE, and drops what was typed under a label that no longer
-holds, so the login password never reaches `luksResume` nor the state
-passphrase the login check. The passphrase goes to the daemon in a pipe
+holds, and anything typed in the second after the label changes, so the
+login password never reaches `luksResume` nor the state passphrase the
+login check. The passphrase goes to the daemon in a pipe
 beside `resume-state`, with its own pause after a wrong one, and on to
 cryptsetup's standard input. On idle, the chrome starts `kryptik-lock
 --idle`, which waits on dwl's `ext-idle-notify-v1` and locks after ten

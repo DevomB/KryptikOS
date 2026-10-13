@@ -321,6 +321,9 @@ static int kind_now(void)
 	return !strcmp(why, "ok state") ? STATE : !strcmp(why, "ok login") ? LOGIN : -1;
 }
 
+/* When the label last changed; keys typed within a second of it are dropped. */
+static struct timespec relabeled;
+
 /* A label that no longer says what unlocks: what was typed under it is dropped, as it was the
  * other secret, and the right question is shown. True if the label changed. */
 static int relabel(int now)
@@ -331,9 +334,19 @@ static int relabel(int now)
 	ntyped = 0;
 	kind = now;
 	show_kind();
+	clock_gettime(CLOCK_MONOTONIC, &relabeled);
 	say(kind == STATE ? "the state partition is suspended: its passphrase unlocks"
 	                  : "the state partition is back: the login password unlocks");
 	return 1;
+}
+
+/* Someone typing on as the label changes is still typing the other secret: for a second, what
+ * they type goes nowhere, so its end does not reach the new label's check. */
+static int just_relabeled(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return relabeled.tv_sec && (now.tv_sec - relabeled.tv_sec) * 1000 + (now.tv_nsec - relabeled.tv_nsec) / 1000000 < 1000;
 }
 
 /* What was typed, to the check for the label shown: the login password in check-password's
@@ -458,7 +471,7 @@ static void keyboard_leave(void *data, struct wl_keyboard *kb, uint32_t serial, 
 static void keyboard_key(void *data, struct wl_keyboard *kb, uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
 {
 	(void)data; (void)kb; (void)serial; (void)time;
-	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !xstate || unlocked)
+	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !xstate || unlocked || just_relabeled())
 		return;
 	xkb_keycode_t code = key + 8;
 	xkb_keysym_t sym = xkb_state_key_get_one_sym(xstate, code);
