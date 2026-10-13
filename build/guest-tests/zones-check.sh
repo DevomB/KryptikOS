@@ -1680,6 +1680,20 @@ else
     else
         fail "image-toolkit" "the list names no toolkit image, or it could not be kept (${tk_hash:-none})"
     fi
+    # The browser image over the toolkit's, which a zone naming it must name too: Firefox draws a
+    # page of the zone's own with no display, through its content process, its sandbox left on.
+    ff_hash="$(sed -n 's/^image: browser .* root-hash=\([0-9a-f]\{64\}\) .*/\1/p' "$D/images.manifest")"
+    if [[ -n "$ff_hash" && -n "$tk_hash" ]] && install -D -m 0644 "$D/browser.img" "$IMGS/browser/$ff_hash.img"; then
+        izone imgff 4259840 '#1b0a6c' "browser toolkit"
+        irun imgff sh -c 'printf "<p>kryptik</p>" > /tmp/page.html && cd /tmp && HOME=/tmp firefox --headless --screenshot /tmp/shot.png file:///tmp/page.html && test -s /tmp/shot.png && echo SHOT-TAKEN'
+        if [[ "$ZRC" -eq 0 && "$ZOUT" == *"SHOT-TAKEN"* ]]; then
+            pass "image-browser" "a zone naming the browser and the toolkit draws a page with Firefox, headless"
+        else
+            fail "image-browser" "rc ${ZRC}: $(tail -3 <<<"$ZOUT" | tr '\n' ' '); $(tail -5 <<<"$ZERR" | tr '\n' ' ')"
+        fi
+    else
+        fail "image-browser" "the list names no browser image, or it could not be kept (${ff_hash:-none})"
+    fi
     umount /run/zt-images
 fi
 
