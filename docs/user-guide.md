@@ -317,6 +317,8 @@ stop ZONE` stops one. `kryptik shell ZONE` and `kryptik run ZONE -- COMMAND` sta
 zone through the launch service when run as the user, detached: its output
 goes to `/var/log/kryptik/zone-ZONE.log`, which root can read. Run as root,
 they use the terminal, for a zone without encrypted storage only.
+`kryptik status net` gives the menu's Network line too, which says whether a
+network added with `kryptik wifi add` has joined.
 
 Files move between zones only through the broker, from inside the sending
 zone, and only when the zone's policy allows the direction and you allow it:

@@ -210,7 +210,11 @@ cmd_status() {
     fi
     require_zone "$1"
     printf '%-16s %s\n' "$1" "$(running_state "$1")"
-    "$KRYPTIKD" status "$1" 2>&1 | sed 's/^/    /'
+    "$KRYPTIKD" status "$1" --zones "$ZONES_DIR" 2>&1 | sed 's/^/    /'
+    # Root reads the net zone's word on the network itself; a user asks the launch service.
+    if via_launch; then
+        "$LAUNCH" --info "$1" 2>/dev/null | sed -n 's/^network /    network  /p'
+    fi
 }
 
 cmd_explain() {

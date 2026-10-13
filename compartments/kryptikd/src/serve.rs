@@ -980,7 +980,7 @@ fn zone_running(name: &str) -> bool {
 /// The nic zone's word on the network: the line its program wrote last
 /// (tools/net/netzone-init.sh, `report`) in its own /run. The zone is untrusted, so only
 /// `net_summary`'s words leave here, and zone 0's window shows nothing else of the line.
-fn net_status(name: &str) -> Option<String> {
+pub(crate) fn net_status(name: &str) -> Option<String> {
     let Ok(crate::registry::State::Running { init: Some(init), .. }) = crate::registry::state(name) else {
         return None;
     };

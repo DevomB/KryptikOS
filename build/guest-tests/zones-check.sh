@@ -892,6 +892,14 @@ if [[ "$line" == *" wifi=$AP_SSID "* && "${kills:-0}" = 0 ]]; then
 else
     fail "wifi-associated" "newest READY line: ${line:-none}; filter kills of wpa_supplicant: ${kills:-0}; $(netzone_said wifi | tail -3 | tr '\n' ' ')"
 fi
+# At the text login, `kryptik status net` gives the menu's Network line, which kryptikd reads
+# from the net zone for root.
+status_net="$("$KD" status net --zones "$Z" 2>&1)"
+if [[ "$status_net" == *$'\n'"network  ready: Wi-Fi \"$AP_SSID\", "* ]]; then
+    pass "status-network-line" "$(grep '^network' <<<"$status_net")"
+else
+    fail "status-network-line" "kryptikd status net: $(tr '\n' ' ' <<<"$status_net" | cut -c1-300)"
+fi
 net_init="$(cut -d' ' -f1 /run/kryptik/zones/net/init.pid 2>/dev/null)"
 lease=""
 for _ in $(seq 1 40); do
