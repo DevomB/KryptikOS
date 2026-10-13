@@ -54,10 +54,13 @@ step "step 2: the guest-side zone, network and storage checks (as root)"
 MVER="$(basename "$USB")"; MVER="${MVER#kryptik-}"; MVER="${MVER%-usb.img}"
 IMAGES="$(dirname "$USB")/images-${MVER}"
 IMGDISK="${VMDIR}/zones-images.img"
+# The label the guest finds the disk by: ext4 keeps 16 bytes of one, and cuts a longer one short.
+IMGLABEL=kryptik-zt-img
+(( ${#IMGLABEL} <= 16 )) || { red "the images disk's label ${IMGLABEL} is over ext4's 16 bytes"; exit 1; }
 IMGARGS=()
 if [[ -f "${IMAGES}/images.manifest.sig" ]] && rm -f "$IMGDISK" \
    && truncate -s "$(( $(du -sm "$IMAGES" | cut -f1) + 64 ))M" "$IMGDISK" \
-   && mkfs.ext4 -q -F -L kryptik-zt-images -d "$IMAGES" "$IMGDISK"; then
+   && mkfs.ext4 -q -F -L "$IMGLABEL" -d "$IMAGES" "$IMGDISK"; then
     IMGARGS=(--disk "$IMGDISK")
 else
     red "no signed software images for ${MVER} at ${IMAGES}: the guest's image checks have nothing to keep"
