@@ -889,6 +889,12 @@ said() { grep -c "^kryptik-lock: $1" "$slog" 2>/dev/null; }
 more() { [[ "$(said "$1")" -gt "$2" ]]; }
 entered0() { grep -c 'keyboard entered the window' "$LOG/lock-zone0.out"; }
 back0() { [[ "$(entered0)" -ge 2 ]]; }
+# The lock takes the camera back too: vivid stands in for one, granted to untrusted before this
+# round's windows open, so the chrome's camera window is up and under them by then.
+modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid.err"
+cam_given="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
+wait_for 15 pgrep -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
+sleep 2
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 300 lock-0" > "$LOG/lock-zone0.out" 2>&1 &
 lock0_pid=$!
 wait_for 15 grep -q 'keyboard entered the window' "$LOG/lock-zone0.out"
@@ -897,9 +903,6 @@ launch_plain untrusted "/usr/libexec/kryptik/wlprobe popup 300 grab" > "$LOG/lau
 lock_grabbed() { since_mark lock untrusted | grep -q 'popup committed '; }
 lock_popup_done() { since_mark lock untrusted | grep -q 'popup done'; }
 wait_for 20 lock_grabbed
-# The lock takes the camera back too: vivid stands in for one, granted to untrusted.
-modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid.err"
-cam_given="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
 locked0="$(said locked)"; refused0="$(said refused)"; unlocked0="$(said unlocked)"
 echo "GT KEY-LOCK"
 if wait_for 20 more locked "$locked0" && wait_for 10 lock_popup_done && wait_for 10 grep -q 'keyboard left the window' "$LOG/lock-zone0.out"; then
