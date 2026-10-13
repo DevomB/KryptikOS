@@ -47,7 +47,9 @@ emit_inputs() {
              "$KRYPTIK_ROOT"/build/config/hardening.env \
              "$KRYPTIK_ROOT"/build/config/hardening-exceptions.txt \
              "$KRYPTIK_ROOT"/build/config/kernel/*.fragment \
-             "$KRYPTIK_ROOT"/sources.lock; do
+             "$KRYPTIK_ROOT"/sources.lock \
+             "$KRYPTIK_ROOT"/build/images/versions.env \
+             "$KRYPTIK_ROOT"/build/images/sources.lock; do
         [[ -f "$f" ]] || continue
         rel="${f#"$KRYPTIK_ROOT"/}"
         printf 'input\trecipe\t%s\t%s\n' "$rel" "$(sha256_of "$f")"

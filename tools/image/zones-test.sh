@@ -92,7 +92,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
             setuid-only-allowed no-file-capabilities sysctls-applied host-activity-hidden fetch-and-sntp-no-caps \
             microcode-notice \
-            image-store image-runs image-needs-refused image-hidden image-explained image-list-namespace image-list-other-base image-corrupt; do
+            image-store image-runs image-needs-refused image-hidden image-explained image-list-namespace image-list-other-base image-corrupt image-toolkit; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 

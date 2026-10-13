@@ -834,7 +834,7 @@ while read -r name _ver url sig _; do
 
     # A kind this script does not know fails: skipping it would pass the row.
     case "$sig" in
-        gnu|kernel|sig|asc|stem.sig|sums:?*|probe|sha256|sha256.txt|tag|none) ;;
+        gnu|kernel|sig|asc|stem.sig|sums:?*|probe|sha256|sha256.txt|sha256sum|stem.sha256sum|tag|none) ;;
         *)
             err "${name}: the manifest declares no signature kind this script knows ('${sig}')"
             FAILED=$((FAILED + 1)); FAILED_LIST+=("${name} (unknown signature kind '${sig}')")
@@ -859,8 +859,8 @@ while read -r name _ver url sig _; do
         stem.sig) verify_detached "$name" "${KRYPTIK_SOURCES}/${file}" "${url%.tar.*}.sig" ;;
         sums:*)   verify_sums     "$name" "$url" "$file" "${sig#sums:}" ;;
         probe)    verify_any      "$name" "$url" "$file" ;;
-        sha256|sha256.txt|tag)
-            what="the publisher's .${sig}"
+        sha256|sha256.txt|sha256sum|stem.sha256sum|tag)
+            what="the publisher's .${sig#stem.}"
             [[ "$sig" == tag ]] && what="the signed tag"
             warn "${name}: no OpenPGP signature upstream; ${what} is verify-provenance's"
             mark_unsigned "${name} (${what}, see verify-provenance)"

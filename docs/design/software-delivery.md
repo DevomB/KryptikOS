@@ -195,6 +195,10 @@ up ADR-001 in the zones where the applications run.
   bit, or file capability. The
   probe image (`build/images/probe.sh`), one small program that locks its
   memory, proves the stage and the zones suite's checks; it ships to no one.
+  An image's sources are pinned in `build/images/versions.env` and locked in
+  `build/images/sources.lock`, so a change to them leaves stage 04 alone,
+  and the image installs their licence files itself, as stage 04 does the
+  root's; stage 06 refuses an image missing one.
 - **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
   makes the root (ext4 without a journal, then the verity tree, with a
   salt and UUID derived from the content), runs the root's artifact audit

@@ -353,6 +353,7 @@ pack_image() {
     if find "$stage" -perm /6000 -print | grep . >&2; then echo "FAIL: a setuid or setgid file in image ${name}" >&2; return 1; fi
     "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict "$stage" >&2
     "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "$stage" --list "${KRYPTIK_ROOT}/build/images/${name}.programs" >&2
+    "${KRYPTIK_ROOT}/tools/check-image-licences.sh" --image "$name" "$stage" >&2
     local bytes; bytes="$(du -sb "$stage" | cut -f1)"
     local fs_bytes=$(( bytes + bytes / 8 + 16 * 1024 * 1024 ))
     fs_bytes=$(( (fs_bytes + 4095) / 4096 * 4096 ))

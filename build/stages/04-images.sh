@@ -20,7 +20,7 @@ image_inputs() {   # image_inputs NAME
     for f in "${DEFS}/${1}.sh" "${DEFS}/${1}"/* "${KRYPTIK_ROOT}/build/lib/recipes.sh" "${KRYPTIK_ROOT}"/build/recipes/*.sh \
              "${BASH_SOURCE[0]}" "${KRYPTIK_ROOT}/tools/check-image-tree.sh" "${KRYPTIK_ROOT}/build/config/hardening.env" \
              "${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt" "${KRYPTIK_ROOT}/build/config/versions.env" \
-             "${KRYPTIK_ROOT}/sources.lock"; do
+             "${KRYPTIK_ROOT}/sources.lock" "${DEFS}/versions.env" "${DEFS}/sources.lock"; do
         if [[ -f "$f" ]]; then printf '%s %s\n' "${f#"${KRYPTIK_ROOT}/"}" "$(sha256_of "$f")"; fi
     done
     printf 'base %s\n' "$(_stamp_read "${KRYPTIK_WORK}/.stamps/bs-licences")"

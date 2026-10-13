@@ -1666,6 +1666,20 @@ else
     else
         fail "image-corrupt" "could not find or flip the probe's first block (${blk:-none})"
     fi
+    # The toolkit image over a zone's /usr: its fontconfig finds the root's fonts, and every library
+    # GTK loads resolves in the zone, with no display to open.
+    tk_hash="$(sed -n 's/^image: toolkit .* root-hash=\([0-9a-f]\{64\}\) .*/\1/p' "$D/images.manifest")"
+    if [[ -n "$tk_hash" ]] && install -D -m 0644 "$D/toolkit.img" "$IMGS/toolkit/$tk_hash.img"; then
+        izone imgtk 4194304 '#0a1b6c' toolkit
+        irun imgtk sh -c 'fc-match sans; gtk-query-immodules-3.0 | head -1'
+        if [[ "$ZRC" -eq 0 && "$ZOUT" == *"DejaVu Sans"* && "$ZOUT" == *"Input Method Modules file"* ]]; then
+            pass "image-toolkit" "a zone naming the toolkit loads GTK and finds its fonts: $(head -1 <<<"$ZOUT")"
+        else
+            fail "image-toolkit" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -3 <<<"$ZERR" | tr '\n' ' ')"
+        fi
+    else
+        fail "image-toolkit" "the list names no toolkit image, or it could not be kept (${tk_hash:-none})"
+    fi
     umount /run/zt-images
 fi
 

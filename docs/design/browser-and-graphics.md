@@ -106,15 +106,31 @@ browser.
 ## The toolkit stack
 
 GTK 3 for Firefox, built with `-Dx11_backend=false`, so no X11 library
-enters the image, and without the accessibility bridge, which talks D-Bus:
+enters the image, and without the accessibility bridge, which talks D-Bus.
+It is the `toolkit` software image (`build/images/toolkit.sh`), which the
+browser image is built over:
 
-- glib, pango, harfbuzz, fribidi, freetype, fontconfig, cairo (pixman is
-  already built), gdk-pixbuf with libpng and libjpeg-turbo, libepoxy, ATK
-  from at-spi2-core;
-- shared-mime-info, the hicolor theme and one small icon theme;
-- GSettings with its keyfile backend, since dconf needs D-Bus;
-- fonts: DejaVu is shipped; Noto for wider scripts costs tens of megabytes,
-  and CJK fonts a hundred or more, so they are a choice, not a default.
+- glib (with pcre2, without its JIT), pango, harfbuzz, fribidi, freetype,
+  fontconfig, cairo (pixman is the root's), gdk-pixbuf with libpng, libepoxy
+  and ATK from at-spi2-core, built alone with a patch that drops its
+  unused libxml2;
+- gdk-pixbuf reads PNG alone, built in: GTK's theme and icons are PNG, and
+  each other loader is a parser more. JPEG, GIF and the rest come only if a
+  program the image carries needs them; Firefox decodes its own;
+- the hicolor theme. An icon theme with symbolic icons needs librsvg, so
+  GTK falls back to its built-in icons until one is chosen;
+- fontconfig's and GTK's configuration under `/usr/etc`, as an image adds
+  nothing outside `/usr`; fontconfig keeps its cache in the user's home;
+- GSettings with the memory backend by default, or the keyfile backend
+  (`GSETTINGS_BACKEND=keyfile`), since dconf needs D-Bus;
+- printing to a file alone, which GTK requires; no CUPS;
+- fonts: DejaVu is the root's; Noto for wider scripts costs tens of
+  megabytes, and CJK fonts a hundred or more, so they are a choice, not a
+  default.
+
+gtk3-demo and gtk3-widget-factory come with it, the first GUI programs a
+zone can run. The zones suite runs `fc-match` and `gtk-query-immodules-3.0`
+in a zone that names the image, which loads every library GTK needs.
 
 Firefox's own copies of NSS, NSPR, libvpx, dav1d and opus stay bundled: they
 are built from source in its tree either way, and every library made

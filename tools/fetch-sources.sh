@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 # Fetch and verify upstream source tarballs.
 #
-#   ./tools/fetch-sources.sh            download and verify against sources.lock
-#   ./tools/fetch-sources.sh --lock     download and WRITE sources.lock
-#   ./tools/fetch-sources.sh --list     print the resolved manifest, download nothing
+#   ./tools/fetch-sources.sh                    download and verify against sources.lock
+#   ./tools/fetch-sources.sh --lock             download and WRITE sources.lock
+#   ./tools/fetch-sources.sh --list             print the resolved manifest, download nothing
+#   ./tools/fetch-sources.sh --list-root        only the sources the root is built from
+#   ./tools/fetch-sources.sh --list-image NAME  only those software image NAME is built from
 #
+# The software images' sources are pinned in build/images/versions.env and locked in
+# build/images/sources.lock, so a change to them is no input of stage 04.
 # --lock trusts whatever downloads: audit sources.lock before committing it (docs/supply-chain.md).
 
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 load_config
 
-MODE="verify"
+MODE="verify"; IMAGE=""
 case "${1:-}" in
     --lock) MODE="lock" ;;
     --list) MODE="list" ;;
+    --list-root) MODE="list-root" ;;
+    --list-image) MODE="list-image"; IMAGE="${2:?--list-image needs an image name}" ;;
     "")     ;;
-    *)      die "unknown argument: $1 (expected --lock, --list, or nothing)" ;;
+    *)      die "unknown argument: $1 (expected --lock, --list, --list-root, --list-image NAME, or nothing)" ;;
 esac
 
 # Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs.
@@ -35,6 +41,8 @@ fi
 #   probe         whichever of .sig, .asc and .sign is published, now or in a later release
 #   sha256        the publisher's .sha256 beside it (tools/verify-provenance.sh)
 #   sha256.txt    the same, named .sha256.txt
+#   sha256sum     the same, named .sha256sum
+#   stem.sha256sum  a .sha256sum named without the .tar.* suffix (glib-2.90.1.sha256sum)
 #   tag           a signed tag the archive must reproduce (tools/verify-provenance.sh)
 #   none          nothing, as beside a generated GitHub, GitLab or sr.ht archive
 # new: where its newest release is found (tools/check-source-currency.sh)
@@ -165,12 +173,46 @@ linux-hardened|${V_LINUX_HARDENED}|${MIRROR_HARDENED}/v${V_LINUX_HARDENED}/linux
 MANIFEST
 }
 
-if [[ "$MODE" == "list" ]]; then
-    manifest | while IFS='|' read -r name ver url sig new; do
-        printf '%-12s %-10s %s %s %s\n' "$name" "$ver" "$url" "$sig" "$new"
-    done
-    exit 0
-fi
+# The software images' sources (build/images/versions.env), never installed in the root: the image
+# each is built into, then the row as above. Their checksums are in build/images/sources.lock.
+image_manifest() {
+    [[ -z "${KRYPTIK_FETCH_MANIFEST:-}" ]] || return 0
+    local gnome="$MIRROR_GNOME"
+    cat <<MANIFEST
+toolkit|pcre2|${V_PCRE2}|${MIRROR_GITHUB}/PCRE2Project/pcre2/releases/download/pcre2-${V_PCRE2}/pcre2-${V_PCRE2}.tar.bz2|sig|rule
+toolkit|glib|${V_GLIB}|${gnome}/glib/${V_GLIB%.*}/glib-${V_GLIB}.tar.xz|stem.sha256sum|rule
+toolkit|libpng|${V_LIBPNG}|${MIRROR_SOURCEFORGE}/libpng/libpng-${V_LIBPNG}.tar.xz|none|rule
+toolkit|freetype|${V_FREETYPE}|${MIRROR_SAVANNAH}/freetype/freetype-${V_FREETYPE}.tar.xz|sig|listing
+toolkit|harfbuzz|${V_HARFBUZZ}|${MIRROR_GITHUB}/harfbuzz/harfbuzz/releases/download/${V_HARFBUZZ}/harfbuzz-${V_HARFBUZZ}.tar.xz|none|github
+toolkit|fontconfig|${V_FONTCONFIG}|${MIRROR_FDO_GITLAB}/api/v4/projects/890/packages/generic/fontconfig/${V_FONTCONFIG}/fontconfig-${V_FONTCONFIG}.tar.xz|sha256sum|rule
+toolkit|fribidi|${V_FRIBIDI}|${MIRROR_GITHUB}/fribidi/fribidi/releases/download/v${V_FRIBIDI}/fribidi-${V_FRIBIDI}.tar.xz|none|github
+toolkit|cairo|${V_CAIRO}|${MIRROR_CAIRO}/cairo-${V_CAIRO}.tar.xz|sums:cairo-${V_CAIRO}.tar.xz.sha256sum.asc|rule
+toolkit|pango|${V_PANGO}|${gnome}/pango/${V_PANGO%.*}/pango-${V_PANGO}.tar.xz|stem.sha256sum|rule
+toolkit|gdk-pixbuf|${V_GDK_PIXBUF}|${gnome}/gdk-pixbuf/${V_GDK_PIXBUF%.*}/gdk-pixbuf-${V_GDK_PIXBUF}.tar.xz|stem.sha256sum|rule
+toolkit|libepoxy|${V_LIBEPOXY}|${MIRROR_GITHUB}/anholt/libepoxy/archive/${V_LIBEPOXY}/libepoxy-${V_LIBEPOXY}.tar.gz|none|github
+toolkit|at-spi2-core|${V_AT_SPI2_CORE}|${gnome}/at-spi2-core/${V_AT_SPI2_CORE%.*}/at-spi2-core-${V_AT_SPI2_CORE}.tar.xz|stem.sha256sum|rule
+toolkit|hicolor-icon-theme|${V_HICOLOR_ICON_THEME}|${MIRROR_ICON_THEME}/hicolor-icon-theme-${V_HICOLOR_ICON_THEME}.tar.xz|asc|listing
+toolkit|gtk3|${V_GTK3}|${gnome}/gtk/${V_GTK3%.*}/gtk-${V_GTK3}.tar.xz|stem.sha256sum|rule
+MANIFEST
+}
+
+# Every source, each row led by "." for the root's or by the image it is built into.
+all_sources() {
+    manifest | sed 's/^/.|/'
+    image_manifest
+}
+
+case "$MODE" in
+    list|list-root|list-image)
+        all_sources | while IFS='|' read -r owner name ver url sig new; do
+            case "$MODE" in
+                list-root)  [[ "$owner" == . ]] || continue ;;
+                list-image) [[ "$owner" == "$IMAGE" ]] || continue ;;
+            esac
+            printf '%-12s %-10s %s %s %s\n' "$name" "$ver" "$url" "$sig" "$new"
+        done
+        exit 0 ;;
+esac
 
 mkdir -p "$KRYPTIK_SOURCES"
 
@@ -221,23 +263,26 @@ fetch_attempt() {
     return 1
 }
 
-lookup_hash() {
-    [[ -f "$KRYPTIK_LOCK" ]] || return 1
-    awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$KRYPTIK_LOCK"
+lookup_hash() {   # lookup_hash FILE LOCK
+    [[ -f "$2" ]] || return 1
+    awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$2"
 }
 
 if [[ "$MODE" == "lock" ]]; then
     warn "Lock mode: recording checksums of whatever downloads."
-    warn "Audit sources.lock against upstream signatures before committing it."
+    warn "Audit sources.lock and build/images/sources.lock against upstream signatures before committing them."
     : > "${KRYPTIK_LOCK}.new"
+    # A tree without software images has no directory for their lock.
+    if [[ -d "${KRYPTIK_IMAGES_LOCK%/*}" ]]; then : > "${KRYPTIK_IMAGES_LOCK}.new"; fi
 fi
 
 total=0; fetched=0; cached=0
-while IFS='|' read -r name ver url _; do
+while IFS='|' read -r owner name ver url _; do
     [[ -z "$name" ]] && continue
     total=$((total + 1))
     file="$(basename "$url")"
     dest="${KRYPTIK_SOURCES}/${file}"
+    lock="$KRYPTIK_LOCK"; [[ "$owner" == . ]] || lock="$KRYPTIK_IMAGES_LOCK"
 
     was_fetched=no
     if [[ -f "$dest" ]]; then
@@ -254,11 +299,11 @@ while IFS='|' read -r name ver url _; do
     actual="$(sha256_of "$dest")"
 
     if [[ "$MODE" == "lock" ]]; then
-        printf '%s  %s\n' "$actual" "$file" >> "${KRYPTIK_LOCK}.new"
+        printf '%s  %s\n' "$actual" "$file" >> "${lock}.new"
         ok "${name} ${ver}  ${actual:0:16}…"
     else
-        if ! expected="$(lookup_hash "$file")"; then
-            die "no entry for ${file} in sources.lock; run './tools/fetch-sources.sh --lock', then audit it."
+        if ! expected="$(lookup_hash "$file" "$lock")"; then
+            die "no entry for ${file} in ${lock#"$KRYPTIK_ROOT"/}; run './tools/fetch-sources.sh --lock', then audit it."
         fi
         if [[ "$actual" != "$expected" ]]; then
             err "CHECKSUM MISMATCH for ${file}"
@@ -272,7 +317,7 @@ while IFS='|' read -r name ver url _; do
         fi
         ok "${name} ${ver}  verified"
     fi
-done < <(manifest)
+done < <(all_sources)
 
 # Kept in the sources cache for the signature gate, as ftp.gnu.org does not answer every runner.
 keyring="${KRYPTIK_SOURCES}/.keys/gnu-keyring.gpg"
@@ -284,9 +329,12 @@ if [[ ! -s "$keyring" ]]; then
 fi
 
 if [[ "$MODE" == "lock" ]]; then
-    sort -k2 "${KRYPTIK_LOCK}.new" > "$KRYPTIK_LOCK"
-    rm -f "${KRYPTIK_LOCK}.new"
-    ok "wrote $(wc -l < "$KRYPTIK_LOCK") entries to sources.lock"
+    for lock in "$KRYPTIK_LOCK" "$KRYPTIK_IMAGES_LOCK"; do
+        [[ -f "${lock}.new" ]] || continue
+        sort -k2 "${lock}.new" > "$lock"
+        rm -f "${lock}.new"
+        ok "wrote $(wc -l < "$lock") entries to ${lock#"$KRYPTIK_ROOT"/}"
+    done
     warn "NOT YET AUDITED. Verify against upstream signatures before trusting."
 else
     ok "${total} package(s) verified (${fetched} downloaded, ${cached} cached)"

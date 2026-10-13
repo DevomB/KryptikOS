@@ -31,7 +31,12 @@ Two build tools that do not ship are special cases:
 ## Source integrity
 
 `sources.lock` pins a SHA-256 for every upstream tarball, and
-`tools/fetch-sources.sh` refuses to proceed on a mismatch.
+`tools/fetch-sources.sh` refuses to proceed on a mismatch. The software
+images' sources are pinned apart, in `build/images/versions.env` and
+`build/images/sources.lock`: they never reach the root, so a change to them
+is no input of stage 04 and leaves its cache standing. Every check here
+reads both, and `fetch-sources.sh --list-root` and `--list-image NAME` give
+each set alone.
 
 The lock alone is trust on first use: `--lock` records the hash of whatever
 was downloaded. Before committing a lock file or changing an entry, run

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Every source's licence files, from its own tarball, under /usr/share/licenses/<source>/.
-s_licences() {
+# Each listed source's licence files, from its own tarball, under /usr/share/licenses/<source>/;
+# prints how many. The root's sources for stage 04, an image's for that image.
+source_licences() {   # source_licences < tools/fetch-sources.sh --list-root|--list-image NAME
     # Also the microcode's lowercase license, firmware's WHENCE and the kernel's LICENSES/.
     local more_re='^[^/]+/(license|WHENCE|LICENSES/(preferred|exceptions)/[^/]+)$'
     local name url f m dir tmp n=0 members
@@ -24,7 +25,13 @@ s_licences() {
             fi
         done
         rm -rf "$tmp"
-    done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
+    done
+    echo "$n"
+}
+
+s_licences() {
+    local f n members
+    n="$(source_licences < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list-root))"
 
     # Texts no tarball carries: the CA bundle's MPL, and Rust std, libc and musl in static binaries.
     for f in "${KRYPTIK_ROOT}"/build/licences/*/*; do

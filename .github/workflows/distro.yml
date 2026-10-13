@@ -332,7 +332,7 @@ jobs:
 
       # After the cache is packed, so no image tree or overlay reaches it; stage 06 packs what this builds.
       - name: Software images (over the base system, in the chroot)
-        timeout-minutes: 30
+        timeout-minutes: 90
         run: make -o system images
 
       # The throwaway production pair, then A and B; a production release is only bound here, where upstream build scripts ran as root.
