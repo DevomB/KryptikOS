@@ -392,8 +392,10 @@ s_images() {
     local version="$1" base; base="$(root_json root_hash)"
     local rec name ver line dep reqs needs=() images=() requires=()
     rm -rf "$IMAGES"; mkdir -p "$IMAGES"
-    # In the list's own order, which its requires and needs lines follow.
-    for rec in $(printf '%s\n' "${KRYPTIK_WORK}"/image-build/*/record | LC_ALL=C sort); do
+    # By name in byte order, the list's own, which its requires and needs lines follow. Not by path:
+    # there "probe-x/record" comes before "probe/record", as "-" sorts below "/".
+    for name in $(for rec in "${KRYPTIK_WORK}"/image-build/*/record; do basename "${rec%/record}"; done | LC_ALL=C sort); do
+        rec="${KRYPTIK_WORK}/image-build/${name}/record"
         [[ -f "$rec" ]] || continue
         name="$(sed -n 's/^name: //p' "$rec")"; ver="$(sed -n 's/^version: //p' "$rec")"
         if [[ "$(sed -n 's/^ships: //p' "$rec")" == no ]]; then
