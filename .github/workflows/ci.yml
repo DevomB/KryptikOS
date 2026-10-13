@@ -126,17 +126,16 @@ jobs:
           ./tools/fetch-sources.sh --list
 
       # Restores the last sets; `make sources` checks them against the locks and fetches what is missing.
-      # The software images' sources, under images/, are a cache of their own (the prepare action's).
+      # The software images' sources, under images/, are a cache of their own (the prepare action's),
+      # set aside while the root's is saved.
       - name: Upstream sources (cached by sources.lock)
         id: sources
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          path: |
-            /mnt/kryptik/sources
-            !/mnt/kryptik/sources/images
-          key: sources-v4-${{ hashFiles('sources.lock') }}
+          path: /mnt/kryptik/sources
+          key: sources-v3-${{ hashFiles('sources.lock') }}
           restore-keys: |
-            sources-v4-
+            sources-
 
       - name: The software images' sources (cached by build/images/sources.lock)
         id: image_sources
@@ -156,14 +155,20 @@ jobs:
           ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
       # Not from a pull request: its cache is scoped to the merge ref and would duplicate the set.
+      - name: Set the software images' sources aside
+        if: ${{ github.event_name != 'pull_request' && steps.sources.outputs.cache-hit != 'true' }}
+        run: if [[ -d /mnt/kryptik/sources/images ]]; then mv /mnt/kryptik/sources/images /mnt/kryptik/images-aside; fi
+
       - name: Save the sources
         if: ${{ github.event_name != 'pull_request' && steps.sources.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          path: |
-            /mnt/kryptik/sources
-            !/mnt/kryptik/sources/images
+          path: /mnt/kryptik/sources
           key: ${{ steps.sources.outputs.cache-primary-key }}
+
+      - name: The software images' sources back in place
+        if: always()
+        run: if [[ -d /mnt/kryptik/images-aside ]]; then mv /mnt/kryptik/images-aside /mnt/kryptik/sources/images; fi
 
       - name: Save the software images' sources
         if: ${{ github.event_name != 'pull_request' && steps.image_sources.outputs.cache-hit != 'true' }}

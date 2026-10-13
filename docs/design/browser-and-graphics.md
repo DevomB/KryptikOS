@@ -210,9 +210,9 @@ floors are given with each layer.
   - **The images' sources have a cache of their own.** They go under
     `sources/images/`, keyed by `build/images/sources.lock`, each named in
     `sources/` by a link, so every tool finds it where it always has. The
-    root's set stays keyed by `sources.lock` alone, so a browser bump copies
-    neither set into the other's entry. A job that builds no image fetches
-    the root's alone (`fetch-sources.sh --root`).
+    root's set is keyed by `sources.lock` alone and saved with `images/` set
+    aside, so a browser bump copies neither set into the other's entry. A job
+    that builds no image fetches the root's alone (`fetch-sources.sh --root`).
   - **Mozilla's key comes from Mozilla.** The fingerprint is pinned like
     every other, confirmed by Mozilla's security blog post of August 2026.
     The key material is taken from the `KEY` file beside the release rather

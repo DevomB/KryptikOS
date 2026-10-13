@@ -336,18 +336,19 @@ fi
 total=0; fetched=0; cached=0
 while IFS='|' read -r owner name ver url _; do
     [[ -z "$name" ]] && continue
-    [[ "$ROOT_ONLY" -eq 0 || "$owner" == . ]] || continue
-    total=$((total + 1))
     file="$(basename "$url")"
     dest="${KRYPTIK_SOURCES}/${file}"
     lock="$KRYPTIK_LOCK"; [[ "$owner" == . ]] || lock="$KRYPTIK_IMAGES_LOCK"
     if [[ "$owner" != . ]]; then
         mkdir -p "${KRYPTIK_SOURCES}/images"
-        # One fetched before images/ was made moves in.
+        # One fetched before images/ was made moves in, under --root too, so the root's set is
+        # saved without it.
         if [[ -f "$dest" && ! -L "$dest" ]]; then mv -- "$dest" "${KRYPTIK_SOURCES}/images/${file}"; fi
         ln -sfn "images/${file}" "$dest"
         dest="${KRYPTIK_SOURCES}/images/${file}"
+        [[ "$ROOT_ONLY" -eq 0 ]] || continue
     fi
+    total=$((total + 1))
 
     was_fetched=no
     if [[ -f "$dest" ]]; then
