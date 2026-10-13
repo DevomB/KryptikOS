@@ -73,6 +73,7 @@ static const unsigned char zonefont[128][7] = {
 #define SOUNDUID 87 /* the mixer's, build/services/kryptik-sound/run */
 static char miczone[16], camzone[16];
 static int markfd = -1;
+static struct wl_event_source *marktimer;
 
 /* The zone FILE names after PREFIX on its first line, into OUT: nothing unless
  * FILE is a regular file of OWNER's that no one else may write, and the name a
@@ -151,21 +152,49 @@ zonebar(Client *c)
 \t}
 }
 
-/* Kryptik: a change in either file's directory: both are read again, and every
- * fullscreen window's bar drawn again. */
+/* Kryptik: both files read again, and every fullscreen window's bar drawn again
+ * if either holder changed. Both watches are set again too: a directory made
+ * anew, or mounted over, drops its watch, which would hide every later grant. */
+static void
+marksupdate(void)
+{
+\tchar mic[16], cam[16];
+\tClient *c;
+
+\tif (markfd >= 0) {
+\t\tinotify_add_watch(markfd, "/run/kryptik-sound/control", MARKEVENTS);
+\t\tinotify_add_watch(markfd, "/run/kryptik-camera", MARKEVENTS);
+\t}
+\treadmark(MICMARK, SOUNDUID, "", mic, sizeof(mic));
+\treadmark(CAMMARK, 0, "zone ", cam, sizeof(cam));
+\tif (strcmp(mic, miczone) == 0 && strcmp(cam, camzone) == 0)
+\t\treturn;
+\tsnprintf(miczone, sizeof(miczone), "%s", mic);
+\tsnprintf(camzone, sizeof(camzone), "%s", cam);
+\twl_list_for_each(c, &clients, link)
+\t\tif (c->isfullscreen && c->mon)
+\t\t\tzonebar(c);
+}
+
+/* Kryptik: a change in either file's directory, a dropped watch among them. */
 static int
 marksread(int fd, uint32_t mask, void *data)
 {
 \tchar events[4096];
-\tClient *c;
 
-\twhile (fd >= 0 && read(fd, events, sizeof(events)) > 0)
+\twhile (read(fd, events, sizeof(events)) > 0)
 \t\t;
-\treadmark(MICMARK, SOUNDUID, "", miczone, sizeof(miczone));
-\treadmark(CAMMARK, 0, "zone ", camzone, sizeof(camzone));
-\twl_list_for_each(c, &clients, link)
-\t\tif (c->isfullscreen && c->mon)
-\t\t\tzonebar(c);
+\tmarksupdate();
+\treturn 0;
+}
+
+/* Kryptik: a look each second besides the watches, should one have gone. */
+static int
+markstick(void *data)
+{
+\tmarksupdate();
+\tif (marktimer)
+\t\twl_event_source_timer_update(marktimer, 1000);
 \treturn 0;
 }
 
@@ -831,20 +860,17 @@ inputdevice(struct wl_listener *listener, void *data)
 """),
     # The marks' headers.
     ("#include <sys/wait.h>\n",
-     "#include <errno.h>\n#include <fcntl.h>\n#include <string.h>\n#include <sys/inotify.h>\n"
+     "#include <fcntl.h>\n#include <string.h>\n#include <sys/inotify.h>\n"
      "#include <sys/stat.h>\n#include <sys/wait.h>\n"),
     # setup: one inotify descriptor on the two files' directories, read at once.
     ("""\tseat = wlr_seat_create(dpy, "seat0");
 """,
-     """\t/* Kryptik: the microphone's and the camera's holders, for the bar. */
-\tif ((markfd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC)) >= 0) {
-\t\tif (inotify_add_watch(markfd, "/run/kryptik-sound/control", MARKEVENTS) < 0)
-\t\t\tfprintf(stderr, "dwl: the microphone's holder goes unmarked: %s\\n", strerror(errno));
-\t\tif (inotify_add_watch(markfd, "/run/kryptik-camera", MARKEVENTS) < 0)
-\t\t\tfprintf(stderr, "dwl: the camera's holder goes unmarked: %s\\n", strerror(errno));
+     """\t/* Kryptik: the microphone's and the camera's holders, for the bar: watched,
+\t * and looked at each second besides. */
+\tif ((markfd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC)) >= 0)
 \t\twl_event_loop_add_fd(event_loop, markfd, WL_EVENT_READABLE, marksread, NULL);
-\t}
-\tmarksread(markfd, 0, NULL);
+\tmarktimer = wl_event_loop_add_timer(event_loop, markstick, NULL);
+\tmarkstick(NULL);
 \tseat = wlr_seat_create(dpy, "seat0");
 """),
     ("""\t/* On _press_ if there is no active screen locker,

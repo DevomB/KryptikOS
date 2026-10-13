@@ -375,10 +375,14 @@ sleep 6
 # as the window covers the chrome's own windows that say so: the microphone's holder as the
 # mixer records it, and the camera granted with vivid standing in for one. The camera's window,
 # opening on the grant, ends the fullscreen as any zone 0 window does; closed, Alt+e puts it back.
-micrec=/run/kryptik-sound/control/microphone
+# The mixer's directory is first made anew, as a restart that made it again would: the compositor's
+# watch stays with the old one, and the mark must come all the same.
+micdir=/run/kryptik-sound/control
+micrec="$micdir/microphone"
 mic_record() {   # mic_record OWNER ZONE: a record of who may record, as OWNER writes it
     printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0640 "$micrec.t" && mv -f "$micrec.t" "$micrec"
 }
+mv "$micdir" "$micdir.before" && install -d -m 2750 -o 87 -g kryptik "$micdir"
 mic_record 87 untrusted
 modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid-marks.err"
 marks_cam="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
@@ -401,7 +405,8 @@ mic_record 0 untrusted
 sleep 2
 echo "GT SCREENSHOT-NO-MARKS"
 sleep 6
-rm -f "$micrec"
+# The mixer's own directory back, its control socket in it.
+rm -rf "$micdir" && mv "$micdir.before" "$micdir"
 modprobe -r vivid uvcvideo 2>/dev/null
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
