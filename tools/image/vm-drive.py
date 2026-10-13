@@ -50,6 +50,10 @@ Steps (each one argument):
     plug:ID:FILE[:ro]       plug FILE in as a USB stick called ID (run-ovmf.sh
                             --usb-port), read-only with :ro
     unplug:ID               pull stick ID out, as a hand would, with no eject
+    plug-sound:ID:AUDIODEV  plug a USB sound card called ID in, playing into
+                            QEMU's audio backend AUDIODEV (run-ovmf.sh --sound
+                            --usb-port)
+    unplug-sound:ID         pull sound card ID out
     wait-exit               wait for the serial socket to close (guest gone)
 
 With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
@@ -411,6 +415,16 @@ def main():
                     time.sleep(0.5)
                 else:
                     raise RuntimeError(f"blockdev-del: {r['error']}")
+            elif kind == "plug-sound":
+                if not qmpsock: raise RuntimeError("plug-sound needs --qmp")
+                ident, _, audiodev = rest.partition(":")
+                r = qmp(qmpsock, "device_add", {"driver": "usb-audio", "id": ident, "audiodev": audiodev,
+                                                "bus": "xhci.0"})
+                if "error" in r: raise RuntimeError(f"device_add: {r['error']}")
+            elif kind == "unplug-sound":
+                if not qmpsock: raise RuntimeError("unplug-sound needs --qmp")
+                r = qmp(qmpsock, "device_del", {"id": rest})
+                if "error" in r: raise RuntimeError(f"device_del: {r['error']}")
             elif kind == "wait-exit":
                 deadline = time.time() + timeout
                 while not d.closed and time.time() < deadline: d._read()

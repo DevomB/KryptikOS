@@ -5,6 +5,7 @@
 #   GT LOCK-TYPE-STATE-WRONG         type a wrong passphrase and Enter
 #   GT LOCK-TYPE-STATE 1|2|3         type the second state passphrase and Enter
 #   GT ZONE-PASS-TYPE 1              type the work zone's passphrase and Enter
+#   GT ZONE-PASS-SKIP                press Enter alone, where the chrome asks for it again
 #   GT SLEEPING 1                    wait for the guest to sleep, dump its memory, wait past
 #                                    the watchdog's timeout, then wake it; or for
 #                                    GT DID-NOT-SLEEP 1, the kernel's refusal
@@ -234,6 +235,13 @@ grep -qx 'waiting yes' <<<"$said_info" && pass "info-says-waiting" "the daemon s
 said_run="$(as_user "kryptik-launch --no-display work -- true" 2>&1)"
 [[ "$said_run" == *"waits for its volume's passphrase"* ]] && pass "launch-told-waiting" "$said_run" \
     || fail "launch-told-waiting" "$said_run"
+# The menu names it WAITING, with the choice that gives its passphrase.
+waits_line="$(as_user "printf 'q\\n' | XDG_RUNTIME_DIR=$RT /usr/bin/kryptik-chrome --menu" 2>&1 | grep -a ') work ' | tail -1)"
+if [[ "$waits_line" == *"WAITING for its passphrase (p"[1-9]")"* ]]; then
+    pass "menu-says-waiting" "$(sed 's/^ *//' <<<"$waits_line")"
+else
+    fail "menu-says-waiting" "${waits_line:-no line for work}"
+fi
 printf 'not-the-zone-pass\n' > "$OUT/wrong-pass"; chmod 600 "$OUT/wrong-pass"
 if ! "$KD" volume resume work --passphrase-file "$OUT/wrong-pass" > "$OUT/resume-wrong.out" 2>&1 \
    && grep -q 'wrong passphrase' "$OUT/resume-wrong.out" && waits work; then
@@ -279,12 +287,13 @@ sync
 echo "GT CACHE-MARK $(head -c 32 "$R/work/cache-mark" | od -An -v -tx1 | tr -dc 0-9a-f)"
 
 # --- a real sleep ----------------------------------------------------------------------------
-# The user's own way: the lock, then the daemon. The host sees the guest sleep, dumps its memory,
-# waits past the watchdog's timeout and wakes it; should the kernel refuse to sleep, the lock
-# says so, and so does this script, for the host. The host hears of the sleep first: once the
-# daemon has frozen this script, it says nothing more until the machine is back.
+# The user's own way, `kryptik suspend` as the guide has it: the lock, then the daemon. The host
+# sees the guest sleep, dumps its memory, waits past the watchdog's timeout and wakes it; should
+# the kernel refuse to sleep, the lock says so, and so does this script, for the host. The host
+# hears of the sleep first: once the daemon has frozen this script, it says nothing more until
+# the machine is back.
 echo "GT SLEEPING 1"
-as_user "/usr/bin/kryptik-lock --suspend" > "$OUT/lock-suspend.out" 2>&1 &
+as_user "/usr/bin/kryptik suspend" > "$OUT/lock-suspend.out" 2>&1 &
 # The lock tells the daemon's answer once the machine is back, or once the kernel has refused.
 wait_for 300 grep -q '^kryptik-lock: suspend: ' "$OUT/lock-suspend.out"
 grep -q '^kryptik-lock: suspending' "$OUT/lock-suspend.out" || fail "suspend-asked" "$(tr '\n' ' ' < "$OUT/lock-suspend.out")"
@@ -321,6 +330,18 @@ if wait_for 15 thawed untrusted && waits work; then
     pass "zone-waits-after-sleep" "untrusted thawed; work waits for its passphrase"
 else
     fail "zone-waits-after-sleep" "untrusted frozen $(zone_frozen untrusted); work frozen $(zone_frozen work), its volume's flag $(dm_flag kryptik-zone-work)"
+fi
+# The chrome's window asks again. Enter alone there leaves the zone waiting, the daemon asked
+# nothing; the host presses it whether or not the window came, so the rounds after go on.
+wait_for 20 asking; asked=$?
+sleep 1
+echo "GT ZONE-PASS-SKIP"
+not_asking() { ! asking; }
+if [[ "$asked" -eq 0 ]] && wait_for 15 not_asking && waits work \
+   && as_user "kryptik-launch --info work" 2>&1 | grep -qx 'waiting yes'; then
+    pass "enter-leaves-zone-waiting" "Enter alone ended the window's ask, and work still waits"
+else
+    fail "enter-leaves-zone-waiting" "asked ${asked}: $(pgrep -u "$USER_NAME" -af 'kryptik-launch --resume' | tr '\n' ';') work frozen $(zone_frozen work), its volume's flag $(dm_flag kryptik-zone-work)"
 fi
 # Never given its passphrase, the zone stops all the same: its volume fails every read and write,
 # the zone ends and the volume closes, its file whole for the next start.

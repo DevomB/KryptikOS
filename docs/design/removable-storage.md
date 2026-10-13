@@ -1,8 +1,8 @@
 # Removable storage
 
 Someone hands the user a USB stick with a PDF on it, or the user wants a
-document out of `work` and onto a stick. Nothing in Kryptik does either
-today. This design keeps the rules the architecture already set: zone 0
+document out of `work` and onto a stick. This design is how Kryptik does
+both, and keeps the rules the architecture already set: zone 0
 runs no user applications ([ADR-003](../decisions.md)), a zone reaches
 zone 0 only through its proxy and its [broker](broker.md), and every zone
 shares one kernel, so whatever the kernel parses for one zone it parses

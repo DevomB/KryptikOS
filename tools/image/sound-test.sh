@@ -11,6 +11,8 @@
 # that rests on modprobe loading every codec driver before snd-hda-intel probes
 # (build/config/modprobe.d/sound.conf). Then zones play and record through zone 0's mixer:
 # the host finds a zone's tone in what the first card played, and two zones' tones together.
+# Last, the host plugs in a USB sound card, which takes the sound, and pulls it out while a
+# zone plays: the rest of that tone must reach the first card.
 set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -46,11 +48,12 @@ install_disk sound-install "$USB" --vars clean && green "installed" || { red "in
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the cards and the mixer, from the guest"
 rm -f "$WAV"
-start_vm sound-p2 --net user --sound "$WAV"
+start_vm sound-p2 --net user --sound "$WAV" --usb-port
 DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/sound-check.sh ${TUSER} 2>&1; echo SNDCHECK-DONE'" \
     "expect:Password: ?" "send:${RPASS}" \
+    "expect:GT USB-SOUND-PLUG" "plug-sound:usbsound:snd2" "expect:GT USB-SOUND-PULL" "unplug-sound:usbsound" \
     "expect:GT END" "expect:SNDCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
@@ -61,12 +64,14 @@ T="$(tr -d '\r' < "$LOG")"
 summary="$(grep -o 'GT SUMMARY passed=[0-9]* failed=[0-9]*' <<<"$T" | tail -1)"
 echo "  guest summary: ${summary:-none}"
 gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*failed=\([0-9]*\).*/\1/p' <<<"$summary")"
-if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 21 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
+if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 30 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in sound-card codec-bound codec-drivers-ahead pcm-nodes zone-proc-asound-empty mixer-running mixer-zones mixer-own-user \
             zone-socket-no-card zone-plays zones-play-together record-refused-ungranted status-shows-recording \
             holder-recorded record-granted grant-ends-with-zone holder-cleared foreign-uid-refused chrome-grants-microphone \
-            chrome-takes-microphone-back chrome-sets-volume microphone-window volume-steps; do
+            chrome-takes-microphone-back chrome-sets-volume microphone-window microphone-window-taken-back \
+            chrome-says-recording microphone-moves volume-steps usb-sound-card plays-on-usb usb-pull-moves-sound \
+            usb-pull-zone-plays-on; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
@@ -74,7 +79,7 @@ done
 step "step 3: what the first card played"
 # Quarter seconds with sound in them, each read for 440 Hz and 660 Hz (Goertzel): one tone's
 # share of the power is near a half alone and a quarter beside another, and near none when it
-# is not playing.
+# is not playing. 550 Hz is the tone the USB card took until it was pulled out.
 heard="$(python3 - "$WAV" <<'PY'
 import array, math, struct, sys
 raw = open(sys.argv[1], "rb").read()
@@ -101,7 +106,7 @@ def share(x, f, energy):
     for v in x:
         s1, s2 = v + k * s1 - s2, s1
     return (s1 * s1 + s2 * s2 - k * s1 * s2) / (len(x) * energy)
-alone = together = loud = 0
+alone = together = moved = loud = 0
 for i in range(0, len(frames) - win + 1, win):
     x = frames[i:i + win]
     energy = sum(v * v for v in x)
@@ -111,17 +116,21 @@ for i in range(0, len(frames) - win + 1, win):
     a, b = share(x, 440, energy) > 0.1, share(x, 660, energy) > 0.1
     alone += a and not b
     together += a and b
+    moved += share(x, 550, energy) > 0.1
 print(f"{rate} Hz, {len(frames) / rate:.1f} s, {loud} quarter seconds with sound: "
-      f"{alone} of 440 Hz alone, {together} of 440 Hz and 660 Hz together")
+      f"{alone} of 440 Hz alone, {together} of 440 Hz and 660 Hz together, {moved} of 550 Hz")
 PY
 )"
 echo "  ${heard:-no reading}"
 alone="$(sed -n 's/.*sound: \([0-9]*\) of 440 Hz alone.*/\1/p' <<<"$heard")"
 together="$(sed -n 's/.*alone, \([0-9]*\) of 440 Hz and 660 Hz together.*/\1/p' <<<"$heard")"
+moved="$(sed -n 's/.*together, \([0-9]*\) of 550 Hz.*/\1/p' <<<"$heard")"
 [[ "${alone:-0}" -ge 8 ]] && green "a zone's tone reached the card: ${alone} quarter seconds of 440 Hz alone" \
     || red "the zone's tone is not in what the card played (${alone:-0} quarter seconds of 440 Hz alone)"
 [[ "${together:-0}" -ge 4 ]] && green "two zones were mixed: ${together} quarter seconds of 440 Hz and 660 Hz together" \
     || red "two zones' tones were not mixed (${together:-0} quarter seconds of both)"
+[[ "${moved:-0}" -ge 4 ]] && green "the tone the USB card had went on on the first card once it was pulled: ${moved} quarter seconds of 550 Hz" \
+    || red "the USB card's tone did not reach the first card after the pull (${moved:-0} quarter seconds of 550 Hz)"
 rm -f "$WAV"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
