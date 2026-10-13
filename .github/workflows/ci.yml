@@ -150,13 +150,16 @@ jobs:
           restore-keys: |
             image-sources-v1-
 
-      # Fetches the signatures into the cached set for the gate below; this pass is not the verdict.
+      # Runs on two hits as well: the root's set restored may be one saved without the links that name
+      # each image source in sources/ (an older set's), and only this pass makes them. On a miss it
+      # fetches the signatures into the cached set for the gate below; that pass is not the verdict.
       - name: Fetch and verify the sources
-        if: steps.sources.outputs.cache-hit != 'true' || steps.image_sources.outputs.cache-hit != 'true'
+        env:
+          MISSED: ${{ steps.sources.outputs.cache-hit != 'true' || steps.image_sources.outputs.cache-hit != 'true' }}
         run: |
           make sources
           ./tools/prune-sources.sh
-          ./tools/verify-signatures.sh > /dev/null 2>&1 || true
+          [[ "$MISSED" != true ]] || ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
       # Not from a pull request: its cache is scoped to the merge ref and would duplicate the set.
       - name: Set the software images' sources aside
