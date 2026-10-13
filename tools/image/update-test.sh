@@ -194,6 +194,7 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "grab:v2:grep ^VERSION_ID= /etc/os-release; cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result" \
     "run:test \"\$(cat /home/${TUSER}/marker)\" = before-update" \
     "$(ROOTSH 'sha256sum -c /root/work.sha && kryptik-update status && echo B-OK')" "expect:B-OK" \
+    "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/image-probe.sh')" "expect:IMAGE-PROBE " \
     "$(ROOTSH 'kryptikd time status')" \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
@@ -203,6 +204,9 @@ txt | grep -q "KRYPTIK_SMOKE: boot_identity=slot=b" && green "booted slot b" || 
 txt | grep -q "version_id=${VB}" && green "guest reports version ${VB}" || red "guest did not report ${VB}"
 txt | grep -q "boot-success: committed: BOOTX64.EFI is now slot b" && green "boot-success committed slot b" || red "no commit of slot b"
 txt | grep -q "committed slot:   b" && green "status shows committed slot b" || red "committed slot is not b"
+txt | grep -q 'IMAGE-PROBE kryptik-probe 1.0, from the probe image: ' \
+    && green "a zone on ${VB} runs the probe from the image apply kept with it" \
+    || red "the probe image did not run on ${VB}: $(txt | grep -m1 'IMAGE-PROBE')"
 txt | grep -qF "floor    ${B_FLOOR} UTC (release ${VB}, the newest this machine committed to" \
     && green "the clock's floor is ${VB}'s signed date (${B_FLOOR} UTC)" || red "after the commit of ${VB} the floor is not its date: $(txt | grep -E '(floor|release)  ' | tail -2 | tr '\n' ' ')"
 
@@ -268,11 +272,15 @@ drive "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'reboot')" "expect:Linux version" "expect:KRYPTIK_SMOKE: END" \
     "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'cat /run/kryptik/boot-identity; cat /var/lib/kryptik/boot/last-result; echo RB2-OK')" "expect:slot=b" "expect:commit b" "expect:RB2-OK" \
+    "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/image-probe.sh')" "expect:IMAGE-PROBE " \
     "$(ROOTSH 'poweroff')" "expect:Power down" "wait-exit"
 rc=$?; stop_vm
 [[ "$rc" -eq 0 ]] && green "rollback: slot b armed, booted and committed" || red "step 5 drive failed"
 stop_unless_ok "$rc" "step 5"
 txt | grep -q "version_id=${VB}" && green "guest reports ${VB} after rollback" || red "guest did not report ${VB}"
+txt | grep -q 'IMAGE-PROBE kryptik-probe 1.0, from the probe image: ' \
+    && green "after ${VA} was applied to the other slot, ${VB}'s images were still kept, and its zone runs the probe" \
+    || red "${VB}'s probe image did not run after the rollback: $(txt | grep -m1 'IMAGE-PROBE')"
 
 # ----------------------------------------------------------------- step 6 --
 step "step 6: interruption during the slot write, then after arming"
