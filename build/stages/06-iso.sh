@@ -355,8 +355,11 @@ pack_image() {
     # names the root's objects, and --strict refuses an entry that matches nothing.
     local accepted="${KRYPTIK_ROOT}/build/images/${name}.accepted"
     if [[ ! -f "$accepted" ]]; then accepted="${stage}.accepted"; : > "$accepted"; fi
-    "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict --accepted "$accepted" "$stage" >&2
-    "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "$stage" --list "${KRYPTIK_ROOT}/build/images/${name}.programs" >&2
+    # Every check runs before the step fails, so one run shows each finding.
+    local failed=0
+    "${KRYPTIK_ROOT}/tools/check-artifact-hardening.sh" --strict --accepted "$accepted" "$stage" >&2 || failed=1
+    "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "$stage" --list "${KRYPTIK_ROOT}/build/images/${name}.programs" >&2 || failed=1
+    [[ "$failed" -eq 0 ]] || { echo "FAIL: image ${name} did not pass the checks above" >&2; return 1; }
     local bytes; bytes="$(du -sb "$stage" | cut -f1)"
     local fs_bytes=$(( bytes + bytes / 8 + 16 * 1024 * 1024 ))
     fs_bytes=$(( (fs_bytes + 4095) / 4096 * 4096 ))
