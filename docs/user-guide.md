@@ -287,6 +287,8 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+Shift+p | a terminal in the personal zone |
 | Alt+Shift+u | the browser (lynx) in the untrusted zone |
 | Alt+Shift+l | lock the screen until the login password is typed |
+| volume keys, mute, microphone mute | the volume up or down a step, mute or unmute everything, and take the microphone back from whichever zone has it |
+| brightness keys | the screen's backlight up or down a step |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |
@@ -326,8 +328,13 @@ Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
-never appears on a command line. Under the zones, a Network line says what
-the net zone reports: whether it is ready, the Wi-Fi network it joined (or
+never appears on a command line. On a machine with a battery, a Power
+line under the zones gives its charge and whether the machine runs on it;
+on battery at 3% the zones are stopped, each closing its volume, and the
+machine powers off, so save work before then: a window warns at 10% and
+again at 5%, and closes once the machine is plugged in. Under the zones, a
+Network line says what the net zone reports: whether it is ready, the
+Wi-Fi network it joined (or
 that Wi-Fi is switched off, by a switch or an airplane-mode key; switched on
 again, it rejoins by itself, or that a saved network refused its passphrase),
 its address on the uplink and whether there is DNS. The menu also names a
@@ -338,6 +345,17 @@ shows the ones in range with `s`, numbered, adds one by its name or that
 number, asking for its passphrase in the menu's own window, adds an open one
 with `o`, or forgets one, as `kryptik wifi` does at the administration login.
 A name with a character a terminal would not show plainly is typed instead.
+
+Every zone but the net zone plays sound through zone 0's mixer, and none
+hears another. No zone may record until you let it: in the menu, `c` and the
+zone's number lets that zone use the microphone until it stops, one zone at
+a time, and `c` alone takes it back, as does the keyboard's microphone key.
+The menu's Sound line names the zone that may record and says when it is
+recording, and while a zone may record, a window of its own says so, and
+when it does; it closes when the zone stops or the microphone is taken
+back. `v` and a digit sets the volume, 0 to 9, `v`, a zone's number and
+a digit sets that zone's own, and `x` mutes or unmutes everything. Sound
+plays on a USB device when one is plugged in, otherwise on the built-in one.
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,

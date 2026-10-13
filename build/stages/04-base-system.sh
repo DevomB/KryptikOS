@@ -261,6 +261,8 @@ PACKAGES=(
     "ca-bundle"   "s_ca_bundle"
     # --- device firmware (ADR-012): what build/config/firmware.list names.
     "linux-firmware" "s_firmware $(sha256_of "${KRYPTIK_ROOT}/build/config/firmware.list" 2>/dev/null || echo none)"
+    # --- sound: the library zone 0's mixer and a zone's programs use (docs/design/laptop.md).
+    "alsa-lib"    "s_alsa_lib"
     # --- the desktop: build tools, the Wayland stack, compositor, applications.
     "meson"       "s_meson"
     "ninja"       "s_ninja"
@@ -287,6 +289,8 @@ PACKAGES=(
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
     # The desktop's own pieces; the proxy's path and hash are arguments, as for kryptikd.
     "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-lock.c" 2>/dev/null || echo none) ${V_DWL}"
+    # Zone 0's mixer and a zone's plugin to it; the sources' digest rebuilds them.
+    "sound"       "s_sound $(tree_digest "${KRYPTIK_ROOT}"/tools/sound/*)"
 
     # From here the steps configure the system rather than build packages.
     "etc"         "s_etc"
@@ -295,7 +299,7 @@ PACKAGES=(
     # After init, whose stage 2 scripts look for the database; before the
     # updater and efiboot, whose checks source the devices.sh it installs. The
     # digest covers the files the recipe reads by path, which declare -f cannot.
-    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf "${KRYPTIK_ROOT}"/build/config/keyboard-layouts)"
+    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf "${KRYPTIK_ROOT}"/build/config/udev/*.rules "${KRYPTIK_ROOT}"/build/config/keyboard-layouts)"
     # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/update-fetch.py" 2>/dev/null || echo none)"

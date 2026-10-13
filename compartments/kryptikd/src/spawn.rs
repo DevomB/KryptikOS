@@ -809,6 +809,13 @@ pub fn run_in_zone(
         None
     };
 
+    // Zone 0's mixer's directory for this zone, made by its service; a root launch only.
+    let sound_dir: Option<String> = if id.privileged && zone.network != crate::zone::NetworkMode::Nic {
+        crate::sound::zone_dir(&zone.name).map(|p| p.display().to_string())
+    } else {
+        None
+    };
+
     let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
@@ -855,7 +862,7 @@ pub fn run_in_zone(
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
             zone_policy.as_ref(), &fs_rules, &broker_path_str, wayland_path_str.as_deref(), opts.wayland_inode,
-            wifi_conf.as_deref(),
+            wifi_conf.as_deref(), sound_dir.as_deref(),
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -1013,6 +1020,10 @@ pub fn run_in_zone(
     let status = serve_until_exit(pid, broker_fd, &served, zone_out)?;
     unsafe { libc::close(broker_fd) };
     let _ = std::fs::remove_file(&broker_path);
+    // A grant of the microphone lasts until the zone stops.
+    if sound_dir.is_some() {
+        crate::sound::revoke(&zone.name);
+    }
     // dm-crypt frees the volume key on close: that is all "keys wiped on stop" means.
     if let Some(o) = opened_volume.take() {
         match o.close() {
@@ -1068,6 +1079,7 @@ fn intermediate_main(
     wayland_path: Option<&str>,
     wayland_inode: Option<crate::serve::InodeId>,
     wifi_conf: Option<&str>,
+    sound_dir: Option<&str>,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1262,7 +1274,7 @@ fn intermediate_main(
     if inner == 0 {
         alive.close_write();
         let service = maps_service(id.privileged, zone_policy);
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, service, &alive);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, sound_dir, service, &alive);
         unsafe { libc::_exit(rc) };
     }
     alive.close_read();
@@ -1300,6 +1312,7 @@ fn zone_init(
     broker_path: &str,
     wayland_path: Option<&str>,
     wifi_conf: Option<&str>,
+    sound_dir: Option<&str>,
     service: bool,
     alive: &SyncPipe,
 ) -> i32 {
@@ -1334,7 +1347,7 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, _) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, service) {
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, sound_dir, service) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };

@@ -15,20 +15,38 @@ ADR-021 is proposed and ADR-022, for suspend, accepted.
 
 ### Where things stand
 
-`CONFIG_SOUND` is off ("no audio stack", `hardening.fragment`), ADR-013
-lists sound among what Kryptik never builds, and ADR-012 left sound firmware
-out. No zone has a sound device or a sound server.
+The kernel builds HD Audio and USB audio as signed modules
+(`boot.fragment`), and the image carries alsa-lib without its MIDI,
+sequencer, use-case manager and DSP topology parts. `kryptik-sound` mixes
+in zone 0 and every zone but the net zone plays through it, as the
+recommendation below has it. The chrome's menu grants the microphone
+(`c<N>`, and `c` takes it back), sets the volume of all and of each zone
+(`v<D>`, `v<N><D>`) and mutes (`x`), and names the zone that may record and
+whether it does; the keyboard's volume keys step the volume, its mute key
+mutes, and its microphone key takes the microphone back. While a zone holds
+the microphone, a window of the chrome's says so, and says when it records;
+it opens on the grant, so it takes the keyboard from the menu the gesture was
+typed in, not from a zone, and closes when the grant ends.
 
 ### The kernel side
 
-The drivers are modules, since nothing at boot needs them (ADR-013):
-`snd-hda-intel` with its codecs, Intel's Sound Open Firmware drivers for
-laptops with digital microphones, AMD's audio coprocessor drivers,
-`snd-usb-audio`, and the smart-amplifier codecs (Cirrus, TI) many laptops
-put on their speakers. Most of their firmware is in linux-firmware, but
-Intel's SOF firmware and topology files are not: the SOF project publishes
-them separately (sof-bin). That is a second firmware source, which ADR-012
-has to name, with its own provenance row.
+The drivers are modules, since nothing at boot needs them (ADR-013). Built:
+`snd-hda-intel`, with the codec drivers of the machines that boot UEFI
+(Realtek, Conexant, Senarytech, IDT, Cirrus, and the HDMI and DisplayPort
+codecs of Intel, AMD and NVIDIA graphics) and the generic parser for any
+other codec, and `snd-usb-audio`; none of them needs firmware. The kernel
+loads no module by itself (`STATIC_USERMODEHELPER`), and a codec binds only
+to a driver loaded when the controller probes it, so modprobe loads every
+codec driver ahead of `snd-hda-intel` (`build/config/modprobe.d/sound.conf`,
+which stage 05 holds to the drivers built).
+
+Not yet: Intel's Sound Open Firmware drivers for laptops with digital
+microphones, AMD's audio coprocessor drivers, and the smart-amplifier
+codecs (Cirrus, TI) many laptops put on their speakers. Most of their
+firmware is in linux-firmware, but Intel's SOF firmware and topology files
+are not: the SOF project publishes them separately (sof-bin). That is a
+second firmware source, which ADR-012 has to name, with its own provenance
+row.
 
 ### Who holds `/dev/snd`
 
@@ -40,45 +58,82 @@ has to name, with its own provenance row.
   compromised it records whatever it likes and carries audio from one zone to
   another, and the microphone's gate would be enforced by the party it
   should restrain.
-- **A small mixer in zone 0.** `kryptik-sound`, in Rust like kryptikd, runs
-  as a user of its own in the `audio` group, never as root. It reads
-  fixed-format sound from one socket per zone, mixes it, and plays it
-  through alsa-lib, whose UCM configurations the SOF and AMD laptops need.
-  The microphone's gate is trusted code, and only zone 0 reaches the sound
-  drivers' ioctls.
+- **A small mixer in zone 0.** `kryptik-sound` runs as a user of its own
+  in the `audio` group, never as root. It reads fixed-format sound from one
+  socket per zone, mixes it, and plays it through alsa-lib, whose UCM
+  configurations the SOF and AMD laptops need. The microphone's gate is
+  trusted code, and only zone 0 reaches the sound drivers' ioctls. It is C,
+  built in stage 04 with the hardening flags like the screen lock, not Rust
+  like kryptikd: alsa-lib is a glibc library that loads its plugins, and
+  kryptikd is a static musl binary built outside the image.
 
 ### Recommendation: the mixer in zone 0, brokered like the clipboard
 
-- **The channel.** `kryptik-sound` keeps one listening socket per configured
-  zone. kryptikd binds that zone's socket into the zone at
-  `/run/kryptik/sound` at launch, as it binds the broker and proxy sockets.
-  The mixer checks the peer's uid against the zone's identity
-  (`SO_PEERCRED`, as the [broker](broker.md#identity-is-the-peer-uid) does).
+- **The channel.** `kryptik-sound` keeps one listening socket per zone,
+  `/run/kryptik-sound/zones/NAME/socket`, for every zone whose file lets it
+  play (`kryptikd sound zones`): not the nic zone, and not `vault`, whose
+  file says `[sound] play = false`, as secrets have no use for a way out to
+  the room that nothing mediates. Its service makes each socket's directory as
+  root, and kryptikd binds that directory into the zone at
+  `/run/kryptik/sound` at launch, as it binds the broker and proxy sockets:
+  the directory, so the socket a restarted mixer makes is the one a running
+  zone reaches, and one root owns, so the mixer cannot have it name another
+  place. The mixer checks the peer's uid against the uid the zone's root
+  maps to (`SO_PEERCRED`, as the [broker](broker.md#identity-is-the-peer-uid)
+  does), and a zone holds at most eight streams.
+- **The mixer's user** is uid 87 in group `audio` (11) and nothing else,
+  fixed numbers set by its service, so no line under `/etc`, whose upper
+  layer state can change, decides who it is. It refuses to run as root.
 - **The wire.** One line, `play` or `record`, then raw interleaved frames:
   48 kHz, two channels, signed 16-bit little-endian, and nothing else. A
   fixed format leaves nothing to parse, and a zone that sends garbage plays
   noise in its own stream.
 - **The microphone.** `record` is refused unless the user granted the
   microphone to that zone with a gesture in the chrome, as `m<N><M>` moves a
-  clipboard. The grant lasts until the zone stops or the user takes it back,
-  and only one zone holds it at a time. The chrome shows which zone is
-  recording, and a zone hears nothing of any other zone.
+  clipboard. The grant lasts until the zone stops (kryptikd says `revoke
+  NAME` when its zone exits) or the user takes it back, and only one zone
+  holds it at a time. The chrome shows which zone is recording (the
+  control socket's `status`), and a zone hears nothing of any other zone.
+  It can tell one thing: the card stays open five seconds after the last
+  sound, so how soon its own first sound is taken says whether any zone
+  played in that time, a bit two zones could also signal through. Keeping
+  the card open always would close it, at the codec's power saving.
 - **Volume** and mute per zone are the chrome's, along with a key that mutes
-  everything.
+  everything (`mute toggle`) and the volume keys' steps (`volume +5`,
+  `volume -5`); the microphone key says `revoke`. The mixer applies the
+  volumes, squared so the steps sound even, and
+  sets the card's own controls to unity when it opens it, so a card that
+  came up muted plays.
+- **The card** is a USB device when one is plugged in, as it is plugged in
+  to be used, otherwise the first card with a device 0; an HDMI-only card
+  has none. The mixer opens it only while something plays and closes it
+  five seconds after, so the codec can power down.
 - **In the zone,** alsa-lib with a small PCM plugin as the default device
-  writes to `/run/kryptik/sound`. Firefox built with `--enable-alsa` uses
-  it directly. No PulseAudio or PipeWire runs in a zone.
+  writes to `/run/kryptik/sound/socket` (`/usr/etc/alsa/conf.d`, on the
+  verified root, which every zone reads). Firefox built with
+  `--enable-alsa` uses it directly. No PulseAudio or PipeWire runs in a
+  zone.
 
 ### Check
 
-QEMU's HDA device with its output written to a WAV file on the host (`-audiodev wav`):
+QEMU's HDA device with its output written to a WAV file on the host (`-audiodev wav`),
+in `make sound-test`, all of which it checks but the keys, which the
+desktop suite does not press yet:
 
-- a tone played in `work` arrives in the file;
+- the card registers at boot with its codec bound, every codec driver
+  loaded ahead of the controller;
+- a zone's `/proc/asound` is empty: the PCM status there would show when
+  another zone plays or records, and the codec files name the model;
+- a tone played in a zone arrives in the file;
 - two zones playing at once are mixed;
-- `record` without a grant is refused, works after the chrome's gesture,
-  and is refused again once the zone stops;
-- a connection from another zone's uid is refused;
-- no zone's `/dev` has a sound node.
+- `record` without a grant is refused, works after the grant, shows in the
+  status while it records, and is refused again once the zone stops;
+- the chrome's menu grants the microphone, names the zone that has it and
+  takes it back, and sets the volume of all and of one zone and mutes;
+- a connection from another uid than the zone's is refused;
+- no zone's `/dev` has a sound node, and no zone reaches the control
+  socket;
+- the mixer runs as uid 87 in group `audio` alone.
 
 ## Bluetooth
 
@@ -330,18 +385,36 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   is a key, which dwl binds to `kryptik-lock --suspend`, and the lid a
   switch, which Kryptik's dwl patch turns into the same command when it
   closes (above). Nothing in zone 0 runs as root for them.
-- **`kryptik-power`,** a small zone 0 service, still to come. It reads the
-  battery and AC state from `/sys/class/power_supply`, and at critically low
-  battery shuts the machine down in order, zones stopped and volumes closed,
-  since there is no hibernation.
-- **Policy at boot.** A service writes a fixed policy from the verified
-  root: `energy_performance_preference` set to `balance_power` on battery and
-  `balance_performance` on AC (amd-pstate and intel_pstate both take it), and
-  the kernel's defaults for PCIe link power and NVMe power states. No rule
-  turns on USB autosuspend for input devices, which too often misbehave
-  with it.
-- **Brightness.** An eudev rule gives the `video` group write access to the
-  backlight, the session user is in it, and dwl's keys run a small tool.
+- **The power service** (`build/service-scripts/power.sh`, the `power`
+  service), in zone 0, reads the battery and the mains adapter or USB
+  charger from `/sys/class/power_supply` every 30 s; a mouse's battery
+  (scope `Device`) does not count, and of two batteries the fuller does. On
+  battery at 10% and again at 5% it warns, once each a discharge: the
+  chrome's status loop opens a window that says what comes at 3% and
+  follows the charge until the machine is on mains. At 3% or under, seen
+  twice running, it stops every zone as `kryptikd stop` does, each launcher
+  closing its volume, and powers the machine off, since there is no
+  hibernation. Each look is written to `/run/kryptik-power/state`, which the
+  chrome reads, so the menu says what the service acts on.
+- **A gauge that reads too low.** A worn battery whose gauge says 3% or less
+  while it still holds charge powers the machine off a minute after every
+  boot on battery. Requiring a reading above 3% earlier in the boot would
+  stop that, at the cost of an unclean death for a boot that starts at 2%.
+  Which to take is for the tests on physical hardware.
+- **The energy preference.** The same service sets
+  `energy_performance_preference` to `balance_power` on battery and
+  `balance_performance` on mains whenever the source changes, on each
+  processor policy that offers it (amd-pstate and intel_pstate both do).
+  PCIe link power and NVMe power states keep the kernel's defaults, and no
+  rule turns on USB autosuspend for input devices, which too often
+  misbehave with it.
+- **Brightness.** An eudev rule (`70-kryptik-backlight.rules`) gives the
+  session's group, `kryptik`, write access to the backlight's level, not
+  `video`, which would hand the user the GPU's device nodes past seatd.
+  dwl's brightness keys run `brightness.sh up|down`, a twentieth of the
+  range a step and never down to dark, on the backlight the kernel's
+  documentation prefers when a panel has several (firmware, then platform,
+  then raw).
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
   zone 0 tool to blank the screen, then lock, then suspend. All three are
   built (`kryptik-lock --idle`, above), lock first: a screen turned off
@@ -363,7 +436,8 @@ and the power key, idle and inhibitors, suspend, and runtime directories
     zone holds the screen awake for as long as it does.
   - The moment no hold qualifies, the lock and the blanking count input
     alone again.
-- The chrome shows the battery and AC state.
+- The chrome's menu has a Power line, from the power service's state: on
+  mains or on battery, the charge, and on battery what happens at 3%.
 
 ### Check
 
@@ -372,6 +446,17 @@ uinput, and the kernel's test power supply (`test_power`, a test module like
 `mac80211_hwsim`) reports a battery the suite can drain. Closing the lid
 suspends, the update's lock holds that off, and a critical battery shuts the
 machine down with every volume closed.
+
+`make power-test` does the battery's part with `test_power`: the service
+follows the adapter both ways, the menu's Power line names the source and
+the charge, a window warns at 10% and again at 5%, follows the charge and
+closes on mains, and with the battery at 2% unplugged the service stops the
+zones and powers off; the host then finds on the state partition that it
+said so and that a running zone's volume was closed first. The energy
+preference, which QEMU's processors do not offer, is checked against
+stand-in `/sys` trees (`tools/tests/power.sh`). QEMU has no backlight:
+the brightness steps are checked the same way (`tools/tests/brightness.sh`),
+and the rule and the keys wait for physical hardware.
 
 ## Keyboard layouts and input methods
 

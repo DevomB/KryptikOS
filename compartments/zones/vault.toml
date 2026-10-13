@@ -19,6 +19,11 @@ seccomp  = "policy/vault.seccomp"
 memory_max = "2G"
 pids_max   = 128
 
+[sound]
+# No socket to zone 0's mixer: secrets have no use for sound, and a sound is a way out to the
+# room that nothing mediates.
+play = false
+
 [identity]
 # Root inside maps to host uid/gid 393216, nobody to 458750; fixed, never derived from zone order.
 uid_base = 393216

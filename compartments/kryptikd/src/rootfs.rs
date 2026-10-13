@@ -174,8 +174,11 @@ pub const PROC_MASKED: &[&str] = &[
     "sys/fs/file-nr", "sys/fs/inode-nr", "sys/fs/dentry-state",
 ];
 
-/// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too.
-pub const PROC_EMPTIED: &[&str] = &["irq"];
+/// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too,
+/// and asound's PCM status shows when another zone plays or records (the card is open while one
+/// does) while its codec files name the machine's model. sysinit loads ALSA's core so asound is
+/// there to empty when a zone starts.
+pub const PROC_EMPTIED: &[&str] = &["irq", "asound"];
 
 /// What a zone sees of sysfs: its interfaces and the CPU layout (glibc counts CPUs there). The
 /// rest holds disk and monitor serials and which encrypted zones run.
@@ -317,6 +320,7 @@ pub fn pivot_into(
     broker: Option<&str>,
     wayland: Option<&str>,
     wifi_conf: Option<&str>,
+    sound: Option<&str>,
     service: bool,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
@@ -483,6 +487,11 @@ pub fn pivot_into(
         let rk = mkdir("run/kryptik")?;
         let target = format!("{rk}/{}", WAYLAND_SOCKET_NAME);
         bind_ro_file(sock, &target)?;
+    }
+    // The zone's directory of zone 0's mixer: the directory, so the socket a restarted mixer
+    // makes in it is the one the zone reaches.
+    if let Some(dir) = sound {
+        bind_ro_dir(dir, &format!("{root}{}", crate::sound::IN_ZONE))?;
     }
 
     /* The zone's data at /home/<zone>, bound through the descriptor that was checked. Not

@@ -96,7 +96,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
         chroot chroot-enter chroot-umount chroot-status \
         iso media production-pair ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
         media-refused-foreign-keys install-test integrity-test update-test \
-        state-test keyboard-test zones-test gui-test suspend-test acceptance \
+        state-test keyboard-test zones-test gui-test suspend-test sound-test power-test acceptance \
         zones zone-test launcher-test zone-tests cli-test serve-test \
         test test-libc-unwind smoke-userspace \
         audit-artifacts audit-artifacts-strict manifest verify-manifest source-bundle \
@@ -134,6 +134,8 @@ help:
 	@echo "  make update-test PAYLOAD_A=.. PAYLOAD_B=..  A/B update, rollback, refusals, interruptions"
 	@echo "  make state-test | zones-test | gui-test    the state partition, zones, the desktop"
 	@echo "  make suspend-test  sleep with the state partition's key dropped, and the way back at the lock"
+	@echo "  make sound-test  the sound card, its codec bound at boot"
+	@echo "  make power-test  the power source followed, and a critical battery's orderly power-off"
 	@echo "  make keyboard-test  a keyboard layout at the passphrase prompt, on the console, for the session"
 	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
@@ -367,6 +369,14 @@ gui-test:
 suspend-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/suspend-test.sh --usb "$(MEDIA_USB)"
+
+sound-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/sound-test.sh --usb "$(MEDIA_USB)"
+
+power-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/power-test.sh --usb "$(MEDIA_USB)"
 
 # Every acceptance suite, one verdict, as root. MEDIA_USB/MEDIA_ISO are passed
 # on only when named explicitly; otherwise acceptance.sh tests the
