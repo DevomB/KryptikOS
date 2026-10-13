@@ -35,8 +35,9 @@ code that looks past the zone's own clocks: the offsets in
 checkpoint and restore, the scheduler's clock in `/proc/<pid>/sched`, the
 vDSO's data page, which a time namespace maps beside its own, and the CPU's
 timestamp counter, one instruction away, each give it; the free memory in
-`/proc/meminfo`, coarse, which programs need; and the idle counts of a CPU
-brought online after the zone started.
+`/proc/meminfo`, coarse, which programs need; the user's keyboard layouts,
+up to four, in the keymap every window is given, as Wayland gives it; and
+the idle counts of a CPU brought online after the zone started.
 Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 
