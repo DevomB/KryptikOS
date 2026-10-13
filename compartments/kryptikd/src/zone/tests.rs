@@ -357,7 +357,12 @@ fn exactly_one_nic_zone() {
     assert!(format!("{err}").contains("claim the physical NIC"), "got: {err}");
 
     let none = vec![zone_with("work", "routed", "#111111")];
-    assert!(check_invariants(&none).is_err());
+    let err = check_invariants(&none).unwrap_err();
+    assert!(format!("{err}").contains("routed zones would have no path out"), "got: {err}");
+
+    // Zones without network need no path out, so no NIC zone.
+    let offline = vec![zone_with("work", "none", "#111111"), zone_with("vault", "none", "#222222")];
+    assert!(check_invariants(&offline).is_ok());
 
     let one = vec![
         zone_with("net", "nic", "#111111"),
