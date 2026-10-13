@@ -257,11 +257,32 @@ pub fn prepare(zone: &Zone, granted: Option<&Policy>) -> Result<String, String> 
     }
     lower.push("/usr".into());
     let set = set_dir(&chosen);
-    if !crate::volume::is_mountpoint(&set) {
+    let lowerdir = format!("lowerdir={}", lower.join(":"));
+    let mounts = fs::read_to_string("/proc/self/mounts").map_err(|e| format!("/proc/self/mounts: {e}"))?;
+    if !stacked(&mounts, &set, &lowerdir)? {
         fs::create_dir_all(&set).map_err(|e| format!("{set}: {e}"))?;
-        mount("kryptik-usr", &set, "overlay", Some(format!("lowerdir={}", lower.join(":")).as_str()))?;
+        // No redirect in a lower layer is followed, though no image is built with one.
+        mount("kryptik-usr", &set, "overlay", Some(format!("{lowerdir},redirect_dir=nofollow").as_str()))?;
     }
     Ok(set)
+}
+
+/// Whether the set at `at` is mounted already with exactly `lowerdir` (use it), not at all (stack
+/// it), or over other images (refused): a set's name holds 64 bits of each root hash, the mounts
+/// in its lowerdir the whole hash. `mounts` is /proc/self/mounts; the topmost mount at `at` counts.
+fn stacked(mounts: &str, at: &str, lowerdir: &str) -> Result<bool, String> {
+    let options = mounts
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() >= 4 && f[1] == at).then(|| f[3])
+        })
+        .last();
+    match options {
+        None => Ok(false),
+        Some(o) if o.split(',').any(|x| x == lowerdir) => Ok(true),
+        Some(_) => Err(format!("{at} already stacks other images than these")),
+    }
 }
 
 /// The list for `base`, read once, its signature checked as nobody on a copy of those bytes.
@@ -305,7 +326,8 @@ fn open(img: &Image) -> Result<String, String> {
     if md.len() != img.bytes {
         return Err(format!("image {}: {shown} holds {} bytes, and the list signs {}", img.name, md.len(), img.bytes));
     }
-    let mapper = format!("kryptik-image-{}-{}", img.name, &img.root_hash[..16]);
+    // The whole root hash: at most 111 characters, inside device-mapper's 127.
+    let mapper = format!("kryptik-image-{}-{}", img.name, img.root_hash);
     let dev = format!("/dev/mapper/{mapper}");
     if Path::new(&dev).exists() {
         // dm-verity marks a mapping corrupted at the first block that reads back other than signed.
@@ -326,7 +348,7 @@ fn open(img: &Image) -> Result<String, String> {
         ];
         crate::volume::run("veritysetup open", "veritysetup", &args, None).map_err(|e| format!("image {}: {}", img.name, e.1))?;
     }
-    let at = format!("{MOUNTS}/{}/{}", img.name, &img.root_hash[..16]);
+    let at = format!("{MOUNTS}/{}/{}", img.name, img.root_hash);
     if !crate::volume::is_mountpoint(&at) {
         fs::create_dir_all(&at).map_err(|e| format!("{at}: {e}"))?;
         // A journal is never replayed: the device under it is read-only.
