@@ -158,6 +158,12 @@ fn c(s: &str) -> CString {
     CString::new(s).expect("no NUL in a constant")
 }
 
+/// RUN_DIR mounted now: the compositor watches it for the grant's record, and a watch made
+/// before the mount would be on the directory beneath.
+pub fn mount_run_dir() -> io::Result<()> {
+    mounted()
+}
+
 /// The directory `zone` sees at `IN_ZONE`, made when a zone that may hold the camera starts: a
 /// node left in it by a grant that ended without kryptikd goes.
 pub fn zone_dir(zone: &str) -> io::Result<PathBuf> {

@@ -148,6 +148,14 @@ else
 fi
 
 granted="$(ctl grant untrusted 2>&1)"
+# The mixer's record of who may record, which dwl's bar over a fullscreen window shows: the
+# mixer's own file, which no one else may write, naming the zone.
+holder="$(stat -c '%u %a %F' /run/kryptik-sound/control/microphone 2>&1) $(cat /run/kryptik-sound/control/microphone 2>&1)"
+if [[ "$holder" == "87 640 regular file untrusted" ]]; then
+    pass "holder-recorded" "the mixer records the grant for the compositor's bar: ${holder}"
+else
+    fail "holder-recorded" "${holder}"
+fi
 ( zrun untrusted 30 -- "$PROBE" record 3 ) &
 shown() { ctl status | grep -q '^zone untrusted .* granted recording$'; }
 if [[ "$granted" == ok ]] && wait_for 15 shown; then
@@ -168,6 +176,11 @@ ungranted() { ! ctl status | grep -q ' granted'; }
 zrun untrusted 30 -- "$PROBE" record 1
 if wait_for 5 ungranted && [[ "$ZRC" -eq 1 && "$ZOUT" == *"not granted to this zone"* ]]; then
     pass "grant-ends-with-zone" "the grant went with the zone that held it"
+    if [[ -f /run/kryptik-sound/control/microphone && ! -s /run/kryptik-sound/control/microphone ]]; then
+        pass "holder-cleared" "the record names no zone once the grant is gone"
+    else
+        fail "holder-cleared" "$(stat -c '%u %a %s' /run/kryptik-sound/control/microphone 2>&1): $(cat /run/kryptik-sound/control/microphone 2>&1)"
+    fi
 else
     fail "grant-ends-with-zone" "status: $(ctl status | tr '\n' ' ') record: rc ${ZRC}: ${ZOUT}"
 fi

@@ -65,7 +65,7 @@ if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 21 ]]; then green "eve
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in sound-card codec-bound codec-drivers-ahead pcm-nodes zone-proc-asound-empty mixer-running mixer-zones mixer-own-user \
             zone-socket-no-card zone-plays zones-play-together record-refused-ungranted status-shows-recording \
-            record-granted grant-ends-with-zone foreign-uid-refused chrome-grants-microphone \
+            holder-recorded record-granted grant-ends-with-zone holder-cleared foreign-uid-refused chrome-grants-microphone \
             chrome-takes-microphone-back chrome-sets-volume microphone-window volume-steps; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done

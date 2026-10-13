@@ -377,7 +377,9 @@ No zone sees the camera until you let it: `k` and the zone's number in the
 menu gives that zone the camera, one zone at a time, until it stops, the
 screen locks, or `k` alone takes it back, and while it has it a window of the
 chrome's says so. A program the zone left holding the camera loses it then
-as well. Built-in and USB cameras that speak the USB Video Class work, as
+as well. A window in full screen covers those windows, so the bar above it
+names the zone that may use the microphone (`MIC`) and the zone that has the
+camera (`CAM`), whichever zones they are. Built-in and USB cameras that speak the USB Video Class work, as
 most do; the cameras of recent Intel laptops that need Intel's image
 processing in userspace (MIPI cameras behind the IPU6) and infrared
 face-login cameras do not. `vault` and the net zone never get the camera.

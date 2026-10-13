@@ -6,6 +6,8 @@
 #   GT KEY-FOCUS-ZONE, GT KEY-FOCUS-OVERSIZE,
 #   GT KEY-FOCUS-FORGED, GT KEY-FOCUS-PERSONAL      press Alt+j (explicit focus)
 #   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (fullscreen, then back)
+#   GT KEY-MARKS-FULLSCREEN                         press Alt+e (fullscreen again)
+#   GT SCREENSHOT-MARKS, GT SCREENSHOT-NO-MARKS     take a screenshot
 #   GT KEY-FOCUS-AWAY, GT KEY-FOCUS-CHILD, GT KEY-FOCUS-PARENT,
 #   GT KEY-FOCUS-BELOW, GT KEY-FOCUS-LATE            press Alt+j
 #   GT KEY-ZOOM-BELOW, GT KEY-ZOOM-AGAIN            press Alt+Return (zoom)
@@ -369,6 +371,38 @@ fi
 sleep 2
 echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6
+# The bar over a fullscreen window also names the zones that hold the microphone and the camera,
+# as the window covers the chrome's own windows that say so: the microphone's holder as the
+# mixer records it, and the camera granted with vivid standing in for one. The camera's window,
+# opening on the grant, ends the fullscreen as any zone 0 window does; closed, Alt+e puts it back.
+micrec=/run/kryptik-sound/control/microphone
+mic_record() {   # mic_record OWNER ZONE: a record of who may record, as OWNER writes it
+    printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0640 "$micrec.t" && mv -f "$micrec.t" "$micrec"
+}
+mic_record 87 untrusted
+modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid-marks.err"
+marks_cam="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
+wait_for 15 pgrep -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
+sleep 2
+pkill -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
+wait_for 15 grep -q '^zone=untrusted' "$RT/kryptik/focus"
+echo "GT KEY-MARKS-FULLSCREEN"
+if wait_for 20 grep -q '^fullscreen=1' "$RT/kryptik/focus" && grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
+    pass "marks-fullscreen" "untrusted fullscreen again, holding the camera (${marks_cam}) and the microphone"
+else
+    fail "marks-fullscreen" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); camera: ${marks_cam}; vivid: $(tr '\n' ' ' < "$LOG/vivid-marks.err")"
+fi
+sleep 2
+echo "GT SCREENSHOT-MARKS"
+sleep 6
+# Taken back; and a record of the microphone's holder the mixer did not write counts for nothing.
+as_user "kryptik-launch --camera-revoke" > /dev/null 2>&1
+mic_record 0 untrusted
+sleep 2
+echo "GT SCREENSHOT-NO-MARKS"
+sleep 6
+rm -f "$micrec"
+modprobe -r vivid uvcvideo 2>/dev/null
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
 # Alt+p opens another menu window (the chrome's text menu in a zone 0 terminal), closed once seen.

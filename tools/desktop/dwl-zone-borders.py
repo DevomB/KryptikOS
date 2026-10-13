@@ -12,8 +12,9 @@ import sys
 # not found instead of patching with fuzz. The colour comes from the app_id
 # prefix only the zone's proxy sets; focus is shown by width (a band of the
 # root colour when unfocused), and fullscreen keeps the border under a bar
-# that names the zone. A zone's popups are drawn inside its window's frame
-# and last while the window has the keyboard.
+# that names the zone, and the zones that hold the microphone and the camera.
+# A zone's popups are drawn inside its window's frame and last while the
+# window has the keyboard.
 
 # The bar's lettering, 5x7: capitals for the letters, digits and '-' of a zone name.
 FONT = {
@@ -62,9 +63,51 @@ ZONEBAR = """/* Kryptik: the bar's lettering, indexed by the lower-case name; bi
 static const unsigned char zonefont[128][7] = {
 """ + FONT_ROWS + """};
 
+/* Kryptik: the zones that hold the microphone and the camera, which the bar
+ * over a fullscreen window names: that window covers the chrome's own windows
+ * that say so. Each comes from a file only its writer can leave, the mixer's
+ * for the microphone and kryptikd's for the camera. */
+#define MICMARK "/run/kryptik-sound/control/microphone"
+#define CAMMARK "/run/kryptik-camera/grant"
+#define MARKEVENTS (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE)
+#define SOUNDUID 87 /* the mixer's, build/services/kryptik-sound/run */
+static char miczone[16], camzone[16];
+static int markfd = -1;
+
+/* The zone FILE names after PREFIX on its first line, into OUT: nothing unless
+ * FILE is a regular file of OWNER's that no one else may write, and the name a
+ * zone of zonecolors_table. */
+static void
+readmark(const char *file, uid_t owner, const char *prefix, char *out, size_t size)
+{
+\tchar buf[64], *name;
+\tconst ZoneColor *z;
+\tstruct stat st;
+\tssize_t n = 0;
+\tint fd;
+
+\tout[0] = '\\0';
+\tif ((fd = open(file, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)) < 0)
+\t\treturn;
+\tif (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == owner && !(st.st_mode & 022))
+\t\tn = read(fd, buf, sizeof(buf) - 1);
+\tclose(fd);
+\tif (n <= 0)
+\t\treturn;
+\tbuf[n] = '\\0';
+\tbuf[strcspn(buf, "\\n")] = '\\0';
+\tif (strncmp(buf, prefix, strlen(prefix)) != 0)
+\t\treturn;
+\tname = buf + strlen(prefix);
+\tfor (z = zonecolors_table; z < END(zonecolors_table); z++)
+\t\tif (strcmp(z->zone, name) == 0)
+\t\t\tsnprintf(out, size, "%s", name);
+}
+
 /* Kryptik: a fullscreen window leaves the top barpx rows of its output to a
  * bar in its zone's colour that names the zone, outside the window's frame:
- * its surfaces and its popups are clipped to the frame. */
+ * its surfaces and its popups are clipped to the frame. After the name, the
+ * zones that hold the microphone and the camera, whichever zones they are. */
 static void
 zonebar(Client *c)
 {
@@ -72,13 +115,17 @@ zonebar(Client *c)
 \tconst char *id = client_get_appid(c);
 \tconst float *ink;
 \tstruct wlr_box box = c->mon->m;
-\tchar name[16] = "zone 0";
+\tchar name[64] = "zone 0";
 \tint s = (int)barscale, pad = ((int)barpx - 7 * s) / 2, x, row, col, n;
 \tsize_t i;
 
 \tzonecolors(c);
 \tif (c->zoneborder != unzonedcolor && strncmp(id, "kryptik.", 8) == 0)
 \t\tsnprintf(name, sizeof(name), "%.*s", (int)strcspn(id + 8, "."), id + 8);
+\tif (miczone[0])
+\t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   mic %s", miczone);
+\tif (camzone[0])
+\t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   cam %s", camzone);
 \tink = 0.299f * c->zoneborder[0] + 0.587f * c->zoneborder[1]
 \t\t\t+ 0.114f * c->zoneborder[2] > 0.5f ? black : white;
 
@@ -102,6 +149,24 @@ zonebar(Client *c)
 \t\t\t}
 \t\t}
 \t}
+}
+
+/* Kryptik: a change in either file's directory: both are read again, and every
+ * fullscreen window's bar drawn again. */
+static int
+marksread(int fd, uint32_t mask, void *data)
+{
+\tchar events[4096];
+\tClient *c;
+
+\twhile (fd >= 0 && read(fd, events, sizeof(events)) > 0)
+\t\t;
+\treadmark(MICMARK, SOUNDUID, "", miczone, sizeof(miczone));
+\treadmark(CAMMARK, 0, "zone ", camzone, sizeof(camzone));
+\twl_list_for_each(c, &clients, link)
+\t\tif (c->isfullscreen && c->mon)
+\t\t\tzonebar(c);
+\treturn 0;
 }
 
 """
@@ -763,6 +828,24 @@ inputdevice(struct wl_listener *listener, void *data)
      """\t/* Kryptik: while the session is locked, lockedkeys alone. */
 \tconst Key *k = locked ? lockedkeys : keys, *end = locked ? END(lockedkeys) : END(keys);
 \tfor (; k < end; k++) {
+"""),
+    # The marks' headers.
+    ("#include <sys/wait.h>\n",
+     "#include <errno.h>\n#include <fcntl.h>\n#include <string.h>\n#include <sys/inotify.h>\n"
+     "#include <sys/stat.h>\n#include <sys/wait.h>\n"),
+    # setup: one inotify descriptor on the two files' directories, read at once.
+    ("""\tseat = wlr_seat_create(dpy, "seat0");
+""",
+     """\t/* Kryptik: the microphone's and the camera's holders, for the bar. */
+\tif ((markfd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC)) >= 0) {
+\t\tif (inotify_add_watch(markfd, "/run/kryptik-sound/control", MARKEVENTS) < 0)
+\t\t\tfprintf(stderr, "dwl: the microphone's holder goes unmarked: %s\\n", strerror(errno));
+\t\tif (inotify_add_watch(markfd, "/run/kryptik-camera", MARKEVENTS) < 0)
+\t\t\tfprintf(stderr, "dwl: the camera's holder goes unmarked: %s\\n", strerror(errno));
+\t\twl_event_loop_add_fd(event_loop, markfd, WL_EVENT_READABLE, marksread, NULL);
+\t}
+\tmarksread(markfd, 0, NULL);
+\tseat = wlr_seat_create(dpy, "seat0");
 """),
     ("""\t/* On _press_ if there is no active screen locker,
 \t * attempt to process a compositor keybinding. */

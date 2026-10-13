@@ -49,6 +49,8 @@ source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/gui-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 SHOT="${VMDIR}/gui-untrusted.ppm"
 SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
+SHOT_MARKS="${VMDIR}/gui-untrusted-fullscreen-marks.ppm"
+SHOT_NOMARKS="${VMDIR}/gui-untrusted-fullscreen-no-marks.ppm"
 SHOT_OVER="${VMDIR}/gui-untrusted-oversize.ppm"
 SHOT_HEAD="${VMDIR}/gui-second-head.ppm"
 SHOT_POPUP="${VMDIR}/gui-untrusted-popup.ppm"
@@ -89,6 +91,9 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT SCREENSHOT-READY" "sleep:2" "screendump:${SHOT}" \
     "expect:GT KEY-FULLSCREEN\r?\n" "key:alt+e" \
     "expect:GT SCREENSHOT-FULLSCREEN" "sleep:2" "screendump:${SHOT_FS}" \
+    "expect:GT KEY-MARKS-FULLSCREEN" "key:alt+e" \
+    "expect:GT SCREENSHOT-MARKS" "sleep:2" "screendump:${SHOT_MARKS}" \
+    "expect:GT SCREENSHOT-NO-MARKS" "sleep:2" "screendump:${SHOT_NOMARKS}" \
     "expect:GT KEY-FULLSCREEN-AGAIN" "key:alt+e" \
     "expect:GT KEY-MENU" "key:alt+p" \
     "expect:GT KEY-FOCUS-OVERSIZE" "key:alt+j" \
@@ -161,7 +166,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
-            zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do
+            zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key marks-fullscreen zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
@@ -290,7 +295,11 @@ for spec in want:
         print(f"  #{rgb} inside {zone}'s frame {x0},{y0}-{x1},{y1}: {within} px within it, {outside} px outside{'' if good else '  <- WRONG'}")
         ok = ok and good
         continue
+    # ZONE:fullscreen=TEXT: the bar reads TEXT, the zone's name and what follows it.
     zone, state = spec.split(":")
+    text = None
+    if state.startswith("fullscreen="):
+        state, text = state.split("=", 1)
     col = named[zone]
     box, sides = frame(col)
     if box is None:
@@ -298,7 +307,7 @@ for spec in want:
         ok = False
         continue
     if state == "fullscreen":
-        rows, ink = bar("zone 0" if zone == "unzoned" else zone, col)
+        rows, ink = bar(text if text is not None else "zone 0" if zone == "unzoned" else zone, col)
         wrong = sum(at(x, y) != rows[y][x] for y in range(barpx) for x in range(w))
         good = (box == (0, 0, w - 1, hgt - 1) and sides["top"] == barpx + bw and not wrong
                 and sides["bottom"] == sides["left"] == sides["right"] == bw)
@@ -335,6 +344,8 @@ fi
 check_shot "$SHOT" "windowed" untrusted:focused unzoned:unfocused
 # Alt+e: the window fills the screen below a bar that names its zone.
 check_shot "$SHOT_FS" "fullscreen" untrusted:fullscreen
+check_shot "$SHOT_MARKS" "fullscreen, its zone holding the microphone and the camera" "untrusted:fullscreen=untrusted   mic untrusted   cam untrusted"
+check_shot "$SHOT_NOMARKS" "fullscreen, both taken back and a record the mixer did not write" untrusted:fullscreen
 # wlprobe oversize commits a buffer 40 px larger than its configure: the
 # borders must stay above the surface, or its excess covers them.
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused

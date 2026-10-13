@@ -1716,6 +1716,12 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
         cfg.log_dir.display()
     );
 
+    if !cfg.developer {
+        if let Err(e) = crate::camera::mount_run_dir() {
+            eprintln!("kryptikd serve: {}: {e}; the compositor's bar will not mark the camera", crate::camera::RUN_DIR);
+        }
+    }
+
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
     let mut pauses = Pauses::default();
