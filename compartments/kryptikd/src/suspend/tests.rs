@@ -26,6 +26,17 @@ fn a_mapping_is_known_by_its_name() {
 }
 
 #[test]
+fn a_zone_waits_while_its_volume_is_suspended() {
+    let dir = std::env::temp_dir().join(format!("kryptikd-waiting-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    sys_block(&dir, &[("dm-0", "kryptik-state", "0"), ("dm-1", "kryptik-zone-work", "1"), ("dm-2", "kryptik-zone-dev", "0")]);
+    let mapped: Vec<String> = ["dev", "personal", "work"].map(String::from).to_vec();
+    assert_eq!(waiting_in(&dir, &mapped), vec!["work".to_string()], "work alone: dev's volume has its key, and personal has no device");
+    assert!(waiting_in(&dir, &[]).is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_update_holding_its_lock_keeps_the_machine_awake() {
     let p = std::env::temp_dir().join(format!("kryptikd-update-lock-{}", std::process::id()));
     let _ = fs::remove_file(&p);

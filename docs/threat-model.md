@@ -224,10 +224,12 @@ ship as vendor binaries (ADR-012).
 
 Keys are in RAM while zones run. A machine suspended by `kryptik suspend`
 has wiped the state partition's key, and resumes only with its passphrase;
-the TPM does not unlock it. A running zone's volume keeps its key across
-the suspend, as its zone is frozen, not stopped. What zone 0 and the zones
-held in memory is still there, and cold-boot and DMA attacks on a running
-or suspended machine stay out of scope. No software helps against coercion.
+the TPM does not unlock it. Each open zone volume's key is wiped too, and
+the clean page cache dropped first, so no cached page of a zone volume's
+files stays; the zone waits, frozen, for its own passphrase. What zone 0
+and the zones' processes hold in their own memory is still there, and
+cold-boot and DMA attacks on a running or suspended machine stay out of
+scope. No software helps against coercion.
 The screen lock (Alt+Shift+l) keeps whoever is at the keyboard without the
 login password from every window, but takes no key out of RAM.
 

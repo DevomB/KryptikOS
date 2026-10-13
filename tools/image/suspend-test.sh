@@ -12,8 +12,9 @@
 # inodes dropped, and the screen lock, which the compositor starts, asks for the state passphrase,
 # refuses a wrong one and resumes with the right one, while nothing but a writer on /var waits
 # on the partition. Then the guest locks and sleeps for real. While it sleeps the host dumps its
-# memory, which must hold neither the state partition's key nor the passphrase typed at the lock,
-# and must hold the key of the zone volume a frozen zone keeps; it waits past the watchdog's
+# memory, which must hold neither the state partition's key, nor the zone volume's, nor a page
+# that volume had cached, nor the passphrase typed at the lock, and must hold bytes kept in a
+# file in memory; it waits past the watchdog's
 # timeout and wakes the guest, which waits three minutes at the state prompt before the
 # passphrase, typed again, resumes it. Last, a read left waiting on the suspended device keeps
 # the kernel from sleeping when the guest is asked again: the refusal is told, and the passphrase
@@ -103,6 +104,8 @@ for name in second-passphrase session-up zones-ticking state-suspended zones-fro
             nothing-else-waits lock-refuses-wrong-passphrase passphrase-resumes zones-thawed writer-resumes zones-tick-again \
             slept-and-woke woke-to-state-prompt prompt-outlasts-watchdog resumed-after-sleep zones-thawed-after-sleep \
             sleep-refusal-told resumed-after-refusal \
+            zone-waits-for-its-passphrase info-says-waiting launch-told-waiting zone-refuses-wrong-passphrase \
+            zone-passphrase-resumes zone-waits-after-sleep waiting-zone-stops volume-opens-after-giving-up \
             power-key-sleeps power-key-held-off-after-wake power-key-heeded-after-holdoff power-key-resumes \
             power-key-sleeps-locked power-key-locked-resumes \
             lock-pid-written lock-up-sleeps lock-up-resumes lock-pid-removed idle-sleeps idle-sleep-resumes; do
@@ -113,16 +116,19 @@ done
 step "step 3: the memory of the sleeping guest"
 skey="$(sed -n 's/^GT STATE-KEY \([0-9a-f]*\)$/\1/p' <<<"$T" | tail -1)"
 zkey="$(sed -n 's/^GT ZONE-KEY \([0-9a-f]*\)$/\1/p' <<<"$T" | tail -1)"
-if [[ -s "$DUMP" && -n "$skey" && -n "$zkey" ]]; then
+mark="$(sed -n 's/^GT MARK \([0-9a-f]*\)$/\1/p' <<<"$T" | tail -1)"
+cmark="$(sed -n 's/^GT CACHE-MARK \([0-9a-f]*\)$/\1/p' <<<"$T" | tail -1)"
+if [[ -s "$DUMP" && -n "$skey" && -n "$zkey" && -n "$mark" && -n "$cmark" ]]; then
     # Each half of an XTS key is a key of its own; the dump is read in pieces that overlap by
     # more than the longest needle.
-    verdict="$(python3 - "$DUMP" "$skey" "$zkey" "$SPASS" <<'PY'
+    verdict="$(python3 - "$DUMP" "$skey" "$zkey" "$SPASS" "$mark" "$cmark" <<'PY'
 import sys
-dump, skey, zkey, spass = sys.argv[1:]
+dump, skey, zkey, spass, mark, cmark = sys.argv[1:]
 def halves(hexkey):
     k = bytes.fromhex(hexkey)
     return [k[:len(k) // 2], k[len(k) // 2:]]
-needles = {"state key": halves(skey), "zone key": halves(zkey), "passphrase": [spass.encode()]}
+needles = {"state key": halves(skey), "zone key": halves(zkey), "passphrase": [spass.encode()],
+           "mark": [bytes.fromhex(mark)], "cache mark": [bytes.fromhex(cmark)]}
 found = {name: [False] * len(n) for name, n in needles.items()}
 tail = b""
 with open(dump, "rb") as f:
@@ -140,7 +146,9 @@ for name in needles:
 PY
 )"
     printf '%s\n' "$verdict" | sed 's/^/  /'
-    [[ "$verdict" == *"zone key: 2 of 2 found"* ]] && green "the dump holds the zone volume's key, which a frozen zone keeps: the search can find a key" || red "the zone volume's key is not in the dump: it is not the guest's memory, or the search finds nothing"
+    [[ "$verdict" == *"mark: 1 of 1 found"* ]] && green "the dump holds the bytes kept in a file in memory: the search finds what is there" || red "the bytes kept in memory are not in the dump: it is not the guest's memory, or the search finds nothing"
+    [[ "$verdict" == *"zone key: 0 of 2 found"* ]] && green "the dump holds no half of the zone volume's key, which the frozen zone waits to be given" || red "the zone volume's key is in the memory of the sleeping guest"
+    [[ "$verdict" == *"cache mark: 0 of 1 found"* ]] && green "the dump holds not a page the zone volume had cached" || red "a page the zone volume had cached is in the memory of the sleeping guest"
     [[ "$verdict" == *"state key: 0 of 2 found"* ]] && green "the dump holds no half of the state partition's key" || red "the state partition's key is in the memory of the sleeping guest"
     [[ "$verdict" == *"passphrase: 0 of 1 found"* ]] && green "the dump holds not the passphrase typed at the lock before the sleep" || red "the passphrase typed at the lock is in the memory of the sleeping guest"
 else

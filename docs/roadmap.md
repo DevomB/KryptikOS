@@ -195,7 +195,8 @@ A desktop someone can live in, built the same way.
   repository, or zones that carry their own userland. An ADR first.
 - **The laptop.** Per-zone sound brokered like the clipboard, Bluetooth,
   suspend with the zone volumes' keys dropped too (`kryptik suspend`, the
-  power key and the lid drop the state partition's), power management,
+  power key and the lid drop the state partition's and each zone
+  volume's), power management,
   hotplug and multiple monitors, input methods and a second keyboard layout
   to switch to.
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to

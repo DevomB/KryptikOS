@@ -13,7 +13,9 @@
 #   GT KEY-LOCK 3|4                  press Alt+Shift+l
 #   GT SLEEPING 3|4                  as GT SLEEPING 1, a refusal told as GT DID-NOT-SLEEP 5, 6
 #   GT LOCK-TYPE-STATE 4..7          type the second state passphrase and Enter
-#   GT STATE-KEY HEX, GT ZONE-KEY HEX  what the dump must not hold, and what it must
+#   GT STATE-KEY HEX, GT ZONE-KEY HEX, GT CACHE-MARK HEX
+#                                    what the dump must not hold
+#   GT MARK HEX                      what it must, to show the search finds what is there
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 #
@@ -47,14 +49,15 @@ wait_for() {   # wait_for SECONDS CMD...
 slog="$RT/kryptik/session.log"
 said() { grep -c "^kryptik-lock: $1" "$slog" 2>/dev/null; }
 more() { [[ "$(said "$1")" -gt "$2" ]]; }
-# The state partition's dm flag, from sysfs alone: 1 suspended, 0 not.
-state_flag() {
+# A device-mapper device's flag, from sysfs alone: 1 suspended, 0 not, none when it is not there.
+dm_flag() {
     local d
     for d in /sys/block/dm-*; do
-        [[ "$(< "$d/dm/name")" == kryptik-state ]] && { echo "$(< "$d/dm/suspended")"; return; }
+        [[ "$(< "$d/dm/name")" == "$1" ]] && { echo "$(< "$d/dm/suspended")"; return; }
     done
     echo none
 }
+state_flag() { dm_flag kryptik-state; }
 state_is() { [[ "$(state_flag)" == "$1" ]]; }
 # Each running zone and whether its cgroup says it is frozen, from /run and cgroupfs.
 zones_frozen() {
@@ -67,6 +70,15 @@ zones_frozen() {
     echo "${out% }"
 }
 all_frozen() { local f; f="$(zones_frozen)"; [[ -n "$f" && "$f" != *=0* ]]; }
+# One zone's freezer: 1 frozen, 0 not, none when it does not run.
+zone_frozen() {
+    local cg
+    cg="$(< "/run/kryptik/zones/$1/cgroup")" 2>/dev/null || { echo none; return; }
+    if [[ -f "$cg/cgroup.events" ]]; then grep -c '^frozen 1$' "$cg/cgroup.events"; else echo none; fi
+}
+thawed() { [[ "$(zone_frozen "$1")" == 0 ]]; }
+# A zone that waits for its volume's passphrase: frozen, its volume suspended.
+waits() { [[ "$(zone_frozen "$1")" == 1 && "$(dm_flag "kryptik-zone-$1")" == 1 ]]; }
 none_frozen() { local f; f="$(zones_frozen)"; [[ -n "$f" && "$f" != *=1* ]]; }
 # Processes waiting on a disk (state D) in two looks 3 s apart, but the writer, which must.
 blocked() {
@@ -132,6 +144,10 @@ else
 fi
 zkey="$(vkey /var/lib/kryptik/volumes/work.luks "$PP")"
 [[ "${#zkey}" -ge 64 ]] && echo "GT ZONE-KEY $zkey" || fail "zone-key-read" "cryptsetup luksDump gave ${#zkey} hex digits"
+# Bytes kept in a file on /run, which is memory: the dump must hold them. Only their hex crosses
+# the serial line.
+head -c 4096 /dev/urandom > "$OUT/mark"
+echo "GT MARK $(head -c 32 "$OUT/mark" | od -An -v -tx1 | tr -dc 0-9a-f)"
 WLOG=/var/log/kryptik/suspend-writer
 : > "$WLOG"
 ( n=0; while :; do n=$((n + 1)); echo "$n" >> "$WLOG" || exit; sleep 1; done ) &
@@ -183,6 +199,32 @@ if wait_for 60 more unlocked "$unlocked0" && state_is 0; then
 else
     fail "passphrase-resumes" "flag $(state_flag): $(grep '^kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
 fi
+# A zone with a volume stays frozen, its volume's key gone too, until its own passphrase.
+if wait_for 15 thawed untrusted && waits work; then
+    pass "zone-waits-for-its-passphrase" "untrusted thawed; work stays frozen, its volume suspended"
+else
+    fail "zone-waits-for-its-passphrase" "untrusted frozen $(zone_frozen untrusted); work frozen $(zone_frozen work), its volume's flag $(dm_flag kryptik-zone-work)"
+fi
+# The daemon serves the session's group, root not among it.
+said_info="$(as_user "kryptik-launch --info work" 2>&1)"
+grep -qx 'waiting yes' <<<"$said_info" && pass "info-says-waiting" "the daemon says work waits" \
+    || fail "info-says-waiting" "$(tr '\n' ' ' <<<"$said_info")"
+said_run="$(as_user "kryptik-launch --no-display --passphrase-fd 3 work -- true 3<$UPP" 2>&1)"
+[[ "$said_run" == *"waits for its volume's passphrase"* ]] && pass "launch-told-waiting" "$said_run" \
+    || fail "launch-told-waiting" "$said_run"
+printf 'not-the-zone-pass\n' > "$OUT/wrong-pass"; chmod 600 "$OUT/wrong-pass"
+if ! "$KD" volume resume work --passphrase-file "$OUT/wrong-pass" > "$OUT/resume-wrong.out" 2>&1 \
+   && grep -q 'wrong passphrase' "$OUT/resume-wrong.out" && waits work; then
+    pass "zone-refuses-wrong-passphrase" "$(tr '\n' ' ' < "$OUT/resume-wrong.out")and work still waits"
+else
+    fail "zone-refuses-wrong-passphrase" "$(tr '\n' ' ' < "$OUT/resume-wrong.out")"
+fi
+if "$KD" volume resume work --passphrase-file "$PP" > "$OUT/resume-work.out" 2>&1 \
+   && [[ "$(dm_flag kryptik-zone-work)" == 0 ]] && wait_for 10 thawed work; then
+    pass "zone-passphrase-resumes" "$(tr '\n' ' ' < "$OUT/resume-work.out")"
+else
+    fail "zone-passphrase-resumes" "flag $(dm_flag kryptik-zone-work), frozen $(zone_frozen work): $(tr '\n' ' ' < "$OUT/resume-work.out")"
+fi
 wait_for 15 none_frozen && pass "zones-thawed" "$(zones_frozen)" || fail "zones-thawed" "$(zones_frozen)"
 # Its file is read only now: in the window, reading it would have waited too.
 n_before="$(wc -l < "$WLOG")"
@@ -197,6 +239,12 @@ if wait_for 15 ticks_past work "$t_work" && wait_for 15 ticks_past untrusted "$t
 else
     fail "zones-tick-again" "work $(ticks work) after ${t_work}, untrusted $(ticks untrusted) after ${t_untrusted}"
 fi
+
+# A page of the work zone's volume, cached until the sleep lets the clean pages go: the dump
+# must not hold it.
+head -c 4096 /dev/urandom > "$R/work/cache-mark"
+sync
+echo "GT CACHE-MARK $(head -c 32 "$R/work/cache-mark" | od -An -v -tx1 | tr -dc 0-9a-f)"
 
 # --- a real sleep ----------------------------------------------------------------------------
 # The user's own way: the lock, then the daemon. The host sees the guest sleep, dumps its memory,
@@ -239,6 +287,28 @@ if wait_for 60 grep -q '^kryptik-lock: unlocked' "$OUT/lock-suspend.out" && stat
 else
     fail "resumed-after-sleep" "flag $(state_flag): $(tail -3 "$OUT/lock-suspend.out" | tr '\n' ' ')"
 fi
+if wait_for 15 thawed untrusted && waits work; then
+    pass "zone-waits-after-sleep" "untrusted thawed; work waits for its passphrase"
+else
+    fail "zone-waits-after-sleep" "untrusted frozen $(zone_frozen untrusted); work frozen $(zone_frozen work), its volume's flag $(dm_flag kryptik-zone-work)"
+fi
+# Never given its passphrase, the zone stops all the same: its volume fails every read and write,
+# the zone ends and the volume closes, its file whole for the next start.
+if "$KD" stop work > "$OUT/stop-waiting.out" 2>&1 && wait_for 30 test ! -e /dev/mapper/kryptik-zone-work \
+   && wait_for 30 test ! -e /run/kryptik/zones/work/init.pid; then
+    pass "waiting-zone-stops" "$(tr '\n' ' ' < "$OUT/stop-waiting.out")"
+else
+    fail "waiting-zone-stops" "mappings: $(ls /dev/mapper | tr '\n' ' '); $(tr '\n' ' ' < "$OUT/stop-waiting.out")"
+fi
+as_user "kryptik-launch --no-display --passphrase-fd 3 work -- $(tick work) 3<$UPP" > "$OUT/launch-work-again.out" 2>&1 &
+if wait_for 60 test -s "$R/work/ticks" && t_work="$(ticks work)" && wait_for 30 ticks_past work "$t_work"; then
+    pass "volume-opens-after-giving-up" "work started again on its volume, which checked clean, and counts on"
+else
+    fail "volume-opens-after-giving-up" "$(tail -2 "$OUT/launch-work-again.out" | tr '\n' ' ')"
+fi
+# The rounds below sleep with untrusted alone.
+"$KD" stop work > /dev/null 2>&1
+wait_for 30 test ! -e /dev/mapper/kryptik-zone-work
 wait_for 15 none_frozen && pass "zones-thawed-after-sleep" "$(zones_frozen)" || fail "zones-thawed-after-sleep" "$(zones_frozen)"
 
 # --- a sleep the kernel refuses ----------------------------------------------------------------

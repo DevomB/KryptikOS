@@ -323,8 +323,11 @@ waking the lock shows STATE PASSPHRASE: type the passphrase the machine asks
 for at boot, not the login password, and Enter. Until then everything kept on
 the state partition waits, the zones are frozen, and the lock takes nothing
 else; a wrong passphrase waits as a wrong password does. The zones carry on
-where they were once it is given. An encrypted zone's volume keeps its key
-across the sleep, as its zone is frozen, not stopped. The power key and
+where they were once it is given, but an encrypted zone: its volume's key
+is wiped with the sleep too, and the zone stays frozen until its own
+passphrase is given again; `kryptik-launch --info ZONE` says `waiting yes`
+until then. Stopping such a zone closes its volume without the
+passphrase. The power key and
 closing the lid do the same as `kryptik suspend`, locked or not. The machine
 can also sleep by itself, as many minutes after the screen locks for being
 idle as `~/.config/kryptik/lock-sleep` holds, from the next login; it is

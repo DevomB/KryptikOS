@@ -15,6 +15,8 @@
 //!              suspend, answered `ok woke` once the machine has slept and woken; asked
 //!                again while the state partition is suspended, it sleeps again
 //!              resume-state, the state partition's passphrase on one descriptor
+//!              resume-zone <zone>, after a sleep, that zone's volume passphrase on one
+//!                descriptor; `info` says `waiting yes` until it is given
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
@@ -1127,12 +1129,13 @@ fn net_summary(line: &str) -> Option<String> {
     })
 }
 
-/// Wrong secrets in a row, each with its own pause: the login password at the screen lock, and
-/// the state partition's passphrase at resume.
+/// Wrong secrets in a row, each with its own pause: the login password at the screen lock, the
+/// state partition's passphrase at resume, and a zone volume's after it.
 #[derive(Default)]
 struct Pauses {
     login: crate::password::Attempts,
     state: crate::password::Attempts,
+    zone: crate::password::Attempts,
 }
 
 /// `check-password`, the screen lock's: the password on a line of its own, checked against the
@@ -1273,9 +1276,10 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                     reply(
                         &conn,
                         &format!(
-                            "encrypted {}\nrunning {}\nlabel {}\n{}end\n",
+                            "encrypted {}\nrunning {}\nwaiting {}\nlabel {}\n{}end\n",
                             if enc { "yes" } else { "no" },
                             if zone_running(name) { "yes" } else { "no" },
+                            if crate::suspend::waiting().iter().any(|z| z == name) { "yes" } else { "no" },
                             z.label.as_deref().unwrap_or(&z.name),
                             net.map_or(String::new(), |n| format!("network {n}\n")),
                         ),
@@ -1330,6 +1334,42 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                     start_sleep(conn, jobs);
                 }
             }
+        }
+        "resume-zone" => {
+            let zone = first.split_whitespace().nth(1).unwrap_or("");
+            if !ident_ok(zone) {
+                reply(&conn, "error: resume-zone: bad zone name\n");
+                return None;
+            }
+            let now = Instant::now();
+            if let Some(w) = pauses.zone.paused(now) {
+                reply(&conn, &format!("error: {w}\n"));
+                return None;
+            }
+            let Some(fd) = carried else {
+                reply(&conn, "error: resume-zone: the passphrase comes on a descriptor\n");
+                return None;
+            };
+            let said = match crate::volume::Passphrase::from_fd(fd.into_raw_fd()) {
+                Err(e) => format!("error: {e}\n"),
+                Ok(pass) => match crate::suspend::resume_zone(zone, &pass) {
+                    Ok(()) => {
+                        pauses.zone.passed();
+                        eprintln!("kryptikd serve: uid {uid}: zone {zone:?}'s volume has its key again; the zone thawed");
+                        "ok\n".into()
+                    }
+                    Err(crate::suspend::ResumeError::Wrong) => {
+                        pauses.zone.failed(now);
+                        eprintln!("kryptikd serve: uid {uid}: a wrong passphrase for zone {zone:?}'s volume");
+                        "error: wrong passphrase\n".into()
+                    }
+                    Err(crate::suspend::ResumeError::Failed(e)) => {
+                        eprintln!("kryptikd serve: uid {uid}: zone {zone:?}'s volume: {e}");
+                        format!("error: {e}\n")
+                    }
+                },
+            };
+            reply(&conn, &said);
         }
         "stop" => {
             let zone = first.split_whitespace().nth(1).unwrap_or("");
@@ -1493,6 +1533,10 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
             // Check the zone exists before forking, so a bad name is answered now.
             if let Err(e) = zone_named(cfg, &req.zone) {
                 reply(&conn, &format!("error: {e}\n"));
+                return None;
+            }
+            if crate::suspend::waiting().contains(&req.zone) {
+                reply(&conn, &format!("error: zone {:?} waits for its volume's passphrase since the machine slept\n", req.zone));
                 return None;
             }
             let wayland = match &req.wayland {

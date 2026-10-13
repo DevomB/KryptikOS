@@ -202,10 +202,10 @@ Hibernation is off (`hardening.fragment`). Suspend to RAM comes from
 defconfig, and no fragment turns it off. `kryptik suspend`, the power key
 and a closed lid have the machine sleep, and so does idleness after the
 lock when the user asks for it: the screen locks, the launch daemon freezes
-every zone, suspends the state partition with its key wiped and puts the
-machine to sleep, and on waking the lock asks for the state passphrase. A
-running zone's volume keeps its key, as its zone is frozen, not stopped;
-dropping those keys too comes next (below). The lid is untested until the
+every zone, suspends each open zone volume and then the state partition
+with their keys wiped and puts the machine to sleep, and on waking the lock
+asks for the state passphrase. A zone on a volume stays frozen after that
+until its own passphrase is given (below). The lid is untested until the
 tests on physical hardware.
 
 ### Design
@@ -260,11 +260,21 @@ to resume can run from the root while the state partition is suspended.
    machine resume it, and the TPM design extends PCR 15 at boot so that
    cannot happen anyway. `luksResume` brings `/var` and `/home` back, and
    the zones thaw.
-7. **Zone volumes, next.** Each open zone volume suspended before the state
-   partition, its key wiped, and its zone frozen until the user gives its
-   passphrase through the launcher's `--ask` flow, when switching to it or
-   from a list in the chrome. A zone the user never resumes is stopped
-   when the user asks, and its volume closed.
+7. **Zone volumes.** After the flush the clean page cache goes
+   (`drop_caches`), so no cached page of a volume's files outlives its key,
+   and each open zone volume is suspended before the state partition, which
+   holds its file, its key wiped. At resume the zones without a volume thaw
+   with the state partition. One with a volume stays frozen until its own
+   passphrase comes, through the launch daemon's `resume-zone` (or
+   `kryptikd volume resume` as root); the daemon's `info` says `waiting yes`
+   meanwhile, and a launch into it is told why. Stopped without its
+   passphrase, the zone's volume is first made to fail every read and write
+   (`dmsetup wipe_table`), so nothing in it waits on the volume for good,
+   and then closes as any other; the next start checks it. At power-off a
+   mapping still waiting, a zone volume's or the state partition's, is made
+   to fail the same way first, so the unmount does not wait on it. No zone
+   keeps its key across a sleep: a zone file key to opt out would come with
+   a workflow that needs it.
 
 **What runs while the state partition is suspended** must touch nothing
 but the verified root, `/run`, `/dev`, `/proc` and `/sys`: whatever reaches
@@ -338,10 +348,11 @@ starts no program, so it goes on feeding while the partition is suspended.
 
 ### In the threat model
 
-A suspended machine has wiped the state partition's key and resumes only
-with its passphrase; the TPM does not unlock it. A running zone's volume
-keeps its key for now, and what zone 0 and the zones held in memory is
-still there ([threat model](../threat-model.md#coercion-and-access-to-a-running-or-suspended-machine)).
+A suspended machine has wiped the state partition's key and every zone
+volume's, and resumes only with their passphrases; the TPM does not unlock
+it. The clean page cache went before the sleep, but what zone 0 and the
+zones' processes hold in their own memory is still there
+([threat model](../threat-model.md#coercion-and-access-to-a-running-or-suspended-machine)).
 
 ### Check
 
@@ -349,24 +360,31 @@ still there ([threat model](../threat-model.md#coercion-and-access-to-a-running-
 (`run-ovmf.sh --s3`; QEMU's `system_wakeup` wakes it). With the machine up,
 first:
 
-- `kryptikd suspend --awake` drops the state partition's key and freezes
-  every zone, the net zone among them, and the dentry and inode caches are
-  dropped after it;
+- `kryptikd suspend --awake` drops the state partition's key and the work
+  zone volume's and freezes every zone, the net zone among them, and the
+  dentry and inode caches are dropped after it;
 - a lock dwl starts then asks for the state passphrase, a client's request
   is refused at once, and nothing but a writer on `/var` waits on the
   partition: not the lock, dwl, the chrome, the daemon, the watchdog's
   feeder or s6;
 - a wrong passphrase leaves the partition suspended, and the right one,
-  typed at the lock, resumes it, unlocks, and lets the writer and the zones
-  go on.
+  typed at the lock, resumes it, unlocks, and lets the writer and the zone
+  without a volume go on;
+- the work zone, on a volume, stays frozen with its volume suspended: the
+  daemon's `info` says it waits, a launch into it is told why, a wrong
+  passphrase leaves it waiting, and its own thaws it.
 
 Then for real, `kryptik-lock --suspend` as the user:
 
 - the machine sleeps, and a dump of its memory taken from QEMU's monitor
-  holds neither half of the state partition's key nor the passphrase typed
-  at the lock before, and does hold the key of the zone volume a frozen
-  zone keeps, which shows the search can find one (`INIT_ON_FREE` zeroes
-  what the kernel frees);
+  holds no half of the state partition's key or of the zone volume's, no
+  page the volume had cached, and not the passphrase typed at the lock
+  before, and does hold bytes kept in a file on `/run`, which shows the
+  search finds what is there (`INIT_ON_FREE` zeroes what the kernel
+  frees);
+- after the wake and the state passphrase, the work zone waits again; it
+  stops without its passphrase, its volume closing, and starts again with
+  it, the volume checking clean;
 - it sleeps past the watchdog's timeout, wakes with the lock asking for the
   state passphrase, and waits three minutes at it, the caches dropped again,
   without a reset;

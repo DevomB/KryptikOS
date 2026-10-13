@@ -1,8 +1,8 @@
-//! Suspend to RAM with the state partition's key dropped (docs/design/laptop.md): every zone
-//! frozen, the state partition suspended with its key wiped (`cryptsetup luksSuspend`), then
-//! the machine put to sleep. The partition comes back with its passphrase alone, which the
-//! screen lock asks for, and the zones thaw. A zone volume keeps its key: its zone is frozen,
-//! not stopped.
+//! Suspend to RAM with the disk keys dropped (docs/design/laptop.md): every zone frozen, the
+//! clean page cache let go, each open zone volume and then the state partition suspended with
+//! its key wiped (`cryptsetup luksSuspend`), then the machine put to sleep. The partition comes
+//! back with its passphrase alone, which the screen lock asks for, and the zones without a
+//! volume thaw. A zone with one waits, frozen, until its own passphrase gives the volume its key.
 //!
 //! While the state partition is suspended, whatever reaches /var, /home, /root or /etc's upper
 //! layer waits for it. So what answers in that time reads only sysfs and cgroupfs, and the
@@ -27,6 +27,9 @@ const UPDATE_LOCK: &str = "/run/kryptik/update.lock";
 /// suspended, that sync could wait on it for good, a flush to its device among others; the sync
 /// that counts is the one made before the partition is suspended.
 const SYNC_ON_SUSPEND: &str = "/sys/power/sync_on_suspend";
+/// Written 3, after the flush: the clean pages of every file, a zone volume's plaintext among
+/// them, and the dentries and inodes go, so a cached page does not outlive its volume's key.
+const DROP_CACHES: &str = "/proc/sys/vm/drop_caches";
 /// How long a zone may take to say it is frozen.
 const FREEZE_WITHIN: Duration = Duration::from_secs(10);
 /// How long the state partition's resume may take, its key derivation included.
@@ -50,6 +53,16 @@ pub fn suspended(name: &str) -> bool {
 /// Whether the state partition waits for its passphrase.
 pub fn state_suspended() -> bool {
     suspended(STATE_MAPPER)
+}
+
+/// Of the zones with a volume mapped, those whose mapping `sys_block` says is suspended.
+pub fn waiting_in(sys_block: &Path, mapped: &[String]) -> Vec<String> {
+    mapped.iter().filter(|z| suspended_in(sys_block, &crate::volume::mapper_name(z)) == Some(true)).cloned().collect()
+}
+
+/// The zones whose volume waits for its passphrase, frozen since the machine slept.
+pub fn waiting() -> Vec<String> {
+    waiting_in(Path::new("/sys/block"), &crate::volume::mappings())
 }
 
 /// A running zone's cgroup leaf, as the registry records it in kryptikd's own tree.
@@ -115,10 +128,15 @@ fn freeze_all() -> Result<Vec<String>, String> {
     Ok(done.into_iter().map(|(z, _)| z).collect())
 }
 
-/// Thaw every zone a suspend froze. The zones thawed.
+/// Thaw every zone a suspend froze but those whose volume waits for its passphrase, which would
+/// only wait on it. The zones thawed.
 pub fn thaw() -> Vec<String> {
+    let waiting = waiting();
     let mut thawed = Vec::new();
     for zone in crate::registry::names() {
+        if waiting.contains(&zone) {
+            continue;
+        }
         let Some(l) = leaf(&zone) else { continue };
         if held(&l) && set_freeze(&l, false).is_ok() {
             thawed.push(zone);
@@ -135,10 +153,11 @@ fn locked_out(path: &Path) -> bool {
     unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) != 0 }
 }
 
-/// Freeze every zone, flush, then suspend the state partition with its key wiped; the zones
-/// it froze. Zone volumes are written out by the flush, through their files on the partition,
-/// so nothing of theirs is left to reach it. A step that fails thaws the zones and refuses: the
-/// machine must not sleep holding the key.
+/// Freeze every zone, flush, let the clean caches go, then suspend each open zone volume and
+/// last the state partition, every key wiped; the zones it froze. A zone volume's file is on
+/// the partition, so the volume goes first, its flush written through the file. A step that
+/// fails thaws the zones whose volume still has its key and refuses: the machine must not sleep
+/// holding the state partition's.
 pub fn seal() -> Result<Vec<String>, String> {
     if locked_out(Path::new(UPDATE_LOCK)) {
         return Err("an update is being installed".into());
@@ -146,9 +165,21 @@ pub fn seal() -> Result<Vec<String>, String> {
     let zones = freeze_all()?;
     // SAFETY: sync takes no arguments and cannot fail.
     unsafe { libc::sync() };
+    // Best effort: a page left cached is plaintext in memory, never a volume's key.
+    let _ = fs::write(DROP_CACHES, "3");
     if let Err(e) = fs::write(SYNC_ON_SUSPEND, "0") {
         thaw();
         return Err(format!("{SYNC_ON_SUSPEND}: {e}: the kernel's own sync before it sleeps would wait on the suspended partition"));
+    }
+    // One asleep since an earlier sleep, its passphrase not given yet, stays as it is.
+    for zone in crate::volume::mappings() {
+        if suspended(&crate::volume::mapper_name(&zone)) {
+            continue;
+        }
+        if let Err(e) = crate::volume::suspend_mapping(&crate::volume::mapper_name(&zone)) {
+            thaw();
+            return Err(format!("zone {zone:?}'s volume did not suspend: {e}"));
+        }
     }
     if let Err(e) = crate::volume::suspend_mapping(STATE_MAPPER) {
         thaw();
@@ -236,6 +267,41 @@ pub fn resume_state(pass: &Passphrase) -> Result<Vec<String>, ResumeError> {
         Some(2) => Err(ResumeError::Wrong),
         code => Err(ResumeError::Failed(format!("cryptsetup luksResume exited {}: {}", code.unwrap_or(-1), err.trim()))),
     }
+}
+
+/// Give a zone's volume its key again after a sleep (`cryptsetup luksResume`), then thaw the
+/// zone. The volume's header is in its file on the state partition, which must have its key.
+pub fn resume_zone(zone: &str, pass: &Passphrase) -> Result<(), ResumeError> {
+    if state_suspended() {
+        return Err(ResumeError::Failed("the state partition waits for its passphrase first".into()));
+    }
+    if !waiting().iter().any(|z| z == zone) {
+        return Err(ResumeError::Failed(format!("zone {zone:?} does not wait for its passphrase")));
+    }
+    match crate::volume::resume_mapping(zone, pass) {
+        Ok(()) => {}
+        Err(crate::volume::VolumeError::WrongPassphrase { .. }) => return Err(ResumeError::Wrong),
+        Err(e) => return Err(ResumeError::Failed(e.to_string())),
+    }
+    if let Some(l) = leaf(zone) {
+        if held(&l) {
+            let _ = set_freeze(&l, false);
+        }
+    }
+    Ok(())
+}
+
+/// A zone whose volume waits for its passphrase, stopped without it: the volume's table made to
+/// fail every read and write, then the zone thawed, so the stop's signals reach it and nothing
+/// in it waits on the volume for good.
+pub fn give_up_zone(zone: &str) -> Result<(), String> {
+    crate::volume::fail_mapping(zone).map_err(|e| e.to_string())?;
+    if let Some(l) = leaf(zone) {
+        if held(&l) {
+            set_freeze(&l, false).map_err(|e| format!("zone {zone:?}: {}: {e}", l.display()))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
