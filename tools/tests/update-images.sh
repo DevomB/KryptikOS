@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Tests for kryptik-update's stage_images and prune_images, offline: a payload's software images
-# reach the store only for the root the payload carries and only as their list signs them, and the
-# store keeps the lists of the roots in the two slots and the images those lists name.
+# Tests for the image store (build/service-scripts/image-store.sh) and kryptik-update's staging of a
+# payload's images, offline: images reach the store only for the root they come with and only as their
+# list signs them, and the store keeps the lists of the roots in the two slots and the images they name.
 
 set -uo pipefail
 
@@ -9,6 +9,7 @@ unset KRYPTIK_SOURCES KRYPTIK_WORK KRYPTIK_LOCK KRYPTIK_OUT KRYPTIK_ROOT
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 UPD="${ROOT}/tools/update/kryptik-update"
+LIB="${ROOT}/build/service-scripts/image-store.sh"
 
 PASS=0
 FAIL=0
@@ -23,8 +24,8 @@ W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
 STORE="${W}/store"
 
-# The two functions, lifted out of the tool as image-list.sh lifts check-images, with what apply
-# has set by the time it calls them: the payload's path, its manifest's hashes and the private copy.
+# The store's functions and apply's staging, lifted out as image-list.sh lifts check-images, with
+# what apply has set by the time it calls them: the payload's path, its manifest's hashes and the copy.
 {
     printf 'IMAGES=%q\n' "$STORE"
     echo 'say() { printf "%s\n" "$*"; }'
@@ -32,11 +33,14 @@ STORE="${W}/store"
     echo 'uncache() { :; }'
     echo 'payload_path() { echo "$dir/$1"; }'
     echo 'manifest_hash() { sed -n '"'"'/^--$/,$p'"'"' "$m" | sed 1d | awk -v r="$1" '"'"'$3==r {print $1; exit}'"'"'; }'
+    sed -n '/^images_keep() {/,/^}/p' "$LIB"
+    sed -n '/^images_prune() {/,/^}/p' "$LIB"
     sed -n '/^stage_images() {/,/^}/p' "$UPD"
-    sed -n '/^prune_images() {/,/^}/p' "$UPD"
+    grep '^payload_image() ' "$UPD"
 } > "${W}/lib.sh"
-grep -q '^stage_images() {' "${W}/lib.sh" && grep -q '^prune_images() {' "${W}/lib.sh" \
-    || { echo "FATAL: stage_images or prune_images is missing from ${UPD}" >&2; exit 1; }
+for fn in images_keep images_prune stage_images payload_image; do
+    grep -q "^${fn}() " "${W}/lib.sh" || { echo "FATAL: ${fn} is missing from ${LIB} or ${UPD}" >&2; exit 1; }
+done
 
 hex() { printf "%064d" 0 | tr 0 "$1"; }
 R1="$(hex 1)"; R2="$(hex 2)"; R3="$(hex 3)"
@@ -76,7 +80,7 @@ stage "${W}/p1" "$R1"
     || red "staging the same image twice did not find it kept: ${OUT}"
 
 stage "${W}/p1" "$R2"
-[[ "$RC" -ne 0 && "$OUT" == *"REFUSED: the payload's image list is for another root"* ]] \
+[[ "$RC" -ne 0 && "$OUT" == *"REFUSED: the image list is for another root than the one it comes with"* ]] \
     && green "a list for another root than the payload carries is refused" || red "a list for another root was not refused: ${OUT}"
 
 payload "${W}/p2" "$R1" viewer "what the list signs" "$(hex c)"
@@ -85,7 +89,7 @@ zstd -q -f "${W}/other" -o "${W}/p2/viewer.img.zst"
 # The release manifest still vouches for the file, as it would for a payload built wrong.
 sed -i "s/^[0-9a-f]* [0-9]* viewer.img.zst\$/$(sha256sum "${W}/p2/viewer.img.zst" | cut -c1-64) $(stat -c %s "${W}/p2/viewer.img.zst") viewer.img.zst/" "${W}/p2/manifest"
 stage "${W}/p2" "$R1"
-if [[ "$RC" -ne 0 && "$OUT" == *"REFUSED: image viewer does not decompress to the bytes its list signs"* ]] \
+if [[ "$RC" -ne 0 && "$OUT" == *"REFUSED: image viewer is not the bytes its list signs"* ]] \
    && [[ -z "$(find "$STORE" -name '*.new')" && ! -e "${STORE}/viewer/$(hex c).img" ]]; then
     green "an image that does not decompress to its signed bytes is refused, and nothing of it is left"
 else
@@ -114,7 +118,7 @@ stage "${W}/p5" "$R1"
 payload "${W}/q2" "$R2" probe "the probe image" "$(hex b)"; stage "${W}/q2" "$R2"
 payload "${W}/q3" "$R3" viewer "only the third root's" "$(hex d)"; stage "${W}/q3" "$R3"
 : > "${STORE}/probe/$(hex e).img.new"
-( . "${W}/lib.sh"; prune_images "$R1" "$R2" )
+( . "${W}/lib.sh"; images_prune "$STORE" "$R1" "$R2" )
 if [[ -f "${STORE}/${R1}.manifest" && -f "${STORE}/${R2}.manifest.sig" && ! -e "${STORE}/${R3}.manifest" && ! -e "${STORE}/${R3}.manifest.sig" ]] \
    && [[ -f "${STORE}/probe/$(hex b).img" && ! -e "${STORE}/viewer/$(hex d).img" && ! -e "${STORE}/probe/$(hex e).img.new" ]]; then
     green "pruning keeps the two roots' lists and the images they name, and nothing else"
