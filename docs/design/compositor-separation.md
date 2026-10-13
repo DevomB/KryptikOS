@@ -7,8 +7,8 @@ today, and weighs four changes: a socket per zone with the compositor's own
 filter, the proxies as users of their own under seccomp and Landlock, the
 compositor as a user of its own and confined as zones are, and moving the
 Wayland protocol out of zone 0 so that only pixels and input cross. It gives
-their costs and an order; the first two are built. The proposed decision is
-ADR-024 in [decisions](../decisions.md).
+their costs and an order. ADR-024 in [decisions](../decisions.md) decides
+the first two, which are built; the third and fourth are later.
 
 ## What a compromise reaches today
 
