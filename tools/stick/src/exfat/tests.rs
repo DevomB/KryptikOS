@@ -1,6 +1,7 @@
 use super::*;
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// 512-byte sectors and 4 KiB clusters on a 2 MiB volume: the FAT in sectors 24-31, the heap's
 /// 508 clusters from sector 32, the bitmap in cluster 2, the up-case table in 3, the root in 4.
@@ -182,9 +183,12 @@ fn open(b: Vec<u8>) -> Result<ExFat<Cursor<Vec<u8>>>, String> {
     ExFat::open(Cursor::new(b))
 }
 
-/// A directory of the test's own here, made empty.
+/// A directory of the call's own here, made empty: the tests run at once, several of them through
+/// refused().
 fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("kryptik-stick-exfat-{}-{name}", std::process::id()));
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let n = CALLS.fetch_add(1, Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("kryptik-stick-exfat-{}-{name}-{n}", std::process::id()));
     let _ = fs::remove_dir_all(&d);
     fs::create_dir_all(&d).unwrap();
     d
