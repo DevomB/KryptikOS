@@ -14,11 +14,14 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
   with no GPU renderer and no Xwayland (`-Drenderers=[] -Dxwayland=disabled`
   in `build/recipes/wlroots.sh`); its DRM backend scans out dumb buffers, and
   `kryptik-session` sets `WLR_RENDERER=pixman`.
-- **The proxy offers nine globals.** `kryptik-wlproxy` advertises
+- **The proxy offers ten globals.** `kryptik-wlproxy` advertises
   `wl_compositor`, `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`,
-  `xdg_wm_base`, `zxdg_decoration_manager_v1` and `wp_viewporter`, and
-  `wl_data_device_manager` as a global of its own, which it serves itself
-  while the compositor's stays hidden (below). It disconnects a client
+  `xdg_wm_base`, `zxdg_decoration_manager_v1`, `wp_viewporter` and
+  `wp_cursor_shape_manager_v1`, and `wl_data_device_manager` as a global of
+  its own, which it serves itself while the compositor's stays hidden
+  (below). A cursor named through `wp_cursor_shape_manager_v1` is drawn by
+  the compositor from its own theme, while an image a zone draws is never
+  taken. It disconnects a client
   that binds anything else, and bounds shared-memory pools at 64 MiB each,
   128 MiB per connection and 256 MiB per zone
   (`compositor/wlproxy/src/policy.rs`).

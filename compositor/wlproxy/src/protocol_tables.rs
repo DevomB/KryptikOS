@@ -4,6 +4,7 @@
 //   xdg-shell.xml  sha256 7ba7f9c8473deee674cb1f154a18abd0bb0cc072604fc055b0c15e459fc4c7df
 //   xdg-decoration-unstable-v1.xml  sha256 68753c4a85a28659e3aa1fe0f138329a8bf3dff0b4789f4663a2c7fedbfecf2f
 //   viewporter.xml  sha256 dcb12279a03746301fe490aaed4b38a403485a925abfce2ccfceb644e104fe71
+//   cursor-shape-v1.xml  sha256 bb57d91e53a79dadab7c612dab87c233393cee73673feefa7442cfbfdd9aed2f
 //
 // Each message's arguments in wire order, and how many are descriptors. A
 // new_id with no interface is wl_registry.bind's, which the client names.
@@ -453,6 +454,27 @@ pub static INTERFACES: &[Interface] = &[
             Message { name: "destroy", args: &[], fds: 0, since: 1 },
             Message { name: "set_source", args: &[Arg::Fixed, Arg::Fixed, Arg::Fixed, Arg::Fixed], fds: 0, since: 1 },
             Message { name: "set_destination", args: &[Arg::Int, Arg::Int], fds: 0, since: 1 },
+        ],
+        events: &[
+        ],
+    },
+    Interface {
+        name: "wp_cursor_shape_manager_v1",
+        version: 2,
+        requests: &[
+            Message { name: "destroy", args: &[], fds: 0, since: 1 },
+            Message { name: "get_pointer", args: &[Arg::NewId { iface: Some("wp_cursor_shape_device_v1") }, Arg::Object { nullable: false }], fds: 0, since: 1 },
+            Message { name: "get_tablet_tool_v2", args: &[Arg::NewId { iface: Some("wp_cursor_shape_device_v1") }, Arg::Object { nullable: false }], fds: 0, since: 1 },
+        ],
+        events: &[
+        ],
+    },
+    Interface {
+        name: "wp_cursor_shape_device_v1",
+        version: 2,
+        requests: &[
+            Message { name: "destroy", args: &[], fds: 0, since: 1 },
+            Message { name: "set_shape", args: &[Arg::Uint, Arg::Uint], fds: 0, since: 1 },
         ],
         events: &[
         ],

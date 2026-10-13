@@ -731,7 +731,7 @@ wait_for 10 grep -q 'the cursor image entered an output' "$LOG/cursor-zone0.out"
 wait "$probe0" 2>/dev/null
 stop_zone untrusted
 mark cursor untrusted
-launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 20" > "$LOG/launch-cursor.out" 2>&1
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 20 shape" > "$LOG/launch-cursor.out" 2>&1
 cursor_asked() { since_mark cursor untrusted | grep -q 'set a '; }
 wait_for 20 probe_committed cursor || fail "cursor-mapped" "the probe did not draw its window: $(tr '\n' ' ' < "$LOG/launch-cursor.out")"
 echo "GT POINTER-UNTRUSTED"
@@ -743,6 +743,12 @@ if since_mark cursor untrusted | grep -q 'the cursor image entered an output'; t
     fail "zone-cursor-not-shown" "the compositor took the zone's cursor image: it entered an output"
 else
     pass "zone-cursor-not-shown" "six seconds after the zone asked, its cursor image has entered no output"
+fi
+# A cursor by name is the compositor's own drawing, from its theme: the zone may ask for one.
+if since_mark cursor untrusted | grep -q 'asked for the text cursor by name' && ! since_mark cursor untrusted | grep -qE 'refused|connection closed'; then
+    pass "zone-cursor-by-name" "the zone asked for the text cursor by name through its proxy, and its session stood"
+else
+    fail "zone-cursor-by-name" "$(since_mark cursor untrusted | tail -4 | tr '\n' ' ')"
 fi
 # --- a zone's window animates on a clock of its own ----------------------------------------
 # A zone's monotonic clock starts at a random point (isolate::set_time_origin), so the

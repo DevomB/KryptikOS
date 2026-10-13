@@ -72,7 +72,8 @@ and similar Wayland globals, keeps copy and paste among the zone's own
 clients, and stamps each window with its zone; the compositor draws the zone's border and title prefix from that. A
 window it could not stamp is refused, never left to be drawn as zone 0's.
 Over a zone's window the pointer is the compositor's own cursor: an image
-the zone set would be drawn above every window, wherever it chose. Of the
+the zone set would be drawn above every window, wherever it chose, so a zone
+may only name one of the compositor's own. Of the
 monitors a zone learns sizes and modes, not make, model or serial: the
 proxy blanks those and names each output by number.
 
