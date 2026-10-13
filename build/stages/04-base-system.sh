@@ -263,6 +263,8 @@ PACKAGES=(
     "linux-firmware" "s_firmware $(sha256_of "${KRYPTIK_ROOT}/build/config/firmware.list" 2>/dev/null || echo none)"
     # --- sound: the library zone 0's mixer and a zone's programs use (docs/design/laptop.md).
     "alsa-lib"    "s_alsa_lib"
+    # Zone 0's mixer and a zone's plugin to it; the sources' digest rebuilds them.
+    "sound"       "s_sound $(tree_digest "${KRYPTIK_ROOT}"/tools/sound/*)"
     # --- the desktop: build tools, the Wayland stack, compositor, applications.
     "meson"       "s_meson"
     "ninja"       "s_ninja"

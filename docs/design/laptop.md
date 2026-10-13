@@ -17,9 +17,11 @@ check. The proposed decisions are ADR-021 and ADR-022 in
 
 The kernel builds HD Audio and USB audio as signed modules
 (`boot.fragment`), and the image carries alsa-lib without its MIDI,
-sequencer, use-case manager and DSP topology parts. No zone has a sound
-device or a sound server: `kryptik-sound` and the zone's plugin are not
-written.
+sequencer, use-case manager and DSP topology parts. `kryptik-sound` mixes
+in zone 0 and every zone but the net zone plays through it, as the
+recommendation below has it. The microphone is granted, and volume and
+mute set, on its control socket (`kryptik-sound --control`, group
+`kryptik`): the chrome's gesture and keys are still to come.
 
 ### The kernel side
 
@@ -51,48 +53,70 @@ row.
   compromised it records whatever it likes and carries audio from one zone to
   another, and the microphone's gate would be enforced by the party it
   should restrain.
-- **A small mixer in zone 0.** `kryptik-sound`, in Rust like kryptikd, runs
-  as a user of its own in the `audio` group, never as root. It reads
-  fixed-format sound from one socket per zone, mixes it, and plays it
-  through alsa-lib, whose UCM configurations the SOF and AMD laptops need.
-  The microphone's gate is trusted code, and only zone 0 reaches the sound
-  drivers' ioctls.
+- **A small mixer in zone 0.** `kryptik-sound` runs as a user of its own
+  in the `audio` group, never as root. It reads fixed-format sound from one
+  socket per zone, mixes it, and plays it through alsa-lib, whose UCM
+  configurations the SOF and AMD laptops need. The microphone's gate is
+  trusted code, and only zone 0 reaches the sound drivers' ioctls. It is C,
+  built in stage 04 with the hardening flags like the screen lock, not Rust
+  like kryptikd: alsa-lib is a glibc library that loads its plugins, and
+  kryptikd is a static musl binary built outside the image.
 
 ### Recommendation: the mixer in zone 0, brokered like the clipboard
 
-- **The channel.** `kryptik-sound` keeps one listening socket per configured
-  zone. kryptikd binds that zone's socket into the zone at
-  `/run/kryptik/sound` at launch, as it binds the broker and proxy sockets.
-  The mixer checks the peer's uid against the zone's identity
-  (`SO_PEERCRED`, as the [broker](broker.md#identity-is-the-peer-uid) does).
+- **The channel.** `kryptik-sound` keeps one listening socket per zone,
+  `/run/kryptik-sound/zones/NAME/socket`, for every zone but the nic zone
+  (`kryptikd sound zones`). Its service makes each socket's directory as
+  root, and kryptikd binds that directory into the zone at
+  `/run/kryptik/sound` at launch, as it binds the broker and proxy sockets:
+  the directory, so the socket a restarted mixer makes is the one a running
+  zone reaches, and one root owns, so the mixer cannot have it name another
+  place. The mixer checks the peer's uid against the uid the zone's root
+  maps to (`SO_PEERCRED`, as the [broker](broker.md#identity-is-the-peer-uid)
+  does), and a zone holds at most eight streams.
+- **The mixer's user** is uid 87 in group `audio` (11) and nothing else,
+  fixed numbers set by its service, so no line under `/etc`, whose upper
+  layer state can change, decides who it is. It refuses to run as root.
 - **The wire.** One line, `play` or `record`, then raw interleaved frames:
   48 kHz, two channels, signed 16-bit little-endian, and nothing else. A
   fixed format leaves nothing to parse, and a zone that sends garbage plays
   noise in its own stream.
 - **The microphone.** `record` is refused unless the user granted the
   microphone to that zone with a gesture in the chrome, as `m<N><M>` moves a
-  clipboard. The grant lasts until the zone stops or the user takes it back,
-  and only one zone holds it at a time. The chrome shows which zone is
-  recording, and a zone hears nothing of any other zone.
+  clipboard. The grant lasts until the zone stops (kryptikd says `revoke
+  NAME` when its zone exits) or the user takes it back, and only one zone
+  holds it at a time. The chrome shows which zone is recording (the
+  control socket's `status`), and a zone hears nothing of any other zone.
 - **Volume** and mute per zone are the chrome's, along with a key that mutes
-  everything.
+  everything. The mixer applies them, squared so the steps sound even, and
+  sets the card's own controls to unity when it opens it, so a card that
+  came up muted plays.
+- **The card** is a USB device when one is plugged in, as it is plugged in
+  to be used, otherwise the first card with a device 0; an HDMI-only card
+  has none. The mixer opens it only while something plays and closes it
+  five seconds after, so the codec can power down.
 - **In the zone,** alsa-lib with a small PCM plugin as the default device
-  writes to `/run/kryptik/sound`. Firefox built with `--enable-alsa` uses
-  it directly. No PulseAudio or PipeWire runs in a zone.
+  writes to `/run/kryptik/sound/socket` (`/usr/etc/alsa/conf.d`, on the
+  verified root, which every zone reads). Firefox built with
+  `--enable-alsa` uses it directly. No PulseAudio or PipeWire runs in a
+  zone.
 
 ### Check
 
 QEMU's HDA device with its output written to a WAV file on the host (`-audiodev wav`),
-in `make sound-test`:
+in `make sound-test`, all of which it checks but the chrome's part:
 
 - the card registers at boot with its codec bound, every codec driver
   loaded ahead of the controller;
-- a tone played in `work` arrives in the file;
+- a tone played in a zone arrives in the file;
 - two zones playing at once are mixed;
-- `record` without a grant is refused, works after the chrome's gesture,
-  and is refused again once the zone stops;
-- a connection from another zone's uid is refused;
-- no zone's `/dev` has a sound node.
+- `record` without a grant is refused, works after the grant (the
+  control socket's, until the chrome's gesture), shows in the status while
+  it records, and is refused again once the zone stops;
+- a connection from another uid than the zone's is refused;
+- no zone's `/dev` has a sound node, and no zone reaches the control
+  socket;
+- the mixer runs as uid 87 in group `audio` alone.
 
 ## Bluetooth
 

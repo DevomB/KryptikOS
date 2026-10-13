@@ -37,6 +37,10 @@ vDSO's data page, which a time namespace maps beside its own, and the CPU's
 timestamp counter, one instruction away, each give it; the free memory in
 `/proc/meminfo`, coarse, which programs need; and the idle counts of a CPU
 brought online after the zone started.
+Sound leaves the zone as one stream of samples to zone 0's mixer, which
+reads one word before them, runs as a user of its own in the cards' group
+alone and gives the zone nothing of any other zone's; the zone records only
+while the user has granted it the microphone.
 Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 

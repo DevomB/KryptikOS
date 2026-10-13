@@ -20,6 +20,7 @@ mod registry;
 mod rootfs;
 mod seccomp;
 mod serve;
+mod sound;
 mod spawn;
 mod supplicant;
 mod time;
@@ -96,6 +97,9 @@ USAGE:
     kryptikd time committed DIR       once boot-success has committed a slot: its
                                       release (the signed manifest in DIR) is the
                                       floor if it is the newest
+    kryptikd sound zones              the zones zone 0's mixer serves, a line each,
+                                      "NAME UID": the uid the zone's root maps to,
+                                      the only peer its socket takes
     kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
                                       checked as nobody on copies: how kryptik-update
                                       apply, which runs as root, has a release checked
@@ -271,6 +275,13 @@ fn main() -> ExitCode {
         "volume" => cmd_volume(&zone_dir, &args),
         "serve" => serve::cmd_serve(&zone_dir, &args),
         "wifi" => cmd_wifi(&zone_dir, &args),
+        "sound" => match args.get(1).map(String::as_str) {
+            Some("zones") => cmd_sound_zones(&zone_dir),
+            _ => {
+                eprintln!("sound: expected `zones`");
+                ExitCode::from(2)
+            }
+        },
         "time" => cmd_time(&args),
         "check-release" => match args.as_slice() {
             [_, dir] => match update::check_release(Path::new(dir)) {
@@ -737,6 +748,19 @@ fn cmd_list(dir: &Path) -> ExitCode {
             for z in zones {
                 println!("{}", z.name);
             }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_sound_zones(dir: &Path) -> ExitCode {
+    match zone::load_all(dir) {
+        Ok(zones) => {
+            print!("{}", sound::zones_list(&zones));
             ExitCode::SUCCESS
         }
         Err(e) => {
