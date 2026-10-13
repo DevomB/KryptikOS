@@ -740,9 +740,11 @@ pub fn install_supplicant_filter() -> Result<(), SeccompError> {
 /// thirty of the zone's calls. `tools/tests/proxy-calls.sh` runs the static proxy under strace
 /// and fails on a call it makes that is missing here.
 pub const PROXY_ALLOWLIST: &[libc::c_long] = &[
-    // Its exec, the C library's start and Rust's (TLS, the stack guard, SIGPIPE ignored), its end.
+    /* Its exec, the C library's start and Rust's (TLS, the stack guard and its handler, which
+     * musl unblocks its own signals for, SIGPIPE ignored), its end. */
     libc::SYS_execve, libc::SYS_arch_prctl, libc::SYS_set_tid_address, libc::SYS_rt_sigaction,
-    libc::SYS_sigaltstack, libc::SYS_prlimit64, libc::SYS_exit, libc::SYS_exit_group,
+    libc::SYS_rt_sigprocmask, libc::SYS_sigaltstack, libc::SYS_prlimit64, libc::SYS_exit,
+    libc::SYS_exit_group,
     // Memory, none of it executable (`proxy_program`).
     libc::SYS_brk, libc::SYS_mmap, libc::SYS_munmap, libc::SYS_mremap, libc::SYS_mprotect,
     libc::SYS_madvise,
