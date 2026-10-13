@@ -34,11 +34,12 @@ STORE="${W}/store"
     echo 'payload_path() { echo "$dir/$1"; }'
     echo 'manifest_hash() { sed -n '"'"'/^--$/,$p'"'"' "$m" | sed 1d | awk -v r="$1" '"'"'$3==r {print $1; exit}'"'"'; }'
     sed -n '/^images_keep() {/,/^}/p' "$LIB"
+    sed -n '/^_images_fail() {/,/^}/p' "$LIB"
     sed -n '/^images_prune() {/,/^}/p' "$LIB"
     sed -n '/^stage_images() {/,/^}/p' "$UPD"
     grep '^payload_image() ' "$UPD"
 } > "${W}/lib.sh"
-for fn in images_keep images_prune stage_images payload_image; do
+for fn in images_keep _images_fail images_prune stage_images payload_image; do
     grep -q "^${fn}() " "${W}/lib.sh" || { echo "FATAL: ${fn} is missing from ${LIB} or ${UPD}" >&2; exit 1; }
 done
 
