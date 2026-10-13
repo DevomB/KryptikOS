@@ -28,6 +28,18 @@ s_browser_firefox() {
     echo '#include <cstdint>' | "${llvm}/bin/clang" -x c++ -fsyntax-only --gcc-install-dir="$gccdir" -
     src="$(unpack "firefox-${V_FIREFOX}esr.source.tar.xz" "firefox-${V_FIREFOX}")"
     cd "$src"
+    # The build's Glean step caches what it parses through Python's sqlite3, and the base system's
+    # Python has none, as zone 0 has no SQLite: the module is built from that Python's own source
+    # and Firefox's copy of SQLite, for this build alone (browser.strip keeps it out of the image).
+    local py pysrc
+    py="$(python3 -c 'import platform; print(platform.python_version())')"
+    pysrc="$(unpack "Python-${py}.tar.xz" "Python-${py}")"
+    gcc -O2 -fPIC -shared -DSQLITE_OMIT_LOAD_EXTENSION \
+        -I"$(python3 -c 'import sysconfig; print(sysconfig.get_path("include"))')" -I"${src}/third_party/sqlite3/src" \
+        "${pysrc}"/Modules/_sqlite/*.c "${src}/third_party/sqlite3/src/sqlite3.c" \
+        -o "$(python3 -c 'import sysconfig; print(sysconfig.get_path("platstdlib") + "/lib-dynload/_sqlite3" + sysconfig.get_config_var("EXT_SUFFIX"))')"
+    rm -rf "$pysrc"
+    python3 -c 'import sqlite3; sqlite3.connect(":memory:").execute("create table t (x)")'
     # Configure requires unzip, which only packaging runs (make_unzip.py: `unzip ARCHIVE`, into the
     # current directory) and the base system does not have: Python's zipfile does that, here alone.
     # And llvm-objdump, which it finds by asking the compiler when that is clang: GCC's, it is named.
