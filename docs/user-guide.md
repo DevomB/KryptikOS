@@ -300,7 +300,9 @@ Type the login password and Enter. After a wrong one the lock shows WRONG,
 and the next try waits 2 seconds, doubling with each wrong one in a row up
 to a minute (the lock shows WAIT and the seconds); Escape clears what was
 typed. If the lock's program dies, the screen stays locked and the lock
-starts again.
+starts again. The screen also locks by itself after ten minutes without a
+key, a click or the pointer moving; to change that, write the minutes to
+`~/.config/kryptik/lock-idle` (0 for never), which the next login reads.
 
 Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then

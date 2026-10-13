@@ -21,6 +21,7 @@
 #   GT SCREENSHOT-LOCKED                            take a screenshot
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
+#   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
@@ -93,6 +94,14 @@ pgrep -u "$USER_NAME" -x dwl >/dev/null && pass "compositor-running" || fail "co
 wait_for 20 test -f "$RT/kryptik/focus" && pass "chrome-focus-record" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "chrome-focus-record" "no $RT/kryptik/focus after 20 s"
 # The record exists before the chrome's own window has mapped: wait for the window.
 wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus" && pass "chrome-window-is-zone0" "the launcher window is recorded as zone 0 (trusted)" || fail "chrome-window-is-zone0" "$(cat "$RT/kryptik/focus" 2>/dev/null | tr '\n' ' '); terminals: $(pgrep -u "$USER_NAME" -a havoc 2>/dev/null | tr '\n' ';'); session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+# The chrome arms the idle lock, ten minutes by default. The suite stops it, as its own quiet
+# stretches would lock the session under it; the lock section runs one of 8 s.
+if wait_for 20 pgrep -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 600'; then
+    pass "idle-lock-armed" "the chrome started kryptik-lock --idle 600"
+else
+    fail "idle-lock-armed" "kryptik-lock processes: $(pgrep -u "$USER_NAME" -af kryptik-lock | tr '\n' ';')"
+fi
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 600' 2>/dev/null
 
 # --- what zone 0 sees, and what a zone sees ---------------------------------
 as_user "/usr/libexec/kryptik/wlprobe list" > "$LOG/probe-zone0.out" 2>&1
@@ -526,7 +535,7 @@ for d in /proc/[0-9]*; do
     read -r _ script _ <<<"$cmd"
     # An interpreter only as one of Kryptik's scripts; havoc only around the chrome's menu or a launch.
     case "$exe" in
-        /usr/bin/s6-*|/usr/sbin/s6-*|/usr/libexec/s6-*|/usr/sbin/udevd|/usr/sbin/agetty|/usr/bin/seatd|/usr/bin/kryptikd|/usr/bin/kryptik-wlproxy|/usr/bin/kryptik-launch|/usr/bin/dwl|/usr/bin/sleep) ;;
+        /usr/bin/s6-*|/usr/sbin/s6-*|/usr/libexec/s6-*|/usr/sbin/udevd|/usr/sbin/agetty|/usr/bin/seatd|/usr/bin/kryptikd|/usr/bin/kryptik-wlproxy|/usr/bin/kryptik-launch|/usr/bin/kryptik-lock|/usr/bin/dwl|/usr/bin/sleep) ;;
         /usr/bin/bash|/usr/bin/python3)
             case "$script" in /usr/libexec/kryptik/*|/usr/bin/kryptik-session|/usr/bin/kryptik-chrome) ;; *) foreign+=("$p ${cmd:0:60}") ;; esac ;;
         /usr/bin/havoc)
@@ -799,6 +808,26 @@ else
 fi
 pkill -u "$USER_NAME" -f 'wlprobe oversize 0 300 lock-0' 2>/dev/null; wait "$lock0_pid" 2>/dev/null
 stop_zone untrusted
+# Idle, the session locks itself: kryptik-lock --idle, as the chrome starts it, locks after
+# its seconds without input, and again after the next quiet stretch once unlocked.
+as_user "/usr/bin/kryptik-lock --idle 8" > "$LOG/idle-lock.out" 2>&1 &
+idle_pid=$!
+idle_said() { [[ "$(grep -c "^kryptik-lock: $1" "$LOG/idle-lock.out")" -ge "$2" ]]; }
+if wait_for 30 idle_said locked 1 && grep -q '^kryptik-lock: no input for 8 s, locking' "$LOG/idle-lock.out"; then
+    pass "idle-locks" "8 s without input locked the session"
+else
+    fail "idle-locks" "$(tr '\n' ' ' < "$LOG/idle-lock.out"); session.log: $(grep 'kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+fi
+echo "GT LOCK-TYPE-IDLE"
+if wait_for 30 idle_said unlocked 1 && wait_for 30 idle_said locked 2; then
+    pass "idle-locks-again" "unlocked by the password, the session locked itself again after 8 s more without input"
+else
+    fail "idle-locks-again" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
+fi
+echo "GT LOCK-TYPE-IDLE-AGAIN"
+wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
+# Its own quiet stretches below must not lock the session under the suite.
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8' 2>/dev/null; wait "$idle_pid" 2>/dev/null
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
 # chrome's record follows the monitor in use, and pulling the monitor out

@@ -186,7 +186,11 @@ nothing for 2 s, doubling to 60 s, as the consent window does. dwl keeps a
 session locked when its lock dies and then takes no keys, so the lock runs
 in a child that starts again when a signal kills it. At resume the state
 passphrase will be the unlock instead: whoever knows it already owns the
-machine. Locking on idle and before suspend are still to come.
+machine. On idle, the chrome starts `kryptik-lock --idle`, which waits on
+dwl's `ext-idle-notify-v1` and locks after ten minutes without input, or
+the minutes in `~/.config/kryptik/lock-idle` (0 never). No zone can bind the
+notifier, which would tell it when the user is away. Locking before suspend
+is still to come.
 
 The lock's check, in `make gui-test`:
 
@@ -200,7 +204,9 @@ The lock's check, in `make gui-test`:
 - the lock's program killed leaves the session locked with no window given
   the keyboard, and the lock locks again;
 - a grab a zone makes while locked keeps no key from the lock;
-- the login password unlocks, and zone 0's window has the keyboard again.
+- the login password unlocks, and zone 0's window has the keyboard again;
+- the chrome arms the idle lock at ten minutes, and an idle lock of 8 s
+  locks the session, and locks it again after the next 8 s once unlocked.
 
 **The watchdog** must not reset a sleeping machine. The drivers stop their
 timers across suspend; the suite proves it with a sleep longer than the
@@ -254,7 +260,8 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 - **Brightness.** An eudev rule gives the `video` group write access to the
   backlight, the session user is in it, and dwl's keys run a small tool.
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
-  zone 0 tool to blank the screen, then lock, then suspend. Zones may hold the screen awake through the
+  zone 0 tool to blank the screen, then lock, then suspend. The lock is
+  built (`kryptik-lock --idle`, above); blanking and suspend are not. Zones may hold the screen awake through the
   proxy's idle inhibition (the browser design), and the chrome shows which
   zone does.
 - The chrome shows the battery and AC state.

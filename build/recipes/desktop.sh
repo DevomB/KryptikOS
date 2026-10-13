@@ -33,15 +33,20 @@ s_desktop() {
     [[ "$out" == *usage:* ]] || { echo "FAIL: wlprobe does not run here: ${out}"; return 1; }
     echo "wlprobe: built and runs"
 
-    # The screen lock: a client of ext-session-lock-v1, whose code wayland-scanner makes from
-    # wayland-protocols' description, with xkbcommon for the user's keyboard layout.
-    local xml=/usr/share/wayland-protocols/staging/ext-session-lock/ext-session-lock-v1.xml gen
-    [[ -f "$xml" ]] || { echo "FAIL: no ${xml}"; return 1; }
+    # The screen lock: a client of ext-session-lock-v1 and ext-idle-notify-v1, whose code
+    # wayland-scanner makes from wayland-protocols' descriptions, with xkbcommon for the
+    # user's keyboard layout.
+    local gen p xml
     gen="$(mktemp -d)"
-    wayland-scanner client-header "$xml" "$gen/ext-session-lock-v1-client-protocol.h"
-    wayland-scanner private-code "$xml" "$gen/ext-session-lock-v1-protocol.c"
+    for p in ext-session-lock ext-idle-notify; do
+        xml="/usr/share/wayland-protocols/staging/${p}/${p}-v1.xml"
+        [[ -f "$xml" ]] || { echo "FAIL: no ${xml}"; rm -rf "$gen"; return 1; }
+        wayland-scanner client-header "$xml" "$gen/${p}-v1-client-protocol.h"
+        wayland-scanner private-code "$xml" "$gen/${p}-v1-protocol.c"
+    done
     # shellcheck disable=SC2086,SC2046
-    gcc ${CFLAGS} ${LDFLAGS} -I"$gen" -o /usr/bin/kryptik-lock "$d/kryptik-lock.c" "$gen/ext-session-lock-v1-protocol.c" \
+    gcc ${CFLAGS} ${LDFLAGS} -I"$gen" -o /usr/bin/kryptik-lock "$d/kryptik-lock.c" \
+        "$gen/ext-session-lock-v1-protocol.c" "$gen/ext-idle-notify-v1-protocol.c" \
         $(pkg-config --cflags --libs wayland-client xkbcommon)
     rm -rf "$gen"
     chmod 0755 /usr/bin/kryptik-lock
