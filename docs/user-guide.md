@@ -162,10 +162,9 @@ the desktop is not seen this way.
 The medium presents a root shell with no password, on the display and, if
 the machine has one, on the serial console (the serial line under QEMU),
 under a few lines naming the commands that list the disks, show the
-install's plan and read an installed disk.
-That shell exists only on install media; installed systems have root locked
-at every terminal. The medium uses no network: a cable plugged in, or a
-radio, is left down.
+install's plan and read an installed disk. That shell exists only on install
+media; installed systems have root locked at every terminal. The medium uses
+no network: a cable plugged in, or a radio, is left down.
 
 ## 2. Install
 
@@ -187,12 +186,12 @@ The installer refuses the disk the medium is on; anything with a mounted
 partition, active swap, or a partition held open (an unlocked LUKS volume,
 LVM); anything that is not a whole, writable disk; a disk with 4096-byte
 logical sectors (an NVMe drive can be formatted so), where Linux does not
-mount the medium's boot partition; and a disk too small to
-hold the boot partition, two root slots with room to grow, and a state
-partition with space for one update and a gigabyte of data (about 8 GB for
-the current image; the refusal names the exact minimum). A disk that already
-holds a Kryptik installation or medium is refused too, since it may hold the
-only copy of someone's encrypted state. To reinstall over one, add
+mount the medium's boot partition; and a disk too small to hold the boot
+partition, two root slots with room to grow, and a state partition with
+space for one update and a gigabyte of data (about 8 GB for the current
+image; the refusal names the exact minimum). A disk that already holds a
+Kryptik installation or medium is refused too, since it may hold the only
+copy of someone's encrypted state. To reinstall over one, add
 `--replace-kryptik`: the installer names the Kryptik partitions it is about
 to destroy and then asks for `ERASE` as usual.
 
@@ -200,26 +199,25 @@ Each root slot is sized for the image and half again, so that a later, larger
 release still fits. `--slot-size MIB` makes both slots larger than that,
 never smaller, and the state partition gets what is left.
 
-It writes four GPT partitions: `kryptik-esp` (the medium's ESP, with the slot
-A kernel as the boot file), `kryptik-a` (the verified root image, read back
-and hashed against the medium's record), `kryptik-b` (empty until the first
-update), and `kryptik-state` (LUKS2 with ext4 inside: users, zone volumes,
-updates). Its plan names the disk's model and what each of its partitions
-holds (`holds  gpt: sda1 ntfs "Windows" 237G; ...`): read it, as nothing
-else tells a backup disk from the one you mean. Before its first write it
-asks you to type `ERASE` (`--yes`
-skips that), then twice for the state partition's passphrase, which the
-system then asks for at every boot: at least 8 characters, and a long phrase
-is better, as a stolen disk can be guessed at offline (`kryptik state
-passphrase` changes it later). There is no escrow: without the
-passphrase, or without the partition's header, the state is lost. It ends
-with `kryptik-install: installed VERSION to /dev/sdY: boot it from firmware
-with the medium removed.` and a reminder to keep a copy of that header. Make
-the copy now, on a second removable disk: `/root`, `/var` and `/tmp` on a
-medium are memory, and a file left there is gone at power-off. The medium
-reads FAT and ext4, not exFAT or NTFS, which large sticks and Windows disks
-often come as; `mkfs.ext4 /dev/sdZ1` at the medium's shell makes such a
-partition ext4, erasing what it holds.
+It writes four GPT partitions: `kryptik-esp` (the medium's ESP, with the
+slot A kernel as the boot file), `kryptik-a` (the verified root image, read
+back and hashed against the medium's record), `kryptik-b` (empty until the
+first update), and `kryptik-state` (LUKS2 with ext4 inside: users, zone
+volumes, updates). Its plan names the disk's model and what each of its
+partitions holds (`holds  gpt: sda1 ntfs "Windows" 237G; ...`): read it, as
+nothing else tells a backup disk from the one you mean. Before its first
+write it asks you to type `ERASE` (`--yes` skips that), then twice for the
+state partition's passphrase, which the system then asks for at every boot:
+at least 8 characters, and a long phrase is better, as a stolen disk can be
+guessed at offline (`kryptik state passphrase` changes it later). There is
+no escrow: without the passphrase, or without the partition's header, the
+state is lost. It ends with `kryptik-install: installed VERSION to /dev/sdY:
+boot it from firmware with the medium removed.` and a reminder to keep a
+copy of that header. Make the copy now, on a second removable disk: `/root`,
+`/var` and `/tmp` on a medium are memory, and a file left there is gone at
+power-off. The medium reads FAT and ext4, not exFAT or NTFS, which large
+sticks and Windows disks often come as; `mkfs.ext4 /dev/sdZ1` at the
+medium's shell makes such a partition ext4, erasing what it holds.
 
 ```sh
 mount /dev/sdZ1 /mnt
@@ -251,23 +249,22 @@ holds (`<work>/keys/release/kryptik-testctl` for a development build).
 
 Every boot asks for the state passphrase, three times at most, before
 anything else starts: on the display and, if the machine has one, on the
-serial console, and the first answer counts. Root changes it with `kryptik
-state passphrase`, which asks for the current one, then twice for a new one
-of at least 8 characters. A header backup made before the change, or any earlier
-copy of the disk, still opens with the old passphrase: back the header up
-again and destroy the older backups. That does not shut out anyone who
-already copied the old header; only re-encrypting the partition under a new
-key (`cryptsetup reencrypt`) does. On the
-first boot, before the login prompt, a setup program asks in the same places
-for a user name (lower-case letters, digits, `_` and `-` only) and that
-user's password, then for root's password (root still cannot log in at a
-terminal; the password is for `su`, below). After an
-unattended install with a preseed, it creates those accounts from the preseed
-instead. If setup is interrupted, a question waits unanswered for 10 minutes,
-or a password is not set, boot again: every boot asks for whatever is still
-missing until the user and root both have passwords. Over a serial line,
-answer the setup's questions there: the serial console shows its login
-prompt only once setup has ended.
+serial console, and the first answer counts. Root changes it with
+`kryptik state passphrase`, which asks for the current one, then twice for a
+new one of at least 8 characters. A header backup made before the change, or
+any earlier copy of the disk, still opens with the old passphrase: back the
+header up again and destroy the older backups. That does not shut out anyone
+who already copied the old header; only re-encrypting the partition under a
+new key (`cryptsetup reencrypt`) does. On the first boot, before the login
+prompt, a setup program asks in the same places for a user name (lower-case
+letters, digits, `_` and `-` only) and that user's password, then for root's
+password (root still cannot log in at a terminal; the password is for `su`,
+below). After an unattended install with a preseed, it creates those
+accounts from the preseed instead. If setup is interrupted, a question waits
+unanswered for 10 minutes, or a password is not set, boot again: every boot
+asks for whatever is still missing until the user and root both have
+passwords. Over a serial line, answer the setup's questions there: the
+serial console shows its login prompt only once setup has ended.
 
 Log in as the user on tty1. The desktop session starts from the profile:
 dwl with the Kryptik chrome as its startup command. Every application
