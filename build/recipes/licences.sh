@@ -2,6 +2,7 @@
 
 # Each listed source's licence files, from its own tarball, under /usr/share/licenses/<source>/;
 # prints how many. The root's sources for stage 04, an image's for that image; ERE adds members.
+# shellcheck disable=SC2120  # an image passes the ERE, from its own definition
 source_licences() {   # source_licences [ERE] < tools/fetch-sources.sh --list-root|--list-image NAME
     # Also the microcode's lowercase license, firmware's WHENCE and the kernel's LICENSES/.
     local more_re='^[^/]+/(license|WHENCE|LICENSES/(preferred|exceptions)/[^/]+)$'
