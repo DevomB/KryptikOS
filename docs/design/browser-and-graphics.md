@@ -176,7 +176,8 @@ floors are given with each layer.
   - Stage 04's GCC with the hardening flags; an exception each flag needs
     goes into `hardening-exceptions.txt` with its reason. Firefox drops
     `-fno-delete-null-pointer-checks`, under which GCC 14 cannot evaluate
-    SpiderMonkey's compile-time checks, and carries the few changes a GCC
+    SpiderMonkey's compile-time checks (Mozilla's own builds go without it
+    too), and carries the few changes a GCC
     build needs (`build/patches/firefox-153.4.0`).
   - `--enable-default-toolkit=cairo-gtk3-wayland-only`, `--disable-dbus`,
     `--enable-release`, `--disable-tests`, `--disable-crashreporter`,
