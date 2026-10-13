@@ -1,15 +1,15 @@
 # The laptop
 
 The [roadmap](../roadmap.md)'s laptop item asks for per-zone sound brokered
-like the clipboard, Bluetooth, suspend and resume with the volume keys
-dropped across it, power management, hotplug and several monitors, and
-keyboard layouts and input methods. Each part meets a rule the architecture
-already set: [ADR-013](../decisions.md) builds no sound, the architecture
-allows no shared D-Bus, the threat model gives up on a suspended machine,
-there is no logind, and nothing reaches a zone except through its proxy and
-its broker. One section each, with its options, its recommendation and its
-check. The proposed decisions are ADR-021 and ADR-022 in
-[decisions](../decisions.md).
+like the clipboard, Bluetooth, suspend from the lid, the power key and
+idleness with the zone volumes' keys dropped too, power management, hotplug
+and several monitors, and keyboard layouts and input methods. Each part
+meets a rule the architecture already set: [ADR-013](../decisions.md) builds
+no sound, the architecture allows no shared D-Bus, the threat model gives up
+on a suspended machine's memory, there is no logind, and nothing reaches a
+zone except through its proxy and its broker. One section each, with its
+options, its recommendation and its check. In [decisions](../decisions.md),
+ADR-021 is proposed and ADR-022, for suspend, accepted.
 
 ## Sound
 
@@ -140,9 +140,13 @@ controller without a radio:
 ### Where things stand
 
 Hibernation is off (`hardening.fragment`). Suspend to RAM comes from
-defconfig, and no fragment turns it off. Nothing suspends the machine
-today. The threat model says a suspended machine is not defended: its keys
-are in RAM.
+defconfig, and no fragment turns it off. `kryptik suspend` is the one way
+the machine sleeps: the screen locks, the launch daemon freezes every zone,
+suspends the state partition with its key wiped and puts the machine to
+sleep, and on waking the lock asks for the state passphrase. A running
+zone's volume keeps its key, as its zone is frozen, not stopped; dropping
+those keys too comes next (below). Neither the lid, the power key nor
+idleness suspends the machine yet (power management, below).
 
 ### Design
 
@@ -151,52 +155,85 @@ dm-crypt can suspend a mapping and wipe its key from kernel memory
 on dm-verity, unencrypted and readable without any key, everything needed
 to resume can run from the root while the state partition is suspended.
 
-1. **Trigger.** The lid, the power key, an idle timeout or
-   `kryptik suspend` asks the launch daemon, which runs the rest as root.
-2. **Lock** the screen first (below).
+1. **Trigger.** `kryptik suspend` runs `kryptik-lock --suspend`; the lid,
+   the power key and an idle timeout are to ask the same way. The launch
+   daemon runs the rest as root (`suspend`), and refuses while a zone is
+   starting or `kryptik-update apply` holds the updater's lock.
+2. **Lock** the screen first: the lock asks for the suspend only once dwl
+   has confirmed it, and checks nothing typed while the request is under
+   way, so no session sleeps, or wakes, open.
 3. **Freeze** every zone (`cgroup.freeze` on its leaf), so none is caught
-   in the middle of I/O.
-4. **Sync,** then suspend every open zone volume and then the state
-   partition, wiping their keys.
-5. **Sleep** (`/sys/power/state`).
+   in the middle of I/O. A zone with no leaf, or one that is not frozen
+   within 10 s, thaws the others and the suspend is refused.
+4. **Sync,** then suspend the state partition, wiping its key. A zone
+   volume's file is on the partition, so the sync writes the volume out
+   through it first. The kernel's own sync before it sleeps is turned off
+   (`/sys/power/sync_on_suspend`), as it could wait on the suspended
+   partition for good, and on again once the partition is back.
+5. **Sleep** (`/sys/power/state`), written by a child of the daemon's, so
+   the daemon goes on answering the lock while the kernel puts the machine
+   to sleep, or refuses to: a task it cannot freeze, such as one waiting on
+   the suspended partition's device, makes it give up after 20 s, and the
+   lock says so. Asked again at the passphrase prompt, as a lid closed on
+   it would, the daemon only sleeps.
 6. **On waking,** the lock asks for the state partition's passphrase. The
    TPM is not used here: an unseal at resume would let whoever holds the
    machine resume it, and the TPM design extends PCR 15 at boot so that
    cannot happen anyway. `luksResume` brings `/var` and `/home` back, and
-   the session thaws.
-7. **Zones stay frozen** until the user gives each one's passphrase, when
-   switching to it or from a list in the chrome. A zone the user never
-   resumes is stopped when the user asks, and its volume closed.
+   the zones thaw.
+7. **Zone volumes, next.** Each open zone volume suspended before the state
+   partition, its key wiped, and its zone frozen until the user gives its
+   passphrase through the launcher's `--ask` flow, when switching to it or
+   from a list in the chrome. A zone the user never resumes is stopped
+   when the user asks, and its volume closed.
 
 **What runs while the state partition is suspended** must touch nothing
-but the verified root and `/run`: the lock, the prompt, cryptsetup and the
-launch daemon's resume path. Zone 0 programs that write to `/var/log` block
-until resume, which is fine as long as none of them is on that path. The
-suite proves it with a writer blocked on `/var` during the resume.
+but the verified root, `/run`, `/dev`, `/proc` and `/sys`: whatever reaches
+`/var`, `/home`, `/root` or the upper layer of `/etc` waits for the
+partition, and so does a lookup the dentry cache has let go of. The launch
+daemon learns that the partition is suspended from device-mapper's
+`suspended` file in sysfs, before it reads `/etc/group` for anything, and
+until it has its key answers only the lock's two questions (`unlock-kind`,
+`resume-state`), to whoever reached its root:kryptik socket; started again
+in that time, it takes the socket's group from its directory. It runs
+`cryptsetup luksResume` in a mount namespace of its own, without `/var`,
+`/home`, `/root` and the overlay on `/etc`, so the loader and cryptsetup
+read the verified root's `/etc` and nothing else. The lock talks to the
+daemon's socket itself rather than through a program it starts, and the
+watchdog's feeder waits with a shell builtin, not `sleep`. Zone 0 programs
+that write to `/var/log` block until resume, which is fine as long as none
+of them is on that path; the suite proves it with a writer blocked on
+`/var` during the resume.
 
 **The lock** is `kryptik-lock` (`tools/desktop/kryptik-lock.c`), a client of
 dwl's `ext-session-lock-v1` in zone 0 that Alt+Shift+l starts. While it
 runs, dwl shows only its surfaces, one per output, and gives them every key;
 they show LOCKED and a mark per character typed, nothing else. The lock
-takes the login password and hands it to the launch daemon
-(`kryptik-launch --check-password`), which reads the shadow file and checks
-it against the session user's own entry with crypt(3), so the lock never
-sees a hash and no PAM is needed. After a wrong password the daemon checks
-nothing for 2 s, doubling to 60 s, as the consent window does. dwl keeps a
-session locked when its lock dies and then takes no keys, so the lock runs
-in a child that starts again when a signal kills it. At resume the state
-passphrase will be the unlock instead: whoever knows it already owns the
-machine. On idle, the chrome starts `kryptik-lock --idle`, which waits on
-dwl's `ext-idle-notify-v1` and locks after ten minutes without input, or
-the minutes in `~/.config/kryptik/lock-idle` (0 never). A minute after the
-lock it turns the screens off through dwl's
+takes the login password and hands it to the launch daemon over its socket
+(`check-password`), which reads the shadow file and checks it against the
+session user's own entry with crypt(3), so the lock never sees a hash and
+no PAM is needed. After a wrong password the daemon checks nothing for 2 s,
+doubling to 60 s, as the consent window does. dwl keeps a session locked
+when its lock dies and then takes no keys, so the lock runs in a child that
+starts again when a signal kills it. After a suspend the state passphrase
+is the unlock instead: whoever knows it already owns the machine. The lock
+asks the daemon what unlocks (`unlock-kind`) when it starts, at the first
+key of each entry and before it sends what was typed; it shows LOCKED or
+STATE PASSPHRASE, and drops what was typed under a label that no longer
+holds, and anything typed in the second after the label changes, so the
+login password never reaches `luksResume` nor the state passphrase the
+login check. The passphrase goes to the daemon in a pipe
+beside `resume-state`, with its own pause after a wrong one, and on to
+cryptsetup's standard input. On idle, the chrome starts `kryptik-lock
+--idle`, which waits on dwl's `ext-idle-notify-v1` and locks after ten
+minutes without input, or the minutes in `~/.config/kryptik/lock-idle` (0
+never). A minute after the lock it turns the screens off through dwl's
 `zwlr_output_power_manager_v1`, and the first key or movement turns them on
 again; an unlock turns them on as well, should the watcher be gone. It
 counts input alone (the protocol's version 2), so an idle inhibitor, which
 the browser design would let a zone hold to keep the screen awake, never
 keeps the session unlocked or the screens lit. No zone can bind the
-notifier, which would tell it when the user is away. Locking before
-suspend is still to come.
+notifier, which would tell it when the user is away.
 
 The lock's check, in `make gui-test`:
 
@@ -216,36 +253,51 @@ The lock's check, in `make gui-test`:
   reports to it, turns it on at the first key, and locks again after the
   next 8 s once unlocked.
 
-**The watchdog** must not reset a sleeping machine. The drivers stop their
-timers across suspend; the suite proves it with a sleep longer than the
-watchdog's timeout.
+**The watchdog** must not reset a sleeping machine, nor one waiting at the
+state prompt. The drivers stop their timers across suspend, and the feeder
+starts no program, so it goes on feeding while the partition is suspended.
 
-### What it changes in the threat model
+### In the threat model
 
-Proposed text for "Coercion, and access to a running or suspended machine",
-to apply with the change that builds this:
-
-> Keys are in RAM while zones run. A suspended machine has wiped the keys of
-> the state partition and of every zone volume, and resumes only with their
-> passphrases; the TPM does not unlock it. What zone 0 and the zones held in
-> memory is still there, and cold-boot and DMA attacks on a running or
-> suspended machine stay out of scope. No software helps against coercion.
-
-The "Offline physical access" section's "Not defended while running or
-suspended" becomes "Not defended while running; while suspended, the disk's
-keys are gone and memory is not".
+A suspended machine has wiped the state partition's key and resumes only
+with its passphrase; the TPM does not unlock it. A running zone's volume
+keeps its key for now, and what zone 0 and the zones held in memory is
+still there ([threat model](../threat-model.md#coercion-and-access-to-a-running-or-suspended-machine)).
 
 ### Check
 
-The state suite under QEMU (`system_wakeup` resumes the VM):
+`make suspend-test`, on the installed system with suspend to RAM offered
+(`run-ovmf.sh --s3`; QEMU's `system_wakeup` wakes it). With the machine up,
+first:
 
-- the suite formats the state partition and a zone volume with volume keys
-  it chose, and a dump of the sleeping VM's memory taken from QEMU's monitor
-  contains neither (`INIT_ON_FREE` zeroes what the kernel frees);
-- a wrong passphrase leaves them suspended, and the right one resumes the
-  state while the zones stay frozen until theirs are given;
-- a writer blocked on `/var` does not stop the resume;
-- the machine survives a sleep longer than the watchdog's timeout.
+- `kryptikd suspend --awake` drops the state partition's key and freezes
+  every zone, the net zone among them, and the dentry and inode caches are
+  dropped after it;
+- a lock dwl starts then asks for the state passphrase, a client's request
+  is refused at once, and nothing but a writer on `/var` waits on the
+  partition: not the lock, dwl, the chrome, the daemon, the watchdog's
+  feeder or s6;
+- a wrong passphrase leaves the partition suspended, and the right one,
+  typed at the lock, resumes it, unlocks, and lets the writer and the zones
+  go on.
+
+Then for real, `kryptik-lock --suspend` as the user:
+
+- the machine sleeps, and a dump of its memory taken from QEMU's monitor
+  holds neither half of the state partition's key nor the passphrase typed
+  at the lock before, and does hold the key of the zone volume a frozen
+  zone keeps, which shows the search can find one (`INIT_ON_FREE` zeroes
+  what the kernel frees);
+- it sleeps past the watchdog's timeout, wakes with the lock asking for the
+  state passphrase, and waits three minutes at it, the caches dropped again,
+  without a reset;
+- the passphrase resumes it, and the zones thaw;
+- asked to sleep again with the partition suspended and a read left waiting
+  on its device, the kernel refuses, the refusal is told, and the passphrase
+  still brings the partition back.
+
+Whether the guest slept or the kernel refused is told either way, so a
+refusal in the first sleep reads as one, not as a hang.
 
 ## Power management without logind
 
@@ -255,9 +307,10 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 
 - **`kryptik-power`,** a small zone 0 service. It reads the lid switch and
   the power button from their input devices, and the battery and AC state
-  from `/sys/class/power_supply`. It asks the launch daemon to suspend, and
-  holds suspend off while `kryptik-update apply` writes a slot (the
-  updater's lock). At critically low battery it shuts the machine down in
+  from `/sys/class/power_supply`. It asks for a suspend as `kryptik
+  suspend` does, through the lock, and the launch daemon holds it off while
+  `kryptik-update apply` writes a slot (the updater's lock). At critically
+  low battery it shuts the machine down in
   order, zones stopped and volumes closed, since there is no hibernation.
 - **Policy at boot.** A service writes a fixed policy from the verified
   root: `energy_performance_preference` set to `balance_power` on battery and
@@ -271,7 +324,7 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   zone 0 tool to blank the screen, then lock, then suspend. The lock and
   blanking are built (`kryptik-lock --idle`, above), in the other order: a
   screen turned off while unlocked would come back on to an open session at
-  the first touch. Suspend is not built.
+  the first touch. Suspending when idle is not built.
 - **Holding the screen awake.** A zone playing a video may hold off both the
   lock and the blanking, through the proxy's idle inhibition (the browser
   design), under these conditions. They come with the browser image, the

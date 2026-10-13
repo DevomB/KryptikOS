@@ -36,6 +36,14 @@ Steps (each one argument):
                             names no line end), then type what its first
                             group matched (digits and letters) and Enter
                             through QMP: for a value only the guest can see
+    asleep-or:SECONDS:REGEX wait until QEMU says the guest has suspended to RAM
+                            (run-ovmf.sh --s3), or until REGEX appears on the
+                            serial line, which says it did not; either is a
+                            success, and the steps after if-asleep: follow it
+    if-asleep:STEP          STEP, if the last asleep-or: saw the guest asleep
+    dump:FILE               write the guest's memory to FILE (QMP
+                            dump-guest-memory, ELF, no paging)
+    wakeup                  wake a suspended guest (QMP system_wakeup)
     wait-exit               wait for the serial socket to close (guest gone)
 
 With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
@@ -249,9 +257,13 @@ def qmp(path, cmd, args=None):
     msg = {"execute": cmd}
     if args: msg["arguments"] = args
     f.write((json.dumps(msg) + "\n").encode())
-    resp = f.readline()
+    # Events (SUSPEND, WAKEUP, ...) may come before the answer.
+    while True:
+        resp = json.loads(f.readline())
+        if "return" in resp or "error" in resp:
+            break
     s.close()
-    return json.loads(resp)
+    return resp
 
 def main():
     args = sys.argv[1:]
@@ -269,6 +281,7 @@ def main():
         print(__doc__); return 2
     d = Drive(serial, log, timeout)
     grabbed = {}
+    asleep = None   # what the last asleep-or: saw
     heads = {}   # VNC connections, kept: an output stays on while its display is there
     for i, st in enumerate(steps, 1):
         kind, _, rest = st.partition(":")
@@ -338,6 +351,34 @@ def main():
                     if "error" in r: raise RuntimeError(f"send-key {k}: {r['error']}")
                     time.sleep(0.15)
                 print(f"     typed {text} and Enter")
+            elif kind == "asleep-or":
+                if not qmpsock: raise RuntimeError("asleep-or needs --qmp")
+                secs, _, regex = rest.partition(":")
+                rx = re.compile(regex.encode(), re.M)
+                deadline = time.time() + float(secs)
+                asleep = None
+                while asleep is None:
+                    if qmp(qmpsock, "query-status")["return"]["status"] == "suspended":
+                        asleep = True
+                    elif rx.search(d.all):
+                        asleep = False
+                    elif time.time() > deadline:
+                        raise RuntimeError(f"the guest neither slept nor said {regex!r} within {secs} s")
+                    else:
+                        d.drain(0.5)
+                print(f"     {'the guest is asleep' if asleep else 'the guest did not sleep'}")
+            elif kind == "if-asleep":
+                # The step runs next: it goes into the list right after this one.
+                if asleep:
+                    steps.insert(i, rest)
+            elif kind == "dump":
+                if not qmpsock: raise RuntimeError("dump needs --qmp")
+                r = qmp(qmpsock, "dump-guest-memory", {"paging": False, "protocol": "file:" + rest})
+                if "error" in r: raise RuntimeError(f"dump-guest-memory: {r['error']}")
+            elif kind == "wakeup":
+                if not qmpsock: raise RuntimeError("wakeup needs --qmp")
+                r = qmp(qmpsock, "system_wakeup")
+                if "error" in r: raise RuntimeError(f"system_wakeup: {r['error']}")
             elif kind == "wait-exit":
                 deadline = time.time() + timeout
                 while not d.closed and time.time() < deadline: d._read()
