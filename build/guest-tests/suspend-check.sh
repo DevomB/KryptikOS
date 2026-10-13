@@ -26,6 +26,8 @@ set -u
 # The root login's home is on the state partition.
 cd / || exit 1
 KD=/usr/bin/kryptikd
+# Where work's volume is mounted, as zone 0 sees it.
+R=/var/lib/kryptik/zones
 USER_NAME="${1:-tester}"
 STATE_PW="${2:-}"
 # The host types the second passphrase, the seed reversed: only the seed crosses the serial line,
@@ -302,7 +304,7 @@ else
     fail "waiting-zone-stops" "mappings: $(ls /dev/mapper | tr '\n' ' '); $(tr '\n' ' ' < "$OUT/stop-waiting.out")"
 fi
 as_user "kryptik-launch --no-display --passphrase-fd 3 work -- $(tick work) 3<$UPP" > "$OUT/launch-work-again.out" 2>&1 &
-if wait_for 60 test -s "$R/work/ticks" && t_work="$(ticks work)" && wait_for 30 ticks_past work "$t_work"; then
+if wait_for 60 ticking work && t_work="$(ticks work)" && wait_for 30 ticks_past work "$t_work"; then
     pass "volume-opens-after-giving-up" "work started again on its volume, which checked clean, and counts on"
 else
     fail "volume-opens-after-giving-up" "$(tail -2 "$OUT/launch-work-again.out" | tr '\n' ' ')"
