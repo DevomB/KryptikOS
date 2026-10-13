@@ -36,8 +36,9 @@
 #   --second-head  with --gpu in serve mode: a second output on the GPU, off
 #                  until a VNC client on the printed socket asks for a size
 #                  (vm-drive.py's head: step), which plugs a monitor in
-#   --sound WAV    an HD Audio controller with a codec that plays and records;
-#                  what the guest plays is written to the file WAV
+#   --sound WAV    two HD Audio cards: the first only plays, into the file WAV
+#                  at 48 kHz, and the second plays to nothing and records
+#                  silence (QEMU's WAV writer has no input)
 #   --mode console interactive serial console (Ctrl-A X quits)
 # shellcheck disable=SC2054  # commas inside QEMU options are option syntax, not array separators
 set -Eeuo pipefail
@@ -72,7 +73,7 @@ while [[ "$#" -gt 0 ]]; do
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
         --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,42p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,43p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -160,7 +161,9 @@ if [[ -n "$SOUND" ]]; then
     # A comma would end QEMU's path option early.
     [[ "$SOUND" != *,* ]] || die "--sound: no commas in the path: ${SOUND}"
     case "$(readlink -f "$SOUND")" in /dev/*|/sys/*|/proc/*) die "refusing to use ${SOUND}" ;; esac
-    ARGS+=( -audiodev "wav,id=snd0,path=${SOUND}" -device ich9-intel-hda -device hda-duplex,audiodev=snd0 )
+    ARGS+=( -audiodev "wav,id=snd0,path=${SOUND},out.frequency=48000" -audiodev none,id=snd1
+            -device ich9-intel-hda,id=hda0 -device hda-output,bus=hda0.0,audiodev=snd0
+            -device ich9-intel-hda,id=hda1 -device hda-duplex,bus=hda1.0,audiodev=snd1 )
 fi
 [[ "$ALLOW_REBOOT" -eq 1 ]] || ARGS+=( -no-reboot )
 case "$NET" in

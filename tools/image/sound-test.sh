@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
 # Sound on the INSTALLED system (the sound suite): install from the medium, boot the disk alone
-# with an HD Audio controller whose codec plays into a WAV file on the host, and run the
-# guest-side checks (build/guest-tests/sound-check.sh) as root over the serial login.
+# with two HD Audio cards, the first playing into a WAV file on the host and the second
+# recording silence, and run the guest-side checks (build/guest-tests/sound-check.sh) as root
+# over the serial login.
 #
 #   tools/image/sound-test.sh --usb IMG [--disk FILE] [--timeout N]
 #
-# The guest finds the card with its codec bound. The kernel loads no module by itself, so
+# The guest finds both cards with their codecs bound. The kernel loads no module by itself, so
 # that rests on modprobe loading every codec driver before snd-hda-intel probes
 # (build/config/modprobe.d/sound.conf).
 set -uo pipefail
@@ -21,7 +22,7 @@ while [[ "$#" -gt 0 ]]; do
         --usb) USB="${2:?}"; shift 2 ;;
         --disk) DISK="${2:?}"; shift 2 ;;
         --timeout) TIMEOUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -42,7 +43,7 @@ fresh_disk "$USB"
 install_disk sound-install "$USB" --vars clean && green "installed" || { red "install failed"; exit 1; }
 
 # ----------------------------------------------------------------- step 2 --
-step "step 2: the card, from the guest"
+step "step 2: the cards, from the guest"
 rm -f "$WAV"
 start_vm sound-p2 --net user --sound "$WAV"
 DRIVE_TIMEOUT=300 drive --qmp "$QMP" \

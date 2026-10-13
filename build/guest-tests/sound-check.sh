@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sound suite, run as root in the installed guest by tools/image/sound-test.sh, which boots it
-# with QEMU's HD Audio controller and a codec that plays and records.
+# with two of QEMU's HD Audio cards: the first only plays, the second plays and records.
 # Verdicts: "GT PASS|FAIL name - detail".
 set -u
 cd / || exit 1
@@ -14,22 +14,26 @@ wait_for() {   # wait_for SECONDS CMD...
 }
 klog() { dmesg | grep -iE 'snd|hda|sound' | tail -"${1:-6}" | tr '\n' ' '; }
 
-# --- the card ------------------------------------------------------------------------------
-# eudev loads snd-hda-intel at coldplug, and the card registers once a codec has bound.
-card() { grep -q 'HDA-Intel' /proc/asound/cards; }
-if wait_for 30 card; then
-    pass "sound-card" "$(head -2 /proc/asound/cards | tr -s ' ' | tr '\n' ' ')"
+# --- the cards -----------------------------------------------------------------------------
+# eudev loads snd-hda-intel at coldplug, and a card registers once its codec has bound.
+cards() { [[ "$(grep -c 'HDA-Intel' /proc/asound/cards)" -eq 2 ]]; }
+if wait_for 30 cards; then
+    pass "sound-card" "$(grep 'HDA-Intel' /proc/asound/cards | tr -s ' ' | tr '\n' ' ')"
 else
     fail "sound-card" "cards: $(tr '\n' ' ' < /proc/asound/cards 2>&1) kernel: $(klog)"
 fi
 
-# QEMU's codec has no driver of its own, so the generic parser takes it: it was loaded before
-# the controller probed, as the kernel could not load it then.
-drv="$(readlink /sys/bus/hdaudio/devices/hdaudioC0D0/driver 2>/dev/null)"
-if [[ "${drv##*/}" == snd_hda_codec_generic ]]; then
-    pass "codec-bound" "hdaudioC0D0 is driven by ${drv##*/}"
+# QEMU's codecs have no driver of their own, so the generic parser takes them: it was loaded
+# before the controllers probed, as the kernel could not load it then.
+drivers=""
+for c in hdaudioC0D0 hdaudioC1D0; do
+    drv="$(readlink "/sys/bus/hdaudio/devices/$c/driver" 2>/dev/null)"
+    drivers+="$c=${drv##*/} "
+done
+if [[ "$drivers" == "hdaudioC0D0=snd_hda_codec_generic hdaudioC1D0=snd_hda_codec_generic " ]]; then
+    pass "codec-bound" "${drivers% }"
 else
-    fail "codec-bound" "hdaudioC0D0's driver: ${drv:-none}; kernel: $(klog)"
+    fail "codec-bound" "${drivers% }; kernel: $(klog)"
 fi
 
 # Every codec driver modprobe.d names came with the controller, so a codec that has a driver
@@ -44,7 +48,7 @@ else
     fail "codec-drivers-ahead" "not loaded:${missing}"
 fi
 
-if [[ -c /dev/snd/pcmC0D0p && -c /dev/snd/pcmC0D0c ]]; then
+if [[ -c /dev/snd/pcmC0D0p && -c /dev/snd/pcmC1D0p && -c /dev/snd/pcmC1D0c ]]; then
     pass "pcm-nodes" "$(cd /dev/snd && echo *)"
 else
     fail "pcm-nodes" "/dev/snd: $(ls /dev/snd 2>&1 | tr '\n' ' ')"
