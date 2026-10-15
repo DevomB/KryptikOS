@@ -148,8 +148,13 @@ descriptor and punches the pool's range (`fallocate` with
 `FALLOC_FL_PUNCH_HOLE`) once the pool and its buffers are gone and no surface
 shows one, which frees what dwl faulted with the rest. It refuses a pool it
 could not punch: one not open for writing, one sealed against writes, a file
-that is not shared memory; and it seals each pool it takes against a later
-write seal (`F_SEAL_SEAL`). The pools of a connection that ended are punched a
+that is not shared memory. It seals each pool it takes against a later seal
+(`F_SEAL_SEAL`) before it reads the seals, so no write seal can come between
+the two. Two pools of one connection may share a file: the first to go leaves
+the pages alone and hands its range to the other, and the last to go punches
+the widest. Two connections sharing one file only clear each other's pages
+early, which the zone does to itself. The proxy's filter allows `fallocate`
+for that punch alone. The pools of a connection that ended are punched a
 second later, once dwl has read the hang-up, and count against the zone until
 then. What dwl holds for a zone is then bounded by the per-zone bound. A page
 a zone splices into a pipe outlives the punch while the pipe holds it, which

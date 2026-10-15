@@ -343,7 +343,11 @@ fn main() {
                 s.client.flush().map_err(|e| format!("client write: {e}"))?;
                 Ok(())
             };
-            if let Err(why) = step(&mut l.s, ce, se) {
+            let stepped = step(&mut l.s, ce, se);
+            if let Some(e) = l.s.unpunched.take() {
+                log.line(format_args!("client #{}: a gone pool's pages were not freed: {e}", l.id));
+            }
+            if let Err(why) = stepped {
                 log.line(format_args!(
                     "client #{} ended: {why} (forwarded {} requests, {} events; hid {} globals; rewrote {} identities)",
                     l.id, l.s.forwarded_c2s, l.s.forwarded_s2c, l.s.hidden_count, l.s.rewritten
@@ -425,7 +429,9 @@ fn main() {
                 if o.once {
                     // No later turn punches them.
                     for (fd, size, _) in gone.drain(..) {
-                        session::punch(&fd, size);
+                        if let Err(e) = session::punch(&fd, size) {
+                            log.line(format_args!("a gone pool's pages were not freed: {e}"));
+                        }
                     }
                     eprintln!("kryptik-wlproxy[{}]: --once: served {served}, exiting", o.zone);
                     if o.listen_fd.is_none() {
@@ -440,7 +446,9 @@ fn main() {
         gone.retain(|(fd, size, at)| {
             let due = *at <= now;
             if due {
-                session::punch(fd, *size);
+                if let Err(e) = session::punch(fd, *size) {
+                    log.line(format_args!("a gone pool's pages were not freed: {e}"));
+                }
             }
             !due
         });

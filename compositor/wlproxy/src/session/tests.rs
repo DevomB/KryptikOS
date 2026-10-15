@@ -414,8 +414,33 @@ fn an_ended_session_hands_its_pools_over() {
     assert_eq!(pools[0].1, 4096);
     assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
     assert_eq!(unsafe { libc::pwrite(fd.as_raw_fd(), b"x".as_ptr().cast(), 1, 0) }, 1);
-    punch(&pools[0].0, pools[0].1);
+    punch(&pools[0].0, pools[0].1).unwrap();
     assert_eq!(data_at(&fd), -1);
+}
+
+#[test]
+fn pools_on_one_file_are_punched_by_the_last() {
+    // The first gone leaves the other's pages be and hands it its range, so the last frees the
+    // larger pool's pages too, though it is the smaller.
+    let (mut s, mut c, mut sv) = make();
+    s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+    let fd = shm();
+    let data = [0x5au8; 16384];
+    assert_eq!(unsafe { libc::pwrite(fd.as_raw_fd(), data.as_ptr().cast(), data.len(), 0) }, 16384);
+    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(4).i32(16384).finish().unwrap(), fd.as_raw_fd());
+    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(5).i32(4096).finish().unwrap(), fd.as_raw_fd());
+    c.write_all(&MessageWriter::new(4, 1).finish().unwrap()).unwrap(); // the larger pool's destroy
+    pump_all(&mut s).unwrap();
+    delete_ids(&mut sv, &[4]);
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 16384), "charged the range it now frees");
+    assert_eq!(data_at(&fd), 0, "the pool left on the file still shows its pages");
+    c.write_all(&MessageWriter::new(5, 1).finish().unwrap()).unwrap();
+    pump_all(&mut s).unwrap();
+    delete_ids(&mut sv, &[5]);
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
+    assert_eq!(data_at(&fd), -1, "no page left of either pool's range");
 }
 
 fn delete_ids(sv: &mut UnixStream, ids: &[u32]) {
