@@ -295,7 +295,9 @@ up ADR-001 in the zones where the applications run.
   a zone names, kryptikd mounts a read-only overlay (no upper directory; the
   images' `usr` over the root's `/usr`; redirects in a layer not followed)
   at `/run/kryptik/usr/<set>` in the initial namespace, and the zone's bind
-  of `/usr` takes that instead. A set already mounted there is used only if
+  of `/usr` takes that instead, through a descriptor kryptikd opens before
+  it takes the zone's ids: `/run/kryptik` is root's alone, and the zone's
+  mapped root may not walk it. A set already mounted there is used only if
   it stacks exactly those mounts, as its name holds 64 bits of each root
   hash. Since zone 0 mounts it and the zone only receives a bind, the
   hardened kernel's `OVERLAY_FS_UNPRIVILEGED`, which is off, does not come
