@@ -31,6 +31,8 @@ work in zones from a terminal and a text browser, and keep it up to date.
       three machines: a wired desktop, an Intel laptop on Wi-Fi alone, an AMD
       laptop. What each lacked becomes a line in `boot.fragment` or
       `firmware.list`, and the machines start a hardware list in the README.
+      The laptops also try what no virtual machine has: the backlight's rule
+      and keys.
       Planned for October 2026.
 - [x] **CPU microcode.** Built into the signed kernel from Intel's release and
       AMD's containers in linux-firmware; stage 05 refuses a kernel without
@@ -101,7 +103,9 @@ work in zones from a terminal and a text browser, and keep it up to date.
       and the machine resets and comes back with its data.
 - [x] **Every status row is tested.** Each row of the status table names
       the check that can fail it; stage 05, stage 06 and `make acceptance`
-      were the last to read *implemented*.
+      were the last to read *implemented*. Brightness, which came with the
+      laptop, reads it again: QEMU has no backlight, so its rule and its keys
+      wait for physical hardware.
 - [x] **The accepted lists are reviewed.** `checker-accepted.txt`,
       `hardening-exceptions.txt`, the setuid allowlist and the artifact
       audit's soft findings: each entry closed or re-justified, with the
