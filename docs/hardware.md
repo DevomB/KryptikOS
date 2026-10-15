@@ -45,10 +45,10 @@ There are two ways to take one:
 
 A `certified` row says that the release installs on that model, boots there
 with Secure Boot on, has a display to draw the desktop on and reaches a
-network. It does not speak for what 1.0 does not drive (sound, Bluetooth,
-suspend), for another firmware version, or for the same model sold with
-another network card: the report names the firmware version and every device,
-so a reader can compare.
+network. It does not speak for what the report does not exercise (sound,
+suspend, a camera), for Bluetooth, which 1.0 does not drive, for another
+firmware version, or for the same model sold with another network card: the
+report names the firmware version and every device, so a reader can compare.
 
 ## Who may vouch
 
