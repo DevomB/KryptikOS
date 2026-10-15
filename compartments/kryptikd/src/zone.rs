@@ -97,6 +97,8 @@ pub struct Zone {
     /// `[transfer] max_bytes = N`: the largest file this zone sends or
     /// receives through the broker, at most its cap. None: the cap alone.
     pub transfer_max: Option<u64>,
+    /// `[sound] play = false`: no socket to zone 0's mixer (sound.rs). The nic zone never has one.
+    pub sound: bool,
 }
 
 /// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
@@ -135,6 +137,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "limits.memory_max", "limits.pids_max", "limits.cpu_max", "limits.io_max",
     "identity.uid_base",
     "transfer.to", "transfer.max_bytes",
+    "sound.play",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
@@ -417,6 +420,16 @@ impl Zone {
             Some(v) => return Err(bad("network.local", v, "true or false")),
         };
 
+        let sound = match kv.get("sound.play").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone plays no sound")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("sound.play", v, "true or false")),
+        };
+
         let transfer_to: Vec<String> = match get("transfer.to") {
             None => Vec::new(),
             Some(v) => {
@@ -467,6 +480,7 @@ impl Zone {
             uid_base,
             transfer_to,
             transfer_max,
+            sound,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),
             size: get("storage.size"),

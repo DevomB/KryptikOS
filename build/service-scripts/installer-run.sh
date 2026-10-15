@@ -3,6 +3,7 @@
 set -u
 . /usr/libexec/kryptik/testctl.sh
 . /usr/libexec/kryptik/esp-records.sh
+. /usr/libexec/kryptik/devices.sh
 
 say() { echo "KRYPTIK_INSTALL: $*"; }
 
@@ -17,7 +18,7 @@ fi
 # The state header saved, wiped on the disk and put back by kryptik-recover,
 # as a user with a backup repairs a damaged one.
 header_roundtrip() {   # header_roundtrip DISK
-    st="$(blkid -t PARTLABEL=kryptik-state -o device 2>/dev/null | grep "^$1" | head -1)"
+    st="$(kryptik_named kryptik-state | grep "^$1" | head -1)"
     [ -b "$st" ] || { echo "header: no kryptik-state partition on $1"; return 1; }
     h=/run/kryptik-state-header
     rm -f "$h"
@@ -107,10 +108,10 @@ if [ "$rc" -eq 0 ]; then
     # Check the disk apart from the installer's report, finding partitions by label as boot does.
     say "verify: table=$(sfdisk -l "$target" 2>/dev/null | grep -c "^${target}")"
     for lbl in kryptik-esp kryptik-a kryptik-b kryptik-state; do
-        dev="$(blkid -t PARTLABEL="$lbl" -o device 2>/dev/null | grep "^${target}" | head -1)"
+        dev="$(kryptik_named "$lbl" | grep "^${target}" | head -1)"
         say "verify: ${lbl}=${dev:-ABSENT} type=$(blkid -s TYPE -o value "$dev" 2>/dev/null || echo none)"
     done
-    esp="$(blkid -t PARTLABEL=kryptik-esp -o device 2>/dev/null | grep "^${target}" | head -1)"
+    esp="$(kryptik_named kryptik-esp | grep "^${target}" | head -1)"
     mkdir -p /run/verify
     if [ -n "$esp" ] && mount -t vfat -o ro "$esp" /run/verify 2>/dev/null; then
         say "verify: esp_files=$(cd /run/verify && find . -type f | sort | tr '\n' ' ')"
@@ -120,7 +121,7 @@ if [ "$rc" -eq 0 ]; then
     else
         say "verify: could not mount the ESP read-only"
     fi
-    st="$(blkid -t PARTLABEL=kryptik-state -o device 2>/dev/null | grep "^${target}" | head -1)"
+    st="$(kryptik_named kryptik-state | grep "^${target}" | head -1)"
     if [ -n "$st" ] && printf '%s' "$sp" | cryptsetup open --readonly --type luks2 --key-file=- "$st" kryptik-verify-state 2>/dev/null \
             && mount -t ext4 -o ro /dev/mapper/kryptik-verify-state /run/verify 2>/dev/null; then
         say "verify: state_marker=$([ -e /run/verify/.kryptik-state ] && echo yes || echo no)"
@@ -129,7 +130,7 @@ if [ "$rc" -eq 0 ]; then
         umount /run/verify
     fi
     cryptsetup close kryptik-verify-state 2>/dev/null || true
-    slot_a="$(blkid -t PARTLABEL=kryptik-a -o device 2>/dev/null | grep "^${target}" | head -1)"
+    slot_a="$(kryptik_named kryptik-a | grep "^${target}" | head -1)"
     if [ -n "$slot_a" ]; then
         say "verify: slot_a_sha256=$(head -c "$(cat /etc/kryptik/root-image-bytes 2>/dev/null || echo 0)" "$slot_a" | sha256sum | cut -c1-64)"
         say "verify: image_sha256=$(sed -n 's/.*"root_image_sha256": *"\([0-9a-f]*\)".*/\1/p' /etc/kryptik-image.json 2>/dev/null)"

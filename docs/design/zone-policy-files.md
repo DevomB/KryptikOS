@@ -65,6 +65,18 @@ a kill, is printed with `soft` after its name and gets the same errno here:
   no, as the kernel tells an unprivileged caller. `unshare` stays on the
   denied list, and `setns`, which would enter another zone's namespaces, is
   killed.
+- `sched_setscheduler`, `sched_setparam` and `sched_setattr` fail with EPERM:
+  a program that sets a thread's scheduling class or priority takes that as
+  a missing privilege, which glibc's `pthread_create` and
+  `pthread_setschedparam` pass on; Firefox's on-device inference (llama.cpp)
+  asks for `SCHED_BATCH` for its low-priority threads. A policy may allow
+  them, and the kernel still refuses a real-time or raised priority without
+  `CAP_SYS_NICE`.
+- `ioprio_set` fails with EPERM: Firefox lowers the I/O priority of the
+  thread that writes its startup cache, a few seconds after its window shows
+  and again on a timer, and writes at the normal priority when refused, where
+  a kill would end the browser. A policy may allow it, and the kernel still
+  refuses the real-time class without `CAP_SYS_NICE`.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
 list; a call refused for its arguments (namespace flags to `clone`,

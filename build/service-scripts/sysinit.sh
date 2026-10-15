@@ -221,6 +221,10 @@ printf 'slot=%s\nmedia=%s\nstate=%s\nstate_dev=%s\nroot_disk=%s\n' \
     "$slot" "$media" "$STATE" "$state_dev" "$root_disk" > /run/kryptik/boot-identity
 echo "sysinit: booted slot='${slot}' media='${media}' state=${STATE}${state_dev:+ (${state_dev})}"
 
+# ALSA's core, so /proc/asound is there before any zone starts: a zone's /proc empties it
+# (rootfs.rs), and only what is there when the zone starts. Nothing where sound is not built.
+modprobe -q snd 2>/dev/null || true
+
 # Kernel tunables, from the verified root only.
 if [ -d /usr/lib/kryptik/sysctl.d ]; then
     for f in /usr/lib/kryptik/sysctl.d/*.conf; do

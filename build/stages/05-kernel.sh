@@ -268,7 +268,7 @@ s_modules() {
 }
 
 s_install() {
-    echo "config digest: ${1:-none}"
+    echo "config digest: ${1:-none}; modprobe.d digest: ${2:-none}"
     cd "$KSRC"
     mkdir -p "$BOOTDIR"
     cp -v arch/x86/boot/bzImage "${BOOTDIR}/kryptik-${V_LINUX}"
@@ -284,6 +284,23 @@ s_install() {
     install -d -m 0755 "${KRYPTIK_DESTDIR}/usr/lib/kryptik/kernel"
     install -m 0644 "$hwsim" "${KRYPTIK_DESTDIR}/usr/lib/kryptik/kernel/mac80211_hwsim-unsigned.ko"
     echo "unsigned control module: /usr/lib/kryptik/kernel/mac80211_hwsim-unsigned.ko"
+
+    # On the verified root, where /etc, which state can shadow, has no say.
+    install -d -m 0755 "${KRYPTIK_DESTDIR}/usr/lib/modprobe.d"
+    install -m 0644 "${KRYPTIK_ROOT}"/build/config/modprobe.d/*.conf "${KRYPTIK_DESTDIR}/usr/lib/modprobe.d/"
+    # An HDA codec driver modprobe does not load ahead of the controller never binds.
+    local krel built listed
+    krel="$(cat include/config/kernel.release)"
+    built="$(find "${MODDIR}/${krel}" -name 'snd-hda-codec-*.ko*' ! -name 'snd-hda-codec-realtek-lib.ko*' \
+        | sed 's|.*/||; s|\.ko.*||' | sort)"
+    listed="$(grep -v '^[[:space:]]*#' "${KRYPTIK_ROOT}/build/config/modprobe.d/sound.conf" \
+        | grep -oE 'snd-hda-codec-[a-z0-9-]+' | sort)"
+    if [[ -z "$built" || "$built" != "$listed" ]]; then
+        echo "FAIL: the codec drivers built and those modprobe.d/sound.conf loads differ:"
+        diff <(printf '%s\n' "$built") <(printf '%s\n' "$listed") | sed -n 's/^</  built, not loaded:/p; s/^>/  loaded, not built:/p' || true
+        return 1
+    fi
+    echo "HDA codec drivers loaded ahead of snd-hda-intel: $(wc -l <<<"$built")"
 }
 
 # The kernel is where a bootloader will look, and nowhere else.
@@ -410,7 +427,7 @@ CFG_DIGEST="$(sha256_of "${KSRC}/.config" 2>/dev/null || echo noconfig)"
 step build           s_build "${HOSTLDFLAGS:-}" "$CFG_DIGEST"
 step size            --check s_size "$CFG_DIGEST" "$(sha256_of "${CONFIG_DIR}/size-budget")"
 step modules         s_modules "$CFG_DIGEST"
-step install         s_install "$CFG_DIGEST"
+step install         s_install "$CFG_DIGEST" "$(cat "${KRYPTIK_ROOT}"/build/config/modprobe.d/*.conf | sha256_of_stdin)"
 step verify-install  --check s_verify_install "$CFG_DIGEST"
 
 echo

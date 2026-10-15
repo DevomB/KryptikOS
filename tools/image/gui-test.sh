@@ -120,6 +120,17 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT LOCK-TYPE-SUSPEND" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-VOLUME-DOWN" "key:volumedown" \
+    "expect:GT KEY-LOCK-LAYOUT" "key:alt+shift+l" \
+    "expect:GT KEY-LOCKED-VOLUME-UP" "key:volumeup" \
+    "expect:GT KEY-LOCKED-MUTE\r?\n" "key:audiomute" \
+    "expect:GT KEY-LOCKED-MUTE-AGAIN" "key:audiomute" \
+    "expect:GT KEY-LOCKED-MENU" "key:alt+p" "key:esc" \
+    "expect:GT KEY-LAYOUT-NEXT" "key:meta_l+spc" \
+    "expect:GT LOCK-TYPE-OTHER-LAYOUT" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-LAYOUT-BACK" "key:meta_l+spc" \
+    "expect:GT LOCK-TYPE-FIRST-LAYOUT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT HEAD-ON" "head:${HEAD2}:1024x768" \
     "expect:GT KEY-FOCUS-HEAD\r?\n" "key:alt+dot" \
     "expect:GT KEY-FOCUS-HEAD-WINDOW" "key:alt+j" \
@@ -153,6 +164,9 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
+            suspend-refused-virtio-gpu suspend-refused-stays-awake \
+            desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
+            volume-key lock-passes-volume-keys lock-holds-other-keys \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \

@@ -10,6 +10,10 @@
 #   kb_store NAME   the name into the variable
 #   kb_current      the layout in force: us when none was loaded
 #   kb_export_xkb   XKB_DEFAULT_LAYOUT and _VARIANT from what kb_load recorded
+#   kb_desktop FILE the names FILE lists, the user's desktop layouts, each one the table holds
+#   kb_export_desktop FILE
+#                   those layouts for the desktop in place of the machine's, Super+Space to
+#                   switch among them, and KRYPTIK_LAYOUTS naming them for the screen lock
 
 KB_TABLE="${KB_TABLE:-/usr/share/kryptik/keyboard-layouts}"
 KB_VAR="${KB_VAR:-/sys/firmware/efi/efivars/KryptikKeyboard-ec0aed97-b78d-446f-997d-10d0c35f5fb6}"
@@ -71,4 +75,35 @@ kb_export_xkb() {
     case "$_kb_l" in ''|*[!a-z0-9_]*) return 0 ;; esac
     case "$_kb_x" in *[!a-z0-9_-]*) _kb_x="" ;; esac
     export XKB_DEFAULT_LAYOUT="$_kb_l" XKB_DEFAULT_VARIANT="$_kb_x"
+}
+
+# The user's list, in their home, so the state partition's: a keymap is no privilege. At most
+# four names, as an xkb keymap holds no more, and every one the table's, or none counts.
+kb_desktop() {
+    [ -r "$1" ] || return 1
+    _kb_d=""; _kb_n=0
+    for _kb_w in $(head -c 256 "$1" 2>/dev/null | tr -cs 'a-z0-9-' ' '); do
+        kb_row "$_kb_w" > /dev/null 2>&1 || return 1
+        _kb_n=$((_kb_n + 1))
+        [ "$_kb_n" -le 4 ] || return 1
+        _kb_d="${_kb_d:+$_kb_d }$_kb_w"
+    done
+    [ -n "$_kb_d" ] || return 1
+    printf '%s\n' "$_kb_d"
+}
+
+kb_export_desktop() {
+    _kb_names=$(kb_desktop "$1") || return 0
+    _kb_ls=""; _kb_vs=""; _kb_i=0
+    for _kb_w in $_kb_names; do
+        _kb_r=$(kb_row "$_kb_w")
+        _kb_l=$(printf '%s\n' "$_kb_r" | awk '{ print $3 }')
+        _kb_x=$(printf '%s\n' "$_kb_r" | awk '{ print $4 }')
+        [ "$_kb_x" = - ] && _kb_x=""
+        if [ "$_kb_i" -eq 0 ]; then _kb_ls="$_kb_l"; _kb_vs="$_kb_x"; else _kb_ls="$_kb_ls,$_kb_l"; _kb_vs="$_kb_vs,$_kb_x"; fi
+        _kb_i=$((_kb_i + 1))
+    done
+    export XKB_DEFAULT_LAYOUT="$_kb_ls" XKB_DEFAULT_VARIANT="$_kb_vs" KRYPTIK_LAYOUTS="$_kb_names"
+    # Super+Space: dwl's own keys are Alt's, and the toggle reaches no window as a character.
+    if [ "$_kb_i" -gt 1 ]; then export XKB_DEFAULT_OPTIONS=grp:win_space_toggle; else unset XKB_DEFAULT_OPTIONS; fi
 }

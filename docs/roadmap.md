@@ -193,9 +193,12 @@ A desktop someone can live in, built the same way.
   viewer, a file manager that understands transfers between zones.
 - **Software from somewhere.** A package manager and a signed binary
   repository, or zones that carry their own userland. An ADR first.
-- **The laptop.** Per-zone sound brokered like the clipboard,
-  suspend and resume with volume keys dropped across it, power management,
-  hotplug and multiple monitors, and a second keyboard layout to switch to.
+- **The laptop.** Hotplug and several monitors. What else the laptop design
+  asked for is built: sound mixed in zone 0 for each zone, the microphone
+  granted to one zone at a time; suspend with the state partition's and each
+  zone volume's keys dropped, by `kryptik suspend`, the power key, the lid
+  or idleness; the power source, a low battery and brightness; and up to
+  four keyboard layouts to switch between ([status](status.md)).
 - **USB sticks.** Decided (ADR-025): read in the zone the user gives one
   to, through a descriptor and a reader of Kryptik's own, never mounted;
   FAT first, exFAT a named gap, FUSE a later decision of its own

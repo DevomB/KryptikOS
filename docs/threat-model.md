@@ -23,7 +23,9 @@ filter and a Landlock ruleset. Its `/proc` and `/sys` hide the machine-wide
 interrupt, scheduling, load, page-fault and allocation, stall and open-file
 counters, each CPU's idle counts and frequency (`/proc/cpuinfo` is a copy
 taken as the zone starts), which would time keystrokes typed in any zone, and
-the disk tables, which would show which encrypted zones are open; `/proc`
+the disk tables, which would show which encrypted zones are open, and the
+sound cards' files, which would show when another zone plays or records and
+name the machine's model; `/proc`
 gives it a boot ID of its own, and its monotonic and boot clocks start at a
 random point each time the zone starts, so the uptime and boot time that
 crash reports and telemetry send match no other zone's. Still shown: the
@@ -35,8 +37,16 @@ code that looks past the zone's own clocks: the offsets in
 checkpoint and restore, the scheduler's clock in `/proc/<pid>/sched`, the
 vDSO's data page, which a time namespace maps beside its own, and the CPU's
 timestamp counter, one instruction away, each give it; the free memory in
-`/proc/meminfo`, coarse, which programs need; and the idle counts of a CPU
-brought online after the zone started.
+`/proc/meminfo`, coarse, which programs need; the user's keyboard layouts,
+up to four, in the keymap every window is given, as Wayland gives it; and
+the idle counts of a CPU brought online after the zone started.
+Sound leaves the zone as one stream of samples to zone 0's mixer, which
+reads one word before them and runs as a user of its own in the cards' group
+alone; the zone records only while the user has granted it the microphone,
+and `vault` has no sound at all. Of other zones' sound it learns one thing:
+the card stays open five seconds after the last sound, so how soon its own
+first sound is taken tells it whether any zone played in that time, a bit
+two zones could also signal through.
 Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 
@@ -179,7 +189,8 @@ most a card's option ROM by its hash), with a firmware password that clearing
 the firmware's settings does not remove, closes that
 ([user guide](user-guide.md#1-boot-the-medium)).
 
-**Not defended while running or suspended.** Keys are in RAM; see
+**Not defended while running; while suspended, the state partition's key is
+gone and memory is not.** See
 [coercion, and access to a running or suspended machine](#coercion-and-access-to-a-running-or-suspended-machine).
 
 ### User error across zones
@@ -211,10 +222,24 @@ ship as vendor binaries (ADR-012).
 
 ### Coercion, and access to a running or suspended machine
 
-Keys are in RAM while zones run. Cold-boot and DMA attacks on a running or
-suspended machine are out of scope, and no software helps against coercion.
+Keys are in RAM while zones run. A machine suspended by `kryptik suspend`
+has wiped the state partition's key, and resumes only with its passphrase;
+the TPM does not unlock it. Each open zone volume's key is wiped too, and
+the clean page cache dropped first, so no cached page of a zone volume's
+files stays; the zone waits, frozen, for its own passphrase. What zone 0
+and the zones' processes hold in their own memory, the files they have
+mapped included, is still there, and
+cold-boot and DMA attacks on a running or suspended machine stay out of
+scope. No software helps against coercion.
 The screen lock (Alt+Shift+l) keeps whoever is at the keyboard without the
 login password from every window, but takes no key out of RAM.
+
+A USB stick or an SD card plugged into a running machine reaches the
+kernel, which reads its partition table as it does any disk's, and no
+program in zone 0: eudev probes none of its filesystems
+(`59-kryptik-removable.rules`), and Kryptik finds its own partitions by
+the names the kernel read from their tables (`devices.sh`). A device that
+also presents a keyboard is taken as one.
 
 ### Microarchitectural side channels
 
