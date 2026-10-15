@@ -420,6 +420,14 @@ pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_setgroups, EPERM),
     (libc::SYS_capset, EPERM),
     (libc::SYS_unshare, EPERM),
+    // A thread setting its scheduling class or priority, as llama.cpp's do in Firefox, takes
+    // EPERM as a missing privilege; glibc's pthread_create and pthread_setschedparam pass it on.
+    (libc::SYS_sched_setscheduler, EPERM),
+    (libc::SYS_sched_setparam, EPERM),
+    (libc::SYS_sched_setattr, EPERM),
+    // Firefox lowers the I/O priority of the thread writing its startup cache and writes at the
+    // normal one when refused; killed, the browser ends seconds after its window shows.
+    (libc::SYS_ioprio_set, EPERM),
 ];
 
 const fn errno_action(e: u32) -> u32 {
