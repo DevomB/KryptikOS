@@ -1439,7 +1439,8 @@ mark firefox untrusted
 launch_plain untrusted "sh -c 'printf \"<title>kryptik-page</title><p>kryptik</p>\" > /tmp/page.html && exec firefox --new-instance file:///tmp/page.html'" > "$LOG/launch-firefox.out" 2>&1 &
 ff_page() { grep -q '^title=.*kryptik-page' "$RT/kryptik/focus" && grep -qx 'zone=untrusted' "$RT/kryptik/focus"; }
 if wait_for 120 ff_page; then
-    pass "browser-window" "Firefox from the browser image opened a page in untrusted: $(grep '^title=' "$RT/kryptik/focus")"
+    # With its app_id as the proxy stamped it, which the browser key matches (dwl-config.h).
+    pass "browser-window" "Firefox from the browser image opened a page in untrusted: $(grep -E '^(title|appid)=' "$RT/kryptik/focus" | tr '\n' ' ')"
     # Its idle startup tasks and its startup cache's first write come later, the write at most
     # 60 s after the cache's last entry: a call the zone's filter kills there ends Firefox after
     # its window has shown.
