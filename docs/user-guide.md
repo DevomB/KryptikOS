@@ -185,8 +185,8 @@ uses it too. `kryptik keyboard NAME`, as root, changes it later
 from the next login, the first in force and Super+Space to switch; the
 screen lock names the one in force, as a password typed in the other one
 fails. The state passphrase at boot is always asked under the machine's one
-layout. This release has no input method, so Chinese, Japanese and Korean cannot be
-typed yet.
+layout. This release has no input method, so Chinese, Japanese and Korean
+cannot be typed yet.
 
 The installer refuses the disk the medium is on; anything with a mounted
 partition, active swap, or a partition held open (an unlocked LUKS volume,
