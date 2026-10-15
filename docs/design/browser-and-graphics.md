@@ -105,9 +105,9 @@ window in front, and start Firefox only when the zone has none
   each zone window's `app_id` `kryptik.<zone>.<claimed>`, and dwl matches
   that whole string together with the socket's zone, so a window that
   claims another zone's browser, or a zone 0 client that claims a zone's,
-  is never taken. Firefox claims its remoting name, `firefox-default` on
-  the default update channel, which `dwl-config.h` names once
-  (`browserappid`). The chrome sees only the focused window of each output,
+  is never taken. Firefox claims its remoting name, which it gives GTK as
+  the program name: `firefox-default` on the default update channel, which
+  `dwl-config.h` names once (`browserappid`). The chrome sees only the focused window of each output,
   from dwl's status. The launch daemon sees the zone's processes, not its
   windows.
 - **The key.** A dwl action in place of `spawn`, `focusorlaunch`, given the
@@ -134,6 +134,9 @@ window in front, and start Firefox only when the zone has none
   it is on, and the keyboard follows it there. A window is never moved
   between tags, so the vault keeps its tag. Nothing moves while the screen
   is locked.
+- **Still left.** The key or `b` while the zone's Firefox is starting,
+  before its window shows, starts a second one, which says that the
+  first is running.
 - **A waiting zone.** The window of a zone frozen after a sleep, its volume
   waiting for the passphrase, comes forward all the same and does not
   answer. The menu already says the zone is waiting and asks with `p`.

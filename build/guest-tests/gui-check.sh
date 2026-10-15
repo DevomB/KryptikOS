@@ -1494,7 +1494,7 @@ if ff_away && [[ ! -e "$front" ]]; then
 else
     fail "browser-front-only-the-users" "$(ff_record); the request: $(ls -la "$front" 2>&1)"
 fi
-as_user "echo untrusted > $front.tmp && mv -f $front.tmp $front"
+as_user "umask 077 && echo untrusted > $front.tmp && mv -f $front.tmp $front"
 if wait_for 10 ff_front && [[ ! -e "$front" ]]; then
     pass "browser-front-request" "the user's request put untrusted's Firefox in front on tag 3, and was removed"
 else
