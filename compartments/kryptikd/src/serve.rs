@@ -1222,11 +1222,17 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 // Asked again at the passphrase prompt, as a lid closed on it would: the
                 // zones are frozen and the key is gone already, so the machine just sleeps.
                 if first == "suspend" {
-                    eprintln!("kryptikd serve: uid {uid} asked to suspend again");
-                    start_sleep(conn, jobs);
-                    return None;
+                    if let Some(why) = crate::suspend::sleep_refused() {
+                        eprintln!("kryptikd serve: uid {uid} asked to suspend again: {why}");
+                        format!("error: {why}\n")
+                    } else {
+                        eprintln!("kryptikd serve: uid {uid} asked to suspend again");
+                        start_sleep(conn, jobs);
+                        return None;
+                    }
+                } else {
+                    while_suspended(uid, &first, carried, &mut pauses.state)
                 }
-                while_suspended(uid, &first, carried, &mut pauses.state)
             }
             Err(e) => format!("error: {e}\n"),
         };
@@ -1320,6 +1326,13 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
         "unlock-kind" => reply(&conn, "ok login\n"),
         "resume-state" => reply(&conn, "error: not suspended: the state partition has its key\n"),
         "suspend" => {
+            // Before anything is frozen or dropped: a sleep the display would not come back
+            // from is refused whole.
+            if let Some(why) = crate::suspend::sleep_refused() {
+                eprintln!("kryptikd serve: uid {uid} asked to suspend: {why}");
+                reply(&conn, &format!("error: {why}\n"));
+                return None;
+            }
             let refused = if cfg.developer {
                 Some("a developer instance suspends nothing")
             } else if launching {
