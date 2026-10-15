@@ -215,8 +215,9 @@ up ADR-001 in the zones where the applications run.
   stage 04, so changing them rebuilds no image, and a kept image's tree is
   checked against the root again. A release builds every image from nothing.
 - **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
-  makes the root (ext4 without a journal, then the verity tree, with a
-  salt and UUID derived from the content), runs the root's artifact audit
+  makes the root (ext4 without a journal in 4096-byte blocks, the size
+  dm-verity reads it in, then the verity tree, with a salt and UUID derived
+  from the content), runs the root's artifact audit
   over it with the image's own accepted findings
   (`build/images/NAME.accepted`, each with its reason) or none, and the
   image's own program list, after leaving out what `build/images/NAME.strip`
