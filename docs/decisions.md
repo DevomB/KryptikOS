@@ -525,16 +525,22 @@ certificate sends Windows to its BitLocker recovery key once.
 linear table in the shared command line; a shared ESP; a boot loader to
 choose between systems (ADR-014).
 
-## ADR-024 (proposed): Zones reach the compositor through sockets it filters, by proxies that run as users of their own
+## ADR-024: Zones reach the compositor through sockets it filters, by proxies that run as users of their own
 
-dwl serves each zone on a socket of its own, offers it only the globals the
-proxy allows (`wl_display_set_global_filter`), and takes a window's zone
-from the socket, not from the app_id. Each zone's `kryptik-wlproxy` runs as
-a uid of its own, outside groups `kryptik` and `seat`, under seccomp, with a
-Landlock ruleset that grants no files, in an empty network namespace,
-started by the launch daemon. Later, dwl runs as a `compositor` user and
-confines itself after start-up, with commands run by a fixed spawner. Last,
-Wayland parsing moves into the zones, and only pixels and input cross
+dwl serves each zone on a socket of its own, which takes only that zone's
+proxy uid and the session's own programs, and offers it only the globals
+the proxy allows (`wl_display_set_global_filter`). A window's zone, for its
+border, the fullscreen bar, the chrome's status and the window rules, is the
+socket its client came through, never its app_id. The launch daemon starts
+each zone's `kryptik-wlproxy` as a uid of its own, outside groups `kryptik`
+and `seat`, in empty network and IPC namespaces and a cgroup of its own
+(128M, one process), with a Landlock ruleset that leaves it its own program
+alone and a seccomp list of its own calls, which CI checks against the
+static proxy under strace. Both are built.
+
+Later, and decided on its own: dwl runs as a `compositor` user and confines
+itself after start-up, with commands run by a fixed spawner; last, Wayland
+parsing moves into the zones, and only pixels and input cross
 ([compositor separation](design/compositor-separation.md)).
 
 **Why:** a proxy running as the login user can connect to dwl's own
@@ -543,10 +549,10 @@ bug in the parser zones reach first then gives a zone the whole desktop,
 the consent directory and the launch daemon, and lets it draw another
 zone's border.
 
-**Cost:** changes to dwl (sockets per zone, the filter, then the sandbox
-and a spawner); the launch daemon starts proxies and the compositor; uids
-per zone; a crate shared by kryptikd and the proxy for seccomp and Landlock.
-A compromised compositor still controls what the user sees and types.
+**Cost:** changes to dwl (sockets per zone, the filter, a window's zone
+from its socket); the launch daemon starts each proxy and confines it before
+the exec; a uid per zone's proxy. A compromised compositor still controls
+what the user sees and types.
 
 **Rejected:** splitting dwl into an input process and a renderer, which
 leaves the renderer drawing the borders and every zone talking to it.
