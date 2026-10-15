@@ -131,6 +131,7 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT KEY-MENU-OPEN" "key:alt+p" \
     "type-from:GT OPEN-TYPE 1 ([a-z0-9]+)" "type-from:GT OPEN-TYPE 2 ([a-z0-9]+)" \
     "type-from:GT OPEN-TYPE 3 ([a-z0-9]+)" \
+    "expect:GT KEY-VIEW-BROWSER" "key:alt+3" "expect:GT KEY-BROWSER-BACK" "key:alt+1" \
     "expect:GT END" "expect:GCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
