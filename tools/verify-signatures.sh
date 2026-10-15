@@ -278,6 +278,9 @@ PINNED_FPRS=(
     "108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE"   # Rust Language, rustc, cargo and rust-std
     # https://releases.llvm.org/release-keys.asc (retrieved 2026-10-13), the release managers' keys.
     "D574BD5D1D0E98895E3BF90044F2485E45D59042"   # Tobias Hieta, LLVM's release builds
+    # https://github.com/nodejs/node#release-keys (retrieved 2026-10-15) lists the releasers' keys, which
+    # its release-keys repository serves. Each release is signed by one releaser; this one signs 24.22.0.
+    "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C"   # Richard Lau, Node.js
 )
 
 # Primaries and subkeys: GOODSIG names a subkey, while pins and keys.manifest hold primaries.
@@ -786,6 +789,11 @@ verify_sums() {
     local listname="${signame%.*}"
     local list="${SIGDIR}/${listname}" want got
 
+    # A list named alike for every release (Node.js's SHASUMS256.txt) may be cached from an earlier
+    # one: if it does not name FILE, it and its signature are fetched again.
+    if [[ -s "$list" && -z "$(listed_digest "$list" "$file")" ]]; then
+        rm -f "$list" "${SIGDIR}/${signame}"
+    fi
     if [[ ! -s "$list" ]] && ! quiet_fetch "${url%/*}/${listname}" "$list"; then
         rm -f "$list"
         warn "${name}: no ${listname} published upstream"

@@ -476,6 +476,23 @@ fresh_root; run
 expect_fail "a file the signed list does not name fails" \
     "does not match a digest in summed-SHA-256.txt"
 
+# Like Node.js's SHASUMS256.txt: every release's list has the same name, so the one cached can be an
+# earlier release's, and its signature with it.
+for r in first second; do printf 'fixture payload for %s\n' "$r" > "${SRC}/${r}.tar.gz"; done
+list_release() {  # list_release NAME: upstream's list names NAME's file alone, signed afresh
+    sha256sum "${SRC}/$1.tar.gz" | sed "s#  .*#  $1.tar.gz#" > "${SRC}/SHASUMS256.txt"
+    fixgpg --yes --local-user good@example.test \
+        --detach-sign -o "${SRC}/SHASUMS256.txt.sig" "${SRC}/SHASUMS256.txt" >/dev/null 2>&1
+}
+list_release first
+: > "${W}/manifest"; add_row first sums:SHASUMS256.txt.sig
+fresh_root; run --strict
+expect_pass "a list named alike for every release verifies" "verified:     1"
+list_release second
+: > "${W}/manifest"; add_row second sums:SHASUMS256.txt.sig
+fresh_root; run --strict
+expect_pass "an earlier release's cached list is fetched again, with its signature" "verified:     1"
+
 # --- unaudited imported keys ------------------------------------------------
 
 write_manifest unknown

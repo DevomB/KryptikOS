@@ -59,9 +59,9 @@ root. The decision is ADR-016 in [decisions](../decisions.md).
 - **Build.** Firefox builds with GCC 11.1 or newer on Linux, so stage 04's
   GCC 14 can compile it. It still needs clang and libclang, since bindgen
   generates its style system's bindings through libclang whatever the
-  compiler; the pinned Rust toolchain and cbindgen; Node.js, unless the
-  build passes `--disable-nodejs`, which upstream warns will become an
-  error; Python 3; and nasm for its codecs' SIMD. Its wasm-sandboxed
+  compiler; the pinned Rust toolchain and cbindgen; Node.js, which the
+  build runs for the devtools debugger's modules, `--disable-nodejs` or
+  not; Python 3; and nasm for its codecs' SIMD. Its wasm-sandboxed
   libraries (RLBox: graphite, hunspell, expat, ogg, woff2 and others run as
   WebAssembly compiled back to native code) need clang's `wasm32` target and
   a WASI sysroot. They are worth keeping: a font or spelling parser bug stays
@@ -224,7 +224,11 @@ floors are given with each layer.
     and the crates its lock file names are fetched before the build, since
     the chroot has no network, and checked against that lock.
   - **`nasm`:** for dav1d's AV1 decoder.
-  - **Node.js** is left out: ESR 153 still takes `--disable-nodejs`.
+  - **`node`:** Node.js's release build, the program alone, which the build
+    runs for the devtools debugger's modules. ESR 153's configure still
+    takes `--disable-nodejs`, but the build then stops at those modules.
+    12.22.12 or newer; the pin keeps to an LTS line, and one of the
+    releasers whose keys Node.js lists signs its checksum list.
 - **The build.**
   - Stage 04's GCC with the hardening flags; an exception each flag needs
     goes into `hardening-exceptions.txt` with its reason. Firefox drops

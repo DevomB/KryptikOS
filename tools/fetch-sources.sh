@@ -214,6 +214,7 @@ rust|rust-std|${V_RUST}|https://static.rust-lang.org/dist/rust-std-${V_RUST}-x86
 clang|llvm|${V_LLVM}|${MIRROR_GITHUB}/llvm/llvm-project/releases/download/llvmorg-${V_LLVM}/LLVM-${V_LLVM}-Linux-X64.tar.zst|sig|github
 cbindgen|cbindgen|${V_CBINDGEN}|https://static.crates.io/crates/cbindgen/cbindgen-${V_CBINDGEN}.crate|none|rule
 nasm|nasm|${V_NASM}|https://www.nasm.us/pub/nasm/releasebuilds/${V_NASM}/nasm-${V_NASM}.tar.xz|none|rule
+node|node|${V_NODE}|https://nodejs.org/dist/v${V_NODE}/node-v${V_NODE}-linux-x64.tar.xz|sums:SHASUMS256.txt.sig|rule
 browser|firefox|${V_FIREFOX}|https://archive.mozilla.org/pub/firefox/releases/${V_FIREFOX}esr/source/firefox-${V_FIREFOX}esr.source.tar.xz|asc|rule
 MANIFEST
 }

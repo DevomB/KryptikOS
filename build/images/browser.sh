@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # The browser image: Firefox ESR for Wayland alone, over the toolkit image, built with the rust,
-# clang, cbindgen and nasm layers, which it does not carry (docs/design/browser-and-graphics.md).
+# clang, cbindgen, nasm and node layers, which it does not carry (docs/design/browser-and-graphics.md).
 # Its own copies of NSS, NSPR, libvpx, dav1d and opus stay bundled. Its PDF viewer is the document
 # viewer. Pins in build/images/versions.env.
 # shellcheck disable=SC2034  # read by build/stages/04-images.sh
 image_version="${V_FIREFOX}esr"
 # shellcheck disable=SC2034
-image_over=(toolkit rust clang cbindgen nasm)
+image_over=(toolkit rust clang cbindgen nasm node)
 # shellcheck disable=SC2034
 image_rows=(
     "firefox"   "s_browser_firefox"
@@ -14,7 +14,7 @@ image_rows=(
 )
 
 # Stage 04's GCC and hardening flags; libclang only for bindgen. With no network: Firefox's own vendored
-# crates and Python packages, no toolchain bootstrap, no Node.js. No D-Bus, which no zone has, no updater
+# crates and Python packages, and no toolchain bootstrap. No D-Bus, which no zone has, no updater
 # (updates are the image's), no crash reporter, no EME, no jemalloc (hardened_malloc is preloaded). Sound
 # through ALSA, whose default device in a zone is zone 0's mixer; Web MIDI links ALSA's sequencer, which
 # reaches no device, as the kernel builds none. The first build keeps no wasm sandbox for its libraries.
@@ -45,6 +45,8 @@ s_browser_firefox() {
     # Configure requires unzip, which only packaging runs (make_unzip.py: `unzip ARCHIVE`, into the
     # current directory) and the base system does not have: Python's zipfile does that, here alone.
     # And llvm-objdump, which it finds by asking the compiler when that is clang: GCC's, it is named.
+    # And Node.js, which the build runs for the devtools debugger's modules whatever --disable-nodejs
+    # says: not on the PATH, it is named, and configure stops at once if it is wrong.
     cat > kryptik-unzip <<'EOF'
 #!/usr/bin/env python3
 import sys, zipfile
@@ -67,7 +69,6 @@ ac_add_options --disable-debug
 ac_add_options --disable-debug-symbols
 ac_add_options --disable-tests
 ac_add_options --disable-bootstrap
-ac_add_options --disable-nodejs
 ac_add_options --disable-dbus
 ac_add_options --disable-necko-wifi
 ac_add_options --disable-updater
@@ -82,6 +83,7 @@ mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj
 export UNZIP=${src}/kryptik-unzip
 export LLVM_OBJDUMP=${llvm}/bin/llvm-objdump
 export BINDGEN_CFLAGS="--gcc-install-dir=${gccdir}"
+export NODEJS=/usr/lib/node-${V_NODE%%.*}/bin/node
 EOF
     env CC=gcc CXX=g++ MOZBUILD_STATE_PATH="${src}/.mozbuild" MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=none \
         MOZ_NOSPAM=1 ./mach --no-interactive build
