@@ -598,10 +598,11 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
         fail "F4  volume init for the encrypted fixture failed"
         info "output: $(printf '%s' "$F4INIT" | tr '\n' '|' | cut -c1-220)"
     else
-        # Read before any mount, which would start ext4's lazy thread on what init left.
+        # Read before any mount, which would start ext4's lazy thread on what init left. The
+        # group lines alone: the superblock's "Group descriptor size" line carries no flags.
         f4groups=""
         if cryptsetup open --type luks2 --readonly --key-file "$F4PASS" "$WORK/volumes/sealed.luks" kryptik-f4-probe >/dev/null 2>&1; then
-            f4groups="$(dumpe2fs /dev/mapper/kryptik-f4-probe 2>/dev/null | grep '^Group ')"
+            f4groups="$(dumpe2fs /dev/mapper/kryptik-f4-probe 2>/dev/null | grep '^Group [0-9]')"
             cryptsetup close kryptik-f4-probe >/dev/null 2>&1
         fi
         if [[ -n "$f4groups" ]] && ! grep -v -q 'ITABLE_ZEROED' <<<"$f4groups"; then
