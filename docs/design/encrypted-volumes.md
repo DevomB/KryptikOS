@@ -51,8 +51,12 @@ a passphrase is a UX choice; kryptikd works either way.
 - `kryptikd volume init NAME [--size 512M] --passphrase-file F` creates a
   sparse 0600 file of at least 32 MiB in a 0700 directory, or uses an empty
   block device, refusing anything with a signature (`blkid -p`); it formats,
-  runs `mkfs.ext4 -E root_owner=<uid>:<gid>` and closes. The installer
-  creates no zone volumes.
+  runs `mkfs.ext4 -E root_owner=<uid>:<gid>,lazy_itable_init=0` and closes.
+  Every inode table is written then, since ext4's lazy thread would write
+  them after the first mount, through the loop device onto the state
+  partition, and a suspend that has dropped that partition's key would keep
+  the thread waiting and the kernel from sleeping. The installer creates no
+  zone volumes.
 - `volume passwd` runs `cryptsetup luksChangeKey` with both passphrases in
   memfds. A passphrase either sets has at least 8 characters, as a copied
   header can be guessed at offline; one a volume already has still opens it.

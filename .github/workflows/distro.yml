@@ -149,8 +149,10 @@ jobs:
           if [ "$STAGE02" = success ] && [ -z "$ttfp" ]; then echo "stage 02 passed and tt-gcc2 has no fingerprint"; exit 1; fi
           echo "ttfp=$ttfp" >> "$GITHUB_OUTPUT"
 
+      # Saved from main alone, which every branch's run restores: a branch's own copy would be read
+      # before main's, so main's went unread until the cache's size limit dropped it.
       - name: Save the stage 01-02 sysroot
-        if: ${{ !cancelled() && github.ref_type != 'tag' && steps.progress02.outputs.prefix != '' && !startsWith(steps.work02.outputs.cache-matched-key, steps.progress02.outputs.prefix) }}
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.progress02.outputs.prefix != '' && !startsWith(steps.work02.outputs.cache-matched-key, steps.progress02.outputs.prefix) }}
         continue-on-error: true
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
@@ -576,6 +578,14 @@ jobs:
           rm -f work-after-media.tar.zst
           if [ -f production-media.tar.zst ]; then sudo tar --zstd -xf production-media.tar.zst -C work; rm -f production-media.tar.zst; fi
           ls work/images; df -h /mnt | tail -1
+
+      # The host suites' proxy-calls traces the static proxy's live tests, as CI's Compartment layer
+      # does; root runs them with this user's cargo and rustup, which tools/acceptance.sh finds.
+      - name: The proxy-calls suite's target and strace
+        if: contains(matrix.suites, 'build')
+        run: |
+          command -v strace >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq strace; }
+          rustup target add x86_64-unknown-linux-musl
 
       # The script, not make, which turns every failure into 2; exit 2 is a part's normal answer.
       - name: Acceptance of these suites

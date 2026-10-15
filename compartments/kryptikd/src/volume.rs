@@ -352,8 +352,12 @@ pub fn init(zone: &str, volume: &str, size: u64, pass: &Passphrase, uid: u32, gi
     let mapper = mapper_path(zone);
     run("cryptsetup open", "cryptsetup", &["open", "--type", "luks2", "--key-file", "-", volume, &mapper_name(zone)], Some(pass.as_bytes()))
         .map_err(|e| tool_err("cryptsetup open", e))?;
-    let owner = format!("{uid}:{gid}");
-    let r = run("mkfs.ext4", "mkfs.ext4", &["-q", "-F", "-E", &format!("root_owner={owner}"), "-L", &format!("kryptik-{zone}"), &mapper], None);
+    /* Every inode table is written now: left to ext4's lazy thread, they would be written for
+     * minutes after the first mount, through the loop device onto the state partition, where a
+     * suspend that has dropped that partition's key keeps the thread waiting and the kernel
+     * from sleeping. */
+    let options = format!("root_owner={uid}:{gid},lazy_itable_init=0");
+    let r = run("mkfs.ext4", "mkfs.ext4", &["-q", "-F", "-E", &options, "-L", &format!("kryptik-{zone}"), &mapper], None);
     let c = run("cryptsetup close", "cryptsetup", &["close", &mapper_name(zone)], None);
     r.map_err(|e| tool_err("mkfs.ext4", e))?;
     c.map_err(|e| tool_err("cryptsetup close", e))?;
