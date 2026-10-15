@@ -379,11 +379,11 @@ fn send_fds(s: &UnixStream, data: &[u8], fds: &[RawFd]) {
 /// Only clients whose queued fds fit the raised limit are served, so none starves the open ones.
 #[test]
 fn clients_fit_descriptor_limit() {
-    // (300 - 8) / 130: two sessions.
-    let mut p = Proxy::start_with("work", &["--max-clients", "32"], Some((100, 300)));
+    // (556 - 8 - 256) / 130: two sessions, past the copies of the zone's pools.
+    let mut p = Proxy::start_with("work", &["--max-clients", "32"], Some((100, 556)));
     let limits = std::fs::read_to_string(format!("/proc/{}/limits", p.child.id())).unwrap();
     let files = limits.lines().find(|l| l.starts_with("Max open files")).unwrap();
-    assert_eq!(files.split_whitespace().nth(3), Some("300"), "the soft limit was not raised: {files}");
+    assert_eq!(files.split_whitespace().nth(3), Some("556"), "the soft limit was not raised: {files}");
 
     let (mut good, mut ugood) = p.connect();
     good.write_all(&get_registry(2)).unwrap();
