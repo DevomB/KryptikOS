@@ -107,9 +107,9 @@ window in front, and start Firefox only when the zone has none
   claims another zone's browser, or a zone 0 client that claims a zone's,
   is never taken. Firefox claims its remoting name, which it gives GTK as
   the program name: `firefox-default` on the default update channel, which
-  `dwl-config.h` names once (`browserappid`). The chrome sees only the focused window of each output,
-  from dwl's status. The launch daemon sees the zone's processes, not its
-  windows.
+  `dwl-config.h` names once (`browserappid`). The chrome sees only the
+  focused window of each output, from dwl's status. The launch daemon sees
+  the zone's processes, not its windows.
 - **The key.** A dwl action in place of `spawn`, `focusorlaunch`, given the
   zone, the claimed `app_id` and the launch command. It takes the first
   window in the focus order whose zone and `app_id` match, so the one used
