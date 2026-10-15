@@ -169,6 +169,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             password-check-pauses lock-takes-keyboard lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
             zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
+            chrome-names-hold idle-lock-heeds-hold chrome-hold-cleared \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             volume-key lock-passes-volume-keys lock-holds-other-keys \

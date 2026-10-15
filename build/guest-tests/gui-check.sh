@@ -1277,6 +1277,24 @@ if [[ "$held" -eq 0 ]] && grep -q '^watching for 2000 ms' "$LOG/hold-idle.out" &
 else
     fail "zone-holds-screen-awake" "personal's probe: $(since_mark hold personal | tail -3 | tr '\n' ' '); zone 0's idle probe: $(tr '\n' ' ' < "$LOG/hold-idle.out"); $(zone_why personal)"
 fi
+# The chrome names the zone holding the screen awake, from dwl's status, for its menu.
+hold_named() { [[ "$(head -n 1 "$RT/kryptik/holdawake" 2>/dev/null)" == personal ]]; }
+if wait_for 10 hold_named; then
+    pass "chrome-names-hold" "the chrome's record names personal as holding the screen awake"
+else
+    fail "chrome-names-hold" "holdawake: $(tr '\n' ' ' < "$RT/kryptik/holdawake" 2>/dev/null)"
+fi
+# The idle lock heeds the hold: one of 2 s, started now, is still waiting 6 s later and never locked.
+as_user "/usr/bin/kryptik-lock --idle 2 --blank 30" > "$LOG/hold-idle-lock.out" 2>&1 &
+holdidle_pid=$!
+sleep 6
+pgrep -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 2 --blank 30' > /dev/null; waiting=$?
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 2 --blank 30' 2>/dev/null; wait "$holdidle_pid" 2>/dev/null
+if [[ "$waiting" -eq 0 ]] && ! grep -q 'locking' "$LOG/hold-idle-lock.out"; then
+    pass "idle-lock-heeds-hold" "a 2 s idle lock started while personal's window held the screen awake was still waiting 6 s later"
+else
+    fail "idle-lock-heeds-hold" "still waiting: $([[ "$waiting" -eq 0 ]] && echo yes || echo no); $(tr '\n' ' ' < "$LOG/hold-idle-lock.out")"
+fi
 # A zone 0 window maps in front and takes the keyboard: the hold ends at once.
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 30 hold-0" > "$LOG/hold-zone0.out" 2>&1 &
 hold0_pid=$!
@@ -1287,6 +1305,12 @@ if [[ "$moved" -eq 0 ]] && grep -qx 'idled' "$LOG/hold-idle-away.out"; then
     pass "hold-ends-off-keyboard" "a zone 0 window took the keyboard from personal's, and zone 0's 2 s idle timer ran out"
 else
     fail "hold-ends-off-keyboard" "zone 0's window: $(tr '\n' ' ' < "$LOG/hold-zone0.out" | cut -c1-200); personal's probe: $(since_mark hold personal | tail -3 | tr '\n' ' '); idle probe: $(tr '\n' ' ' < "$LOG/hold-idle-away.out")"
+fi
+hold_unnamed() { [[ -z "$(head -n 1 "$RT/kryptik/holdawake" 2>/dev/null)" ]]; }
+if wait_for 10 hold_unnamed; then
+    pass "chrome-hold-cleared" "the chrome's record names no zone once the zone 0 window took the keyboard"
+else
+    fail "chrome-hold-cleared" "holdawake: $(tr '\n' ' ' < "$RT/kryptik/holdawake" 2>/dev/null)"
 fi
 # Closed, it gives personal's window the keyboard back; the lock takes it, and the hold ends.
 kill "$hold0_pid" 2>/dev/null; wait "$hold0_pid" 2>/dev/null

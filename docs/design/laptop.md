@@ -464,9 +464,8 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 - **Holding the screen awake.** A zone playing a video may hold off both the
   lock and the blanking, through the proxy's idle inhibition (the browser
   design), under these conditions. dwl counts a hold under them and tells its
-  idle notifier so; the lock and the blanking heed that once `kryptik-lock`
-  waits on the notification that counts inhibitors, and until then both
-  count input alone.
+  idle notifier so, and `kryptik-lock` waits on the notification that counts
+  inhibitors: the lock, the blanking and a sleep after them all heed it.
   - The zone's file on the verified root opts in (`[desktop] hold_awake =
     true`): `personal` and `work`, where the browser plays video. It is off
     by default, and set false for `untrusted`, where unknown links open.
