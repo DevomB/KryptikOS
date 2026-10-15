@@ -90,6 +90,55 @@ root. The decision is ADR-016 in [decisions](../decisions.md).
 - **Updates.** The extended-support release (ESR) has a security release
   every four weeks, like the rapid channel, with fewer feature changes.
 
+### A second launch where Firefox is open
+
+With no remote, a second `firefox` in a zone whose browser is open finds
+its profile locked and says that Firefox is already running. The browser
+key (Alt+Shift+u) and the menu's `b` should instead put that zone's open
+Firefox window in front, and start Firefox only when the zone has none. A
+design, not yet built:
+
+- **Who knows the window.** dwl alone. For every window it holds the zone,
+  taken from the socket the client came through and never from the client,
+  the `app_id` Firefox sets, its tags and monitor, and the focus order. The
+  `app_id` is the client's own word, but a match is only sought among one
+  zone's windows, so a zone that claims it can bring forward only its own
+  window. The chrome sees only the focused window of each output, from
+  dwl's status. The launch daemon sees the zone's processes, not its
+  windows.
+- **The key.** A dwl action in place of `spawn`, focus-or-launch, given the
+  zone, the `app_id` and the launch command. It takes the first window in
+  the focus order whose zone and `app_id` match, so the one used last. If
+  that window is not shown, dwl first views its first tag on its monitor,
+  as Alt and the tag's number would, then gives it the keyboard. With no
+  such window, it starts the command as the key does now. No channel to
+  dwl is needed.
+- **The menu.** The chrome keeps the launch, as the zone's passphrase is
+  asked on its terminal. It needs two things from dwl:
+  - dwl's status gains a line naming each zone's open `app_id`s. The
+    chrome's status reader records it beside the focus record, in the
+    session's runtime directory, and `b` looks there first.
+  - When the browser is open, the chrome writes a one-line request, the
+    zone and that `app_id`, to a file in that directory. dwl watches it the
+    way it watches the microphone and camera marks: inotify on the
+    directory, and a file that must be the session user's own and not
+    writable by group or others. dwl reads it, removes it and acts on it as
+    the key does. The runtime directory is the session user's alone, mode
+    0700, so no zone can make the request.
+- **On another tag or monitor.** dwl views the window's tag on the monitor
+  it is on, and the keyboard follows it there. A window is never moved
+  between tags, so the vault keeps its tag.
+- **A waiting zone.** The window of a zone frozen after a sleep, its volume
+  waiting for the passphrase, comes forward all the same and does not
+  answer. The menu already says the zone is waiting and asks with `p`.
+- **Not chosen.** Firefox's remote over a D-Bus session bus private to the
+  zone would hand the second launch to the open browser, but it puts D-Bus
+  back into the image and the zone, which the build leaves out on purpose.
+  A Wayland protocol for the chrome, wlroots' foreign-toplevel management
+  or one of Kryptik's own, is more code than a status line and a watched
+  file, and foreign-toplevel management carries no zone: the chrome would
+  have to trust the titles.
+
 ### Chromium
 
 Google builds and supports Chromium with clang alone, and it needs Rust and
