@@ -26,6 +26,22 @@ fn a_mapping_is_known_by_its_name() {
 }
 
 #[test]
+fn a_display_on_virtio_gpu_keeps_the_machine_awake() {
+    let sys = std::env::temp_dir().join(format!("kryptikd-sys-virtio-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&sys);
+    assert_eq!(sleep_refused_in(&sys), None, "no virtio bus at all");
+    let drv = sys.join("bus/virtio/drivers/virtio_gpu");
+    fs::create_dir_all(&drv).unwrap();
+    for f in ["bind", "unbind", "uevent", "module"] {
+        fs::write(drv.join(f), "").unwrap();
+    }
+    assert_eq!(sleep_refused_in(&sys), None, "the module loaded, no device bound");
+    std::os::unix::fs::symlink("../../../../devices/pci0000:00/0000:00:01.0/virtio0", drv.join("virtio0")).unwrap();
+    assert!(sleep_refused_in(&sys).is_some_and(|why| why.contains("virtio-gpu")), "a device bound");
+    let _ = fs::remove_dir_all(&sys);
+}
+
+#[test]
 fn an_update_holding_its_lock_keeps_the_machine_awake() {
     let p = std::env::temp_dir().join(format!("kryptikd-update-lock-{}", std::process::id()));
     let _ = fs::remove_file(&p);
