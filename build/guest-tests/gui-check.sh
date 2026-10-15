@@ -1138,7 +1138,10 @@ back0() { [[ "$(entered0)" -ge 2 ]]; }
 modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid.err"
 cam_given="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
 wait_for 15 pgrep -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
-sleep 2
+# Mapped after lock-0's window, the camera's would take the keyboard from it: it must have it first.
+wait_for 15 grep -qx 'zone=0' "$RT/kryptik/focus" \
+    || info "lock: the camera's window has not taken the keyboard: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+sleep 1
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 300 lock-0" > "$LOG/lock-zone0.out" 2>&1 &
 lock0_pid=$!
 wait_for 15 grep -q 'keyboard entered the window' "$LOG/lock-zone0.out"

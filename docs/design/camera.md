@@ -90,8 +90,8 @@ loaded only for a grant.
 
 QEMU has no USB camera. The kernel's `vivid`, a test driver that makes V4L2
 devices with no hardware (as `test_power` makes a battery), stands in, built
-as a module that the zones suite alone loads; `uvcvideo` itself waits for
-the tests on physical hardware.
+as a module that the zones and desktop suites alone load; `uvcvideo`
+itself waits for the tests on physical hardware.
 
 - with no grant, no zone's `/dev/video0` opens, and loading by a camera's
   alias, as eudev does when one is plugged in, loads nothing
