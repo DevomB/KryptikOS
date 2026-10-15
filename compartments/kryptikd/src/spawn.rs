@@ -1251,6 +1251,21 @@ fn intermediate_main(
             Some(format!("/proc/self/fd/{raw}"))
         }
     };
+    /* The images' /usr too: its set is stacked under /run/kryptik (images.rs), which the zone's
+     * mapped root may not walk. Like the broker's, the descriptor dies in pid 1's sweep. */
+    let usr_in_zone = if usr == "/usr" {
+        usr.to_string()
+    } else {
+        let c = match std::ffi::CString::new(usr) {
+            Ok(c) => c,
+            Err(_) => bail!("the images' /usr path contains a NUL"),
+        };
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW) };
+        if fd < 0 {
+            bail!("the images' /usr at {}: {}", usr, io::Error::last_os_error());
+        }
+        format!("/proc/self/fd/{fd}")
+    };
 
     // Until the parent writes our id maps we are nobody (65534) and cannot become root.
     ready.signal();
@@ -1312,7 +1327,7 @@ fn intermediate_main(
     if inner == 0 {
         alive.close_write();
         let service = maps_service(id.privileged, zone_policy);
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, sound_dir, camera_dir, usr, service, &alive);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, sound_dir, camera_dir, &usr_in_zone, service, &alive);
         unsafe { libc::_exit(rc) };
     }
     alive.close_read();
