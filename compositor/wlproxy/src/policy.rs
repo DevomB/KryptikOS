@@ -80,21 +80,28 @@ pub fn app_id_for(zone: &str, claimed: &str) -> String {
     format!("kryptik.{zone}.{}", if cleaned.is_empty() { "app".to_string() } else { cleaned })
 }
 
-// Resource bounds per client connection and across a zone's connections.
+/* Resource bounds per client connection and across a zone's connections. Passing one ends the
+ * connection, as Wayland answers a pool or a window it will not make only with a protocol error,
+ * and a browser draws all its windows over one connection: the bounds sit above what Firefox
+ * needs on two 4K heads (docs/design/resource-limits-and-ephemeral-zones.md). */
 pub const MAX_OBJECTS: usize = 4096;
 /// Id slots per range: libwayland reuses freed ids, so only a client that never does reaches this.
 pub const MAX_ID_SLOTS: usize = 2 * MAX_OBJECTS;
 pub const MAX_PENDING_BYTES: usize = 1 << 20; // per direction
 pub const MAX_PENDING_FDS: usize = 64;
-pub const MAX_TOPLEVELS_PER_SESSION: usize = 8;
+/// A browser's windows, dialogs and picture-in-picture all count.
+pub const MAX_TOPLEVELS_PER_SESSION: usize = 32;
 pub const MAX_TOPLEVELS_PER_ZONE: usize = 64;
 /// Menus and their submenus, tooltips: the compositor keeps each inside its window.
 pub const MAX_POPUPS_PER_SESSION: usize = 16;
-pub const MAX_SHM_POOLS_PER_SESSION: usize = 32;
-pub const MAX_SHM_POOLS_PER_ZONE: usize = 128;
-pub const MAX_SHM_POOL_BYTES: usize = 64 << 20; // room for a 4K RGBA frame and stride padding
-pub const MAX_SHM_BYTES_PER_SESSION: usize = 128 << 20;
-pub const MAX_SHM_BYTES_PER_ZONE: usize = 256 << 20;
+/// Each pool is a mapping in dwl: far below vm.max_map_count, where dwl's own mappings would fail.
+pub const MAX_SHM_POOLS_PER_SESSION: usize = 128;
+pub const MAX_SHM_POOLS_PER_ZONE: usize = 256;
+pub const MAX_SHM_POOL_BYTES: usize = 128 << 20; // room for a 6K RGBA frame and stride padding
+/// What dwl maps for a zone at one time. A page dwl reads before the zone wrote it is charged to
+/// dwl, not to the zone's memory_max; these bound that while the pools live, not after.
+pub const MAX_SHM_BYTES_PER_SESSION: usize = 1 << 30;
+pub const MAX_SHM_BYTES_PER_ZONE: usize = 1 << 30;
 /// A pool a surface may still show stays charged, so these bound what one session can hold.
 pub const MAX_SUBSURFACES_PER_SESSION: usize = 256;
 pub const MAX_HELD_PER_SURFACE: usize = 64;
