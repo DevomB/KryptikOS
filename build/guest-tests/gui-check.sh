@@ -27,6 +27,7 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT KEY-FOCUS-HOLD                               press Alt+j
 #   GT LOCK-TYPE-HOLD                               type the user's password and Enter
 #   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
 #   GT KEY-VOLUME-DOWN                              press the volume-down key
@@ -1269,7 +1270,11 @@ mark hold personal
 launch personal "/usr/libexec/kryptik/wlprobe inhibit 120" > "$LOG/launch-hold.out" 2>&1
 hold_keys() { [[ "$(since_mark hold personal | grep -c 'keyboard entered the window')" -ge "$1" ]]; }
 hold_asked() { since_mark hold personal | grep -q 'asked to keep the screen awake'; }
-wait_for 30 hold_keys 1 && wait_for 5 hold_asked; held=$?
+hold_drawn() { since_mark hold personal | grep -q 'committed '; }
+# Mapped behind zone 0's window, it has the keyboard once the user's key takes it there.
+wait_for 30 hold_drawn
+echo "GT KEY-FOCUS-HOLD"
+wait_for 15 hold_keys 1 && hold_asked; held=$?
 sleep 1
 as_user "/usr/libexec/kryptik/wlprobe idle 2000 6" > "$LOG/hold-idle.out" 2>&1
 if [[ "$held" -eq 0 ]] && grep -q '^watching for 2000 ms' "$LOG/hold-idle.out" && ! grep -qx 'idled' "$LOG/hold-idle.out"; then

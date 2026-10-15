@@ -120,6 +120,7 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-FOCUS-HOLD" "key:alt+j" \
     "expect:GT LOCK-TYPE-HOLD" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-SUSPEND" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT KEY-VOLUME-DOWN" "key:volumedown" \
