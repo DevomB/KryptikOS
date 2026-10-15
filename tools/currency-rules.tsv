@@ -60,7 +60,8 @@ libglvnd	api	https://gitlab.freedesktop.org/api/v4/projects/glvnd%2Flibglvnd/rel
 # GitHub's API answers with spaced JSON, which only a listing pattern reads.
 rustc	listing	https://api.github.com/repos/rust-lang/rust/releases?per_page=20	"tag_name": "([0-9]+\.[0-9]+\.[0-9]+)"	-
 cbindgen	listing	https://api.github.com/repos/mozilla/cbindgen/releases?per_page=20	"tag_name": "v?([0-9]+\.[0-9]+\.[0-9]+)"	-
-nasm	listing	https://www.nasm.us/pub/nasm/releasebuilds/	([0-9]+\.[0-9]+(\.[0-9]+)?)/	-
+# The directory links alone: the page's DOCTYPE names HTML 4.01, and "4.01//" is no release.
+nasm	listing	https://www.nasm.us/pub/nasm/releasebuilds/	href="([0-9]+\.[0-9]+(\.[0-9]+)?)/"	-
 # The current ESR and, while two overlap, the next one; the pin's own ESR series is what counts.
 firefox	listing	https://product-details.mozilla.org/1.0/firefox_versions.json	"FIREFOX_ESR[_NEXT]*": "([0-9]+\.[0-9]+\.[0-9]+)esr"	major
 # An odd minor is a development snapshot.
