@@ -39,13 +39,17 @@ sec() { printf '\n== %s ==\n' "$1"; }
 or_none() { if [ -s "$1" ]; then sed 's/^/  /' "$1"; else echo "  (none)"; fi; }
 
 # The log prints what must not leave the machine: a network driver its
-# address, USB a device's serial number, a filesystem its UUID.
+# address, USB a device's serial number, a filesystem its UUID. And a
+# device's strings, DMI fields and interface names are their makers' own
+# words: control characters, C1's in UTF-8 too, are dropped so no escape
+# sequence reaches the terminal the report is read on.
 scrub() {
     sed -E \
         -e ':a' -e 's/(^|[^0-9A-Fa-f])([0-9A-Fa-f]{2}:){5,}[0-9A-Fa-f]{2}($|[^0-9A-Fa-f])/\1xx:xx:xx:xx:xx:xx\3/' -e 'ta' \
         -e 's/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/<uuid>/g' \
         -e 's/([Ss]erial ?([Nn]umber|[Nn]o)[.:= ]+)[^ ,;]+/\1<removed>/g' \
-        -e 's/(S\/N[:= ]+)[^ ,;]+/\1<removed>/g'
+        -e 's/(S\/N[:= ]+)[^ ,;]+/\1<removed>/g' \
+        | LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed 's/\xc2[\x80-\x9f]//g'
 }
 
 # A driver that is a loadable module cannot hold the root: there is no
