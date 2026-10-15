@@ -14,11 +14,11 @@ This page is about what was seen to work.
 `kryptik-hwreport` prints what a machine is made of and what the image lacks
 for it: the maker and model, the firmware's Secure Boot state, the processor
 and its microcode, every PCI and USB device with the driver that took it, the
-disks and the drivers under them, the display, network and input devices, the
-loaded modules and the kernel log. Its `missing` section is the part to act
-on: the firmware the kernel asked for and did not find, each a line for
-`build/config/firmware.list`, and the devices and disks that want a driver's
-line in `build/config/kernel/boot.fragment`.
+disks and the drivers under them, the display, the sound hardware, network and
+input devices, the loaded modules and the kernel log. Its `missing` section is
+the part to act on: the firmware the kernel asked for and did not find, each a
+line for `build/config/firmware.list`, and the devices and disks that want a
+driver's line in `build/config/kernel/boot.fragment`.
 
 Nothing in it is one machine's alone. No serial number is read, and the
 hardware addresses, serial numbers and UUIDs the kernel log prints are struck
@@ -49,6 +49,11 @@ network. It does not speak for what the report does not exercise (sound,
 suspend, a camera), for Bluetooth, which 1.0 does not drive, for another
 firmware version, or for the same model sold with another network card: the
 report names the firmware version and every device, so a reader can compare.
+
+A listing also names the machine's sound: its HD Audio codecs, and whether
+microphones sit on Intel's DSP or AMD's coprocessor, codecs on SoundWire or
+amplifiers in front of the speakers, each with what drives it. No level asks
+for any of it.
 
 ## Who may vouch
 

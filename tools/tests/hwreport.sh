@@ -225,6 +225,11 @@ audio_now() {
 }
 aud()   { if grep -qE -- "$2" "$A"; then green "$1"; else red "$1: $(paste -sd'|' "$A")"; fi; }
 noaud() { if grep -qE -- "$2" "$A"; then red "$1: $(paste -sd'|' "$A")"; else green "$1"; fi; }
+# listed WHAT FACT: the audio line check-hardware.sh gives the kind just reported.
+listed() {
+    local got; got="$(bash "${ROOT}/tools/check-hardware.sh" "$W/report-audio.txt" 2>&1 | sed -n 's/^  audio      //p')"
+    [[ "$got" == "$2" ]] && green "$1" || red "$1: '${got}'"
+}
 # Each kind on a machine with no other sound: the controllers, codecs, tables
 # and ACPI devices of the kind before are taken away first.
 quiet() {
@@ -248,6 +253,7 @@ aud "its codec, by maker and subsystem"     '^codec 10ec0287 sub 17aa22e6$'
 aud "and the graphics' own"                 '^codec 80862812 sub 80860101$'
 aud "no NHLT table, said so"                '^nhlt: none$'
 noaud "nothing on SoundWire, no amplifier, no coprocessor" '^(soundwire|amplifier|acp) '
+listed "the listing names the codec, not the graphics'" "HD Audio codec 10ec0287"
 
 quiet
 pci 0000:00:1f.3 0x040380 8086 a0c8 snd_hda_intel
@@ -260,6 +266,8 @@ mkdir -p "$W/sys/firmware/acpi/tables"
 audio_now
 aud "a controller with a DSP, by its class" '^controller 0000:00:1f\.3 class 040380 '
 aud "the NHLT's microphone array and I2S link" '^nhlt: 2 endpoints, pdm 1, ssp 1$'
+listed "the listing: microphones on the DSP, which snd-hda-intel does not drive" \
+    "HD Audio codec 10ec0287; digital microphones on Intel's DSP, not driven"
 
 quiet
 pci 0000:00:1f.3 0x040380 8086 a0c8 snd_hda_intel
@@ -277,6 +285,8 @@ audio_now
 aud "a part on SoundWire link 0, by maker and part" '^soundwire 0000:00:1f\.3 link 0 part 025d:0711$'
 aud "and one on link 1"                     '^soundwire 0000:00:1f\.3 link 1 part 025d:1316$'
 [[ "$(grep -c '^soundwire ' "$A")" -eq 2 ]] && green "only under the controller at 0x40000000" || red "SoundWire lines: $(grep -c '^soundwire ' "$A")"
+listed "the listing: HDMI alone on HD Audio, and the SoundWire parts" \
+    "HD Audio for HDMI alone; SoundWire 025d:0711 025d:1316, not driven"
 
 quiet
 pci 0000:04:00.5 0x048000 1022 15e2
@@ -289,6 +299,8 @@ audio_now
 aud "AMD's coprocessor, its revision, and no driver" '^acp 0000:04:00\.5 class 048000 1022:15e2 rev 6f driver -$'
 aud "the property its driver looks for"    '^acpi names: AcpDmicConnected$'
 aud "and the HD Audio beside it"            '^controller 0000:04:00\.6 class 040300 1022:15e3 rev 20 driver snd_hda_intel$'
+listed "the listing: microphones on AMD's coprocessor" \
+    "HD Audio codec 10ec0257; microphones on AMD's coprocessor (rev 6f, AcpDmicConnected), not driven"
 
 quiet
 pci 0000:00:1f.3 0x040300 8086 a0c8 snd_hda_intel
@@ -302,6 +314,7 @@ put sys/bus/acpi/devices/CSC3551:01/status 0
 audio_now
 aud "the amplifiers, and that nothing drives them" '^amplifier CSC3551:00 driver -$'
 noaud "not those the firmware calls absent" '^amplifier CSC3551:01'
+listed "the listing: the amplifiers, by their ACPI name" "HD Audio codec 10ec0287; amplifiers CSC3551, not driven"
 
 echo
 echo "${PASS} passed, ${FAIL} failed"

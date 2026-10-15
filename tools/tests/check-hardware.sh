@@ -70,6 +70,12 @@ card0 driver i915
 card0-eDP-1 connected 1920x1200
 card0-DP-1 disconnected
 
+== audio ==
+controller 0000:00:1f.3 class 040380 8086:a0c8 rev 20 driver snd_hda_intel
+codec 10ec0287 sub 17aa22e6
+codec 80862812 sub 80860101
+nhlt: 2 endpoints, pdm 1, ssp 1
+
 == network ==
 rfkill0 wlan phy0 soft 0 hard 0
 in the net zone:
@@ -123,6 +129,14 @@ grep -qF '  machine    LENOVO 20XWCTO1WW (ThinkPad X1 Carbon Gen 9), firmware N3
 grep -qF '  release    1.0.0, kernel 6.18.53-hardened1' <<<"$OUT" && green "the release and kernel" || red "release line"
 grep -qF '  display    i915: eDP-1 1920x1200' <<<"$OUT" && green "the display driver and the connected output" || red "display line: $(grep display <<<"$OUT")"
 grep -qF '  network    wireless wlan0' <<<"$OUT" && green "the interface the default route leaves by" || red "network line: $(grep network <<<"$OUT")"
+grep -qF "  audio      HD Audio codec 10ec0287; digital microphones on Intel's DSP, not driven" <<<"$OUT" \
+    && green "the sound, by kind, and what is not driven" || red "audio line: $(grep audio <<<"$OUT")"
+vary sof 's/driver snd_hda_intel$/driver sof-audio-pci-intel-tgl/'; see "$W/sof.txt"
+grep -qF "digital microphones on Intel's DSP, driven by sof-audio-pci-intel-tgl" <<<"$OUT" \
+    && green "and what drives it, once a driver does" || red "audio line with SOF: $(grep audio <<<"$OUT")"
+vary noaudio '/^== audio ==$/,/^$/d'; see "$W/noaudio.txt"
+grep -qF '  audio      not in this report' <<<"$OUT" && grep -q '^  carries    certified$' <<<"$OUT" \
+    && green "a report from before the section: said so, and no level asks for it" || red "a report with no audio section: $(grep -E 'audio|carries' <<<"$OUT")"
 
 echo "-- each thing a certified listing needs"
 short medium    's/^booted: .*/booted: the usb medium/'           "not taken on an installed system (booted: the usb medium)"

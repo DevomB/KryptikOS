@@ -18,6 +18,43 @@ DIR="${KRYPTIK_HARDWARE_DIR:-${ROOT}/docs/hardware}"
 
 section() { awk -v s="== $1 ==" '$0 == s { on = 1; next } on && /^== .* ==$/ { exit } on' "$2"; }   # section NAME REPORT
 field() { sed -n "s/^$1: //p" | head -1; }   # field KEY, of the section on stdin
+took() { if [[ -n "$1" ]]; then echo "driven by $1"; else echo "not driven"; fi; }   # took DRIVER
+
+# audio_of REPORT: the machine's sound in one line, by the kinds of
+# docs/design/laptop-audio.md, each with what drives it. No level asks for any.
+audio_of() {
+    local a sof codecs sdw acp names amps drv parts=()
+    a="$(section audio "$1")"
+    [[ -n "$a" ]] || { echo "not in this report"; return; }
+    # SOF in place of snd-hda-intel drives what sits behind Intel's DSP.
+    sof="$(awk '$1 == "controller" && $NF ~ /^sof-/ { print $NF; exit }' <<<"$a")"
+    # The graphics' HDMI codecs (Intel's, AMD's, NVIDIA's) are not the machine's own.
+    codecs="$(awk '$1 == "codec" && $2 !~ /^(8086|1002|10de)/ { print $2 }' <<<"$a" | sort -u | paste -sd' ' -)"
+    if [[ -n "$codecs" ]]; then parts+=("HD Audio codec ${codecs}")
+    elif grep -q '^codec ' <<<"$a"; then parts+=("HD Audio for HDMI alone")
+    elif grep -q '^controller ' <<<"$a"; then parts+=("no HD Audio codec found")
+    fi
+    if awk '$1 == "nhlt:" && $5 + 0 > 0 { found = 1 } END { exit !found }' <<<"$a"; then
+        parts+=("digital microphones on Intel's DSP, $(took "$sof")")
+    fi
+    sdw="$(awk '$1 == "soundwire" && $5 == "part" { print $6 }' <<<"$a" | paste -sd' ' -)"
+    [[ -z "$sdw" ]] || parts+=("SoundWire ${sdw}, $(took "$sof")")
+    acp="$(awk '$1 == "acp" { print $7, ($9 == "-" ? "" : $9); exit }' <<<"$a")"
+    if [[ -n "$acp" ]]; then
+        names="$(sed -n 's/^acpi names: //p' <<<"$a" | head -1)"
+        drv="${acp#* }"
+        if [[ -n "$names" ]]; then parts+=("microphones on AMD's coprocessor (rev ${acp%% *}, ${names// /, }), $(took "$drv")")
+        else parts+=("AMD's coprocessor (rev ${acp%% *}) with no microphones its ACPI names"); fi
+    fi
+    amps="$(awk '$1 == "amplifier" { sub(/:.*/, "", $2); print $2 }' <<<"$a" | sort -u | paste -sd' ' -)"
+    if [[ -n "$amps" ]]; then
+        # The ACPI device splitter alone drives no amplifier.
+        drv="$(awk '$1 == "amplifier" { for (i = 4; i <= NF; i++) if ($i != "-" && $i != "serial-multi-instantiate") print $i }' <<<"$a" | sort -u | paste -sd' ' -)"
+        parts+=("amplifiers ${amps}, $(took "$drv")")
+    fi
+    if [[ "${#parts[@]}" -eq 0 ]]; then echo "no audio device"
+    else local IFS=';'; sed 's/;/; /g' <<<"${parts[*]}"; fi
+}
 
 # examine REPORT: MACHINE, RELEASE and FACTS, with NOT_REPORTED and
 # NOT_CERTIFIED, each empty or one reason per line.
@@ -81,6 +118,7 @@ examine() {
     outputs="$(section display "$r" | sed -n 's/^card[0-9]*-\([^ ]*\) connected *\(.*\)/\1 \2/p' | paste -sd';' -)"
     fact display "${cards:-no DRM device}${outputs:+: ${outputs//;/; }}"
     [[ -n "$cards" && -n "$outputs" ]] || lacks "no display the compositor can use: no DRM device with a connected output"
+    fact audio "$(audio_of "$r")"
 
     # A path out: the default route leaves by one of the machine's own
     # interfaces, and that one has a carrier.
