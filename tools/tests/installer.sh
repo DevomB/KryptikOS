@@ -192,6 +192,54 @@ else
 fi
 
 echo
+echo "-- the medium's software images go through kryptikd before anything is written"
+# A kryptikd that answers check-images as the medium in DIR has it: DIR/answer is "ok" or the refusal.
+# What it checks is images.rs's (check_medium) and kryptik-update's (tools/tests/image-list.sh): an
+# unsigned list, one signed in kryptik-release, a missing or short image. This is how the installer
+# takes the answer, and where.
+if ! declare -F medium_images_ok >/dev/null; then
+    red "could not read medium_images_ok from ${MEDIUM_ROOT}"
+else
+    stub="$(mktemp -d)"
+    cat > "${stub}/kryptikd" <<'STUB'
+#!/bin/sh
+[ "$1" = check-images ] && [ "$#" -eq 3 ] || { echo "usage: kryptikd check-images DIR BASE" >&2; exit 2; }
+printf '%s\n' "$3" > "$2/base-asked"
+a="$(cat "$2/answer")"
+[ "$a" = ok ] && { echo "1 images of release 1.0.0 for this root"; exit 0; }
+echo "kryptikd: check-images: $a" >&2
+exit 1
+STUB
+    chmod 0755 "${stub}/kryptikd"
+    med="$(mktemp -d)"
+    V_HASH="$(printf 'c%.0s' $(seq 64))"
+    echo ok > "${med}/answer"
+    ( PATH="${stub}:$PATH"; medium_images_ok "$med" ) >/dev/null 2>&1 \
+        && [[ "$(cat "${med}/base-asked" 2>/dev/null)" == "$V_HASH" ]] \
+        && green "a medium kryptikd accepts is taken, checked for the root the signed command line names" \
+        || red "a medium kryptikd accepts was refused, or checked for another root"
+    for why in "the medium's image list is refused: not signed as an image list" \
+               "image browser: /media/images/browser.img holds 4096 bytes, and the list signs 12288"; do
+        echo "$why" > "${med}/answer"
+        out="$( (PATH="${stub}:$PATH"; medium_images_ok "$med") 2>&1 )"; rc=$?
+        [[ "$rc" -ne 0 && "$out" == *"software images are refused: ${why}"* ]] \
+            && green "a refusal stops the install with kryptikd's reason (${why%%:*})" \
+            || red "a refusal was not passed on: rc=${rc} ${out}"
+    done
+    rm -rf "$stub" "$med"
+fi
+if awk '/medium_images_ok "\$IMG_SRC"/ && !c { c = NR }
+        /^sfdisk / && !w { w = NR }
+        END { exit !(c && w && c < w) }' "$INSTALLER"; then
+    green "the medium's images are checked before the partition table, the first write"
+else
+    red "the medium's image check is not before the first write"
+fi
+grep -qE 'kryptik-efiboot kryptikd; do$' "$INSTALLER" \
+    && green "kryptikd is among the tools checked up front" \
+    || red "kryptikd is not among the tools checked up front"
+
+echo
 echo "-- --slot-size is a number of MiB, no less than a slot needs"
 eval "$(sed -n '/^slot_size_ok()/,/^}/p' "$INSTALLER")"
 if ! declare -F slot_size_ok >/dev/null; then

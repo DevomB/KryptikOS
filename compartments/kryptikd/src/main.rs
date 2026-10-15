@@ -114,6 +114,10 @@ USAGE:
     kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
                                       checked as nobody on copies: how kryptik-update
                                       apply, which runs as root, has a release checked
+    kryptikd check-images DIR BASE    a medium's images.manifest and its signature in
+                                      DIR, checked as a kept list is, for root BASE,
+                                      and each image it names there at its size: the
+                                      installer's check before it writes anything
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -295,6 +299,22 @@ fn main() -> ExitCode {
             }
         },
         "time" => cmd_time(&args),
+        "check-images" => match args.as_slice() {
+            [_, dir, base] => match images::check_medium(Path::new(dir), base) {
+                Ok(said) => {
+                    print!("{said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("kryptikd: check-images: {why}");
+                    ExitCode::FAILURE
+                }
+            },
+            _ => {
+                eprintln!("usage: kryptikd check-images DIR BASE");
+                ExitCode::from(2)
+            }
+        },
         "check-release" => match args.as_slice() {
             [_, dir] => match update::check_release(Path::new(dir)) {
                 Ok(said) => {

@@ -71,7 +71,7 @@ done
 missing=""
 for tool in sfdisk blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
             grep readlink lsblk head tail wc cmp cp mkdir stat tr cut basename mv mountpoint rmdir chmod rm cat sleep \
-            loadkeys chattr kryptik-efiboot; do
+            loadkeys chattr kryptik-efiboot kryptikd; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}
@@ -237,13 +237,8 @@ case "$media" in
 esac
 medium_root "$ROOT_JSON" /proc/cmdline
 ROOT_HASH="$(json_field "$ROOT_JSON" root_hash)"
-# The medium's image list, read before anything is written: for this medium's root, and signed.
-# Each image is checked against it as it is copied (image-store.sh); kryptikd checks the signature.
-if [ -n "$IMG_SRC" ]; then
-    [ -f "$IMG_SRC/images.manifest.sig" ] || die "the medium's image list has no signature"
-    [ "$(sed -n 's/^base: //p' "$IMG_SRC/images.manifest")" = "$ROOT_HASH" ] \
-        || die "the medium's image list is for another root than the one it installs"
-fi
+# The medium's software images, checked before anything is written (medium-root.sh).
+[ -z "$IMG_SRC" ] || medium_images_ok "$IMG_SRC"
 for s in a b; do
     kernel_names_root "$MNT_BASE/esp/EFI/kryptik/kryptik-$s.efi" \
         || die "the medium's kernel for slot $s does not carry the root hash its signed command line names; nothing was written"

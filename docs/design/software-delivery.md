@@ -252,7 +252,11 @@ up ADR-001 in the zones where the applications run.
   neither. The controls stay with the build. Whoever can write the stick
   can craft that partition, and the installer mounts it, so it is a FAT32
   like the ESP: the kernel parses no filesystem for it that the medium did
-  not already need. What it holds is checked as an update's images are.
+  not already need. Before the installer writes anything, `kryptikd
+  check-images` checks the list as a kept one is checked, its signature as
+  nobody on a copy, for the root the signed command line names, and finds
+  every image it names there at the size it signs; each image's hash is
+  checked as it is copied, as an update's are.
 - **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
   the list for each root as `<base>.manifest` and `.manifest.sig`, root
   only. Zone 0 keeps the lists of the roots in the two slots and the images
@@ -266,8 +270,8 @@ up ADR-001 in the zones where the applications run.
   image into the store, where the copy is checked against the size and hash
   the list signs before it takes its name. Once the trial is armed, the
   store drops the release the slot held. The installer takes the medium's
-  copy (above): it checks the list is for the root it installs before it
-  writes anything, and keeps each image as `apply` does.
+  copy (above): kryptikd checks the list and the images' sizes before it
+  writes anything, and it keeps each image as `apply` does.
   `kryptik-recover --restore-slot` does not open the state partition, so a
   slot it restores finds its images only if the store still holds that
   release's, from the install or a kept update; otherwise a zone that names
@@ -285,7 +289,7 @@ up ADR-001 in the zones where the applications run.
   the list's signature again, as nobody, on a copy of the bytes it then
   reads. A mapping that dm-verity has marked corrupted is not used again:
   the next start of a zone that names the image is refused, with the
-  reason, until the image is fetched again. For each distinct set of images
+  reason, until this machine restarts. For each distinct set of images
   a zone names, kryptikd mounts a read-only overlay (no upper directory; the
   images' `usr` over the root's `/usr`; redirects in a layer not followed)
   at `/run/kryptik/usr/<set>` in the initial namespace, and the zone's bind
