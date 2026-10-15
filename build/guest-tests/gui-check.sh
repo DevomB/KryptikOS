@@ -28,6 +28,8 @@
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
 #   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
+#   GT POWER-KEY-AWAKE                              press the power button
+#   GT LOCK-TYPE-POWER-KEY                          type the user's password and Enter
 #   GT KEY-VOLUME-DOWN                              press the volume-down key
 #   GT KEY-LOCK-LAYOUT                              press Alt+Shift+l
 #   GT KEY-LOCKED-VOLUME-UP                         press the volume-up key
@@ -1225,19 +1227,20 @@ wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/i
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
 
-# --- no sleep where the display would not come back --------------------------------------------
-# This VM shows through virtio-gpu, whose driver a sleep would leave waiting for good, so the
-# daemon refuses before it freezes a zone or drops a key. `kryptik suspend` locks first and is
-# told; the password opens the same session, on the same boot, and the compositor answers.
+# --- no sleep in this release -------------------------------------------------------------------
+# The daemon refuses every sleep before it freezes a zone or drops a key. `kryptik suspend`
+# locks first and is told; the password opens the same session, on the same boot, and the
+# compositor answers. The power key does the same through dwl's binding.
 boot0="$(< /proc/sys/kernel/random/boot_id)"
 entries0="$(dmesg 2>/dev/null | grep -c 'PM: suspend entry')"
 as_user "kryptik suspend" > "$LOG/suspend.out" 2>&1 &
 susp_pid=$!
-told_awake() { grep -q "suspend: error: the display's driver, virtio-gpu, does not come back from a sleep" "$LOG/suspend.out"; }
+NOT_OFFERED="suspend: error: this release does not put the machine to sleep: it stays awake, and locked"
+told_awake() { grep -q "$NOT_OFFERED" "$LOG/suspend.out"; }
 if wait_for 30 told_awake; then
-    pass "suspend-refused-virtio-gpu" "kryptik suspend locked, and the daemon refused the sleep: virtio-gpu"
+    pass "suspend-not-offered" "kryptik suspend locked, and the daemon refused the sleep: not offered"
 else
-    fail "suspend-refused-virtio-gpu" "$(tr '\n' ' ' < "$LOG/suspend.out" | cut -c1-300)"
+    fail "suspend-not-offered" "$(tr '\n' ' ' < "$LOG/suspend.out" | cut -c1-300)"
 fi
 # Keys in the second after the lock's label changed, as it does with the refusal, go nowhere.
 sleep 2
@@ -1253,6 +1256,22 @@ else
     fail "suspend-refused-stays-awake" "boot $(< /proc/sys/kernel/random/boot_id) (was ${boot0}); suspend entries ${entries} (were ${entries0}); suspended mappings: $(grep -lx 1 /sys/block/dm-*/dm/suspended 2>/dev/null | tr '\n' ' '); $(tail -3 "$LOG/suspend.out" | tr '\n' ' ')"
 fi
 wait "$susp_pid" 2>/dev/null
+told0="$(grep -c "^kryptik-lock: $NOT_OFFERED" "$slog" 2>/dev/null)"; unlocked_pk="$(said unlocked)"
+told_more() { [[ "$(grep -c "^kryptik-lock: $NOT_OFFERED" "$slog" 2>/dev/null)" -gt "$told0" ]]; }
+echo "GT POWER-KEY-AWAKE"
+if wait_for 30 told_more; then
+    pass "power-key-locks-awake" "the power key locked the screen, and the sleep was refused"
+else
+    fail "power-key-locks-awake" "$(grep '^kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
+sleep 2
+echo "GT LOCK-TYPE-POWER-KEY"
+entries="$(dmesg 2>/dev/null | grep -c 'PM: suspend entry')"
+if wait_for 30 more unlocked "$unlocked_pk" && [[ "$(< /proc/sys/kernel/random/boot_id)" == "$boot0" && "$entries" == "$entries0" ]] && still_answers; then
+    pass "power-key-stays-awake" "the password unlocked the same boot, and the kernel was never asked to sleep"
+else
+    fail "power-key-stays-awake" "boot $(< /proc/sys/kernel/random/boot_id) (was ${boot0}); suspend entries ${entries} (were ${entries0}); $(grep '^kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
 # The volume keys are dwl's bindings to zone 0's mixer, which runs without a card here.
 mixer() { /usr/libexec/kryptik/kryptik-sound --control status 2>&1 | sed -n 's/^master //p'; }
 master_is() { [[ "$(mixer)" == "$1" ]]; }

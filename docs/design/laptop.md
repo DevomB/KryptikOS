@@ -198,6 +198,10 @@ controller without a radio:
 
 ## Suspend and resume, with the keys dropped
 
+Not offered in this release: kryptikd's `SLEEP_OFFERED` is off, so every
+path to a sleep is refused before anything is frozen, and `suspend-test`
+is not mandatory in acceptance while it is.
+
 ### Where things stand
 
 Hibernation is off (`hardening.fragment`). Suspend to RAM comes from

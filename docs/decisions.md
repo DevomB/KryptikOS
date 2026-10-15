@@ -475,6 +475,8 @@ bluetoothd in zone 0; one input method for all zones.
 
 ## ADR-022: Suspend wipes the disk keys
 
+Accepted, and built; not yet offered (kryptikd's `SLEEP_OFFERED`).
+
 Before the machine sleeps, the screen locks, and the launch daemon freezes
 every zone, lets the clean page cache go, and suspends each open zone volume
 and then the state partition with its key wiped (`cryptsetup luksSuspend`).

@@ -317,6 +317,10 @@ key, a click or the pointer moving; to change that, write the minutes to
 minute after it locks, the screens turn off; any key or movement turns them
 on again, and that key goes to the lock.
 
+This release does not put the machine to sleep: `kryptik suspend`, the
+power key and closing the lid lock the screen, and the machine stays awake.
+What follows is how sleep works once a release offers it.
+
 `kryptik suspend`, from a terminal of zone 0's, locks the screen and puts
 the machine to sleep with the state partition's key wiped from memory. On
 waking the lock shows STATE PASSPHRASE: type the passphrase the machine asks
@@ -561,6 +565,9 @@ shows each timer, its timeout and whether it is running.
   so its certificate is enrolled on its own and no other build's release
   updates it.
 - No independent security review has been made.
+- The machine does not sleep: suspend to RAM with the keys dropped is built
+  but not offered until its suite passes whole. The power key and the lid
+  lock the screen instead.
 - A Kryptik guest whose display is virtio-gpu, as QEMU's virtio-vga is, does
   not sleep: the kernel's virtio-gpu driver has no suspend callbacks, so the
   display would not come back. The power key and the lid lock it instead.

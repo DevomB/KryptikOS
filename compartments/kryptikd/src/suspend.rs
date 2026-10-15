@@ -78,7 +78,15 @@ pub fn sleep_refused_in(sys: &Path) -> Option<&'static str> {
     bound.then_some("the display's driver, virtio-gpu, does not come back from a sleep")
 }
 
+/// Off until the suspend suite passes whole on this release: a sleep it cannot show the machine
+/// wakes from would cost open work. tools/acceptance.sh makes `suspend-test` mandatory exactly
+/// when this is true.
+const SLEEP_OFFERED: bool = false;
+
 pub fn sleep_refused() -> Option<&'static str> {
+    if !SLEEP_OFFERED {
+        return Some("this release does not put the machine to sleep: it stays awake, and locked");
+    }
     sleep_refused_in(Path::new("/sys"))
 }
 

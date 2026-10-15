@@ -487,7 +487,10 @@ item zones     zones-test                 M vm   10 it_zones need_vm
 item zones     sound-test                 M vm   23 it_sound need_vm
 item zones     power-test                 M vm   12 it_power need_vm
 item desktop   gui-test                   M vm   25 it_gui need_vm
-item desktop   suspend-test               M vm   20 it_suspend need_vm
+# Mandatory exactly when kryptikd offers sleep (SLEEP_OFFERED in its suspend.rs).
+sleep_mand=O
+grep -q '^const SLEEP_OFFERED: bool = true;' "${ROOT}/compartments/kryptikd/src/suspend.rs" && sleep_mand=M
+item desktop   suspend-test               "$sleep_mand" vm   20 it_suspend need_vm
 item update    update-test                M vm   10 it_update need_update
 item update    delta-count                O host  0 it_delta need_payloads
 item production update-test-production    M vm   10 it_production need_production
