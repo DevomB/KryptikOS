@@ -291,18 +291,49 @@ fn verified_list(base: &str) -> Result<Manifest, String> {
     let text = read_bounded(&list, LIST_MAX)
         .map_err(|e| format!("no software images are kept for this root ({}...): {e}", &base[..12]))?;
     let sig = read_bounded(&list.with_extension("manifest.sig"), SIG_MAX)?;
-    let dir = crate::update::make_scratch(Path::new("/run/kryptik"))?;
-    let checked = fs::write(dir.join("manifest"), &text)
-        .and_then(|_| fs::write(dir.join("manifest.sig"), &sig))
-        .map_err(|e| format!("{}: {e}", dir.display()))
-        .and_then(|_| crate::update::check_images(&dir));
-    let _ = fs::remove_dir_all(&dir);
-    checked.map_err(|e| format!("the image list for this root is refused: {e}"))?;
+    signed(&text, &sig).map_err(|e| format!("the image list for this root is refused: {e}"))?;
     let m = parse(std::str::from_utf8(&text).map_err(|_| "the image list is not text".to_string())?)?;
     if m.base != base {
         return Err(format!("the image list kept for this root is for another root ({})", m.release));
     }
     Ok(m)
+}
+
+/// Whether `sig` signs `text` as an image list, checked as nobody on a copy of these bytes.
+fn signed(text: &[u8], sig: &[u8]) -> Result<(), String> {
+    let dir = crate::update::make_scratch(Path::new("/run/kryptik"))?;
+    let checked = fs::write(dir.join("manifest"), text)
+        .and_then(|_| fs::write(dir.join("manifest.sig"), sig))
+        .map_err(|e| format!("{}: {e}", dir.display()))
+        .and_then(|_| crate::update::check_images(&dir));
+    let _ = fs::remove_dir_all(&dir);
+    checked.map(|_| ())
+}
+
+/// A medium's images.manifest and images.manifest.sig in `dir`, checked as the installer has them
+/// before it writes anything: signed as an image list, read as a kept list is, for the root `base`
+/// it installs, and naming only images `dir` holds as NAME.img at the size the list signs. Each
+/// image's hash is checked as it is copied (image-store.sh).
+pub fn check_medium(dir: &Path, base: &str) -> Result<String, String> {
+    check_medium_with(dir, base, &signed)
+}
+
+fn check_medium_with(dir: &Path, base: &str, check: &dyn Fn(&[u8], &[u8]) -> Result<(), String>) -> Result<String, String> {
+    let text = read_bounded(&dir.join("images.manifest"), LIST_MAX)?;
+    let sig = read_bounded(&dir.join("images.manifest.sig"), SIG_MAX)?;
+    check(&text, &sig).map_err(|e| format!("the medium's image list is refused: {e}"))?;
+    let m = parse(std::str::from_utf8(&text).map_err(|_| "the image list is not text".to_string())?)?;
+    if m.base != base {
+        return Err(format!("the medium's image list ({}) is for another root than the one it installs", m.release));
+    }
+    for img in &m.images {
+        let file = dir.join(format!("{}.img", img.name));
+        let md = fs::metadata(&file).map_err(|e| format!("image {}: {}: {e}", img.name, file.display()))?;
+        if !md.is_file() || md.len() != img.bytes {
+            return Err(format!("image {}: {} holds {} bytes, and the list signs {}", img.name, file.display(), md.len(), img.bytes));
+        }
+    }
+    Ok(format!("{} images of release {} for this root\n", m.images.len(), m.release))
 }
 
 fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, String> {
