@@ -259,6 +259,27 @@ checked="$(grep -n '^\[ -z "\$PRESEED" \] || preseed_ok' "$INSTALLER" | cut -d: 
     || red "the preseed is checked at line ${checked:-none}; the disk is written from ${written:-none}"
 
 echo
+echo "-- the kernel reads the new table whole, so its partitions carry their names"
+eval "$(sed -n '/^reread_table()/,/^}/p' "$INSTALLER")"
+if ! declare -F reread_table >/dev/null; then
+    red "could not extract reread_table from the installer"
+else
+    # A disk udev holds busy for BUSY re-reads, then lets the kernel read it.
+    blockdev() { n_calls=$((n_calls + 1)); [[ "$1" == --rereadpt && "$n_calls" -gt "$BUSY" ]]; }
+    sleep() { :; }
+    reread() { n_calls=0; BUSY="$1"; reread_table /dev/vdb; rc=$?; }
+    reread 0; [[ "$rc" -eq 0 && "$n_calls" -eq 1 ]] && green "a disk free at once is re-read once" || red "free: rc=${rc} after ${n_calls}"
+    reread 3; [[ "$rc" -eq 0 && "$n_calls" -eq 4 ]] && green "a disk busy for a moment is re-read when it frees" || red "busy 3: rc=${rc} after ${n_calls}"
+    reread 1000; [[ "$rc" -ne 0 && "$n_calls" -eq 100 ]] && green "a disk that stays busy fails the install after 100 tries" || red "always busy: rc=${rc} after ${n_calls}"
+    unset -f blockdev sleep
+fi
+grep -v '^ *#' "$INSTALLER" | grep -qw partx && red "the installer adds partitions with partx, which leaves them nameless" \
+    || green "the installer has no partx, whose partitions the kernel leaves nameless"
+grep -q '^kryptik_named kryptik-a | grep -qx "\$P2" || die' "$INSTALLER" \
+    && green "the written table is checked by the name the kernel gives, as the system will find it" \
+    || red "the installer does not check partition 2's name through kryptik_named"
+
+echo
 echo "-- a mounted target is found by whatever name it was mounted by"
 eval "$(sed -n '/^mounted_on()/,/^}/p' "$INSTALLER")"
 if ! declare -F mounted_on >/dev/null; then

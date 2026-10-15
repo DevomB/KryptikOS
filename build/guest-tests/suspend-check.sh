@@ -108,6 +108,19 @@ stuck_report() {
         info "pid ${p} ${c:0:60}: state $(awk '{print $3}' "/proc/$p/stat" 2>/dev/null), waits in $(cat "/proc/$p/wchan" 2>/dev/null), syscall $(cat "/proc/$p/syscall" 2>/dev/null); $(tr '\n' '|' < "/proc/$p/stack" 2>/dev/null | cut -c1-300)"
     done
     tail -n 25 "$slog" 2>/dev/null | sed 's/^/GT INFO session.log: /'
+    # Below the session: a task waiting where the freezer cannot reach it, and any thread, a
+    # kernel worker's included, waiting in the display's driver or on a fence, as one finishing
+    # a page flip would.
+    for t in /proc/[0-9]*/task/[0-9]*; do
+        c="$(cat "$t/comm" 2>/dev/null)" || continue
+        w="$(cat "$t/wchan" 2>/dev/null)"
+        st="$(cat "$t/stat" 2>/dev/null)"; st="${st##*) }"
+        [[ "${st:0:1}" == D || "$w" =~ drm|virtio|fence|vq ]] && info "task ${t#/proc/} ${c}: state ${st:0:1}, waits in ${w}"
+    done
+    for f in /sys/power/suspend_stats/{last_failed_step,last_failed_errno,fail,failed_freeze}; do
+        [[ -r "$f" ]] && info "${f#/sys/power/}: $(tr '\n' ' ' < "$f")"
+    done
+    dmesg 2>/dev/null | tail -n 40 | sed 's/^/GT INFO dmesg: /'
 }
 boot_id="$(< /proc/sys/kernel/random/boot_id)"
 
@@ -347,7 +360,9 @@ echo "GT KEY-LOCK 2"
 wait_for 30 more locked "$locked0" || fail "locked-again" "$(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
 echo "GT SLEEPING 2"
 # Root's way to the same sleep: the session's lock asks the daemon, which forks the same write.
+t0="$(date +%s)"
 "$KD" suspend > "$OUT/sleep2.out" 2>&1
+info "the sleep was answered after $(( $(date +%s) - t0 )) s; the kernel's log of it: $(dmesg 2>/dev/null | grep -E 'PM: |Freezing|freez|Filesystems sync|Restarting' | tail -n 8 | tr '\n' '|')"
 case "$(< "$OUT/sleep2.out")" in
     *"did not sleep"*)
         echo "GT DID-NOT-SLEEP 2"
