@@ -299,7 +299,8 @@ if wait_for 5 moved && wait_for 15 ended && [[ "$(cat /run/kryptik-sound/control
 else
     fail "microphone-moves" "status: $(ctl status | tr '\n' ' '); holder: $(cat /run/kryptik-sound/control/microphone 2>&1); untrusted: $(tr '\n' ' ' < "$LOG/untrusted.out")"
 fi
-kill "$rp" 2>/dev/null; wait "$rp" 2>/dev/null
+# A record that did not end keeps untrusted up, which the rounds below start again.
+kill "$rp" 2>/dev/null; "$KD" stop untrusted > /dev/null 2>&1; wait "$rp" 2>/dev/null
 ctl revoke > /dev/null
 
 # The keys' steps: dwl runs these for the volume keys.

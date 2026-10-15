@@ -597,6 +597,12 @@ static void play_out(void)
 		close_pcm(&out);
 		return;
 	}
+	/* A card pulled out (a USB device) keeps its pointer where it stopped and frees no period,
+	 * so nothing would be written to it to find out: its state says so. */
+	if (snd_pcm_state(out) == SND_PCM_STATE_DISCONNECTED) {
+		recovered(&out, -ENODEV);
+		return;
+	}
 	int16_t buf[PERIOD * CHANNELS];
 	for (;;) {
 		snd_pcm_sframes_t avail = snd_pcm_avail_update(out);
