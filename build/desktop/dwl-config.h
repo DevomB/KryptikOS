@@ -92,6 +92,11 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
 static const char *termcmd[]      = { "kryptik-launch", "--ask", "work",      "--", "havoc", NULL };
 static const char *personalcmd[]  = { "kryptik-launch", "--ask", "personal",  "--", "havoc", NULL };
 static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "firefox", NULL };
+/* The app_id Firefox claims, its remoting name on the default update channel, which the proxy
+ * stamps kryptik.<zone>.firefox-default. The browser key puts untrusted's open Firefox in front
+ * and starts one only when it has none; the menu's b asks the same of any zone. */
+static const char browserappid[] = "firefox-default";
+static const FocusOrLaunch untrustedbrowser = { "untrusted", browserappid, untrustedcmd };
 static const char *menucmd[]      = { "havoc", "/usr/bin/kryptik-chrome", "--menu", NULL };
 /* The screen lock, opened by the login password (docs/design/laptop.md). */
 static const char *lockcmd[]      = { "kryptik-lock", NULL };
@@ -113,7 +118,7 @@ static const Key keys[] = {
 	{ MODKEY,                    XKB_KEY_p,           spawn,            {.v = menucmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_Return,      spawn,            {.v = termcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_p,           spawn,            {.v = personalcmd} },
-	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_u,           spawn,            {.v = untrustedcmd} },
+	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_u,           focusorlaunch,    {.v = &untrustedbrowser} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_l,           spawn,            {.v = lockcmd} },
 	{ 0,                         XKB_KEY_XF86PowerOff, spawn,           {.v = suspendcmd} },
 	{ 0,                         XKB_KEY_XF86AudioRaiseVolume, spawn,   {.v = volupcmd} },

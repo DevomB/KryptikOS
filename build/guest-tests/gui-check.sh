@@ -44,7 +44,10 @@
 #   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT KEY-MENU-OPEN                                press Alt+p (a menu window for an open network)
 #   GT OPEN-TYPE N TEXT                             type TEXT and Enter (letters and digits)
-#   GT KEY-VIEW-BROWSER, GT KEY-BROWSER-BACK        press Alt+3 (a tag nothing is on), then Alt+1
+#   GT KEY-VIEW-BROWSER                             press Alt+3 (a tag nothing is on)
+#   GT KEY-BROWSER-AWAY, GT KEY-BROWSER-AGAIN       press Alt+1, then the browser key (Alt+Shift+u)
+#   GT KEY-BROWSER-ASIDE                            press Alt+1
+#   GT KEY-BROWSER-LAUNCH, GT KEY-BROWSER-BACK      press the browser key, then Alt+1
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -1448,6 +1451,60 @@ if wait_for 120 ff_page; then
     fi
 else
     fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' ')"
+fi
+# --- a second launch puts the open browser in front ----------------------------------------
+# Alt+1 shows another tag; the browser key then views Firefox's tag, 3, on its monitor and
+# gives it the keyboard, and starts no second Firefox, which would only say that the first is
+# running. The menu's b asks dwl the same through a file in the session's runtime directory,
+# which dwl takes from the user alone: one root wrote is removed unheard. With the zone stopped
+# the key starts Firefox, on the tag left empty.
+# Firefox's own processes: its content processes are started with -contentproc.
+ff_count() {
+    local n=0 p
+    for p in $(pgrep -f '(^|/)firefox( |$)'); do
+        tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- '-contentproc' || n=$((n + 1))
+    done
+    echo "$n"
+}
+ff_front() { ff_page && grep -qx 'tagset=4' "$RT/kryptik/focus"; }
+ff_away() { ! grep -q '^title=.*kryptik-page' "$RT/kryptik/focus"; }
+ff_record() { echo "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); browsers: $(tr '\n' ' ' < "$RT/kryptik/browsers" 2>/dev/null)"; }
+front="$RT/kryptik/browser-front"
+ff_before="$(ff_count)"
+echo "GT KEY-BROWSER-AWAY"
+wait_for 10 ff_away || info "browser: Alt+1 left the keyboard with Firefox: $(ff_record)"
+echo "GT KEY-BROWSER-AGAIN"
+if wait_for 15 ff_front; then
+    sleep 5
+    if [[ "$(ff_count)" -eq "$ff_before" ]]; then
+        pass "browser-key-brings-forward" "the browser key viewed tag 3 and gave untrusted's Firefox the keyboard; ${ff_before} Firefox before and after"
+    else
+        fail "browser-key-brings-forward" "a second Firefox started: ${ff_before} before, $(ff_count) after"
+    fi
+else
+    fail "browser-key-brings-forward" "$(ff_record)"
+fi
+echo "GT KEY-BROWSER-ASIDE"
+wait_for 10 ff_away || info "browser: Alt+1 left the keyboard with Firefox: $(ff_record)"
+printf 'untrusted\n' > "$front"
+sleep 3
+if ff_away && [[ ! -e "$front" ]]; then
+    pass "browser-front-only-the-users" "a request root wrote was removed, and the keyboard stayed where it was"
+else
+    fail "browser-front-only-the-users" "$(ff_record); the request: $(ls -la "$front" 2>&1)"
+fi
+as_user "echo untrusted > $front.tmp && mv -f $front.tmp $front"
+if wait_for 10 ff_front && [[ ! -e "$front" ]]; then
+    pass "browser-front-request" "the user's request put untrusted's Firefox in front on tag 3, and was removed"
+else
+    fail "browser-front-request" "$(ff_record); the request: $(ls -la "$front" 2>&1)"
+fi
+stop_zone untrusted
+echo "GT KEY-BROWSER-LAUNCH"
+if wait_for 120 grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
+    pass "browser-key-launches" "with untrusted stopped, the browser key started Firefox: $(grep '^title=' "$RT/kryptik/focus")"
+else
+    fail "browser-key-launches" "$(ff_record)"
 fi
 stop_zone untrusted
 echo "GT KEY-BROWSER-BACK"
