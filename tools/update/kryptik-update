@@ -138,7 +138,12 @@ payload_path() {   # NAME -> where to read it
     case "$1" in
         kryptik-root.img.zst) echo /proc/self/fd/3 ;; kryptik-a.efi) echo /proc/self/fd/4 ;;
         kryptik-b.efi)    echo /proc/self/fd/5 ;; root.json)     echo /proc/self/fd/6 ;;
-        *) echo "$dir/$1" ;;
+        *)
+            # An image verify_payload pinned (NAME=FD in PINNED), else the payload's file.
+            case " ${PINNED:-} " in
+                *" $1="*) _fd="${PINNED#* $1=}"; echo "/proc/self/fd/${_fd%% *}" ;;
+                *) echo "$dir/$1" ;;
+            esac ;;
     esac
 }
 
@@ -146,6 +151,15 @@ payload_path() {   # NAME -> where to read it
 verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
     verify_manifest "$1" "$2"
     pin 3 kryptik-root.img.zst; pin 4 kryptik-a.efi; pin 5 kryptik-b.efi; pin 6 root.json
+    # And each software image it lists, so the bytes hashed below are those stage_images
+    # decompresses. A name with a directory in it is refused below, before anything is read.
+    PINNED=""; fd=7
+    for n in $(sed -n '/^--$/,$p' "$m" | sed '1d' | awk '$3 ~ /\.img\.zst$/ && $3 != "kryptik-root.img.zst" { print $3 }'); do
+        case "$n" in */*|..*) continue ;; esac
+        pin "$fd" "$n"
+        PINNED="$PINNED $n=$fd"
+        fd=$((fd + 1))
+    done
 
     # Nothing unlisted (a directory listing) before hashing every listed file
     # (gigabytes). Names are compared whole, as text, dotfiles included.
@@ -448,7 +462,7 @@ cmd_apply() {
     arm_trial "$target"
     # The running root's images stay for a rollback; those of the release this slot held go.
     # A command line naming no root hash prunes nothing, rather than the running root's list.
-    running_hash="$(sed -n 's/.*sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
+    running_hash="$(sed -n 's/.*"kroot,[^"]* sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
     if [ -n "$running_hash" ]; then images_prune "$IMAGES" "$running_hash" "$ROOT_HASH"; fi
     printf '%s apply %s -> slot %s\n' "$(date -Iseconds 2>/dev/null)" "$VERSION" "$target" >> "$LOG"
     say "armed: the next boot tries slot $target ($VERSION) once. Reboot to try it."

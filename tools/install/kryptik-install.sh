@@ -220,7 +220,8 @@ case "$media" in
         fi
         ;;
     iso)
-        mount -t iso9660 -o ro /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
+        # As the stick's images partition is: Rock Ridge can carry device nodes and set-id files.
+        mount -t iso9660 -o ro,nosuid,nodev,noexec /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
         ESP_SRC="$MNT_BASE/media/esp.img"
         [ -f "$ESP_SRC" ] || die "no esp.img on the medium"
         # For its kernels, read before anything is written.
