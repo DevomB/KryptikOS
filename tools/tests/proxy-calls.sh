@@ -79,9 +79,10 @@ echo "traced in $runs proxy runs, $fd_runs as the daemon starts it: $(tr '\n' ' 
 echo "listed and not traced here (the gesture, the copies, a resumed poll): $(comm -13 <(printf '%s\n' "$traced") <(printf '%s\n' "$listed") | tr '\n' ' ')"
 missing="$(comm -23 <(printf '%s\n' "$traced") <(printf '%s\n' "$listed"))"
 # The filter's argument rules: AF_UNIX sockets, sendto with no address, FIONBIO alone, nothing
-# mapped executable.
+# mapped executable. A call still running when its process died ends in "<unfinished ...>"
+# where its result would be.
 args="$(grep -E '^socket\(' "$T/lines" | grep -v '^socket(AF_UNIX,'
-        grep -E '^sendto\(' "$T/lines" | grep -v ', NULL, 0) = '
+        grep -E '^sendto\(' "$T/lines" | grep -vE ', NULL, 0(\) = | <unfinished \.\.\.>$)'
         grep -E '^ioctl\(' "$T/lines" | grep -v '^ioctl([0-9]*, FIONBIO,'
         grep -E '^(mmap|mprotect)\(.*PROT_EXEC' "$T/lines")"
 if [[ -n "$missing" || -n "$args" ]]; then
