@@ -125,6 +125,7 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT LOCK-TYPE-SUSPEND" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT KEY-VOLUME-DOWN" "key:volumedown" \
     "expect:GT KEY-LOCK-LAYOUT" "key:alt+shift+l" \
     "expect:GT KEY-LOCKED-VOLUME-UP" "key:volumeup" \
@@ -170,6 +171,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
+            suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys \
             volume-key lock-passes-volume-keys lock-holds-other-keys \

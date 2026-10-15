@@ -147,7 +147,13 @@ ARGS=(
     -rtc base=utc
     -boot menu=off
 )
-if [[ "$GPU" -eq 1 ]]; then
+if [[ "$GPU" -eq 1 && "$S3" -eq 1 ]]; then
+    # A sleep resets virtio-gpu under a driver with no .freeze or .restore (6.18's
+    # drivers/gpu/drm/virtio/virtgpu_drv.c), whose next commit then waits for good. A guest
+    # that sleeps shows through std VGA's framebuffer instead, which OVMF sets up and the
+    # kernel's simpledrm drives: it has no bochs driver, and nothing there waits on a device.
+    ARGS+=( -display none -vga std -device virtio-keyboard-pci -device virtio-mouse-pci )
+elif [[ "$GPU" -eq 1 ]]; then
     # virtio-vga, not virtio-gpu-pci: the firmware framebuffer is in its BAR,
     # so virtio-gpu replaces simpledrm and wlroots sees one DRM device (with
     # two it takes a multi-GPU path the pixman renderer cannot serve).
