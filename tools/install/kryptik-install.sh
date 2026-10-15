@@ -193,6 +193,7 @@ cleanup() {
         rmdir "$m" 2>/dev/null || true
     done
     [ -b "/dev/mapper/$MAPPING" ] && cryptsetup close "$MAPPING" 2>/dev/null || true
+    rm -rf "$MNT_BASE/images-checked"
     rmdir "$MNT_BASE" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
