@@ -257,7 +257,12 @@ pub fn eject(zone: &str) -> Result<bool, String> {
         or_gone(dmsetup(&["remove", "--deferred", &map]))?;
     }
     if held {
-        fs::remove_file(&record).map_err(|e| format!("{}: {e}", record.display()))?;
+        // The zone's own end takes the record too, and can while this runs: the wiped table fails
+        // the reads of the program that held the stick, and the zone may stop when it exits.
+        match fs::remove_file(&record) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{}: {e}", record.display())),
+            _ => {}
+        }
     }
     Ok(held)
 }
