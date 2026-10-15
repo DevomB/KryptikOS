@@ -87,7 +87,8 @@ disk sda sys/devices/pci0000:00/0000:00:17.0/ata1 1000215216 0 'Samsung SSD 860 
 
 stick=sys/devices/pci0000:00/0000:00:14.0/usb1/1-2
 put "$stick/idVendor" 0781; put "$stick/idProduct" 5581; put "$stick/speed" 5000
-put "$stick/manufacturer" SanDisk; put "$stick/product" Ultra; put "$stick/serial" 4C530001230506115281
+# Its strings end in an ESC and a CSI in UTF-8, which the report must not pass to a terminal.
+put "$stick/manufacturer" $'SanDisk\033'; put "$stick/product" $'Ultra\302\233'; put "$stick/serial" 4C530001230506115281
 put "$stick/1-2:1.0/bInterfaceClass" 08; put "$stick/1-2:1.0/bInterfaceSubClass" 06; put "$stick/1-2:1.0/bInterfaceProtocol" 50
 ln -s "$W/sys/bus/usb/drivers/usb-storage" "$W/$stick/1-2:1.0/driver"
 disk sdb "$stick/1-2:1.0" 30031872 1 Ultra
@@ -181,6 +182,10 @@ want "each struck where it stood"           'eth0: \(PCI Express:2\.5GT/s:Width 
 want "two on one line, both"                'authenticate with xx:xx:xx:xx:xx:xx \(local address=xx:xx:xx:xx:xx:xx\)$'
 deny "no serial number from the log or sysfs" '4C530001230506115281|PF-SECRET-1|L1-SECRET-2'
 deny "no chassis serial, asset tag or EDID serial" 'CH-SECRET-3|AT-SECRET-4|BA-SECRET-5|EDIDSER-6'
+ctl="$(LC_ALL=C tr -cd '\000-\010\013-\037\177' < "$OUT" | wc -c)"
+c1="$(LC_ALL=C grep -c $'\302[\200-\237]' "$OUT")"
+[[ "$ctl" -eq 0 && "$c1" -eq 0 ]] && green "no control character from a device's strings" \
+    || red "control characters in the report: ${ctl} C0 or DEL, ${c1} line(s) with a C1"
 want "the panel by its connector, state and mode" 'card0-eDP-1 connected 2256x1504'
 want "the log line kept, the number gone"   'usb 1-2: SerialNumber: <removed>$'
 deny "no UUID"                              '0a1b2c3d-1111|4c4c4544-0042'
