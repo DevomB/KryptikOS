@@ -87,7 +87,10 @@ export NODEJS=/usr/lib/node-${V_NODE%%.*}/bin/node
 EOF
     env CC=gcc CXX=g++ MOZBUILD_STATE_PATH="${src}/.mozbuild" MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=none \
         MOZ_NOSPAM=1 ./mach --no-interactive build
-    env MOZBUILD_STATE_PATH="${src}/.mozbuild" ./mach --no-interactive install
+    # The build's package source too: left unset, mach makes virtualenvs of its own and asks pip, which
+    # has no network here, for its optional packages.
+    env MOZBUILD_STATE_PATH="${src}/.mozbuild" MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=none \
+        ./mach --no-interactive install
     test -x /usr/lib/firefox/firefox
     # Enterprise policies: no telemetry or studies, no update checks (updates are the image's), no
     # question of the default browser, which a zone has no other of, and none of the first-run pages,
