@@ -43,12 +43,14 @@ fi
 # controller driver. The kernel ships AMD's and Intel's, with the bus and the telemetry
 # Intel's needs, as modules that bind no device in QEMU.
 kmods="/lib/modules/$(uname -r)"
+# By module name, as modprobe matches it: '-' and '_' alike, so intel-vsec.ko is intel_vsec.
+built="$(find "$kmods" -name '*.ko*' 2>/dev/null | sed 's#.*/##; s/\.ko.*//; s/-/_/g')"
 missing=""
-for m in amd-pmc intel_pmc_core intel_vsec pmt_telemetry; do
-    [[ -n "$(find "$kmods" -name "${m}.ko*" -print -quit 2>/dev/null)" ]] || missing="${missing} ${m}"
+for m in amd_pmc intel_pmc_core intel_vsec pmt_telemetry; do
+    grep -qx "$m" <<<"$built" || missing="${missing} ${m}"
 done
 if [[ -z "$missing" ]]; then
-    pass "sleep-drivers" "amd-pmc and intel_pmc_core, with intel_vsec and pmt_telemetry, are in ${kmods}"
+    pass "sleep-drivers" "amd_pmc and intel_pmc_core, with intel_vsec and pmt_telemetry, are in ${kmods}"
 else
     fail "sleep-drivers" "not in ${kmods}:${missing}"
 fi
