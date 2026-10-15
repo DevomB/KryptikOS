@@ -17,6 +17,8 @@ pub const ALLOWED: &[(&str, u32)] = &[
     ("wp_viewporter", 1),
     // A cursor by name from the compositor's own theme; an image a zone draws is never taken.
     ("wp_cursor_shape_manager_v1", 1),
+    // The scale the compositor shows a window of the zone's own at: one number for it alone.
+    ("wp_fractional_scale_manager_v1", 1),
 ];
 
 pub fn allowed_version(interface: &str) -> Option<u32> {

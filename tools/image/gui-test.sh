@@ -170,7 +170,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
-            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name zone-fractional-scale compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
             zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do
