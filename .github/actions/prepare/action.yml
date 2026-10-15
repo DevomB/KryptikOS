@@ -5,7 +5,7 @@ inputs:
     description: Also let the runner start VMs (KVM, and virt-fw-vars for the variable stores).
     default: 'false'
   sources:
-    description: The upstream sources, cached by sources.lock. Either fetches what the cache lacks; 'fetch' also saves the set.
+    description: The upstream sources, cached by sources.lock. Either fetches what the cache lacks; 'fetch' also saves the set, on main.
     default: ''
 runs:
   using: composite
@@ -56,7 +56,9 @@ runs:
         [[ "$MODE" != fetch ]] || ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
     # Saved now rather than at the end, so a job that fails later does not refetch the new files.
-    - if: inputs.sources == 'fetch' && steps.sources.outputs.cache-hit != 'true'
+    # From main alone, which every branch's run restores: a branch whose lock adds one file would
+    # save the whole set again in its own scope, and such copies pushed main's caches out.
+    - if: inputs.sources == 'fetch' && steps.sources.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
       uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
         path: /mnt/kryptik/sources
