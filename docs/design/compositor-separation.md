@@ -61,13 +61,16 @@ are the root's zones. It filters every client on those sockets with
 libwayland's global filter (`wl_display_set_global_filter`) to the same
 list the proxy allows, and binding another global by its number ends the
 connection. dwl knows a client's zone from the socket it came through, and
-takes the border, the fullscreen bar's name and the zone its status gives
-the chrome from that, not from the app_id the proxy wrote.
+takes the border, the fullscreen bar's name, the zone its status gives the
+chrome and the window rules' match from that, not from the app_id the proxy
+wrote.
 
 - A client of a zone's socket gets the allowed globals, under that zone's
   identity: a window stamped `kryptik.vault.` through `work`'s socket gets
-  `work`'s border. Which proxy may connect to which socket is the next
-  step's.
+  `work`'s border and stays on the tags `work`'s windows use, as dwl's rules
+  see `kryptik.work.` and no title for it; only the vault's socket puts a
+  window on the vault's tag. The zone's proxy uid and the session's own
+  programs alone are taken on it.
 - **Cost:** a change to dwl (sockets per zone, the filter, the border from
   the socket), the proxy's upstream argument, and the desktop suite's
   checks. The proxy and the compositor check the same list twice: two
@@ -209,8 +212,10 @@ Wayland parsing out of zone 0.
   keyboard or the session lock by the number zone 0's list gives it ends
   its connection, while zone 0's client binds screencopy's;
 - a client on `personal`'s socket that claims a `kryptik.vault.` app_id is
-  personal's: it takes the keyboard from personal's window, as personal's
-  own would, and the chrome names it personal;
+  personal's: it stays on the tag in view, takes the keyboard from
+  personal's window, as personal's own would, and the chrome names it
+  personal; a client on `vault`'s socket that claims personal's app_id maps
+  on the vault's tag, out of view, and Alt+9 shows it named the vault's;
 - `untrusted`'s proxy has its own uid and no group, `Seccomp: 2`,
   `NoNewPrivs: 1`, a network namespace of its own and its cgroup's limits.
   That uid lists neither the user's home (0700) nor the consent
