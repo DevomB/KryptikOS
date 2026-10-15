@@ -236,9 +236,11 @@ usr/bin/killall
 usr/bin/kmod
 usr/bin/kryptik
 usr/bin/kryptik-chrome
+usr/bin/kryptik-display
 usr/bin/kryptik-launch
 usr/bin/kryptik-lock
 usr/bin/kryptik-session
+usr/bin/kryptik-stick
 usr/bin/kryptik-wlproxy
 usr/bin/kryptikd
 usr/bin/last
@@ -735,11 +737,13 @@ usr/lib/kryptik/compartments/tests/cli.sh
 usr/lib/kryptik/compartments/tests/launcher.sh
 usr/lib/kryptik/compartments/tests/serve.sh
 usr/lib/kryptik/guest-tests/broker-client.py
+usr/lib/kryptik/guest-tests/camera-check.sh
 usr/lib/kryptik/guest-tests/gui-check.sh
 usr/lib/kryptik/guest-tests/icmp-echo.py
 usr/lib/kryptik/guest-tests/power-check.sh
 usr/lib/kryptik/guest-tests/probe-sources.py
 usr/lib/kryptik/guest-tests/sound-check.sh
+usr/lib/kryptik/guest-tests/stick-check.sh
 usr/lib/kryptik/guest-tests/suspend-check.sh
 usr/lib/kryptik/guest-tests/zones-check.sh
 usr/lib/kryptik/s6-rc/compiled/servicedirs/eudev/run

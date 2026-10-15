@@ -1005,3 +1005,9 @@ fn broker_survives_any_request_from_the_nic_zone() {
     std::fs::remove_dir_all(dir).unwrap();
     assert!(sent > 2000, "sent {sent}");
 }
+
+#[test]
+fn a_zone_asks_for_its_stick_by_no_name() {
+    assert_eq!(parse_request("stick"), Ok(Request::Stick));
+    assert!(parse_request("stick sdb1").is_err(), "a zone names no partition: the user gave it one");
+}

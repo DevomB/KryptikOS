@@ -185,7 +185,8 @@ uses it too. `kryptik keyboard NAME`, as root, changes it later
 from the next login, the first in force and Super+Space to switch; the
 screen lock names the one in force, as a password typed in the other one
 fails. The state passphrase at boot is always asked under the machine's one
-layout.
+layout. This release has no input method, so Chinese, Japanese and Korean
+cannot be typed yet.
 
 The installer refuses the disk the medium is on; anything with a mounted
 partition, active swap, or a partition held open (an unlocked LUKS volume,
@@ -360,16 +361,31 @@ number, asking for its passphrase in the menu's own window, adds an open one
 with `o`, or forgets one, as `kryptik wifi` does at the administration login.
 A name with a character a terminal would not show plainly is typed instead.
 
-Every zone but the net zone plays sound through zone 0's mixer, and none
-hears another. No zone may record until you let it: in the menu, `c` and the
-zone's number lets that zone use the microphone until it stops, one zone at
-a time, and `c` alone takes it back, as does the keyboard's microphone key.
-The menu's Sound line names the zone that may record and says when it is
-recording, and while a zone may record, a window of its own says so, and
-when it does; it closes when the zone stops or the microphone is taken
-back. `v` and a digit sets the volume, 0 to 9, `v`, a zone's number and
-a digit sets that zone's own, and `x` mutes or unmutes everything. Sound
-plays on a USB device when one is plugged in, otherwise on the built-in one.
+Every zone but `vault` and the net zone plays sound through zone 0's
+mixer, and none hears another. No zone may record until you let it: in the
+menu, `c` and the zone's number lets that zone use the microphone until it
+stops, one zone at a time, and `c` alone takes it back, as does the
+keyboard's microphone key. The menu's Sound line names the zone that may
+record and says when it is recording, and while a zone may record, a window
+of its own says so, and when it does; it closes when the zone stops or the
+microphone is taken back. `v` and a digit sets the volume, 0 to 9, `v`, a
+zone's number and a digit sets that zone's own, and `x` mutes or unmutes
+everything. A USB sound device that is plugged in takes the sound once
+nothing has played for a few seconds; pulled out, it gives the sound back to
+the built-in one at once. This release has no Bluetooth: for calls, use a
+USB or wired headset, or a Bluetooth headset that comes with a USB dongle,
+which works as a USB sound card.
+
+No zone sees the camera until you let it: `k` and the zone's number in the
+menu gives that zone the camera, one zone at a time, until it stops, the
+screen locks, or `k` alone takes it back, and while it has it a window of the
+chrome's says so. A program the zone left holding the camera loses it then
+as well. A window in full screen covers those windows, so the bar above it
+names the zone that may use the microphone (`MIC`) and the zone that has the
+camera (`CAM`), whichever zones they are. Built-in and USB cameras that speak the USB Video Class work, as
+most do; the cameras of recent Intel laptops that need Intel's image
+processing in userspace (MIPI cameras behind the IPU6) and infrared
+face-login cameras do not. `vault` and the net zone never get the camera.
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
@@ -418,6 +434,36 @@ removes one.
 the net zone. The network the machine itself is on, with its router, its
 printers and the page a hotel's or café's Wi-Fi asks you to log in on, is
 open to `untrusted` alone: open that page there (Alt+Shift+u).
+
+**Monitors.** `kryptik display`, in a terminal of zone 0's, lists the
+monitors by name with their scale, mode and place. `kryptik display NAME
+SCALE` draws everything on that monitor SCALE times as large, from 0.5 to 4,
+1.5 say on a laptop's high-resolution panel, and `kryptik display NAME SCALE
+X Y` also puts its top left corner at X,Y. The choice is kept for every
+login and made again whenever the monitor is plugged in; NAME `*` stands for
+every monitor no other line names, and `kryptik display NAME auto` gives the
+monitor back its own: 2 for a built-in panel of 192 dpi or more, 1 for the
+rest. Zones are told the scale rounded up to a whole number, and draw that
+much larger.
+
+**USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
+one in opens a window of the chrome that names each partition by what the
+stick and its partition table say (maker and model, size, the partition's
+number and name), never by what its files say. A letter and a zone's number
+give that partition to that zone to read (`a1`), or to read and write
+(`a1w`); nothing is given until you choose, and the menu's `d` opens the
+same window later. In that zone's terminal, `kryptik-stick` says what the
+zone was given, `kryptik-stick list [DIR]` lists a directory,
+`kryptik-stick get PATH [DEST]` copies a file or a directory off it, and
+`kryptik-stick put FILE [DIR]` copies a file onto it when the zone may
+write; wait for `put` to say it has copied before pulling the stick out.
+The stick goes back with `e` and the zone's number in that window, when the
+zone stops, or when the stick is pulled out, and the zone reads nothing of
+it after. FAT is read and written; exFAT, which SD cards over 32 GB come
+with, is read, and `put` refuses it. Give a stick you do not know to
+`untrusted`: whatever its filesystem
+does to the reader stays in that zone. `vault` and the net zone are never
+given one.
 
 **Degraded boot.** If the system cannot find exactly one `kryptik-state`
 partition on its own disk, or cannot unlock or mount it, it boots degraded: it says
@@ -565,7 +611,9 @@ shows each timer, its timeout and whether it is running.
   not sleep: the kernel's virtio-gpu driver has no suspend callbacks, so the
   display would not come back. The power key and the lid lock it instead.
 - Tested under QEMU with OVMF firmware. Testing on physical hardware is
-  planned for October 2026.
+  planned for October 2026. QEMU has no lid, no microphone or brightness
+  keys, no backlight, no built-in panel and no camera of the USB Video
+  Class, so those parts wait for it.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.

@@ -99,6 +99,12 @@ pub struct Zone {
     pub transfer_max: Option<u64>,
     /// `[sound] play = false`: no socket to zone 0's mixer (sound.rs). The nic zone never has one.
     pub sound: bool,
+    /// `[storage] removable = false`: no USB stick is ever given to this zone (stick.rs). The nic
+    /// zone never gets one.
+    pub removable: bool,
+    /// `[camera] use = false`: the camera is never granted to this zone, which gets no camera
+    /// directory or /dev/video0 (camera.rs). The nic zone never has one.
+    pub camera: bool,
 }
 
 /// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
@@ -132,12 +138,13 @@ impl fmt::Display for ZoneError {
 pub const KNOWN_KEYS: &[&str] = &[
     "zone.name", "zone.description",
     "network.mode", "network.nic", "network.local",
-    "storage.mode", "storage.volume", "storage.size",
+    "storage.mode", "storage.volume", "storage.size", "storage.removable",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max", "limits.cpu_max", "limits.io_max",
     "identity.uid_base",
     "transfer.to", "transfer.max_bytes",
     "sound.play",
+    "camera.use",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
@@ -430,6 +437,26 @@ impl Zone {
             Some(v) => return Err(bad("sound.play", v, "true or false")),
         };
 
+        let removable = match kv.get("storage.removable").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone is given no USB stick")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("storage.removable", v, "true or false")),
+        };
+
+        let camera = match kv.get("camera.use").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone is given no camera")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("camera.use", v, "true or false")),
+        };
+
         let transfer_to: Vec<String> = match get("transfer.to") {
             None => Vec::new(),
             Some(v) => {
@@ -481,6 +508,8 @@ impl Zone {
             transfer_to,
             transfer_max,
             sound,
+            removable,
+            camera,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),
             size: get("storage.size"),

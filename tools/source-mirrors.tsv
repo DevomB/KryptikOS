@@ -1,0 +1,20 @@
+# Mirrors for sources whose upstream host is the only one serving them, for tools/fetch-sources.sh
+# and tools/verify-signatures.sh. A mirror serves upstream's own file, so the lock's hash decides
+# what is built wherever the bytes came from, and a signature from a mirror must still verify. A
+# distribution keeps a version only while a release carries it: a mirror behind the pin answers 404,
+# and the next one is asked. fetch-sources.sh tries them after the source's own host and before
+# Gentoo's distfiles; verify-signatures.sh only when upstream's own signature cannot be fetched.
+#
+# Columns are whitespace separated:
+#   package    the source name, as in tools/fetch-sources.sh
+#   url        the file at the mirror, {VER} standing for the manifest's version
+#   signature  the suffix of upstream's own signature kept beside it there, or - for none
+#
+# Each row was checked when added: the mirror's file has the lock's hash, and its signature was
+# made by the key upstream's own is made by.
+wayland            https://deb.debian.org/debian/pool/main/w/wayland/wayland_{VER}.orig.tar.xz                        .asc
+wayland            https://distfiles.alpinelinux.org/distfiles/edge/wayland-{VER}.tar.xz                              -
+wayland-protocols  https://deb.debian.org/debian/pool/main/w/wayland-protocols/wayland-protocols_{VER}.orig.tar.xz    .asc
+wayland-protocols  https://distfiles.alpinelinux.org/distfiles/edge/wayland-protocols-{VER}.tar.xz                    -
+xkeyboard-config   https://deb.debian.org/debian/pool/main/x/xkeyboard-config/xkeyboard-config_{VER}.orig.tar.xz      .asc
+pixman             https://deb.debian.org/debian/pool/main/p/pixman/pixman_{VER}.orig.tar.gz                          -

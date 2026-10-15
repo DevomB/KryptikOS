@@ -47,6 +47,13 @@ Steps (each one argument):
     dump:FILE               write the guest's memory to FILE (QMP
                             dump-guest-memory, ELF, no paging)
     wakeup                  wake a suspended guest (QMP system_wakeup)
+    plug:ID:FILE[:ro]       plug FILE in as a USB stick called ID (run-ovmf.sh
+                            --usb-port), read-only with :ro
+    unplug:ID               pull stick ID out, as a hand would, with no eject
+    plug-sound:ID:AUDIODEV  plug a USB sound card called ID in, playing into
+                            QEMU's audio backend AUDIODEV (run-ovmf.sh --sound
+                            --usb-port)
+    unplug-sound:ID         pull sound card ID out
     wait-exit               wait for the serial socket to close (guest gone)
 
 With KRYPTIK_STATE_PASSPHRASE set, the driver answers an installed disk's
@@ -386,6 +393,38 @@ def main():
                 if not qmpsock: raise RuntimeError("wakeup needs --qmp")
                 r = qmp(qmpsock, "system_wakeup")
                 if "error" in r: raise RuntimeError(f"system_wakeup: {r['error']}")
+            elif kind == "plug":
+                if not qmpsock: raise RuntimeError("plug needs --qmp")
+                ident, _, path = rest.partition(":")
+                ro = path.endswith(":ro")
+                if ro: path = path[:-3]
+                r = qmp(qmpsock, "blockdev-add", {"driver": "raw", "node-name": ident, "read-only": ro,
+                                                   "file": {"driver": "file", "filename": os.path.abspath(path), "read-only": ro}})
+                if "error" in r: raise RuntimeError(f"blockdev-add: {r['error']}")
+                r = qmp(qmpsock, "device_add", {"driver": "usb-storage", "id": ident, "drive": ident,
+                                                "bus": "xhci.0", "removable": True})
+                if "error" in r: raise RuntimeError(f"device_add: {r['error']}")
+            elif kind == "unplug":
+                if not qmpsock: raise RuntimeError("unplug needs --qmp")
+                r = qmp(qmpsock, "device_del", {"id": rest})
+                if "error" in r: raise RuntimeError(f"device_del: {r['error']}")
+                # The drive is free once the device is gone, which the call does not wait for.
+                for _ in range(20):
+                    r = qmp(qmpsock, "blockdev-del", {"node-name": rest})
+                    if "error" not in r: break
+                    time.sleep(0.5)
+                else:
+                    raise RuntimeError(f"blockdev-del: {r['error']}")
+            elif kind == "plug-sound":
+                if not qmpsock: raise RuntimeError("plug-sound needs --qmp")
+                ident, _, audiodev = rest.partition(":")
+                r = qmp(qmpsock, "device_add", {"driver": "usb-audio", "id": ident, "audiodev": audiodev,
+                                                "bus": "xhci.0"})
+                if "error" in r: raise RuntimeError(f"device_add: {r['error']}")
+            elif kind == "unplug-sound":
+                if not qmpsock: raise RuntimeError("unplug-sound needs --qmp")
+                r = qmp(qmpsock, "device_del", {"id": rest})
+                if "error" in r: raise RuntimeError(f"device_del: {r['error']}")
             elif kind == "wait-exit":
                 deadline = time.time() + timeout
                 while not d.closed and time.time() < deadline: d._read()

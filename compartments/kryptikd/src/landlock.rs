@@ -386,6 +386,16 @@ pub fn nic_zone_rules() -> Vec<ZoneRule> {
         .collect()
 }
 
+/// The camera's directory, for a zone that may be granted it (camera.rs): Landlock checks the
+/// node /dev/video0 links to, not the link.
+pub fn camera_rules() -> Vec<ZoneRule> {
+    vec![ZoneRule {
+        path: crate::camera::IN_ZONE.to_string(),
+        access: ACCESS_READ | ACCESS_WRITE_FILE | ACCESS_IOCTL_DEV,
+        required: true,
+    }]
+}
+
 /// Human-readable form of a rule's rights, for `kryptikd explain`.
 pub fn describe_access(access: u64) -> String {
     let mut parts = Vec::new();
@@ -407,11 +417,14 @@ pub fn describe_access(access: u64) -> String {
 }
 
 /// Apply `zone_rules` after pivot_root and before seccomp, whose allowlist lacks landlock_*.
-pub fn confine_pivoted_zone(home: &str, nic: bool) -> Result<(), LandlockError> {
+pub fn confine_pivoted_zone(home: &str, nic: bool, camera: bool) -> Result<(), LandlockError> {
     let mut rs = Ruleset::new()?;
     let mut rules = zone_rules(home);
     if nic {
         rules.extend(nic_zone_rules());
+    }
+    if camera {
+        rules.extend(camera_rules());
     }
     for r in rules {
         match rs.allow(&r.path, r.access) {
