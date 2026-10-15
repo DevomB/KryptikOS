@@ -1,7 +1,8 @@
-//! kryptik-stick: the FAT filesystem on a USB stick the user gave this zone, read and written
-//! here (ADR-025, docs/design/removable-storage.md). Nothing mounts the stick. Zone 0 hands the
-//! zone a descriptor on the one partition granted, and this program parses the filesystem on it,
-//! in an unprivileged process of this zone, so a hostile filesystem reaches nothing past it.
+//! kryptik-stick: the filesystem on a USB stick or SD card the user gave this zone, FAT read and
+//! written here and exFAT read (ADR-025, docs/design/removable-storage.md). Nothing mounts the
+//! stick. Zone 0 hands the zone a descriptor on the one partition granted, and this program
+//! parses the filesystem on it, in an unprivileged process of this zone, so a hostile filesystem
+//! reaches nothing past it.
 //!
 //!   kryptik-stick                  what this zone was given
 //!   kryptik-stick list [DIR]       a directory of the stick, / unless named
@@ -18,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fatfs::{FileSystem, FsOptions, ReadWriteSeek};
+
+mod exfat;
 
 /// The zone's end of its broker, which kryptikd binds in (docs/design/broker.md).
 const BROKER: &str = "/run/kryptik/broker";
@@ -364,15 +367,18 @@ fn run(args: &[String]) -> Result<(), String> {
     if !matches!(words.as_slice(), [] | ["list"] | ["list", _] | ["get", _] | ["get", _, _] | ["put", _] | ["put", _, _]) {
         return Err(USAGE.to_string());
     }
-    let grant = match device {
+    let mut grant = match device {
         Some(p) => open_device(p)?,
         None => ask_broker()?,
     };
+    if exfat::is_exfat(&mut grant.disk).map_err(|e| format!("{}: {e}", grant.what))? {
+        return run_exfat(grant, &words);
+    }
     let writable = grant.disk.writable;
     // The partition's own descriptor, for the sync after fatfs has written its last.
     let syncer = grant.disk.file.try_clone().map_err(|e| e.to_string())?;
     let fs = FileSystem::new(grant.disk, FsOptions::new().time_provider(&CLOCK))
-        .map_err(|e| format!("{}: no FAT filesystem this reader knows: {e}", grant.what))?;
+        .map_err(|e| format!("{}: no FAT or exFAT filesystem this reader knows: {e}", grant.what))?;
     match words.as_slice() {
         [] => {
             let stats = fs.stats().map_err(|e| e.to_string())?;
@@ -384,15 +390,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("label {:?}, {} bytes free", shown(fs.volume_label().trim_end()),
                      u64::from(stats.free_clusters()) * u64::from(stats.cluster_size()));
         }
-        ["list"] | ["list", _] => {
-            for (name, dir, len) in entries(&fs, words.get(1).copied().unwrap_or("/"))? {
-                if dir {
-                    println!("{:>12}  {}/", "", shown(&name));
-                } else {
-                    println!("{len:>12}  {}", shown(&name));
-                }
-            }
-        }
+        ["list"] | ["list", _] => print_entries(entries(&fs, words.get(1).copied().unwrap_or("/"))?),
         ["get", path] | ["get", path, _] => {
             let dest = PathBuf::from(words.get(2).copied().unwrap_or("."));
             let n = get(&fs, path, &dest)?;
@@ -405,6 +403,37 @@ fn run(args: &[String]) -> Result<(), String> {
             syncer.sync_all().map_err(|e| format!("{}: {e}", grant.what))?;
             println!("copied {n} bytes onto the stick");
         }
+        _ => unreachable!("the words were matched above"),
+    }
+    Ok(())
+}
+
+fn print_entries(list: Vec<(String, bool, u64)>) {
+    for (name, dir, len) in list {
+        if dir {
+            println!("{:>12}  {}/", "", shown(&name));
+        } else {
+            println!("{len:>12}  {}", shown(&name));
+        }
+    }
+}
+
+/// An exFAT partition: read, and never written, whatever the grant allows.
+fn run_exfat(grant: Grant, words: &[&str]) -> Result<(), String> {
+    let what = grant.what;
+    let mut x = exfat::ExFat::open(grant.disk).map_err(|e| format!("{what}: {e}"))?;
+    match words {
+        [] => {
+            println!("{what}: exFAT, read-only (exFAT is read here, not written)");
+            println!("label {:?}, {} bytes free", shown(x.label()), x.free());
+        }
+        ["list"] | ["list", _] => print_entries(x.entries(words.get(1).copied().unwrap_or("/"))?),
+        ["get", path] | ["get", path, _] => {
+            let dest = PathBuf::from(words.get(2).copied().unwrap_or("."));
+            let n = x.get(path, &dest)?;
+            println!("copied {n} bytes off the stick");
+        }
+        ["put", ..] => return Err(format!("{what}: exFAT is read here, not written: copy onto a FAT stick")),
         _ => unreachable!("the words were matched above"),
     }
     Ok(())

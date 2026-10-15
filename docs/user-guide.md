@@ -457,8 +457,9 @@ zone was given, `kryptik-stick list [DIR]` lists a directory,
 write; wait for `put` to say it has copied before pulling the stick out.
 The stick goes back with `e` and the zone's number in that window, when the
 zone stops, or when the stick is pulled out, and the zone reads nothing of
-it after. Only FAT is read; exFAT, which larger SD cards come with, is not
-yet. Give a stick you do not know to `untrusted`: whatever its filesystem
+it after. FAT is read and written; exFAT, which SD cards over 32 GB come
+with, is read, and `put` refuses it. Give a stick you do not know to
+`untrusted`: whatever its filesystem
 does to the reader stays in that zone. `vault` and the net zone are never
 given one.
 

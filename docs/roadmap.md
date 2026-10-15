@@ -202,7 +202,7 @@ A desktop someone can live in, built the same way.
   high-resolution panel at 2 by itself ([status](status.md)).
 - **USB sticks.** Built (ADR-025): read in the zone the user gives one to,
   through a descriptor and a reader of Kryptik's own, never mounted; FAT
-  read, exFAT a named gap, FUSE a later decision of its own
+  read and written, exFAT read, FUSE a later decision of its own
   ([removable storage](design/removable-storage.md)).
 - **A camera.** Built (ADR-026): granted to one zone at a time, as the
   microphone is, its driver loaded only for the grant

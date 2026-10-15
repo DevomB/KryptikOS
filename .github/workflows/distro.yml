@@ -37,7 +37,7 @@ env:
   HOST_PACKAGES: >-
     build-essential bison flex texinfo gawk m4 patch perl python3 python3-pip
     xz-utils bzip2 zstd cpio rsync bc curl git openssl libssl-dev libelf-dev
-    e2fsprogs dosfstools mtools xorriso util-linux cryptsetup-bin sbsigntool
+    e2fsprogs dosfstools mtools exfatprogs xorriso util-linux cryptsetup-bin sbsigntool
     qemu-system-x86 ovmf musl-tools file
 
 # Caches are keyed on the stamps' digest and saved after a failure too; the stage 05 tree's key starts with the toolchain's.
