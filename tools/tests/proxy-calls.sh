@@ -61,9 +61,10 @@ fi
 
 # One file per proxy start: from the line that execs the proxy to the line that ends it, every
 # call it made, marked "fd" when it was started as the launch daemon starts it (--listen-fd) and
-# "path" when it was given a path to bind, as only these tests do.
+# "path" when it was given a path to bind, as only these tests do. strace -f writes each line
+# after its task's id, so a thread the proxy may one day start is read in the same file.
 awk 'FNR == 1 { on = 0 }
-     { sub(/^\[pid +[0-9]+\] /, "") }
+     { sub(/^(\[pid +[0-9]+\]|[0-9]+) +/, "") }
      !on && /^execve\("[^"]*\/kryptik-wlproxy", / && / = 0$/ { on = 1; mode = index($0, "\"--listen-fd\"") ? "fd" : "path" }
      on && /^\+\+\+ (exited|killed) / { on = 0 }
      on && /^[a-z_0-9]+\(/ { print mode "\t" $0 }' "$run"/proxy.* > "$T/calls"
@@ -96,7 +97,7 @@ if [[ -n "$missing" || -n "$args" ]]; then
     # three calls before it.
     for c in $missing; do
         awk -v c="$c" 'FNR == 1 { on = 0; n = 0 }
-            { sub(/^\[pid +[0-9]+\] /, "") }
+            { sub(/^(\[pid +[0-9]+\]|[0-9]+) +/, "") }
             !on && /^execve\("[^"]*\/kryptik-wlproxy", / && / = 0$/ { on = 1; exec = $0; next }
             on && /^\+\+\+ (exited|killed) / { on = 0; n = 0; next }
             on && index($0, c "(") == 1 {
