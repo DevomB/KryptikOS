@@ -42,6 +42,9 @@ PASS=0; FAIL=0
 pass() { echo "GT PASS $1${2:+ - $2}"; PASS=$((PASS + 1)); }
 fail() { echo "GT FAIL $1${2:+ - $2}"; FAIL=$((FAIL + 1)); }
 info() { echo "GT INFO $*"; }
+# The kernel's log, from /dev/kmsg itself: neither the clock's zone nor anything else in /etc,
+# which dmesg and date may read, is needed for it.
+kmsg() { dd if=/dev/kmsg iflag=nonblock bs=8192 status=none 2>/dev/null | sed 's/^[^;]*;//'; }
 as_user() { su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 $*"; }
 wait_for() {   # wait_for SECONDS CMD...
     local n="$1"; shift
@@ -121,7 +124,7 @@ stuck_report() {
     for f in /sys/power/suspend_stats/{last_failed_step,last_failed_errno,fail,failed_freeze}; do
         [[ -r "$f" ]] && info "${f#/sys/power/}: $(tr '\n' ' ' < "$f")"
     done
-    dmesg 2>/dev/null | tail -n 40 | sed 's/^/GT INFO dmesg: /'
+    kmsg | tail -n 40 | sed 's/^/GT INFO kernel: /'
 }
 boot_id="$(< /proc/sys/kernel/random/boot_id)"
 
@@ -310,6 +313,7 @@ case "$answer" in
         echo "GT DID-NOT-SLEEP 1"
         fail "slept-and-woke" "the kernel refused to sleep: ${answer#*did not sleep: }" ;;
     *)
+        echo "GT DID-NOT-SLEEP 1"
         fail "slept-and-woke" "flag $(state_flag): $(tr '\n' ' ' < "$OUT/lock-suspend.out")" ;;
 esac
 grep -q '^kryptik-lock: the state partition is suspended: its passphrase unlocks' "$OUT/lock-suspend.out" \
@@ -371,9 +375,9 @@ echo "GT KEY-LOCK 2"
 wait_for 30 more locked "$locked0" || fail "locked-again" "$(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
 echo "GT SLEEPING 2"
 # Root's way to the same sleep: the session's lock asks the daemon, which forks the same write.
-t0="$(date +%s)"
+t0=$SECONDS
 "$KD" suspend > "$OUT/sleep2.out" 2>&1
-info "the sleep was answered after $(( $(date +%s) - t0 )) s; the kernel's log of it: $(dmesg 2>/dev/null | grep -E 'PM: |Freezing|freez|Filesystems sync|Restarting' | tail -n 8 | tr '\n' '|')"
+info "the sleep was answered after $(( SECONDS - t0 )) s; the kernel's log of it: $(kmsg | grep -E 'PM: |Freezing|freez|Filesystems sync|Restarting' | tail -n 8 | tr '\n' '|')"
 case "$(< "$OUT/sleep2.out")" in
     *"did not sleep"*)
         echo "GT DID-NOT-SLEEP 2"
@@ -403,9 +407,11 @@ wait_for 15 none_frozen || fail "zones-thawed-after-refusal" "$(zones_frozen)"
 answers() { grep -c '^kryptik-lock: suspend: ' "$1" 2>/dev/null; }
 answers_past() { [[ "$(answers "$1")" -gt "$2" ]]; }
 unlocks_past() { [[ "$(grep -c '^kryptik-lock: unlocked' "$1" 2>/dev/null)" -gt "$2" ]]; }
-slept() {   # slept LOG BEFORE N NAME: one more answer to a suspend in LOG; a refusal is told as N
+slept() {   # slept LOG BEFORE N NAME: one more answer to a suspend in LOG; no sleep is told as N
     local a
-    if ! wait_for 120 answers_past "$1" "$2"; then
+    # Within the host's own 120 s, which a wait of 120 looks, each a second and a grep, outlasts:
+    # a cue after that ends the drive, and every round after this one with it.
+    if ! wait_for 100 answers_past "$1" "$2"; then
         echo "GT DID-NOT-SLEEP $3"
         fail "$4" "no answer to the suspend: $(grep '^kryptik-lock' "$1" | tail -3 | tr '\n' ' ')"
         return
@@ -414,7 +420,7 @@ slept() {   # slept LOG BEFORE N NAME: one more answer to a suspend in LOG; a re
     case "$a" in
         *": ok woke") pass "$4" "slept and woke, the state partition suspended (flag $(state_flag))" ;;
         *"did not sleep"*) echo "GT DID-NOT-SLEEP $3"; fail "$4" "the kernel refused to sleep: ${a#*did not sleep: }" ;;
-        *) fail "$4" "$a" ;;
+        *) echo "GT DID-NOT-SLEEP $3"; fail "$4" "$a" ;;
     esac
     # Keys in the second after the label changes go nowhere.
     sleep 2
@@ -438,6 +444,9 @@ if wait_for 15 heldoff "$h0"; then
     echo "GT DID-NOT-SLEEP 7"
     pass "power-key-held-off-after-wake" "a press a moment after the wake did not put the machine back to sleep"
 else
+    # Unless the press did put it to sleep, the host is told it stayed awake, and goes on.
+    [[ "$(answers "$slog")" -gt "$a1" && "$(grep '^kryptik-lock: suspend: ' "$slog" | tail -1)" == *": ok woke" ]] \
+        || echo "GT DID-NOT-SLEEP 7"
     fail "power-key-held-off-after-wake" "$(grep '^kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
 fi
 sleep 13
