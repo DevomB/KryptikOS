@@ -736,6 +736,7 @@ usr/lib/kryptik/compartments/tests/cli.sh
 usr/lib/kryptik/compartments/tests/launcher.sh
 usr/lib/kryptik/compartments/tests/serve.sh
 usr/lib/kryptik/guest-tests/broker-client.py
+usr/lib/kryptik/guest-tests/camera-check.sh
 usr/lib/kryptik/guest-tests/gui-check.sh
 usr/lib/kryptik/guest-tests/icmp-echo.py
 usr/lib/kryptik/guest-tests/power-check.sh

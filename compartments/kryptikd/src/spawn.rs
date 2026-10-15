@@ -815,8 +815,9 @@ pub fn run_in_zone(
     } else {
         None
     };
-    // The zone's camera directory, which a grant puts the camera's node in; a root launch only.
-    let camera_dir: Option<String> = if id.privileged && zone.camera {
+    // The zone's camera directory, which a grant puts the camera's node in: a root launch of a
+    // zone with a fixed uid_base only, as the camera is granted to no other (camera.rs).
+    let camera_dir: Option<String> = if id.privileged && zone.camera && zone.uid_base.is_some() {
         match crate::camera::zone_dir(&zone.name) {
             Ok(p) => Some(p.display().to_string()),
             Err(e) => {
