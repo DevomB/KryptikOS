@@ -1414,20 +1414,6 @@ else
     fail "chrome-follows-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
 second_head="$(focus_output)"
-launch_plain untrusted "havoc" > "$LOG/launch-havoc-head2.out" 2>&1
-sleep 3
-echo "GT KEY-FOCUS-HEAD-WINDOW"
-zone_on_second_head() { grep -q '^zone=untrusted' "$RT/kryptik/focus" && [[ "$(focus_output)" == "$second_head" ]]; }
-if wait_for 20 zone_on_second_head; then
-    pass "second-head-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
-else
-    fail "second-head-zone-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); launch: $(tr '\n' ' ' < "$LOG/launch-havoc-head2.out"); $(zone_why untrusted)"
-fi
-if grep -q '^title=\[untrusted\]' "$RT/kryptik/focus" 2>/dev/null && grep -q '^label=UNTRUSTED' "$RT/kryptik/focus"; then
-    pass "second-head-names-zone" "$(grep -E '^(title|label)=' "$RT/kryptik/focus" | tr '\n' ' ')"
-else
-    fail "second-head-names-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
-fi
 # What a zone is told of the monitors: both, each named by its number with no make or model,
 # as the zone's proxy rewrites them, and the second at the scale chosen for it.
 mark outs untrusted
@@ -1443,6 +1429,22 @@ if [[ "$named" -eq 2 && "$described" -eq 2 && "$blank" -eq 2 ]] && grep -q ' sca
     pass "zone-sees-heads-unnamed" "two outputs named by number, with no make or model, one at scale 2"
 else
     fail "zone-sees-heads-unnamed" "$(tr '\n' '|' <<<"$zone_outs" | cut -c1-400); launch: $(tr '\n' ' ' < "$LOG/launch-outputs.out")"
+fi
+# The probe's zone stops, so the window below starts untrusted afresh on the second head.
+stop_zone untrusted
+launch_plain untrusted "havoc" > "$LOG/launch-havoc-head2.out" 2>&1
+sleep 3
+echo "GT KEY-FOCUS-HEAD-WINDOW"
+zone_on_second_head() { grep -q '^zone=untrusted' "$RT/kryptik/focus" && [[ "$(focus_output)" == "$second_head" ]]; }
+if wait_for 20 zone_on_second_head; then
+    pass "second-head-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "second-head-zone-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); launch: $(tr '\n' ' ' < "$LOG/launch-havoc-head2.out"); $(zone_why untrusted)"
+fi
+if grep -q '^title=\[untrusted\]' "$RT/kryptik/focus" 2>/dev/null && grep -q '^label=UNTRUSTED' "$RT/kryptik/focus"; then
+    pass "second-head-names-zone" "$(grep -E '^(title|label)=' "$RT/kryptik/focus" | tr '\n' ' ')"
+else
+    fail "second-head-names-zone" "$(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
 sleep 2
 echo "GT SCREENSHOT-HEAD"
