@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch dwl.c (dwl v0.8) for zone borders, focus, scene layers and popups.
+"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers and popups.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -8,11 +8,15 @@ import os
 import sys
 
 # Exact-string edits rather than a diff, so a different dwl fails with the text
-# not found instead of patching with fuzz. The colour comes from the app_id
-# prefix only the zone's proxy sets; focus is shown by width (a band of the
-# root colour when unfocused), and fullscreen keeps the border under a bar
-# that names the zone. A zone's popups are drawn inside its window's frame
-# and last while the window has the keyboard.
+# not found instead of patching with fuzz. Each zone reaches dwl through a
+# socket of its own, taken from its proxy's uid and the session's own programs
+# alone and offered only the globals the proxy lets through, and a window's
+# zone, which places it and colours it, is the socket its client came through.
+# Its border is that
+# zone's colour; focus is shown by width (a band of the root colour when
+# unfocused), and fullscreen keeps the border under a bar that names the
+# zone. A zone's popups are drawn inside its window's frame and last while
+# the window has the keyboard.
 
 # The bar's lettering, 5x7: capitals for the letters, digits and '-' of a zone name.
 FONT = {
@@ -68,7 +72,7 @@ static void
 zonebar(Client *c)
 {
 \tstatic const float black[] = {0, 0, 0, 1}, white[] = {1, 1, 1, 1};
-\tconst char *id = client_get_appid(c);
+\tconst ZoneColor *z = clientzone(c);
 \tconst float *ink;
 \tstruct wlr_box box = c->mon->m;
 \tchar name[16] = "zone 0";
@@ -76,8 +80,8 @@ zonebar(Client *c)
 \tsize_t i;
 
 \tzonecolors(c);
-\tif (c->zoneborder != unzonedcolor && strncmp(id, "kryptik.", 8) == 0)
-\t\tsnprintf(name, sizeof(name), "%.*s", (int)strcspn(id + 8, "."), id + 8);
+\tif (z)
+\t\tsnprintf(name, sizeof(name), "%s", z->zone);
 \tink = 0.299f * c->zoneborder[0] + 0.587f * c->zoneborder[1]
 \t\t\t+ 0.114f * c->zoneborder[2] > 0.5f ? black : white;
 
@@ -110,7 +114,7 @@ EDITS = [
     ("""	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
 """,
      """	struct wlr_scene_rect *border[4]; /* top, bottom, left, right */
-	const float *zoneborder; /* Kryptik: chosen by zone from the app_id */
+	const float *zoneborder; /* Kryptik: the colour of the zone whose socket its client came through */
 	struct wlr_scene_tree *band; /* Kryptik: over the border's inner edge while unfocused */
 	struct wlr_scene_rect *bands[4]; /* top, bottom, left, right */
 	struct wlr_scene_tree *bar; /* Kryptik: names the zone above a fullscreen window */
@@ -134,46 +138,232 @@ EDITS = [
 } Rule;
 
 typedef struct {
-	const char *zone;     /* as it appears in kryptik.<zone>.<app_id> */
+	const char *zone;     /* its socket's name under /run/kryptik-compositor/<uid> */
 	const float border[4];
+	unsigned int proxy;   /* its proxy's uid: with the session's, the one peer its socket takes */
 } ZoneColor;
 """),
-    # The chooser, placed before applyrules.
+    # A client's zone and its colour, placed before applyrules.
     ("""void
 applyrules(Client *c)
 {
 """,
-     """/* Kryptik: the border colour is the compositor's statement of which zone a
- * window belongs to. Every zone client reaches the compositor through its
- * zone's proxy, which rewrites app_id to kryptik.<zone>.<claimed>; the zone
- * is read from there. A client with no such prefix did not come through a
- * proxy - it is the chrome, or something the session user ran on the
- * session's own display - and is drawn as unzoned. A prefix naming a zone
- * with no colour is drawn as unknown. */
+     """/* Kryptik: the zone whose socket the client came through (zonesockets), or
+ * none for a client of dwl's own socket: the chrome, or something the
+ * session user ran on the session's own display. */
+static const ZoneColor *
+clientzone(Client *c)
+{
+	return wl_client_get_user_data(wl_resource_get_client(client_surface(c)->resource));
+}
+
+/* Kryptik: the border colour is the compositor's statement of which zone a
+ * window belongs to: the zone of its client's socket, whatever app_id or
+ * title the client set. A client of dwl's own socket is drawn as unzoned. */
 static void
 zonecolors(Client *c)
 {
-	const char *appid = client_get_appid(c);
-	const ZoneColor *z;
-	size_t n;
+	const ZoneColor *z = clientzone(c);
 
-	c->zoneborder = unzonedcolor;
-	if (!appid || strncmp(appid, "kryptik.", 8) != 0)
-		return;
-	appid += 8;
-	n = strcspn(appid, ".");
-	for (z = zonecolors_table; z < END(zonecolors_table); z++) {
-		if (strlen(z->zone) == n && strncmp(z->zone, appid, n) == 0) {
-			c->zoneborder = z->border;
-			return;
-		}
-	}
-	c->zoneborder = unknownzonecolor;
+	c->zoneborder = z ? z->border : unzonedcolor;
 }
 
 void
 applyrules(Client *c)
 {
+"""),
+    # applyrules: a zone's window matches the rules by its socket's zone, never by its claims.
+    ("""\t/* rule matching */
+\tconst char *appid, *title;
+\tuint32_t newtags = 0;
+\tint i;
+\tconst Rule *r;
+\tMonitor *mon = selmon, *m;
+
+\tappid = client_get_appid(c);
+\ttitle = client_get_title(c);
+""",
+     """\t/* rule matching */
+\tconst char *appid, *title;
+\tuint32_t newtags = 0;
+\tint i;
+\tconst Rule *r;
+\tMonitor *mon = selmon, *m;
+\tconst ZoneColor *z = clientzone(c);
+\tchar zoneid[64];
+
+\tappid = client_get_appid(c);
+\ttitle = client_get_title(c);
+\t/* Kryptik: a zone's window is placed by the zone its socket names, never by
+\t * what its client claims: the rules see kryptik.<zone>. and no title. */
+\tif (z) {
+\t\tsnprintf(zoneid, sizeof(zoneid), "kryptik.%s.", z->zone);
+\t\tappid = zoneid;
+\t\ttitle = "";
+\t}
+"""),
+    # The zones' sockets: one each, accepted by hand so that dwl knows the
+    # zone of every client, and the globals a zone's client is offered.
+    ("""#include <getopt.h>
+""",
+     """#define _GNU_SOURCE /* Kryptik: struct ucred, for the peer of a zone's socket */
+#include <errno.h>
+#include <fcntl.h>
+#include <getopt.h>
+"""),
+    ("""#include <stdlib.h>
+#include <sys/wait.h>
+""",
+     """#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+"""),
+    ("""void
+run(char *startup_cmd)
+{
+""",
+     """/* Kryptik: what a zone's socket offers, the list its proxy lets through
+ * (compositor/wlproxy/src/policy.rs): both must be wrong before a zone gets
+ * a global the proxy hides. */
+static const char *const zoneglobals[] = {
+\t"wl_compositor", "wl_subcompositor", "wl_shm", "wl_seat", "wl_output",
+\t"xdg_wm_base", "zxdg_decoration_manager_v1", "wp_viewporter",
+\t"wp_cursor_shape_manager_v1",
+};
+
+/* Kryptik: a client of a zone's socket is told only of zoneglobals, and
+ * binding another global by its number ends its connection; a client of
+ * dwl's own socket sees them all. */
+static bool
+zoneglobal(const struct wl_client *client, const struct wl_global *global, void *data)
+{
+\tconst char *name = wl_global_get_interface(global)->name;
+\tsize_t i;
+
+\tif (!wl_client_get_user_data((struct wl_client *)client))
+\t\treturn true;
+\tfor (i = 0; i < LENGTH(zoneglobals); i++)
+\t\tif (strcmp(zoneglobals[i], name) == 0)
+\t\t\treturn true;
+\treturn false;
+}
+
+/* Kryptik: a zone socket's clients at once (its proxy holds at most 32), and per zone the
+ * live clients and the refused connections. */
+static const unsigned int zoneclientsmax = 64;
+static unsigned int zoneclients[LENGTH(zonecolors_table)], zonerefused[LENGTH(zonecolors_table)];
+
+struct zoneclient {
+\tstruct wl_listener destroy;
+\tsize_t zone;
+};
+
+static void
+zoneclientgone(struct wl_listener *listener, void *data)
+{
+\tstruct zoneclient *zc = wl_container_of(listener, zc, destroy);
+
+\tzoneclients[zc->zone]--;
+\twl_list_remove(&zc->destroy.link);
+\tfree(zc);
+}
+
+/* Kryptik: a client accepted on a zone's socket is that zone's while it is connected. Anyone
+ * reaches the socket; the session's own programs and the zone's proxy alone are taken, and no
+ * more at once than zoneclientsmax, so not even the proxy fills dwl's descriptors. */
+static int
+zoneaccept(int fd, uint32_t mask, void *data)
+{
+\tconst ZoneColor *z = data;
+\tsize_t i = (size_t)(z - zonecolors_table);
+\tstruct zoneclient *zc = NULL;
+\tstruct wl_client *client;
+\tstruct ucred cr = {0};
+\tsocklen_t len = sizeof(cr);
+\tint cfd = accept(fd, NULL, NULL);
+
+\tif (cfd < 0)
+\t\treturn 0;
+\tif (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cr, &len) < 0
+\t\t\t|| (cr.uid != getuid() && cr.uid != z->proxy) || zoneclients[i] >= zoneclientsmax) {
+\t\t/* Said at the 1st, 2nd, 4th, 8th... refusal, so no flood of them fills the log. */
+\t\tzonerefused[i]++;
+\t\tif ((zonerefused[i] & (zonerefused[i] - 1)) == 0)
+\t\t\tfprintf(stderr, "dwl: zone %s refused a client of uid %u (%u refused)\\n",
+\t\t\t\t\tz->zone, (unsigned int)cr.uid, zonerefused[i]);
+\t\tclose(cfd);
+\t\treturn 0;
+\t}
+\tif (fcntl(cfd, F_SETFD, FD_CLOEXEC) < 0 || !(zc = calloc(1, sizeof(*zc)))
+\t\t\t|| !(client = wl_client_create(dpy, cfd))) {
+\t\tfree(zc);
+\t\tclose(cfd);
+\t\treturn 0;
+\t}
+\twl_client_set_user_data(client, data, NULL);
+\tzc->zone = i;
+\tzc->destroy.notify = zoneclientgone;
+\twl_client_add_destroy_listener(client, &zc->destroy);
+\tzoneclients[i]++;
+\treturn 0;
+}
+
+/* Kryptik: a socket for each zone, /run/kryptik-compositor/<uid>/<zone>, in the directory
+ * kryptikd makes for the session; kryptikd gives it the zone's proxy as its upstream. */
+static void
+zonesockets(void)
+{
+\tconst ZoneColor *z;
+\tstruct sockaddr_un sa = {.sun_family = AF_UNIX};
+\tstruct stat st;
+\tchar dir[sizeof(sa.sun_path)];
+\tint fd;
+
+\twl_display_set_global_filter(dpy, zoneglobal, NULL);
+\tsnprintf(dir, sizeof(dir), "/run/kryptik-compositor/%u", (unsigned int)getuid());
+\tif (stat(dir, &st) < 0)
+\t\tdie("startup: %s, which kryptikd makes for the session:", dir);
+\t/* A zone whose socket fails opens no window; the others' still do. */
+\tfor (z = zonecolors_table; z < END(zonecolors_table); z++) {
+\t\tif (snprintf(sa.sun_path, sizeof(sa.sun_path), "%s/%s", dir, z->zone) >= (int)sizeof(sa.sun_path)) {
+\t\t\tfprintf(stderr, "dwl: zone %s gets no socket: its path is too long\\n", z->zone);
+\t\t\tcontinue;
+\t\t}
+\t\tunlink(sa.sun_path);
+\t\tif ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) < 0) {
+\t\t\tfprintf(stderr, "dwl: zone %s gets no socket: %s\\n", z->zone, strerror(errno));
+\t\t} else if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 || chmod(sa.sun_path, 0666) < 0
+\t\t\t\t|| listen(fd, 16) < 0
+\t\t\t\t|| !wl_event_loop_add_fd(event_loop, fd, WL_EVENT_READABLE, zoneaccept, (void *)z)) {
+\t\t\tfprintf(stderr, "dwl: zone %s gets no socket at %s: %s\\n", z->zone, sa.sun_path, strerror(errno));
+\t\t\tclose(fd);
+\t\t}
+\t}
+}
+
+void
+run(char *startup_cmd)
+{
+"""),
+    ("""\tsetenv("WAYLAND_DISPLAY", socket, 1);
+""",
+     """\tsetenv("WAYLAND_DISPLAY", socket, 1);
+\t/* Kryptik: and a socket for each zone, its proxy's. */
+\tzonesockets();
+"""),
+    # The status the chrome reads names the zone the same way.
+    ("""\t\t\tprintf("%s appid %s\\n", m->wlr_output->name, client_get_appid(c));
+""",
+     """\t\t\tprintf("%s appid %s\\n", m->wlr_output->name, client_get_appid(c));
+\t\t\tprintf("%s zone %s\\n", m->wlr_output->name, clientzone(c) ? clientzone(c)->zone : "0");
+"""),
+    ("""\t\t\tprintf("%s appid \\n", m->wlr_output->name);
+""",
+     """\t\t\tprintf("%s appid \\n", m->wlr_output->name);
+\t\t\tprintf("%s zone \\n", m->wlr_output->name);
 """),
     # mapnotify: zone-coloured borders, then the band over them as four
     # strips. The surface stays below both, or a buffer larger than its

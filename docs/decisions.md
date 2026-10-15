@@ -525,27 +525,145 @@ certificate sends Windows to its BitLocker recovery key once.
 linear table in the shared command line; a shared ESP; a boot loader to
 choose between systems (ADR-014).
 
-## ADR-024 (proposed): Zones reach the compositor through sockets it filters, by proxies that run as users of their own
+## ADR-024: Zones reach the compositor through sockets it filters, by proxies that run as users of their own
 
-dwl serves each zone on a socket of its own, offers it only the globals the
-proxy allows (`wl_display_set_global_filter`), and takes a window's zone
-from the socket, not from the app_id. Each zone's `kryptik-wlproxy` runs as
-a uid of its own, outside groups `kryptik` and `seat`, under seccomp, with a
-Landlock ruleset that grants no files, in an empty network namespace,
-started by the launch daemon. Later, dwl runs as a `compositor` user and
-confines itself after start-up, with commands run by a fixed spawner. Last,
-Wayland parsing moves into the zones, and only pixels and input cross
+dwl serves each zone on a socket of its own, which takes only that zone's
+proxy uid and the session's own programs, and offers it only the globals
+the proxy allows (`wl_display_set_global_filter`). A window's zone, for its
+border, the fullscreen bar, the chrome's status and the window rules, is the
+socket its client came through, never its app_id. The launch daemon starts
+each zone's `kryptik-wlproxy` as a uid of its own, outside groups `kryptik`
+and `seat`, in empty network and IPC namespaces and a cgroup of its own
+(128M, one process), with a Landlock ruleset that leaves it its own program
+alone and a seccomp list of its own calls, which CI checks against the
+static proxy under strace. Both are built.
+
+Later, and decided on its own: dwl runs as a `compositor` user and confines
+itself after start-up, with commands run by a fixed spawner; last, Wayland
+parsing moves into the zones, and only pixels and input cross
 ([compositor separation](design/compositor-separation.md)).
 
-**Why:** today every proxy runs as the login user and connects to dwl's own
-socket, which offers screencopy, the virtual keyboard and layer-shell. A bug
-in the parser zones reach first gives a zone the whole desktop, the consent
-directory and the launch daemon, and lets it draw another zone's border.
+**Why:** a proxy running as the login user can connect to dwl's own
+socket, which offers screencopy, the virtual keyboard and layer-shell. A
+bug in the parser zones reach first then gives a zone the whole desktop,
+the consent directory and the launch daemon, and lets it draw another
+zone's border.
 
-**Cost:** changes to dwl (sockets per zone, the filter, then the sandbox
-and a spawner); the launch daemon starts proxies and the compositor; uids
-per zone; a crate shared by kryptikd and the proxy for seccomp and Landlock.
-A compromised compositor still controls what the user sees and types.
+**Cost:** changes to dwl (sockets per zone, the filter, a window's zone
+from its socket); the launch daemon starts each proxy and confines it before
+the exec; a uid per zone's proxy. A compromised compositor still controls
+what the user sees and types.
 
 **Rejected:** splitting dwl into an input process and a renderer, which
 leaves the renderer drawing the borders and every zone talking to it.
+
+## ADR-025: A USB stick is read in the zone the user gives it to, never mounted
+
+When a stick appears, the chrome names it from sysfs and asks which zone
+gets which partition, read-only unless the user says otherwise. kryptikd
+opens the partition exclusively, behind a device-mapper mapping it turns to
+errors on eject, and that zone's broker hands the zone the descriptor. A
+reader of Kryptik's own copies files in and out on the descriptor. Nothing
+mounts the stick, in zone 0 or anywhere
+([removable storage](design/removable-storage.md)).
+
+**Why:** a stick's filesystem is written by whoever had it last, and the
+kernel's filesystem drivers are shared by every zone. Read by a zone's own
+process, a hostile filesystem reaches that process; mounted, it reaches the
+kernel.
+
+**Cost:** a copy step, since a file on the stick reaches a zone's programs
+only once copied in; a reader to write and keep, FAT first and exFAT next;
+a broker verb that hands a descriptor out.
+
+**Rejected:** mounting in zone 0 and transferring, which parses the stick in
+the shared kernel and puts file picking in zone 0. FUSE in the chosen zone,
+which would let every program there browse the stick, stays out: it adds a
+kernel subsystem, and needs a decision of its own, weighed against
+`CONFIG_FUSE_FS`, if copying first proves too clumsy.
+
+## ADR-026: A camera is granted to one zone at a time, its driver loaded only for the grant
+
+The kernel builds Video for Linux and `uvcvideo` as modules, and
+`uvcvideo` never loads by a device's alias. In the chrome the user grants
+the camera to one zone at a time, as the microphone is granted. kryptikd
+loads the driver and makes the camera's node in a directory it bound into
+that zone at its start, the zone's `/dev/video0` a link there. The grant
+ends with the user's gesture, the zone's stop or the screen locking: the
+node goes, the driver unbinds from the device, so every descriptor open
+on it fails, and the module unloads; one that will not stays until the next
+grant, the grant over all the same ([camera](design/camera.md)).
+
+**Why:** a video call in a zone's browser needs a camera, and a driver
+that parses what any USB device says about itself, as `uvcvideo` does,
+should parse nothing until the user asks for a camera.
+
+**Cost:** Video for Linux and `uvcvideo` in every zone's kernel, reached
+by the granted zone through the node, and by any camera plugged in, while
+a grant lasts; a test driver (`vivid`) in the image for the check; MIPI
+cameras behind Intel's IPU6 stay unsupported.
+
+**Rejected:** a camera zone relaying frames, which needs a video pipe of
+Kryptik's and a device Firefox can open in the calling zone; loading the
+driver by alias, which hands every device's descriptors to it at plug-in.
+
+## ADR-027: No Bluetooth for 1.0; then a Bluetooth zone for a headset's audio
+
+Kryptik 1.0 builds no Bluetooth. Calls use a USB or wired headset, or a
+Bluetooth headset whose USB dongle presents itself as a USB sound card,
+all through zone 0's mixer. After 1.0, Bluetooth runs in a zone of its
+own, as ADR-021 has it, with a Kryptik kernel patch that lets that zone's
+network namespace make Bluetooth sockets and has the Bluetooth capability
+checks ask that namespace's user namespace. It carries a headset's audio
+alone, to and from the mixer as fixed-format streams, and its modules load
+only while the user has Bluetooth on in the chrome
+([Bluetooth](design/bluetooth.md)). That is the direction, not yet the
+patch: its code and the cost of rebasing it are weighed again when the work
+starts, and a free host stack on the controller's user channel takes the
+zone's place if one carries a headset's audio by then.
+
+**Why:** the kernel's Bluetooth protocols take input from anyone in radio
+range, and have had remote code execution twice (BlueBorne,
+BleedingTooth); a USB dongle gives calls a headset meanwhile with no radio
+code in the kernel at all.
+
+**Cost:** no Bluetooth headset without a dongle in 1.0. Later: a kernel
+patch rebased at every linux-hardened release, the kernel's Bluetooth code
+in every zone's kernel while Bluetooth is on, three vendors' controller
+firmware, and a device and a few control lines in the mixer.
+
+**Rejected:** bluetoothd in zone 0; a Bluetooth zone in the initial
+network namespace, which needs capabilities of the initial user namespace
+that reach past Bluetooth; a host stack in userspace on the controller's
+user channel, until a free one carries a headset's audio.
+
+## ADR-028: No input method for 1.0; then one per zone, its virtual keyboard bound to the zone
+
+Kryptik 1.0 has no input method: layouts switch and compose works, and the
+guide says CJK input is not there yet. After 1.0, each zone whose file asks
+runs its own input method, fcitx5 delivered as a software image, and is
+offered text input, the input-method protocol and a virtual keyboard by its
+proxy. dwl binds that virtual keyboard to its zone: its keys reach only a
+focused window of that zone, never the compositor's bindings, and its
+keymap only that zone's windows, and the input method's keyboard grab
+holds only while that zone has focus. The compositor's own keys come before
+any grab, so no input method sees or swallows them, and a candidate list
+is held inside its zone's window, as a zone's popups are
+([input methods](design/input-methods.md)). That is the direction, not yet
+the code: dwl's relay is weighed again when the work starts.
+
+This amends ADR-021, whose input methods were never to be offered the
+virtual keyboard.
+
+**Why:** fcitx5 sends every key it lets pass back through the virtual
+keyboard and starts without one only to do nothing, and IBus does not speak
+the input-method protocol wlroots has; a virtual keyboard bound to its zone
+can do no more than that zone's own windows can.
+
+**Cost:** a text-input and input-method relay in dwl, keyed by zone, and the
+virtual keyboard's routing; three more globals in the proxy for the zones
+that ask; fcitx5 and its engines as software images; no CJK input in 1.0.
+
+**Rejected:** one input method in zone 0 for every zone; a virtual keyboard
+as dwl has it; an input method of Kryptik's own that needs no virtual
+keyboard.
