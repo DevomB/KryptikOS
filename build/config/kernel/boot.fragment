@@ -322,8 +322,9 @@ CONFIG_SND_USB_AUDIO=m
 # alias: kryptikd loads it when the user grants the camera and unloads it
 # after. Cameras and test drivers alone, filtered as EXPERT otherwise would
 # not: no TV, radio, DVB or platform cameras. A camera's button makes no input
-# device. vivid stands in for a camera in the zones suite, which alone loads
-# it, without its framebuffer, which would build framebuffer helpers in.
+# device. vivid stands in for a camera in the zones and desktop suites, which
+# alone load it, without its framebuffer, which would build framebuffer
+# helpers in.
 CONFIG_MEDIA_SUPPORT=m
 CONFIG_MEDIA_SUPPORT_FILTER=y
 CONFIG_MEDIA_CAMERA_SUPPORT=y
