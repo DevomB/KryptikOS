@@ -23,8 +23,9 @@ const MEMORY_MAX: &str = "128M";
 /// Clients one proxy serves at once.
 const MAX_CLIENTS: &str = "32";
 /// Its descriptors: 32 clients' sockets and queued descriptors (wlproxy's FDS_PER_SESSION, 130
-/// each) and its own few, so it cannot hold its zone's dwl socket open thousands of times.
-const NOFILE: libc::rlim_t = 32 * 130 + 40;
+/// each), its own few and its copy of each pool the zone may hold (MAX_SHM_POOLS_PER_ZONE, 256),
+/// so it cannot hold its zone's dwl socket open thousands of times.
+const NOFILE: libc::rlim_t = 32 * 130 + 40 + 256;
 
 /// The proxy's uid and gid for a zone whose root maps to `uid_base`: the top of its block, which
 /// no zone maps (a zone maps 0 and 65534 of its block, the nic zone 100 and 101 too).
