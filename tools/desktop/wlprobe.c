@@ -795,6 +795,8 @@ int main(int argc, char **argv)
 		/* Every one bound, then a sync: what they say comes before its answer. */
 		unsigned char b[128];
 		outputs = 1;
+		/* The first new id is 4, after the registry and its sync: one that skips is refused. */
+		next_id = COMPOSITOR;
 		out_first = next_id;
 		for (int i = 0; i < nglobals; i++) {
 			if (strcmp(globals[i].iface, "wl_output")) continue;

@@ -185,7 +185,7 @@ done
 
 # ----------------------------------------------------------------- step 3 --
 step "step 3: the screenshots show every window framed on all four sides"
-check_shot() {   # check_shot FILE WHAT ZONE:focused|unfocused|fullscreen...
+check_shot() {   # check_shot FILE WHAT ZONE:focused|unfocused[@SCALE]|fullscreen...
 local shot="$1" what="$2" verdict
 local good="every window is framed in its zone's colour, at its width, on all four sides" bad="a window's frame or bar is missing or wrong"
 shift 2
@@ -313,6 +313,11 @@ for spec in want:
     text = None
     if state.startswith("fullscreen="):
         state, text = state.split("=", 1)
+    # ZONE:focused@2: on an output at scale 2, where dwl's frame is twice as wide in pixels.
+    k = 1
+    if "@" in state:
+        state, k = state.split("@")
+        k = int(k)
     col = named[zone]
     box, sides = frame(col)
     if box is None:
@@ -333,15 +338,15 @@ for spec in want:
                 print("    " + "".join("#" if at(x, y) == ink else "." if at(x, y) == col else "?" for x in range(min(w, 150))))
         ok = ok and good
         continue
-    expect = bw if state == "focused" else bw - band
+    expect = (bw if state == "focused" else bw - band) * k
     good = all(v == expect for v in sides.values())
     if state == "unfocused" and good:
         # The band, in the root colour, lies just inside each side.
         x0, y0, x1, y1 = box
         xm, ym = (x0 + x1) // 2, (y0 + y1) // 2
         good = min(run(xm, y0 + expect, 0, 1, root), run(xm, y1 - expect, 0, -1, root),
-                   run(x0 + expect, ym, 1, 0, root), run(x1 - expect, ym, -1, 0, root)) >= band
-    extra = f" + {band} band" if state == "unfocused" else ""
+                   run(x0 + expect, ym, 1, 0, root), run(x1 - expect, ym, -1, 0, root)) >= band * k
+    extra = f" + {band * k} band" if state == "unfocused" else ""
     print(f"  {zone} ({state}): frame {box[0]},{box[1]}-{box[2]},{box[3]}: top {sides['top']} bottom {sides['bottom']}"
           f" left {sides['left']} right {sides['right']} px, want {expect}{extra}{'' if good else '  <- WRONG'}")
     ok = ok and good
@@ -363,7 +368,7 @@ check_shot "$SHOT_NOMARKS" "fullscreen, both taken back and a record the mixer d
 # borders must stay above the surface, or its excess covers them.
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused
 # The second monitor's own picture: the zone's window alone on it.
-check_shot "$SHOT_HEAD" "second head" untrusted:focused
+check_shot "$SHOT_HEAD" "second head, at scale 2" untrusted:focused@2
 # wlprobe popup draws a cyan popup from its window's centre, larger than the
 # screen, that may be neither moved nor resized: it must show only inside the
 # window, which keeps its whole frame, and zone 0's window keeps the keyboard.
