@@ -11,8 +11,10 @@ s_sound() {
     install -d -m 0755 /usr/libexec/kryptik /usr/lib/alsa-lib /usr/etc/alsa/conf.d
     # shellcheck disable=SC2086
     gcc ${CFLAGS} ${LDFLAGS} -o /usr/libexec/kryptik/kryptik-sound "$d/kryptik-sound.c" -lasound
+    # PIC as libtool defines it for alsa-lib's own plugins: without it, the plugin macro registers
+    # the plugin with snd_dlsym_start, which only a static alsa-lib has.
     # shellcheck disable=SC2086
-    gcc ${CFLAGS} -fPIC ${LDFLAGS} -shared -o /usr/lib/alsa-lib/libasound_module_pcm_kryptik.so "$d/pcm_kryptik.c" -lasound
+    gcc ${CFLAGS} -fPIC -DPIC ${LDFLAGS} -shared -o /usr/lib/alsa-lib/libasound_module_pcm_kryptik.so "$d/pcm_kryptik.c" -lasound
     # shellcheck disable=SC2086
     gcc ${CFLAGS} ${LDFLAGS} -o /usr/libexec/kryptik/soundprobe "$d/soundprobe.c" -lasound -lm
     chmod 0755 /usr/libexec/kryptik/kryptik-sound /usr/libexec/kryptik/soundprobe \
