@@ -366,6 +366,8 @@ out="$(asroot refused verify_manifest "$T/signed" 0)"
 # A software image the manifest lists is pinned as the root's files are: what stage_images
 # decompresses after the check is the file that was hashed, whatever the directory holds by then.
 # Three of them, as a release carries: with the update lock on fd 9, the third pin must not reopen 9.
+# The call's output is redirected, so bash holds its own copy of it on 10 meanwhile, close-on-exec:
+# a pin there would be one stat and zstd cannot read.
 mkpayload pinned 2
 for i in browser probe toolkit; do printf 'the signed %s\n' "$i" | zstd -q -c > "pinned/$i.img.zst"; done
 { sed -n '1,/^--$/p' pinned/manifest | sed 's/^files: 4$/files: 7/'
