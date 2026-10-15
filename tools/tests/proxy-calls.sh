@@ -86,7 +86,8 @@ args="$(grep -E '^socket\(' "$T/lines" | grep -v '^socket(AF_UNIX,'
         grep -E '^(mmap|mprotect)\(.*PROT_EXEC' "$T/lines")"
 if [[ -n "$missing" || -n "$args" ]]; then
     [[ -n "$missing" ]] && echo "made by the proxy and missing from PROXY_ALLOWLIST: $(tr '\n' ' ' <<<"$missing")"
-    # Where each first came from: the run's exec line, whose arguments name the test, and the
+    # Where each was made, in the first proxy run's trace (by file name) that has it: that run's
+    # exec line, whose arguments tell the daemon's start and a few of the tests apart, and the
     # three calls before it.
     for c in $missing; do
         awk -v c="$c" 'FNR == 1 { on = 0; n = 0 }
