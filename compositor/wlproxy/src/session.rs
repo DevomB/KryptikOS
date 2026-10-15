@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 use crate::clipboard::{Action, Clipboard, Selection};
 use crate::policy;
@@ -333,6 +333,49 @@ struct Pool {
     buffers: usize,
     deleted: bool,
     held: usize,
+    /// The proxy's own copy of the pool's descriptor, to free its pages once it is gone.
+    fd: OwnedFd,
+}
+
+/* A page dwl reads before the client wrote it is allocated by dwl's fault and charged to dwl,
+ * and a client that keeps its descriptor keeps the page after the pool is gone. Punching the
+ * pool's range then frees it, so what dwl holds for a zone stays within the zone's live pools
+ * (docs/design/resource-limits-and-ephemeral-zones.md). */
+const TMPFS_MAGIC: u64 = 0x0102_1994;
+
+/// A copy of a pool's descriptor the proxy can punch once the pool is gone: shared memory, open
+/// for writing, not sealed against writes, and sealed so no such seal comes later.
+fn pool_fd(fd: &OwnedFd) -> Result<OwnedFd, SessionError> {
+    let raw = fd.as_raw_fd();
+    // SAFETY: fcntl and fstatfs on a descriptor borrowed for the call, into a zeroed statfs.
+    unsafe {
+        if libc::fcntl(raw, libc::F_GETFL) & libc::O_ACCMODE != libc::O_RDWR {
+            return Err(SessionError::Forbidden("a wl_shm pool not open for reading and writing"));
+        }
+        let mut st: libc::statfs = std::mem::zeroed();
+        if libc::fstatfs(raw, &mut st) != 0 || st.f_type as u64 != TMPFS_MAGIC {
+            return Err(SessionError::Forbidden("a wl_shm pool that is not shared memory"));
+        }
+        let seals = libc::fcntl(raw, libc::F_GET_SEALS);
+        if seals > 0 && seals & (libc::F_SEAL_WRITE | libc::F_SEAL_FUTURE_WRITE) != 0 {
+            return Err(SessionError::Forbidden("a wl_shm pool sealed against writes"));
+        }
+        // Fails where sealing is closed already, as it is for a file that is not a memfd.
+        libc::fcntl(raw, libc::F_ADD_SEALS, libc::F_SEAL_SEAL);
+        let copy = libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 0);
+        if copy < 0 {
+            return Err(SessionError::Io(io::Error::last_os_error()));
+        }
+        Ok(OwnedFd::from_raw_fd(copy))
+    }
+}
+
+/// Free a gone pool's pages, dwl's faults among them; the client's file keeps its size.
+pub fn punch(fd: &OwnedFd, size: usize) {
+    // SAFETY: fallocate on a descriptor the proxy owns.
+    unsafe {
+        libc::fallocate(fd.as_raw_fd(), libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE, 0, size as libc::off_t);
+    }
 }
 
 /// The pools a wl_surface may hold in the compositor: the last one it committed, and each one a
@@ -480,9 +523,20 @@ impl Session {
     fn release_pool_if_unused(&mut self, generation: u64) {
         if self.pools.get(&generation).is_some_and(|p| p.deleted && p.buffers == 0 && p.held == 0) {
             let pool = self.pools.remove(&generation).unwrap();
+            punch(&pool.fd, pool.size);
             self.shm_pool_bytes -= pool.size;
             self.shm_pool_count -= 1;
         }
+    }
+
+    /// The pools of a connection that ended, which dwl lets go of once it reads the hang-up: the
+    /// main loop punches them a little later, and charges them to the zone until then.
+    pub fn take_pools(&mut self) -> Vec<(OwnedFd, usize)> {
+        self.pool_ids.clear();
+        self.buffer_pools.clear();
+        self.shm_pool_bytes = 0;
+        self.shm_pool_count = 0;
+        self.pools.drain().map(|(_, p)| (p.fd, p.size)).collect()
     }
 
     fn unhold(&mut self, generation: u64) {
@@ -816,13 +870,14 @@ impl Session {
                             || self.shm_pool_bytes + size as usize > policy::MAX_SHM_BYTES_PER_SESSION {
                             return Err(SessionError::ResourceLimit("wl_shm pool budget in one session"));
                         }
+                        let fd = pool_fd(fds.first().ok_or(SessionError::Wire(WireError::ArgOverrun))?)?;
                         /* A destroyed pool may still back buffers; the generation keeps
                          * them apart from a new pool on the same object id. */
                         self.next_pool += 1;
                         self.shm_pool_count += 1;
                         self.shm_pool_bytes += size as usize;
                         self.pool_ids.insert(id, self.next_pool);
-                        self.pools.insert(self.next_pool, Pool { size: size as usize, buffers: 0, deleted: false, held: 0 });
+                        self.pools.insert(self.next_pool, Pool { size: size as usize, buffers: 0, deleted: false, held: 0, fd });
                     }
                     if iface.name == "wl_shm_pool" && m.name == "resize" {
                         let mut r = ArgReader::new(&msg[HEADER_LEN..]);

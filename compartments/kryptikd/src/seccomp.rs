@@ -756,6 +756,8 @@ pub const PROXY_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_read, libc::SYS_write, libc::SYS_pipe2, libc::SYS_fcntl, libc::SYS_ioctl, libc::SYS_close,
     // A HashMap's keys, the clock where the vDSO gives none, its own uid for a gesture's peer.
     libc::SYS_getrandom, libc::SYS_clock_gettime, libc::SYS_geteuid,
+    // A wl_shm pool's kind, and its pages freed once it is gone (session.rs: pool_fd, punch).
+    libc::SYS_fstatfs, libc::SYS_fallocate,
 ];
 
 const FIONBIO: u32 = 0x5421;

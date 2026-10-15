@@ -269,7 +269,7 @@ fn toplevel_limit_and_reclaim() {
 fn shm_pool_limits() {
     let (mut s, mut c, mut sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
-    let (fd, _) = UnixStream::pair().unwrap();
+    let fd = shm();
     let create = |id, size| MessageWriter::new(3, 0).u32(id).i32(size).finish().unwrap();
     send_with_fd(c.as_raw_fd(), &create(4, policy::MAX_SHM_POOL_BYTES as i32), fd.as_raw_fd());
     pump_all(&mut s).unwrap();
@@ -314,7 +314,7 @@ fn a_browser_on_two_4k_heads_fits() {
     // three spare, and GTK holds two more for the window: two 4K windows and developer tools.
     let (mut s, mut c, mut sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
-    let (fd, _) = UnixStream::pair().unwrap();
+    let fd = shm();
     let frame = 3840 * 2160 * 4;
     for id in 4..4 + 3 * 7 {
         send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(id).i32(frame).finish().unwrap(), fd.as_raw_fd());
@@ -334,7 +334,7 @@ fn a_browser_on_two_4k_heads_fits() {
 fn pool_budget_follows_buffers() {
     let (mut s, mut c, mut sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
-    let (fd, _) = UnixStream::pair().unwrap();
+    let fd = shm();
     let create = |id| MessageWriter::new(3, 0).u32(id).i32(4096).finish().unwrap();
     send_with_fd(c.as_raw_fd(), &create(4), fd.as_raw_fd());
     c.write_all(&MessageWriter::new(4, 0).u32(5).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
@@ -354,6 +354,70 @@ fn pool_budget_follows_buffers() {
     assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (1, 4096));
 }
 
+#[test]
+fn a_gone_pool_is_punched() {
+    // Its pages go once the pool and its buffer are gone, whoever faulted them; the file stays.
+    let (mut s, mut c, mut sv) = make();
+    s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+    let fd = shm();
+    let data = [0x5au8; 16384];
+    assert_eq!(unsafe { libc::pwrite(fd.as_raw_fd(), data.as_ptr().cast(), data.len(), 0) }, 16384);
+    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(4).i32(16384).finish().unwrap(), fd.as_raw_fd());
+    c.write_all(&MessageWriter::new(4, 0).u32(5).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
+    c.write_all(&MessageWriter::new(5, 0).finish().unwrap()).unwrap(); // the buffer's destroy
+    c.write_all(&MessageWriter::new(4, 1).finish().unwrap()).unwrap(); // the pool's destroy
+    pump_all(&mut s).unwrap();
+    assert_eq!(data_at(&fd), 0, "kept while the compositor may still hold the pool");
+    delete_ids(&mut sv, &[5, 4]);
+    pump_all(&mut s).unwrap();
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
+    assert_eq!(data_at(&fd), -1, "no page left once the pool and its buffer are gone");
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::fstat(fd.as_raw_fd(), &mut st) }, 0);
+    assert_eq!(st.st_size, 16384, "the client's file keeps its size");
+}
+
+#[test]
+fn a_pool_the_proxy_could_not_punch_is_refused() {
+    let take = |fd: RawFd| {
+        let (mut s, c, _sv) = make();
+        s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+        send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap(), fd);
+        pump_all(&mut s)
+    };
+    let (sock, _peer) = UnixStream::pair().unwrap();
+    assert!(matches!(take(sock.as_raw_fd()), Err(SessionError::Forbidden(_))), "not shared memory");
+    let m = shm();
+    let path = std::ffi::CString::new(format!("/proc/self/fd/{}", m.as_raw_fd())).unwrap();
+    let ro = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    assert!(ro >= 0);
+    let ro = unsafe { OwnedFd::from_raw_fd(ro) };
+    assert!(matches!(take(ro.as_raw_fd()), Err(SessionError::Forbidden(_))), "read-only");
+    let sealed = shm();
+    assert_eq!(unsafe { libc::fcntl(sealed.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_WRITE) }, 0);
+    assert!(matches!(take(sealed.as_raw_fd()), Err(SessionError::Forbidden(_))), "write-sealed");
+    // Taken, a pool can no longer be sealed against the punch.
+    let ok = shm();
+    assert!(take(ok.as_raw_fd()).is_ok());
+    assert_eq!(unsafe { libc::fcntl(ok.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_WRITE) }, -1);
+}
+
+#[test]
+fn an_ended_session_hands_its_pools_over() {
+    let (mut s, c, _sv) = make();
+    s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+    let fd = shm();
+    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap(), fd.as_raw_fd());
+    pump_all(&mut s).unwrap();
+    let pools = s.take_pools();
+    assert_eq!(pools.len(), 1);
+    assert_eq!(pools[0].1, 4096);
+    assert_eq!((s.shm_pool_count, s.shm_pool_bytes), (0, 0));
+    assert_eq!(unsafe { libc::pwrite(fd.as_raw_fd(), b"x".as_ptr().cast(), 1, 0) }, 1);
+    punch(&pools[0].0, pools[0].1);
+    assert_eq!(data_at(&fd), -1);
+}
+
 fn delete_ids(sv: &mut UnixStream, ids: &[u32]) {
     for id in ids {
         sv.write_all(&MessageWriter::new(1, WL_DISPLAY_DELETE_ID).u32(*id).finish().unwrap()).unwrap();
@@ -366,7 +430,7 @@ fn committed_buffer_keeps_its_pool_charged() {
     let (mut s, mut c, mut sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
     s.objects.place(8, (protocol::find("wl_compositor").unwrap(), 4));
-    let (fd, _) = UnixStream::pair().unwrap();
+    let fd = shm();
     c.write_all(&MessageWriter::new(8, 0).u32(9).finish().unwrap()).unwrap(); // create_surface -> 9
     send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap(), fd.as_raw_fd());
     c.write_all(&MessageWriter::new(4, 0).u32(5).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
@@ -406,7 +470,7 @@ fn with_subsurfaces(nested: bool) -> (Session, UnixStream, UnixStream) {
 
 /// Each (pool, buffer) made, attached and committed on `surface`, then deleted.
 fn commit_pools(s: &mut Session, c: &mut UnixStream, sv: &mut UnixStream, surface: u32, ids: &[(u32, u32)]) {
-    let (fd, _) = UnixStream::pair().unwrap();
+    let fd = shm();
     for &(pool, buf) in ids {
         send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(pool).i32(4096).finish().unwrap(), fd.as_raw_fd());
         c.write_all(&MessageWriter::new(pool, 0).u32(buf).i32(0).i32(16).i32(16).i32(64).u32(1).finish().unwrap()).unwrap();
@@ -694,25 +758,23 @@ fn batches_small_messages() {
 fn descriptors_ride_with_their_message() {
     let (mut s, mut c, sv) = with_shm();
     // wl_shm.create_pool(new_id pool, fd, size): send bytes and one fd together
-    let (probe_a, probe_b) = UnixStream::pair().unwrap();
+    let probe = shm();
     let msg = MessageWriter::new(3, 0).u32(4).i32(4096).finish().unwrap();
-    send_with_fd(c.as_raw_fd(), &msg, probe_a.as_raw_fd());
+    send_with_fd(c.as_raw_fd(), &msg, probe.as_raw_fd());
     pump_all(&mut s).unwrap();
     assert!(s.has_object(4), "the pool object is tracked");
     let (bytes, fds) = recv_with_fds(sv.as_raw_fd());
     assert_eq!(bytes, msg);
     assert_eq!(fds.len(), 1, "exactly one descriptor arrived with create_pool");
-    // the descriptor is the same open file: write on it, read on probe_b
-    let mut f = unsafe { <UnixStream as std::os::unix::io::FromRawFd>::from_raw_fd(fds[0]) };
+    // the descriptor is the same open file: write on it, read on the client's
+    let mut f = unsafe { std::fs::File::from_raw_fd(fds[0]) };
     f.write_all(b"same file").unwrap();
-    let mut probe_b = probe_b;
-    probe_b.set_nonblocking(true).unwrap();
     let mut buf = [0u8; 16];
-    let n = probe_b.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"same file");
+    let n = unsafe { libc::pread(probe.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), 0) };
+    assert_eq!(&buf[..n as usize], b"same file");
     // An fd sent with wl_shm.release, which takes none, goes with the next create_pool.
-    let (extra_a, _extra_b) = UnixStream::pair().unwrap();
-    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 1).finish().unwrap(), extra_a.as_raw_fd());
+    let extra = shm();
+    send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 1).finish().unwrap(), extra.as_raw_fd());
     c.write_all(&MessageWriter::new(3, 0).u32(5).i32(8192).finish().unwrap()).unwrap();
     pump_all(&mut s).unwrap();
     let (bytes, fds) = recv_with_fds(sv.as_raw_fd());
@@ -731,7 +793,7 @@ fn message_waits_for_descriptor() {
     assert!(!s.has_object(4));
     assert!(read_all(&mut sv).is_empty());
     // the rest arrives with the fd (SCM_RIGHTS needs data): now it goes
-    let (a, _b) = UnixStream::pair().unwrap();
+    let a = shm();
     send_with_fd(c.as_raw_fd(), &msg[12..], a.as_raw_fd());
     pump_all(&mut s).unwrap();
     assert!(s.has_object(4));
@@ -1123,6 +1185,16 @@ fn a_selection_must_be_a_source() {
 // --- helpers --------------------------------------------------------------
 fn send_with_fd(sock: RawFd, bytes: &[u8], fd: RawFd) {
     send_with_fds(sock, bytes, &[fd]);
+}
+/// A memfd, as a client's pool is.
+fn shm() -> OwnedFd {
+    let fd = unsafe { libc::memfd_create(c"pool".as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+    assert!(fd >= 0, "memfd_create: {}", io::Error::last_os_error());
+    unsafe { OwnedFd::from_raw_fd(fd) }
+}
+/// Where the file's first page with data is, or -1 with none.
+fn data_at(fd: &OwnedFd) -> i64 {
+    unsafe { libc::lseek(fd.as_raw_fd(), 0, libc::SEEK_DATA) as i64 }
 }
 fn send_with_fds(sock: RawFd, bytes: &[u8], fds: &[RawFd]) {
     assert!(!bytes.is_empty(), "SCM_RIGHTS needs at least one byte of data");
