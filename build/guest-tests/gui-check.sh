@@ -14,6 +14,8 @@
 #   GT KEY-PARENT-FULLSCREEN, GT KEY-LATE-FULLSCREEN press Alt+e
 #   GT KEY-MENU                                     press Alt+p (the chrome menu)
 #   GT KEY-FOCUS-NAMED 1..3, back-1..back-3         press Alt+j, then Alt+k
+#   GT KEY-VIEW-VAULT, GT KEY-FOCUS-VAULT,
+#   GT KEY-VAULT-BACK                               press Alt+9, Alt+j, Alt+1
 #   GT KEY-FOCUS-CLIP 1..4, GT KEY-FOCUS-CLIP-PERSONAL  press Alt+j
 #   GT KEY-FOCUS-MOVE 1..4, GT KEY-FOCUS-MOVED 1..4     press Alt+j
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
@@ -776,10 +778,10 @@ launch personal "havoc" > "$LOG/launch-havoc-personal.out" 2>&1
 echo "GT KEY-FOCUS-PERSONAL"
 wait_for 20 grep -q '^zone=personal' "$RT/kryptik/focus" && pass "second-zone-window" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "second-zone-window" "$(cat "$LOG/launch-havoc-personal.out" | tr '\n' ' '); $(zone_why personal)"
 # A window is the zone's whose socket its client came through, whatever app_id it
-# claims: a client of personal's socket calling itself one of untrusted's is personal's,
-# and given the keyboard, the chrome names it personal. Not vault's: dwl keeps an app_id
-# under kryptik.vault. on the vault's tag (dwl-config.h), out of sight.
-as_user "WLPROBE_APP_ID=kryptik.untrusted.forged WAYLAND_DISPLAY=/run/kryptik-compositor/$UID_/personal /usr/libexec/kryptik/wlprobe oversize 0 40 socket-named" > "$LOG/socket-named.out" 2>&1 &
+# claims: a client of personal's socket calling itself the vault's is personal's, stays
+# on the tag in view rather than the vault's, and given the keyboard, the chrome names
+# it personal.
+as_user "WLPROBE_APP_ID=kryptik.vault.forged WAYLAND_DISPLAY=/run/kryptik-compositor/$UID_/personal /usr/libexec/kryptik/wlprobe oversize 0 40 socket-named" > "$LOG/socket-named.out" 2>&1 &
 named_pid=$!
 named_drawn() { grep -q 'committed ' "$LOG/socket-named.out"; }
 wait_for 15 named_drawn
@@ -797,6 +799,27 @@ else
     fail "zone-socket-names-window" "focus with the probe's title: ${named:-never}; now: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); the probe: $(tail -3 "$LOG/socket-named.out" | tr '\n' ' ')"
 fi
 wait "$named_pid" 2>/dev/null
+# And the vault's socket keeps its windows on the vault's tag whatever they claim: a client
+# of it calling itself personal's maps out of view; Alt+9 shows that tag, Alt+j gives the
+# window the keyboard, named the vault's, and Alt+1 comes back.
+as_user "WLPROBE_APP_ID=kryptik.personal.forged WAYLAND_DISPLAY=/run/kryptik-compositor/$UID_/vault /usr/libexec/kryptik/wlprobe oversize 0 25 vault-placed" > "$LOG/vault-placed.out" 2>&1 &
+vault_pid=$!
+vault_drawn() { grep -q 'committed ' "$LOG/vault-placed.out"; }
+wait_for 15 vault_drawn
+in_view="$(tr '\n' ' ' < "$RT/kryptik/focus")"
+echo "GT KEY-VIEW-VAULT"
+sleep 2
+echo "GT KEY-FOCUS-VAULT"
+sleep 2
+placed="$(tr '\n' ' ' < "$RT/kryptik/focus")"
+echo "GT KEY-VAULT-BACK"
+sleep 2
+if [[ "$in_view" != *"title=vault-placed "* && "$placed" == *"zone=vault "* && "$placed" == *"title=vault-placed "* ]]; then
+    pass "vault-tag-by-socket" "on tag 9: $placed"
+else
+    fail "vault-tag-by-socket" "before Alt+9: $in_view; after Alt+9 and Alt+j: ${placed:-nothing}; the probe: $(tail -3 "$LOG/vault-placed.out" | tr '\n' ' ')"
+fi
+wait "$vault_pid" 2>/dev/null
 # --- zone 0 runs no user application (ADR-003) ------------------------------
 ppid_of() { awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null; }
 lineage=" $$ "; p="$(ppid_of "$$")"
