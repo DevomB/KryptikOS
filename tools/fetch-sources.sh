@@ -180,7 +180,25 @@ mkdir -p "$KRYPTIK_SOURCES"
 # versions.env: a mirror is no build input, and that file keys stage 04's cache.
 MIRROR_DISTFILES="${MIRROR_DISTFILES-https://distfiles.gentoo.org/distfiles}"
 
-# fetch_one URL DEST: try each mirror in order.
+# The mirrors of a source its own host alone serves (tools/source-mirrors.tsv): upstream's file, so
+# the lock decides as it does for the first URL.
+MIRRORS="$(dirname "${BASH_SOURCE[0]}")/source-mirrors.tsv"
+if [[ -n "${KRYPTIK_FETCH_MIRRORS:-}" ]]; then
+    [[ "${KRYPTIK_FETCH_SELFTEST:-0}" == "1" ]] \
+        || die "Refusing a substituted mirror list without KRYPTIK_FETCH_SELFTEST=1"
+    MIRRORS="$KRYPTIK_FETCH_MIRRORS"
+fi
+
+# mirrors_of NAME VER: NAME's mirrors, VER in place of {VER}.
+mirrors_of() {
+    local u
+    [[ -n "$1" && -f "$MIRRORS" ]] || return 0
+    while read -r u; do
+        printf '%s\n' "${u//"{VER}"/"$2"}"
+    done < <(awk -v n="$1" '$1 == n { print $2 }' "$MIRRORS")
+}
+
+# fetch_one URL DEST [NAME VER]: try each mirror in order.
 fetch_one() {
     local url="$1" dest="$2"
     local -a urls=("$url")
@@ -189,6 +207,9 @@ fetch_one() {
     if [[ -n "${MIRROR_GNU_FALLBACK:-}" && "$url" == "${MIRROR_GNU}/"* ]]; then
         urls+=("${MIRROR_GNU_FALLBACK}/${url#"${MIRROR_GNU}/"}")
     fi
+    # Then the source's own, where its host alone serves it.
+    local m
+    while read -r m; do urls+=("$m"); done < <(mirrors_of "${3:-}" "${4:-}")
     # Every source has a last one: Gentoo's distfiles keep upstream's own files under a directory
     # named by the BLAKE2b of the file's name, and the lock holds the hash wherever the bytes came
     # from. www.freedesktop.org answers scripts with 418, which leaves libevdev's tarball there alone.
@@ -257,7 +278,7 @@ while IFS='|' read -r name ver url _; do
         cached=$((cached + 1))
     else
         log "fetching ${name} ${ver}"
-        if ! fetch_one "$url" "$dest"; then
+        if ! fetch_one "$url" "$dest" "$name" "$ver"; then
             die "download failed: ${name} ${ver} (every mirror tried). Re-run to resume."
         fi
         fetched=$((fetched + 1))
