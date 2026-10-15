@@ -78,7 +78,6 @@ done
 Refusing to start. Every tool this installer needs has to exist before it
 touches a disk, not at the moment it is first called."
 
-# part_dev DISK N: nvme0n1 -> nvme0n1p2, vdb -> vdb2.
 # Only a table the kernel reads whole (BLKRRPART) gives each partition its name (PARTNAME),
 # which kryptik_named looks up. Partitions added one at a time, as partx adds them and as sfdisk
 # does when its own re-read finds the disk busy, carry none. udev's probe of the new table keeps
@@ -92,6 +91,7 @@ reread_table() {   # DISK
     done
 }
 
+# part_dev DISK N: nvme0n1 -> nvme0n1p2, vdb -> vdb2.
 part_dev() {
     case "$1" in
         *[0-9]) printf "%sp%s" "$1" "$2" ;;
