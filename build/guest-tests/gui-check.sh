@@ -901,15 +901,19 @@ else
     fail "move-in-no-log" "proxy lines: $(grep -h 'move' "$PROXIES/untrusted.log" 2>/dev/null | tail -2 | tr '\n' ' '); holding the text: $(grep -rlsF moved4471 "$RT/kryptik" "$PROXIES" /run/uncaught-logs | tr '\n' ' ')"
 fi
 # The gesture's socket answers the session's user alone: root, past the socket's 0600, is
-# refused as any other uid would be.
+# refused as any other uid would be. The proxy writes the refusal and closes without reading,
+# so the request may meet a closed socket; the refusal is read all the same.
 door="$PROXIES/untrusted.control"
 refusal="$(python3 - "$door" 2>&1 <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX)
 s.settimeout(5)
 s.connect(sys.argv[1])
-s.sendall(b"take\n")
-s.shutdown(socket.SHUT_WR)
+try:
+    s.sendall(b"take\n")
+    s.shutdown(socket.SHUT_WR)
+except (BrokenPipeError, ConnectionResetError):
+    pass
 print(s.recv(200).decode(errors="replace").strip())
 PY
 )"
