@@ -153,7 +153,8 @@ verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
     pin 3 kryptik-root.img.zst; pin 4 kryptik-a.efi; pin 5 kryptik-b.efi; pin 6 root.json
     # And each software image it lists, so the bytes hashed below are those stage_images
     # decompresses. A name with a directory in it is refused below, before anything is read.
-    PINNED=""; fd=7
+    # From 10 up: 3-6 hold the root's files and 9 the update lock, which a reopen would release.
+    PINNED=""; fd=10
     for n in $(sed -n '/^--$/,$p' "$m" | sed '1d' | awk '$3 ~ /\.img\.zst$/ && $3 != "kryptik-root.img.zst" { print $3 }'); do
         case "$n" in */*|..*) continue ;; esac
         pin "$fd" "$n"

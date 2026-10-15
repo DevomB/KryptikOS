@@ -255,8 +255,9 @@ up ADR-001 in the zones where the applications run.
   not already need. Before the installer writes anything, `kryptikd
   check-images` checks the list as a kept one is checked, its signature as
   nobody on a copy, for the root the signed command line names, and finds
-  every image it names there at the size it signs; each image's hash is
-  checked as it is copied, as an update's are.
+  every image it names there at the size it signs, and hands on the list
+  and signature it checked, which are what the installer keeps; each
+  image's hash is checked as it is copied, as an update's are.
 - **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
   the list for each root as `<base>.manifest` and `.manifest.sig`, root
   only. Zone 0 keeps the lists of the roots in the two slots and the images

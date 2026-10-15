@@ -313,12 +313,18 @@ fn signed(text: &[u8], sig: &[u8]) -> Result<(), String> {
 /// A medium's images.manifest and images.manifest.sig in `dir`, checked as the installer has them
 /// before it writes anything: signed as an image list, read as a kept list is, for the root `base`
 /// it installs, and naming only images `dir` holds as NAME.img at the size the list signs. Each
-/// image's hash is checked as it is copied (image-store.sh).
-pub fn check_medium(dir: &Path, base: &str) -> Result<String, String> {
-    check_medium_with(dir, base, &signed)
+/// image's hash is checked as it is copied (image-store.sh). With `out`, the very bytes checked are
+/// written there for the installer to keep: a medium read a second time could answer otherwise.
+pub fn check_medium(dir: &Path, base: &str, out: Option<&Path>) -> Result<String, String> {
+    check_medium_with(dir, base, out, &signed)
 }
 
-fn check_medium_with(dir: &Path, base: &str, check: &dyn Fn(&[u8], &[u8]) -> Result<(), String>) -> Result<String, String> {
+fn check_medium_with(
+    dir: &Path,
+    base: &str,
+    out: Option<&Path>,
+    check: &dyn Fn(&[u8], &[u8]) -> Result<(), String>,
+) -> Result<String, String> {
     let text = read_bounded(&dir.join("images.manifest"), LIST_MAX)?;
     let sig = read_bounded(&dir.join("images.manifest.sig"), SIG_MAX)?;
     check(&text, &sig).map_err(|e| format!("the medium's image list is refused: {e}"))?;
@@ -332,6 +338,11 @@ fn check_medium_with(dir: &Path, base: &str, check: &dyn Fn(&[u8], &[u8]) -> Res
         if !md.is_file() || md.len() != img.bytes {
             return Err(format!("image {}: {} holds {} bytes, and the list signs {}", img.name, file.display(), md.len(), img.bytes));
         }
+    }
+    if let Some(out) = out {
+        crate::files::write_atomic(&out.join("images.manifest"), &[&text[..]], 0o600, None)
+            .and_then(|_| crate::files::write_atomic(&out.join("images.manifest.sig"), &[&sig[..]], 0o600, None))
+            .map_err(|e| format!("{}: {e}", out.display()))?;
     }
     Ok(format!("{} images of release {} for this root\n", m.images.len(), m.release))
 }
