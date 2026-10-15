@@ -37,6 +37,9 @@ PASS=0; FAIL=0
 pass() { echo "GT PASS $1${2:+ - $2}"; PASS=$((PASS + 1)); }
 fail() { echo "GT FAIL $1${2:+ - $2}"; FAIL=$((FAIL + 1)); }
 info() { echo "GT INFO $*"; }
+# The kernel's log, from /dev/kmsg itself: neither the clock's zone nor anything else in /etc,
+# which dmesg and date may read, is needed for it.
+kmsg() { dd if=/dev/kmsg iflag=nonblock bs=8192 status=none 2>/dev/null | sed 's/^[^;]*;//'; }
 as_user() { su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 $*"; }
 wait_for() {   # wait_for SECONDS CMD...
     local n="$1"; shift
@@ -106,7 +109,7 @@ stuck_report() {
     for f in /sys/power/suspend_stats/{last_failed_step,last_failed_errno,fail,failed_freeze}; do
         [[ -r "$f" ]] && info "${f#/sys/power/}: $(tr '\n' ' ' < "$f")"
     done
-    dmesg 2>/dev/null | tail -n 40 | sed 's/^/GT INFO dmesg: /'
+    kmsg | tail -n 40 | sed 's/^/GT INFO kernel: /'
 }
 boot_id="$(< /proc/sys/kernel/random/boot_id)"
 
@@ -287,9 +290,9 @@ echo "GT KEY-LOCK 2"
 wait_for 30 more locked "$locked0" || fail "locked-again" "$(grep '^kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
 echo "GT SLEEPING 2"
 # Root's way to the same sleep: the session's lock asks the daemon, which forks the same write.
-t0="$(date +%s)"
+t0=$SECONDS
 "$KD" suspend > "$OUT/sleep2.out" 2>&1
-info "the sleep was answered after $(( $(date +%s) - t0 )) s; the kernel's log of it: $(dmesg 2>/dev/null | grep -E 'PM: |Freezing|freez|Filesystems sync|Restarting' | tail -n 8 | tr '\n' '|')"
+info "the sleep was answered after $(( SECONDS - t0 )) s; the kernel's log of it: $(kmsg | grep -E 'PM: |Freezing|freez|Filesystems sync|Restarting' | tail -n 8 | tr '\n' '|')"
 case "$(< "$OUT/sleep2.out")" in
     *"did not sleep"*)
         echo "GT DID-NOT-SLEEP 2"
