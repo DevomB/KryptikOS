@@ -614,6 +614,12 @@ shows each timer, its timeout and whether it is running.
   planned for October 2026. QEMU has no lid, no microphone or brightness
   keys, no backlight, no built-in panel and no camera of the USB Video
   Class, so those parts wait for it.
+- Laptop sound goes through the HD Audio driver and USB audio. On many
+  recent laptops part of it does not work: built-in microphones on Intel's
+  or AMD's audio processor, all built-in sound on Intel laptops whose audio
+  chips sit on SoundWire, and speakers behind a smart amplifier. A USB
+  headset or sound card works on all of them
+  ([laptop sound](design/laptop-audio.md)).
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
