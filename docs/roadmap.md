@@ -183,6 +183,15 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **A destroy verb.** `kryptikd volume destroy NAME` erases a stopped
       zone's key slots and deletes its container; it refuses an open volume
       ([design](design/encrypted-volumes.md)). The zone's definition stays.
+- [ ] **Memory a zone makes the compositor hold.** A page of a zone's
+      shared-memory pool that dwl reads before the zone writes it is charged
+      to dwl, not to the zone's `memory_max`, and a zone that keeps the
+      pool's descriptor keeps that page after the pool is gone; the proxy's
+      bounds hold it only while the pools live
+      ([Wayland shared memory](design/resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
+      First the measurement (`wlprobe charge`), then the proxy punching each
+      pool's range once the pool and its buffers are gone, refusing a pool it
+      cannot punch, and a `memory.max` on the session's cgroup.
 
 ## Version 2
 
