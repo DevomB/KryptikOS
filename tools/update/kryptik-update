@@ -128,17 +128,22 @@ cmd_status() {
 # The release's four files are opened once and read only through those
 # descriptors, so what is hashed is what is written even if the directory
 # changes. Links are refused, as is a name replaced while being opened.
-pin() {   # pin FD NAME
+pin() {   # pin FD NAME, or pin - NAME for a descriptor bash picks; either is left in fd
     f="$dir/$2"
     { [ -f "$f" ] && [ ! -L "$f" ]; } || die "payload lacks $2, or it is not a regular file"
-    eval "exec $1< \"\$f\"" || die "cannot open $2"
-    [ "$(stat -c %d:%i "$f")" = "$(stat -L -c %d:%i "/proc/self/fd/$1")" ] || die "$2 changed while it was being opened"
+    if [ "$1" = - ]; then eval 'exec {fd}< "$f"'; else fd="$1"; eval "exec $fd< \"\$f\""; fi || die "cannot open $2"
+    [ "$(stat -c %d:%i "$f")" = "$(stat -L -c %d:%i "/proc/self/fd/$fd")" ] || die "$2 changed while it was being opened"
 }
 payload_path() {   # NAME -> where to read it
     case "$1" in
         kryptik-root.img.zst) echo /proc/self/fd/3 ;; kryptik-a.efi) echo /proc/self/fd/4 ;;
         kryptik-b.efi)    echo /proc/self/fd/5 ;; root.json)     echo /proc/self/fd/6 ;;
-        *) echo "$dir/$1" ;;
+        *)
+            # An image verify_payload pinned (NAME=FD in PINNED), else the payload's file.
+            case " ${PINNED:-} " in
+                *" $1="*) _fd="${PINNED#* $1=}"; echo "/proc/self/fd/${_fd%% *}" ;;
+                *) echo "$dir/$1" ;;
+            esac ;;
     esac
 }
 
@@ -146,6 +151,16 @@ payload_path() {   # NAME -> where to read it
 verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
     verify_manifest "$1" "$2"
     pin 3 kryptik-root.img.zst; pin 4 kryptik-a.efi; pin 5 kryptik-b.efi; pin 6 root.json
+    # And each software image it lists, so the bytes hashed below are those stage_images
+    # decompresses. A name with a directory in it is refused below, before anything is read.
+    # bash (sh here) picks each descriptor: from 10 up, past the root's and the update lock's,
+    # and never one it holds itself, as it holds a redirected call's own output while it runs.
+    PINNED=""
+    for n in $(sed -n '/^--$/,$p' "$m" | sed '1d' | awk '$3 ~ /\.img\.zst$/ && $3 != "kryptik-root.img.zst" { print $3 }'); do
+        case "$n" in */*|..*) continue ;; esac
+        pin - "$n"
+        PINNED="$PINNED $n=$fd"
+    done
 
     # Nothing unlisted (a directory listing) before hashing every listed file
     # (gigabytes). Names are compared whole, as text, dotfiles included.
@@ -448,7 +463,7 @@ cmd_apply() {
     arm_trial "$target"
     # The running root's images stay for a rollback; those of the release this slot held go.
     # A command line naming no root hash prunes nothing, rather than the running root's list.
-    running_hash="$(sed -n 's/.*sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
+    running_hash="$(sed -n 's/.*"kroot,[^"]* sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
     if [ -n "$running_hash" ]; then images_prune "$IMAGES" "$running_hash" "$ROOT_HASH"; fi
     printf '%s apply %s -> slot %s\n' "$(date -Iseconds 2>/dev/null)" "$VERSION" "$target" >> "$LOG"
     say "armed: the next boot tries slot $target ($VERSION) once. Reboot to try it."
