@@ -598,6 +598,18 @@ if (( PRIVILEGED == 1 )) && command -v cryptsetup >/dev/null 2>&1 && [[ -e /dev/
         fail "F4  volume init for the encrypted fixture failed"
         info "output: $(printf '%s' "$F4INIT" | tr '\n' '|' | cut -c1-220)"
     else
+        # Read before any mount, which would start ext4's lazy thread on what init left.
+        f4groups=""
+        if cryptsetup open --type luks2 --readonly --key-file "$F4PASS" "$WORK/volumes/sealed.luks" kryptik-f4-probe >/dev/null 2>&1; then
+            f4groups="$(dumpe2fs /dev/mapper/kryptik-f4-probe 2>/dev/null | grep '^Group ')"
+            cryptsetup close kryptik-f4-probe >/dev/null 2>&1
+        fi
+        if [[ -n "$f4groups" ]] && ! grep -v -q 'ITABLE_ZEROED' <<<"$f4groups"; then
+            pass "F4d every inode table is written at init, none left to ext4's lazy thread"
+        else
+            fail "F4d init left inode tables for ext4's lazy thread to write after the first mount"
+            info "groups: $(printf '%s' "${f4groups:-none read}" | tr '\n' '|' | cut -c1-220)"
+        fi
         ZOUT="$(timeout "$TIMEOUT" "$KRYPTIKD" run sealed "${ZARGS[@]}" --passphrase-file "$F4PASS" \
                 -- /bin/sh -c "echo $LAUNCHED; awk '\$2==\"/home/sealed\" {print \"PROBE=\" \$1}' /proc/mounts" 2>&1)"
         ZRC=$?
