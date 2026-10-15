@@ -1122,6 +1122,12 @@ fn cmd_suspend(args: &[String]) -> ExitCode {
         eprintln!("kryptikd suspend: must run as root; the session asks through kryptik-lock --suspend");
         return ExitCode::from(2);
     }
+    if !awake {
+        if let Some(why) = suspend::sleep_refused() {
+            eprintln!("kryptikd suspend: the machine stays awake: {why}");
+            return ExitCode::FAILURE;
+        }
+    }
     // The zones are frozen and the key gone already: only the sleep is left to do.
     if suspend::state_suspended() {
         if awake {
