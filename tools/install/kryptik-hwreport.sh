@@ -251,6 +251,86 @@ inputs() {
     awk -F= '/^N: Name/ { name = $2 } /^H: Handlers/ { print name " | " $2 }' "$R/proc/bus/input/devices" 2>/dev/null
 }
 
+# The machine's sound, sorted as docs/design/laptop-audio.md sorts laptops:
+# the audio controllers on PCI and what took them, AMD's coprocessor among
+# them, the HD Audio codecs, the endpoints the NHLT table describes for
+# Intel's DSP, the SoundWire parts ACPI describes, the speaker amplifiers ACPI
+# names, and the names AMD's drivers look for to find microphones. Model and
+# part IDs only, which no machine has alone.
+audio() {
+    for d in "$SYS"/bus/pci/devices/*; do
+        c="$(hex "$d/class")"; v="$(hex "$d/vendor")"
+        case "$c" in
+            0401*|0403*) what=controller ;;
+            0480*) [ "$v" = 1022 ] || continue; what=acp ;;
+            *) continue ;;
+        esac
+        drv="$(target "$d/driver")"
+        printf '%s %s class %s %s:%s rev %s driver %s\n' "$what" "${d##*/}" "$c" "$v" "$(hex "$d/device")" \
+            "$(hex "$d/revision")" "${drv:--}"
+        [ "$what" = acp ] || soundwire "$d"
+    done
+    for c in "$SYS"/bus/hdaudio/devices/*; do
+        [ -r "$c/vendor_id" ] && printf 'codec %s sub %s\n' "$(hex "$c/vendor_id")" "$(hex "$c/subsystem_id")"
+    done
+    nhlt
+    for a in "$SYS"/bus/acpi/devices/*; do
+        case "${a##*/}" in
+            CSC355[1467]:*|CLSA010[01]:*|TIAS2781:*|TXNW2770:*|TXNW2781:*|TXNW5825:*|INT8866:*) ;;
+            *) continue ;;
+        esac
+        # Not one the firmware describes and calls absent (_STA 0).
+        [ "$(one "$a/status")" != 0 ] || continue
+        drv=""
+        for n in "$a"/physical_node*; do
+            x="$(target "$n/driver")"; [ -z "$x" ] || drv="$drv $x"
+        done
+        printf 'amplifier %s driver%s\n' "${a##*/}" "${drv:- -}"
+    done
+    names=""
+    for k in AcpDmicConnected acp-audio-device-type _WOV; do
+        grep -qaF -- "$k" "$SYS"/firmware/acpi/tables/DSDT "$SYS"/firmware/acpi/tables/SSDT* 2>/dev/null && names="$names $k"
+    done
+    [ -z "$names" ] || echo "acpi names:$names"
+}
+
+# soundwire DEVICE: the SoundWire controller ACPI describes under an HD Audio
+# controller, which the kernel finds at _ADR 0x40000000, and each part on its
+# links: MIPI's address holds the link in bits 51-48, the maker in 39-24 and
+# the part in 23-8.
+soundwire() {
+    for s in "$1"/firmware_node/*/; do
+        [ "$(one "${s}adr")" = 0x40000000 ] || continue
+        found=""
+        for p in "$s"*/; do
+            x="$(one "${p}adr")"
+            case "$x" in 0x????????????????) ;; *) continue ;; esac
+            printf 'soundwire %s link %d part %04x:%04x\n' "${1##*/}" \
+                $(( ($x >> 48) & 15 )) $(( ($x >> 24) & 65535 )) $(( ($x >> 8) & 65535 ))
+            found=1
+        done
+        [ -n "$found" ] || printf 'soundwire %s no parts\n' "${1##*/}"
+    done
+}
+
+# The endpoints the NHLT table describes for Intel's DSP: a 36-byte header, a
+# count, then each endpoint's length and link type, 2 a digital microphone
+# array (PDM) and 3 an I2S link (SSP). A length that cannot be ends the walk.
+nhlt() {
+    if [ ! -r "$SYS/firmware/acpi/tables/NHLT" ]; then echo "nhlt: none"; return 0; fi
+    od -An -v -t u1 "$SYS/firmware/acpi/tables/NHLT" | awk '
+        { for (i = 1; i <= NF; i++) b[n++] = $i }
+        END {
+            at = 37
+            for (e = 0; e < b[36] && at + 4 < n; e++) {
+                k[b[at + 4]]++
+                len = b[at] + 256 * b[at + 1] + 65536 * b[at + 2] + 16777216 * b[at + 3]
+                at += (len > 4) ? len : n
+            }
+            printf "nhlt: %d endpoints, pdm %d, ssp %d\n", e, k[2], k[3]
+        }'
+}
+
 missing_firmware() {
     kmsg | sed -n \
         -e 's/.*Direct firmware load for \(.*\) failed with error.*/\1/p' \
@@ -286,6 +366,7 @@ report() {
     sec "no driver"; cat "$T/unbound"
     sec storage;  cat "$T/disks"
     sec display;  display
+    sec audio;    audio
     sec network;  network
     sec input;    inputs
     sec modules;  awk '{ print $1 }' "$R/proc/modules" 2>/dev/null | sort | tr '\n' ' ' | fold -s -w 78; echo
