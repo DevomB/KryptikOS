@@ -37,7 +37,7 @@ env:
   HOST_PACKAGES: >-
     build-essential bison flex texinfo gawk m4 patch perl python3 python3-pip
     xz-utils bzip2 zstd cpio rsync bc curl git openssl libssl-dev libelf-dev
-    e2fsprogs dosfstools mtools xorriso util-linux cryptsetup-bin sbsigntool
+    e2fsprogs dosfstools mtools exfatprogs xorriso util-linux cryptsetup-bin sbsigntool
     qemu-system-x86 ovmf musl-tools file
 
 # Caches are keyed on the stamps' digest and saved after a failure too; the stage 05 tree's key starts with the toolchain's.
@@ -242,7 +242,7 @@ jobs:
           for i in "$d"/*/install.sh; do "$i" --prefix=/mnt/kryptik/rust --disable-ldconfig > /dev/null; done
           echo /mnt/kryptik/rust/bin >> "$GITHUB_PATH"
 
-      - name: kryptikd and kryptik-wlproxy, static
+      - name: kryptikd, kryptik-wlproxy and kryptik-stick, static
         run: |
           want="$(sed -n 's/.*  rustc-\([0-9.]*\)-x86_64-unknown-linux-gnu\.tar\.xz$/\1/p' build/config/rust.lock)"
           rustc --version | grep -qF "rustc ${want} " || { echo "refusing to build what ships with $(rustc --version); the pin is ${want}"; exit 1; }
@@ -252,19 +252,21 @@ jobs:
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/kryptik --remap-path-prefix=${home}=/cargo --remap-path-prefix=${CARGO_TARGET_DIR}=/target"
           (cd compartments/kryptikd && cargo build --locked --release --target x86_64-unknown-linux-musl)
           (cd compositor && cargo build --locked --release --target x86_64-unknown-linux-musl -p wlproxy --bin kryptik-wlproxy)
+          (cd tools/stick && cargo build --locked --release --target x86_64-unknown-linux-musl)
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptikd /mnt/kryptik/kryptikd-musl
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptik-wlproxy /mnt/kryptik/kryptik-wlproxy-musl
-          for b in /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl; do
+          cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptik-stick /mnt/kryptik/kryptik-stick-musl
+          for b in /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl /mnt/kryptik/kryptik-stick-musl; do
             ! grep -aqF -e "$GITHUB_WORKSPACE" -e "$home" -e "$CARGO_TARGET_DIR" "$b" || { echo "$b names a path of this build"; exit 1; }
           done
-          file /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl
+          file /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl /mnt/kryptik/kryptik-stick-musl
           # The licence texts build/licences ships for what they link.
           tools/check-rust-licences.sh /mnt/kryptik/rust-dist
 
       - name: Stage 04, the base system (in the chroot, as root)
         id: stage04
         timeout-minutes: 180
-        run: make system KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+        run: make system KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl KRYPTIK_STICK_BIN=/mnt/kryptik/kryptik-stick-musl
 
       - name: Stage 05, the hardened kernel
         timeout-minutes: 90

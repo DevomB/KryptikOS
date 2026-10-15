@@ -134,6 +134,15 @@ fn bind_ro_dir(src: &str, target: &str) -> Result<(), RootfsError> {
     make_ro_recursive(target)
 }
 
+/// Bind `src` at `target` read-only, nosuid and noexec, but with device nodes: the camera's
+/// directory, where kryptikd makes the camera's node for a grant (camera.rs).
+fn bind_dev_dir(src: &str, target: &str) -> Result<(), RootfsError> {
+    fs::create_dir_all(target)
+        .map_err(|e| RootfsError::Setup(format!("{target}: {e}")))?;
+    mount_raw(src, target, None, libc::MS_BIND, None, "mount(bind camera directory)")?;
+    set_mount_attr(target, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NOEXEC, false)
+}
+
 /// Bind-mount the regular file `src` at `target`, read-only.
 fn bind_ro_file(src: &str, target: &str) -> Result<(), RootfsError> {
     if let Some(parent) = Path::new(target).parent() {
@@ -321,6 +330,7 @@ pub fn pivot_into(
     wayland: Option<&str>,
     wifi_conf: Option<&str>,
     sound: Option<&str>,
+    camera: Option<&str>,
     service: bool,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
@@ -430,7 +440,7 @@ pub fn pivot_into(
     }
     let _ = fs::remove_dir(&aside);
 
-    populate_dev(root)?;
+    populate_dev(root, camera.is_some())?;
 
     // Private /tmp, sized: an unsized tmpfs may take half the host's memory.
     let tmp_dir = mkdir("tmp")?;
@@ -492,6 +502,10 @@ pub fn pivot_into(
     // makes in it is the one the zone reaches.
     if let Some(dir) = sound {
         bind_ro_dir(dir, &format!("{root}{}", crate::sound::IN_ZONE))?;
+    }
+    // The zone's camera directory, empty until a grant; /dev/video0 links into it.
+    if let Some(dir) = camera {
+        bind_dev_dir(dir, &format!("{root}{}", crate::camera::IN_ZONE))?;
     }
 
     /* The zone's data at /home/<zone>, bound through the descriptor that was checked. Not
@@ -690,8 +704,10 @@ fn keep_sysfs(aside: &str, sys_dir: &str, kept: &[String]) -> Result<(), RootfsE
     mount_raw("none", sys_dir, None, flags | libc::MS_REMOUNT | libc::MS_RDONLY, None, "mount(sys tmpfs, ro)")
 }
 
-/// A minimal /dev: `DEVICES` bound from the host (mknod needs CAP_MKNOD there), shm and devpts.
-fn populate_dev(root: &str) -> Result<(), RootfsError> {
+/// A minimal /dev: `DEVICES` bound from the host (mknod needs CAP_MKNOD there), shm and devpts,
+/// and with `camera` a link to where a grant puts the camera, which programs look for at
+/// /dev/video0.
+fn populate_dev(root: &str, camera: bool) -> Result<(), RootfsError> {
     let dev_dir = format!("{root}/dev");
     fs::create_dir_all(&dev_dir).map_err(|e| RootfsError::Setup(e.to_string()))?;
     mount_raw(
@@ -743,6 +759,9 @@ fn populate_dev(root: &str) -> Result<(), RootfsError> {
         Err(e) => eprintln!("kryptikd: note: no private devpts for the zone: {e}"),
     }
 
+    if camera {
+        let _ = std::os::unix::fs::symlink(format!("{}/{}", crate::camera::IN_ZONE, crate::camera::NODE), format!("{dev_dir}/video0"));
+    }
     for (link, target) in [
         ("fd", "/proc/self/fd"),
         ("stdin", "/proc/self/fd/0"),

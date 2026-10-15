@@ -12,7 +12,7 @@ STD="$D/rust-std-9.9.9-x86_64-unknown-linux-musl"
 SC="$STD/rust-std-x86_64-unknown-linux-musl/lib/rustlib/x86_64-unknown-linux-musl/lib/self-contained"
 DOC="$D/rustc-9.9.9-x86_64-unknown-linux-gnu/rustc/share/doc/rust"
 CRATE="$H/registry/src/index.crates.io-0000/libc-0.2.189"
-mkdir -p "$R/tools" "$R/build/lib" "$R/compartments/kryptikd" "$R/compositor" \
+mkdir -p "$R/tools/stick" "$R/build/lib" "$R/compartments/kryptikd" "$R/compositor" \
          "$R/build/licences/rust" "$R/build/licences/rust-libc" "$R/build/licences/musl" \
          "$SC" "$DOC" "$CRATE"
 cp "$ROOT/tools/check-rust-licences.sh" "$R/tools/"
@@ -40,6 +40,7 @@ dependencies = [
 ]'
 printf '%s\n' "$lock" > "$R/compartments/kryptikd/Cargo.lock"
 printf '%s\n' "$lock" > "$R/compositor/Cargo.lock"
+printf '%s\n' "$lock" > "$R/tools/stick/Cargo.lock"
 
 check() { KRYPTIK_ROOT="$R" CARGO_HOME="$H" NO_COLOR=1 bash "$R/tools/check-rust-licences.sh" "$D" 2>&1; }
 

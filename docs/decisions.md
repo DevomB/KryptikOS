@@ -440,38 +440,31 @@ and the clock with every other zone.
 and `CAP_NET_ADMIN` in a zone; any setting on the state partition that could
 give an anonymous zone a clearnet route.
 
-## ADR-021 (proposed): Sound is mixed in zone 0; Bluetooth carries audio from a zone of its own; input methods run per zone
+## ADR-021: Sound is mixed in zone 0, and a zone records only once granted the microphone
 
-Sound drivers are built as signed modules, and Intel's SOF firmware comes
-from the SOF project's releases, a second firmware source beside
-linux-firmware. A mixer in zone 0, `kryptik-sound`, runs as its own user
-and reads one fixed-format stream per zone (48 kHz, stereo, 16-bit) from a
-socket kryptikd binds into the zone. A zone records only after a gesture in
-the chrome grants it the microphone, one zone at a time, and the chrome
-shows it. Bluetooth, when it comes, runs in a zone of its own with its own
-bus, after a kernel patch lets one network namespace use `AF_BLUETOOTH`;
-it carries audio only, never keyboards. Input methods run inside each zone,
-and the compositor routes their keys and commits to that zone's surfaces
-alone; the virtual keyboard is never offered to a zone
-([the laptop](design/laptop.md)).
+Sound drivers are built as signed modules. A mixer in zone 0,
+`kryptik-sound`, runs as its own user in the `audio` group and reads one
+fixed-format stream per zone (48 kHz, stereo, 16-bit) from a socket kryptikd
+binds into the zone. A zone records only after a gesture in the chrome
+grants it the microphone, one zone at a time, until the zone stops or the
+user takes it back, and the chrome shows it
+([the laptop](design/laptop.md#sound)). ADR-027 decides Bluetooth, and
+ADR-028 input methods.
 
-This amends ADR-012, which leaves the firmware of sound DSPs and Bluetooth
-out.
+Intel's Sound Open Firmware stays a named gap. Laptops whose microphones or
+codecs sit behind Intel's audio DSP need its firmware and topology files,
+which the SOF project publishes apart from linux-firmware; shipping them is
+a second firmware source, and amends ADR-012 when it comes.
 
 **Why:** a fixed format leaves zone 0 nothing to parse, and the microphone's
 gate stays in trusted code; a sound zone would gate the microphone from the
-place an attacker controls. The kernel refuses Bluetooth sockets outside the
-initial network namespace, and bluetoothd faces a radio and could type into
-the chrome through uhid. An input method shared by all zones would learn
-from every zone and offer one zone's words in another.
+place an attacker controls.
 
-**Cost:** sound drivers, alsa-lib and a new daemon in zone 0; a firmware
-source that is not linux-firmware; a Kryptik kernel patch for Bluetooth,
-rebased with linux-hardened (ADR-009); no Bluetooth keyboards; compositor
-work to route input methods by zone.
+**Cost:** sound drivers, alsa-lib and a new daemon in zone 0; and until SOF
+ships, a laptop whose audio sits behind Intel's DSP has only what the HD
+Audio driver reaches without it, and USB audio.
 
-**Rejected:** PipeWire in zone 0 with a socket per zone; a sound zone;
-bluetoothd in zone 0; one input method for all zones.
+**Rejected:** PipeWire in zone 0 with a socket per zone; a sound zone.
 
 ## ADR-022: Suspend wipes the disk keys
 
@@ -617,9 +610,9 @@ driver by alias, which hands every device's descriptors to it at plug-in.
 Kryptik 1.0 builds no Bluetooth. Calls use a USB or wired headset, or a
 Bluetooth headset whose USB dongle presents itself as a USB sound card,
 all through zone 0's mixer. After 1.0, Bluetooth runs in a zone of its
-own, as ADR-021 has it, with a Kryptik kernel patch that lets that zone's
-network namespace make Bluetooth sockets and has the Bluetooth capability
-checks ask that namespace's user namespace. It carries a headset's audio
+own, with a Kryptik kernel patch that lets that zone's network namespace
+make Bluetooth sockets and has the Bluetooth capability checks ask that
+namespace's user namespace. It carries a headset's audio
 alone, to and from the mixer as fixed-format streams, and its modules load
 only while the user has Bluetooth on in the chrome
 ([Bluetooth](design/bluetooth.md)). That is the direction, not yet the
@@ -656,9 +649,6 @@ any grab, so no input method sees or swallows them, and a candidate list
 is held inside its zone's window, as a zone's popups are
 ([input methods](design/input-methods.md)). That is the direction, not yet
 the code: dwl's relay is weighed again when the work starts.
-
-This amends ADR-021, whose input methods were never to be offered the
-virtual keyboard.
 
 **Why:** fcitx5 sends every key it lets pass back through the virtual
 keyboard and starts without one only to do nothing, and IBus does not speak

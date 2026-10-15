@@ -32,10 +32,11 @@ SOURCE_DATE_EPOCH ?= $(shell git -C "$(ROOT)" log -1 --format=%ct 2>/dev/null ||
 ifneq ($(SOURCE_DATE_EPOCH),)
 export SOURCE_DATE_EPOCH
 endif
-# kryptikd and kryptik-wlproxy are static Rust binaries built outside the
-# chroot and installed by stage 04.
+# kryptikd, kryptik-wlproxy and kryptik-stick are static Rust binaries built
+# outside the chroot and installed by stage 04.
 KRYPTIK_KRYPTIKD_BIN ?=
 KRYPTIK_WLPROXY_BIN ?=
+KRYPTIK_STICK_BIN ?=
 
 export KRYPTIK_ROOT := $(ROOT)
 # Read through the shell: versions.env is shell syntax, not make syntax.
@@ -81,6 +82,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
               $(if $(SOURCE_DATE_EPOCH),SOURCE_DATE_EPOCH="$(SOURCE_DATE_EPOCH)") \
               KRYPTIK_KRYPTIKD_BIN="$(KRYPTIK_KRYPTIKD_BIN)" \
               KRYPTIK_WLPROXY_BIN="$(KRYPTIK_WLPROXY_BIN)" \
+              KRYPTIK_STICK_BIN="$(KRYPTIK_STICK_BIN)" \
               TERM="$(TERM)" \
               NO_COLOR="$(NO_COLOR)" \
               $(if $(CARGO_TARGET_DIR),CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)") \
@@ -178,6 +180,7 @@ help:
 	@echo "  KRYPTIK_BUILD_COMMIT = $(KRYPTIK_BUILD_COMMIT)"
 	@echo "  KRYPTIK_KRYPTIKD_BIN = $(if $(KRYPTIK_KRYPTIKD_BIN),$(KRYPTIK_KRYPTIKD_BIN),(not set - the image will have no kryptikd))"
 	@echo "  KRYPTIK_WLPROXY_BIN  = $(if $(KRYPTIK_WLPROXY_BIN),$(KRYPTIK_WLPROXY_BIN),(not set - zones will have no display))"
+	@echo "  KRYPTIK_STICK_BIN    = $(if $(KRYPTIK_STICK_BIN),$(KRYPTIK_STICK_BIN),(not set - zones will read no USB stick))"
 	@echo "  KRYPTIK_CHANNEL  = $${KRYPTIK_CHANNEL:-(not set - the image fetches no updates)}"
 	@echo "  KRYPTIK_ROLE     = $(KRYPTIK_ROLE)"
 	@echo "  KRYPTIK_KEYS     = $(if $(KRYPTIK_KEYS),$(KRYPTIK_KEYS),(not set - only a development image can be built))"
