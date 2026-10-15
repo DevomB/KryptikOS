@@ -193,6 +193,7 @@ cleanup() {
         rmdir "$m" 2>/dev/null || true
     done
     [ -b "/dev/mapper/$MAPPING" ] && cryptsetup close "$MAPPING" 2>/dev/null || true
+    rm -rf "$MNT_BASE/images-checked"
     rmdir "$MNT_BASE" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -220,7 +221,8 @@ case "$media" in
         fi
         ;;
     iso)
-        mount -t iso9660 -o ro /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
+        # As the stick's images partition is: Rock Ridge can carry device nodes and set-id files.
+        mount -t iso9660 -o ro,nosuid,nodev,noexec /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
         ESP_SRC="$MNT_BASE/media/esp.img"
         [ -f "$ESP_SRC" ] || die "no esp.img on the medium"
         # For its kernels, read before anything is written.
@@ -237,8 +239,13 @@ case "$media" in
 esac
 medium_root "$ROOT_JSON" /proc/cmdline
 ROOT_HASH="$(json_field "$ROOT_JSON" root_hash)"
-# The medium's software images, checked before anything is written (medium-root.sh).
-[ -z "$IMG_SRC" ] || medium_images_ok "$IMG_SRC"
+# The medium's software images, checked before anything is written (medium-root.sh); the list
+# and signature kept later are the ones checked, from IMG_CHECKED.
+IMG_CHECKED="$MNT_BASE/images-checked"
+if [ -n "$IMG_SRC" ]; then
+    rm -rf "$IMG_CHECKED" && mkdir -m 0700 "$IMG_CHECKED" || die "cannot make $IMG_CHECKED"
+    medium_images_ok "$IMG_SRC" "$IMG_CHECKED"
+fi
 for s in a b; do
     kernel_names_root "$MNT_BASE/esp/EFI/kryptik/kryptik-$s.efi" \
         || die "the medium's kernel for slot $s does not carry the root hash its signed command line names; nothing was written"
@@ -413,8 +420,8 @@ fi
 mount -t ext4 -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"
 mkdir -p "$MNT_BASE/state/lib/kryptik"
 if [ -n "$IMG_SRC" ]; then
-    images_keep "$IMG_SRC/images.manifest" "$IMG_SRC/images.manifest.sig" "$MNT_BASE/state/lib/kryptik/images" "$ROOT_HASH" medium_image
-    say "images       $(grep -c '^image: ' "$IMG_SRC/images.manifest") kept for ${VERSION}"
+    images_keep "$IMG_CHECKED/images.manifest" "$IMG_CHECKED/images.manifest.sig" "$MNT_BASE/state/lib/kryptik/images" "$ROOT_HASH" medium_image
+    say "images       $(grep -c '^image: ' "$IMG_CHECKED/images.manifest") kept for ${VERSION}"
 fi
 cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
 {

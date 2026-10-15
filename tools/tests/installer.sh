@@ -203,10 +203,10 @@ else
     stub="$(mktemp -d)"
     cat > "${stub}/kryptikd" <<'STUB'
 #!/bin/sh
-[ "$1" = check-images ] && [ "$#" -eq 3 ] || { echo "usage: kryptikd check-images DIR BASE" >&2; exit 2; }
+[ "$1" = check-images ] && [ "$#" -eq 4 ] || { echo "usage: kryptikd check-images DIR BASE OUT" >&2; exit 2; }
 printf '%s\n' "$3" > "$2/base-asked"
 a="$(cat "$2/answer")"
-[ "$a" = ok ] && { echo "1 images of release 1.0.0 for this root"; exit 0; }
+[ "$a" = ok ] && { echo checked > "$4/images.manifest"; echo "1 images of release 1.0.0 for this root"; exit 0; }
 echo "kryptikd: check-images: $a" >&2
 exit 1
 STUB
@@ -214,21 +214,25 @@ STUB
     med="$(mktemp -d)"
     V_HASH="$(printf 'c%.0s' $(seq 64))"
     echo ok > "${med}/answer"
-    ( PATH="${stub}:$PATH"; medium_images_ok "$med" ) >/dev/null 2>&1 \
-        && [[ "$(cat "${med}/base-asked" 2>/dev/null)" == "$V_HASH" ]] \
-        && green "a medium kryptikd accepts is taken, checked for the root the signed command line names" \
-        || red "a medium kryptikd accepts was refused, or checked for another root"
+    chk="$(mktemp -d)"
+    ( PATH="${stub}:$PATH"; medium_images_ok "$med" "$chk" ) >/dev/null 2>&1 \
+        && [[ "$(cat "${med}/base-asked" 2>/dev/null)" == "$V_HASH" && "$(cat "${chk}/images.manifest" 2>/dev/null)" == checked ]] \
+        && green "a medium kryptikd accepts is taken, checked for the signed root, its checked list handed on" \
+        || red "a medium kryptikd accepts was refused, checked for another root, or its list not handed on"
     for why in "the medium's image list is refused: not signed as an image list" \
                "image browser: /media/images/browser.img holds 4096 bytes, and the list signs 12288"; do
         echo "$why" > "${med}/answer"
-        out="$( (PATH="${stub}:$PATH"; medium_images_ok "$med") 2>&1 )"; rc=$?
+        out="$( (PATH="${stub}:$PATH"; medium_images_ok "$med" "$chk") 2>&1 )"; rc=$?
         [[ "$rc" -ne 0 && "$out" == *"software images are refused: ${why}"* ]] \
             && green "a refusal stops the install with kryptikd's reason (${why%%:*})" \
             || red "a refusal was not passed on: rc=${rc} ${out}"
     done
-    rm -rf "$stub" "$med"
+    rm -rf "$stub" "$med" "$chk"
 fi
-if awk '/medium_images_ok "\$IMG_SRC"/ && !c { c = NR }
+grep -qF 'images_keep "$IMG_CHECKED/images.manifest" "$IMG_CHECKED/images.manifest.sig"' "$INSTALLER" \
+    && green "the list kept is the one kryptikd checked, not the medium's read again" \
+    || red "images_keep reads the list from the medium a second time"
+if awk '/medium_images_ok "\$IMG_SRC" "\$IMG_CHECKED"/ && !c { c = NR }
         /^sfdisk / && !w { w = NR }
         END { exit !(c && w && c < w) }' "$INSTALLER"; then
     green "the medium's images are checked before the partition table, the first write"

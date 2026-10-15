@@ -186,6 +186,26 @@ fn names_are_what_a_path_and_a_zone_file_take() {
     }
 }
 
+/// A mapping under an image's name is used again only if veritysetup shows it is that image's, as
+/// cryptsetup 2.8 prints its status.
+#[test]
+fn a_mapping_is_used_again_only_if_it_is_this_images() {
+    let status = |kind: &str, state: &str, root: &str| {
+        format!(
+            "/dev/mapper/kryptik-image-browser-{root} is active and is in use.\n  type:        {kind}\n  status:      {state}\n  \
+             hash type:   1\n  data block:  4096 [bytes]\n  hash block:  4096 [bytes]\n  hash name:   sha256\n  \
+             salt:        {}\n  data device: /dev/loop0\n  mode:        readonly\n  root hash:   {root}\n",
+            hex('c')
+        )
+    };
+    let b = hex('b');
+    assert_eq!(status_of(&status("VERITY", "verified", &b), &b), (true, false));
+    assert_eq!(status_of(&status("VERITY", "corrupted", &b), &b), (true, true));
+    assert_eq!(status_of(&status("VERITY", "verified", &hex('d')), &b), (false, false), "another root hash");
+    assert_eq!(status_of(&status("LUKS2", "verified", &b), &b).0, false, "not dm-verity");
+    assert_eq!(status_of(&status("VERITY", "verified", &b).replace("  root hash:", "  root:"), &b).0, false, "no root hash shown");
+}
+
 /// What the installer has checked before it writes anything: the medium's list is signed, for the
 /// root it installs, and each image it names is there at the size it signs.
 #[test]
@@ -199,30 +219,41 @@ fn a_medium_is_checked_before_anything_is_written() {
     let yes = |_: &[u8], _: &[u8]| -> Result<(), String> { Ok(()) };
     let no = |_: &[u8], _: &[u8]| -> Result<(), String> { Err("not signed by the release key as an image list".into()) };
 
-    let said = check_medium_with(&d, &hex('1'), &yes).unwrap();
+    let said = check_medium_with(&d, &hex('1'), None, &yes).unwrap();
     assert!(said.contains("1 images of release 1.2.0"), "{said}");
+    // The bytes checked are the ones handed on, and a refusal hands on nothing.
+    let out = d.join("checked");
+    std::fs::create_dir(&out).unwrap();
+    check_medium_with(&d, &hex('1'), Some(&out), &yes).unwrap();
+    assert_eq!(std::fs::read(out.join("images.manifest")).unwrap(), std::fs::read(d.join("images.manifest")).unwrap());
+    assert_eq!(std::fs::read(out.join("images.manifest.sig")).unwrap(), b"signature");
+    std::fs::remove_dir_all(&out).unwrap();
+    std::fs::create_dir(&out).unwrap();
+    assert!(check_medium_with(&d, &hex('2'), Some(&out), &yes).is_err());
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "a refused list is not handed on");
+    std::fs::remove_dir_all(&out).unwrap();
 
-    let refused = check_medium_with(&d, &hex('1'), &no).unwrap_err();
+    let refused = check_medium_with(&d, &hex('1'), None, &no).unwrap_err();
     assert!(refused.contains("the medium's image list is refused: not signed"), "{refused}");
 
-    let refused = check_medium_with(&d, &hex('2'), &yes).unwrap_err();
+    let refused = check_medium_with(&d, &hex('2'), None, &yes).unwrap_err();
     assert!(refused.contains("another root"), "{refused}");
 
     std::fs::write(d.join("browser.img"), vec![0u8; 4096]).unwrap();
-    let refused = check_medium_with(&d, &hex('1'), &yes).unwrap_err();
+    let refused = check_medium_with(&d, &hex('1'), None, &yes).unwrap_err();
     assert!(refused.contains("holds 4096 bytes, and the list signs 12288"), "{refused}");
 
     std::fs::remove_file(d.join("browser.img")).unwrap();
-    let refused = check_medium_with(&d, &hex('1'), &yes).unwrap_err();
+    let refused = check_medium_with(&d, &hex('1'), None, &yes).unwrap_err();
     assert!(refused.starts_with("image browser:"), "{refused}");
 
     // A directory where an image should be is no image, nor is a link to one.
     std::fs::create_dir(d.join("browser.img")).unwrap();
-    assert!(check_medium_with(&d, &hex('1'), &yes).is_err());
+    assert!(check_medium_with(&d, &hex('1'), None, &yes).is_err());
     std::fs::remove_dir(d.join("browser.img")).unwrap();
     std::fs::write(d.join("elsewhere"), vec![0u8; 12288]).unwrap();
     std::os::unix::fs::symlink(d.join("elsewhere"), d.join("browser.img")).unwrap();
-    assert!(check_medium_with(&d, &hex('1'), &yes).unwrap_err().contains("holds"), "a link is not the image");
+    assert!(check_medium_with(&d, &hex('1'), None, &yes).unwrap_err().contains("holds"), "a link is not the image");
     std::fs::remove_file(d.join("browser.img")).unwrap();
     std::fs::rename(d.join("elsewhere"), d.join("browser.img")).unwrap();
 
@@ -231,17 +262,22 @@ fn a_medium_is_checked_before_anything_is_written() {
     std::fs::remove_file(d.join("images.manifest")).unwrap();
     let fifo = std::ffi::CString::new(d.join("images.manifest").to_str().unwrap()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-    assert!(check_medium_with(&d, &hex('1'), &yes).unwrap_err().contains("not a regular file"));
+    assert!(check_medium_with(&d, &hex('1'), None, &yes).unwrap_err().contains("not a regular file"));
+    std::fs::remove_file(d.join("images.manifest")).unwrap();
+    // Nor is a link to the list followed.
+    std::fs::write(d.join("list-elsewhere"), &list_text).unwrap();
+    std::os::unix::fs::symlink(d.join("list-elsewhere"), d.join("images.manifest")).unwrap();
+    assert!(check_medium_with(&d, &hex('1'), None, &yes).unwrap_err().contains("not a regular file"));
     std::fs::remove_file(d.join("images.manifest")).unwrap();
     std::fs::write(d.join("images.manifest"), &list_text).unwrap();
-    assert!(check_medium_with(&d, &hex('1'), &yes).is_ok());
+    assert!(check_medium_with(&d, &hex('1'), None, &yes).is_ok());
 
     std::fs::remove_file(d.join("images.manifest.sig")).unwrap();
-    assert!(check_medium_with(&d, &hex('1'), &yes).unwrap_err().contains("images.manifest.sig"));
+    assert!(check_medium_with(&d, &hex('1'), None, &yes).unwrap_err().contains("images.manifest.sig"));
 
     // A list that does not parse is refused after its signature, as a kept one is.
     std::fs::write(d.join("images.manifest.sig"), b"signature").unwrap();
     std::fs::write(d.join("images.manifest"), "KRYPTIK-IMAGES-1\nrelease: 1.2.0\n").unwrap();
-    assert!(check_medium_with(&d, &hex('1'), &yes).is_err());
+    assert!(check_medium_with(&d, &hex('1'), None, &yes).is_err());
     let _ = std::fs::remove_dir_all(&d);
 }
