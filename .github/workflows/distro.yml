@@ -121,7 +121,11 @@ jobs:
 
       - name: Stage 01, the cross toolchain (unprivileged)
         timeout-minutes: 200
-        run: make toolchain
+        # The root's sources alone: make's own sources would fetch every image's from upstream too,
+        # which no stage here reads and whose cache only the images' jobs restore.
+        run: |
+          ./tools/fetch-sources.sh --root
+          make -o sources toolchain
 
       - name: Stage 02, the temporary tools (unprivileged)
         id: stage02
