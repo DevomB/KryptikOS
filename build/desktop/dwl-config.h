@@ -33,9 +33,12 @@ static const float unzonedcolor[] = COLOR(KRYPTIK_UNZONED_BORDER);
 /* logging */
 static int log_level = WLR_ERROR;
 
+/* A zone's window matches as kryptik.<zone>. with no title, from the socket its client
+ * came through (dwl-zone-borders.py's applyrules); a window of dwl's own socket by what
+ * it sets itself. */
 static const Rule rules[] = {
 	/* app_id             title       tags mask     isfloating   monitor */
-	{ "kryptik.vault.",   NULL,       1 << 8,       0,           -1 }, /* the vault keeps to its own tag */
+	{ "kryptik.vault.",   NULL,       1 << 8,       0,           -1 }, /* the vault zone keeps to its own tag */
 };
 
 /* layout(s) */
