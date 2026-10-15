@@ -119,7 +119,8 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-WRONG" "key:n" "key:o" "key:ret" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
-    "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret"     "expect:GT LOCK-TYPE-HOLD" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT LOCK-TYPE-HOLD" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-SUSPEND" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT KEY-VOLUME-DOWN" "key:volumedown" \
     "expect:GT KEY-LOCK-LAYOUT" "key:alt+shift+l" \
@@ -166,7 +167,8 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up browser-key-brings-forward browser-front-only-the-users browser-front-request browser-key-launches \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
-            idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again             zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
+            idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
+            zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             volume-key lock-passes-volume-keys lock-holds-other-keys \

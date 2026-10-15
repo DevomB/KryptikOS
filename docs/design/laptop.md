@@ -477,7 +477,9 @@ and the power key, idle and inhibitors, suspend, and runtime directories
     a lit output, a window of its zone has the keyboard and the session is
     unlocked; losing any of these ends it. A zone 0 window taking the
     keyboard ends it, and so do a lid close and a suspend, each of which
-    locks first.
+    locks first. A hold that ended begins again, with the four hours anew,
+    once its window is back with the keyboard: after an unlock, the user is
+    there.
   - It lasts four hours from when it began or a key or button was last
     pressed, whatever window took the press (`holdawakesecs` in dwl's
     configuration); then the lock comes as usual. dwl's status names the
