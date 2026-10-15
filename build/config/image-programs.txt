@@ -737,11 +737,13 @@ usr/lib/kryptik/compartments/tests/cli.sh
 usr/lib/kryptik/compartments/tests/launcher.sh
 usr/lib/kryptik/compartments/tests/serve.sh
 usr/lib/kryptik/guest-tests/broker-client.py
+usr/lib/kryptik/guest-tests/camera-check.sh
 usr/lib/kryptik/guest-tests/gui-check.sh
 usr/lib/kryptik/guest-tests/icmp-echo.py
 usr/lib/kryptik/guest-tests/power-check.sh
 usr/lib/kryptik/guest-tests/probe-sources.py
 usr/lib/kryptik/guest-tests/sound-check.sh
+usr/lib/kryptik/guest-tests/stick-check.sh
 usr/lib/kryptik/guest-tests/suspend-check.sh
 usr/lib/kryptik/guest-tests/zones-check.sh
 usr/lib/kryptik/s6-rc/compiled/servicedirs/eudev/run

@@ -160,6 +160,9 @@ hold)
     echo "ST HOLDING"
     ;;
 pulled)
+    # The host has QEMU drop the stick; the kernel lets its partition go a moment later, and only
+    # a listing made after that ends the grant.
+    for _ in $(seq 1 30); do grep -qsx 'PARTNAME=DATA' /sys/class/block/sd*/uevent || break; sleep 1; done
     # Listing the sticks, as the chrome does when a block device goes, ends the grant.
     as_user "kryptik-launch --sticks" > /dev/null 2>&1
     if wait_for "$LOG/held.out" '^READ-FAILED 5$' 30; then pass "stick-pulled-reads-fail" "the descriptor untrusted held reads only EIO"; else fail "stick-pulled-reads-fail" "$(oneline < "$LOG/held.out")"; fi
