@@ -235,7 +235,12 @@ to resume can run from the root while the state partition is suspended.
    risk, so it stays off until resume is proven on physical hardware, and 20
    is the value to use then. The launch daemon runs the rest as root
    (`suspend`), and refuses while a zone is starting or `kryptik-update
-   apply` holds the updater's lock.
+   apply` holds the updater's lock. It refuses first, before anything is
+   frozen, on a machine whose display is virtio-gpu, as a virtual machine's
+   often is: 6.18's driver has no suspend callbacks, so a sleep resets the
+   device under it, and the compositor's next commit that waits on the
+   device never finishes. The suspend suite's VM shows through std VGA's
+   framebuffer for that reason.
 2. **Lock** the screen first: the lock asks for the suspend only once dwl
    has confirmed it, and checks nothing typed while the request is under
    way, so no session sleeps, or wakes, open.

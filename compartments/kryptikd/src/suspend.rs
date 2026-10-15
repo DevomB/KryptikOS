@@ -65,6 +65,23 @@ pub fn waiting() -> Vec<String> {
     waiting_in(Path::new("/sys/block"), &crate::volume::mappings())
 }
 
+/// Why the machine may not sleep, if it may not, as `sys` says. 6.18's virtio-gpu has no
+/// .freeze or .restore (drivers/gpu/drm/virtio/virtgpu_drv.c), so a sleep resets the device
+/// under a driver that keeps its old queues, and the first commit that waits on it waits for
+/// good, the compositor's with it. A machine that shows through it stays awake, until a kernel
+/// whose driver has them.
+pub fn sleep_refused_in(sys: &Path) -> Option<&'static str> {
+    let bound = fs::read_dir(sys.join("bus/virtio/drivers/virtio_gpu"))
+        .ok()?
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with("virtio"));
+    bound.then_some("the display's driver, virtio-gpu, does not come back from a sleep")
+}
+
+pub fn sleep_refused() -> Option<&'static str> {
+    sleep_refused_in(Path::new("/sys"))
+}
+
 /// A running zone's cgroup leaf, as the registry records it in kryptikd's own tree.
 fn leaf(zone: &str) -> Option<PathBuf> {
     match crate::registry::state(zone) {
