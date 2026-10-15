@@ -72,8 +72,9 @@ create_layout() {
     # Mount points for mount_virtual.
     mkdir -pv "$LFS"/{dev,proc,sys,run}
 
-    ln -sfv /run "$LFS/var/run"
-    ln -sfv /run/lock "$LFS/var/lock"
+    # -n: on a sysroot that has them, ln would follow the old link and write into the host's /run.
+    ln -sfnv /run "$LFS/var/run"
+    ln -sfnv /run/lock "$LFS/var/lock"
 
     # root's home is not world-readable.
     install -dv -m 0750 "$LFS/root"
