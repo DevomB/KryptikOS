@@ -185,6 +185,9 @@ floors are given with each layer.
   - `--enable-default-toolkit=cairo-gtk3-wayland-only`, `--disable-dbus`,
     `--enable-release`, `--disable-tests`, `--disable-crashreporter`,
     `--disable-updater` (updates are the image's) and `--disable-eme`.
+    With neither D-Bus nor X11 Firefox has no remote: a second launch in a
+    zone whose browser is open is not handed to it, and says that Firefox is
+    already running (`0004` in the patch set).
   - `--disable-jemalloc`, as the image preloads hardened_malloc for every
     process.
   - `--enable-audio-backends=alsa`: a zone's default ALSA device is zone
