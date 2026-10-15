@@ -1315,8 +1315,18 @@ echo "GT KEY-VIEW-BROWSER"
 wait_for 10 grep -qx 'zone=-' "$RT/kryptik/focus" || info "browser: a window still shows after Alt+3: $(tr '\n' ' ' < "$RT/kryptik/focus")"
 mark firefox untrusted
 launch_plain untrusted "sh -c 'printf \"<title>kryptik-page</title><p>kryptik</p>\" > /tmp/page.html && exec firefox --new-instance file:///tmp/page.html'" > "$LOG/launch-firefox.out" 2>&1 &
-if wait_for 120 grep -q '^title=.*kryptik-page' "$RT/kryptik/focus" && grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
+ff_page() { grep -q '^title=.*kryptik-page' "$RT/kryptik/focus" && grep -qx 'zone=untrusted' "$RT/kryptik/focus"; }
+if wait_for 120 ff_page; then
     pass "browser-window" "Firefox from the browser image opened a page in untrusted: $(grep '^title=' "$RT/kryptik/focus")"
+    # Its idle startup tasks and its startup cache's first write come later, the write at most
+    # 60 s after the cache's last entry: a call the zone's filter kills there ends Firefox after
+    # its window has shown.
+    sleep 90
+    if ff_page; then
+        pass "browser-stays-up" "Firefox's window is still untrusted's 90 s after its page showed"
+    else
+        fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | tail -2 | tr '\n' ' ')"
+    fi
 else
     fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' ')"
 fi
