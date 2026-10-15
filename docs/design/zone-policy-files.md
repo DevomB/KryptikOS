@@ -65,6 +65,12 @@ a kill, is printed with `soft` after its name and gets the same errno here:
   no, as the kernel tells an unprivileged caller. `unshare` stays on the
   denied list, and `setns`, which would enter another zone's namespaces, is
   killed.
+- `sched_setscheduler`, `sched_setparam` and `sched_setattr` fail with EPERM:
+  NSPR, under Firefox, starts each thread with explicit scheduling, which
+  glibc sets by the new thread's id, and EPERM is what Firefox's own sandbox
+  answers; NSPR then lets its threads inherit. A policy may allow them, and
+  the kernel still refuses a real-time or raised priority without
+  `CAP_SYS_NICE`.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
 list; a call refused for its arguments (namespace flags to `clone`,

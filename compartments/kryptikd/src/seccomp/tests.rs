@@ -293,6 +293,20 @@ fn namespace_clone_fails_with_eperm() {
 }
 
 #[test]
+fn thread_scheduling_refused_softly() {
+    // A thread started with explicit scheduling hears EPERM, as NSPR expects; a policy opens it.
+    let p = build_program(BASE_ALLOWLIST).unwrap();
+    for nr in [libc::SYS_sched_setscheduler, libc::SYS_sched_setparam, libc::SYS_sched_setattr] {
+        assert_eq!(evaluate(&p, X86, nr as u32), errno_action(EPERM), "syscall {nr}");
+        assert!(!is_denied(nr), "syscall {nr} must stay addable");
+    }
+    let mut allow = BASE_ALLOWLIST.to_vec();
+    allow.push(libc::SYS_sched_setscheduler);
+    let p = build_program(&allow).unwrap();
+    assert_eq!(evaluate(&p, X86, libc::SYS_sched_setscheduler as u32), SECCOMP_RET_ALLOW, "a policy opens it");
+}
+
+#[test]
 fn unshare_fails_setns_killed() {
     // Both stay on the denied list: no policy may allow either.
     let p = build_program(BASE_ALLOWLIST).unwrap();

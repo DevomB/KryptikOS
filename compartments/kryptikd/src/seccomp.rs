@@ -420,6 +420,11 @@ pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_setgroups, EPERM),
     (libc::SYS_capset, EPERM),
     (libc::SYS_unshare, EPERM),
+    // NSPR starts each thread with explicit scheduling, which glibc sets by the new thread's id:
+    // Firefox's own sandbox answers EPERM, and NSPR then lets its threads inherit.
+    (libc::SYS_sched_setscheduler, EPERM),
+    (libc::SYS_sched_setparam, EPERM),
+    (libc::SYS_sched_setattr, EPERM),
 ];
 
 const fn errno_action(e: u32) -> u32 {
