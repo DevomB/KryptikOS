@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers, popups, the lid
-and the keys heeded under the screen lock.
+"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers, popups, the lid,
+the keys heeded under the screen lock and a zone's hold on the screen.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -142,6 +142,7 @@ typedef struct {
 	const char *zone;     /* its socket's name under /run/kryptik-compositor/<uid> */
 	const float border[4];
 	unsigned int proxy;   /* its proxy's uid: with the session's, the one peer its socket takes */
+	int hold;             /* its file lets its windows hold the screen awake (checkidleinhibitor) */
 } ZoneColor;
 """),
     # A client's zone and its colour, placed before applyrules.
@@ -235,17 +236,21 @@ static const char *const zoneglobals[] = {
 \t"wp_cursor_shape_manager_v1", "wp_fractional_scale_manager_v1",
 };
 
-/* Kryptik: a client of a zone's socket is told only of zoneglobals, and
- * binding another global by its number ends its connection; a client of
- * dwl's own socket sees them all. */
+/* Kryptik: a client of a zone's socket is told only of zoneglobals, and of
+ * the idle inhibitor if its zone may hold the screen awake; binding another
+ * global by its number ends its connection. A client of dwl's own socket
+ * sees them all. */
 static bool
 zoneglobal(const struct wl_client *client, const struct wl_global *global, void *data)
 {
+\tconst ZoneColor *z = wl_client_get_user_data((struct wl_client *)client);
 \tconst char *name = wl_global_get_interface(global)->name;
 \tsize_t i;
 
-\tif (!wl_client_get_user_data((struct wl_client *)client))
+\tif (!z)
 \t\treturn true;
+\tif (strcmp(name, "zwp_idle_inhibit_manager_v1") == 0)
+\t\treturn z->hold;
 \tfor (i = 0; i < LENGTH(zoneglobals); i++)
 \t\tif (strcmp(zoneglobals[i], name) == 0)
 \t\t\treturn true;
@@ -1144,6 +1149,173 @@ inputdevice(struct wl_listener *listener, void *data)
      """\t/* On _press_ attempt to process a compositor keybinding, which while
 \t * the session is locked is one of lockedkeys. */
 \tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+"""),
+    # Holding the screen awake (docs/design/laptop.md): an idle inhibitor counts only from a
+    # zone whose file allows it, on a window of it shown on a lit output while a window of that
+    # zone has the keyboard, for holdawakesecs from when that began or a key or button was last
+    # pressed. A zone 0 client's inhibitor holds nothing, and the status names the holder.
+    ("""static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
+""",
+     """static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
+/* Kryptik: the zone holding the screen awake, if any; the monotonic milliseconds its hold
+ * counts from, 0 while none qualifies; and the timer that ends it. */
+static const ZoneColor *holdzone;
+static int64_t holdsince;
+static struct wl_event_source *holdtimer;
+"""),
+    ("""static void checkidleinhibitor(struct wlr_surface *exclude);
+""",
+     """static void checkidleinhibitor(struct wlr_surface *exclude);
+static void holdpress(void);
+static void keyboardfocuschange(struct wl_listener *listener, void *data);
+"""),
+    ("""static struct wl_listener new_idle_inhibitor = {.notify = createidleinhibitor};
+""",
+     """static struct wl_listener new_idle_inhibitor = {.notify = createidleinhibitor};
+static struct wl_listener keyboard_focus_change = {.notify = keyboardfocuschange};
+"""),
+    ("""void
+checkidleinhibitor(struct wlr_surface *exclude)
+{
+\tint inhibited = 0, unused_lx, unused_ly;
+\tstruct wlr_idle_inhibitor_v1 *inhibitor;
+\twl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link) {
+\t\tstruct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
+\t\tstruct wlr_scene_tree *tree = surface->data;
+\t\tif (exclude != surface && (bypass_surface_visibility || (!tree
+\t\t\t\t|| wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly)))) {
+\t\t\tinhibited = 1;
+\t\t\tbreak;
+\t\t}
+\t}
+
+\twlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
+}
+""",
+     """static int64_t
+monotonicms(void)
+{
+\tstruct timespec ts;
+
+\tclock_gettime(CLOCK_MONOTONIC, &ts);
+\treturn (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+void
+checkidleinhibitor(struct wlr_surface *exclude)
+{
+\tstruct wlr_surface *focused = seat->keyboard_state.focused_surface;
+\tconst ZoneColor *keyzone = focused
+\t\t\t? wl_client_get_user_data(wl_resource_get_client(focused->resource)) : NULL;
+\tconst ZoneColor *found = NULL;
+\tstruct wlr_idle_inhibitor_v1 *inhibitor;
+\tint64_t left = 0;
+\tint unused_lx, unused_ly;
+
+\twl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link) {
+\t\tstruct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
+\t\tconst ZoneColor *z = wl_client_get_user_data(wl_resource_get_client(surface->resource));
+\t\t/* A mapped window's scene tree, which unmapnotify clears (patch 0003). A zone
+\t\t * has no layer surface, so the tree's data is its Client. */
+\t\tstruct wlr_scene_tree *tree = surface->data;
+\t\tClient *c;
+
+\t\tif (surface == exclude || locked || !z || !z->hold || z != keyzone || !tree
+\t\t\t\t|| !(c = tree->node.data) || !c->mon || c->mon->asleep
+\t\t\t\t|| !c->mon->wlr_output->enabled || !VISIBLEON(c, c->mon)
+\t\t\t\t|| !wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly))
+\t\t\tcontinue;
+\t\tfound = z;
+\t\tbreak;
+\t}
+\tif (!found) {
+\t\tholdsince = 0;
+\t} else {
+\t\tif (!holdsince)
+\t\t\tholdsince = monotonicms();
+\t\t/* Run out: the lock comes as usual until a key or button starts the cap again. */
+\t\tif ((left = holdsince + holdawakesecs * 1000LL - monotonicms()) <= 0)
+\t\t\tfound = NULL;
+\t}
+\tif (holdtimer)
+\t\twl_event_source_timer_update(holdtimer, found ? (int)left : 0);
+\twlr_idle_notifier_v1_set_inhibited(idle_notifier, found != NULL);
+\tif (found != holdzone) {
+\t\tholdzone = found;
+\t\tprintstatus();
+\t}
+}
+
+static int
+holdtick(void *data)
+{
+\tcheckidleinhibitor(NULL);
+\treturn 0;
+}
+
+/* Kryptik: a key or button pressed, whatever it reaches: the user is there, so a
+ * hold's cap starts again. */
+void
+holdpress(void)
+{
+\tif (holdsince) {
+\t\tholdsince = monotonicms();
+\t\tcheckidleinhibitor(NULL);
+\t}
+}
+
+void
+keyboardfocuschange(struct wl_listener *listener, void *data)
+{
+\tcheckidleinhibitor(NULL);
+}
+"""),
+    ("""\twlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+
+\t/* On _press_ attempt to process a compositor keybinding, which while
+""",
+     """\twlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+\tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED)
+\t\tholdpress();
+
+\t/* On _press_ attempt to process a compositor keybinding, which while
+"""),
+    ("""\tcase WL_POINTER_BUTTON_STATE_PRESSED:
+\t\tcursor_mode = CurPressed;
+""",
+     """\tcase WL_POINTER_BUTTON_STATE_PRESSED:
+\t\tcursor_mode = CurPressed;
+\t\tholdpress();
+"""),
+    ("""\tm->asleep = !event->mode;
+\tupdatemons(NULL, NULL);
+""",
+     """\tm->asleep = !event->mode;
+\tupdatemons(NULL, NULL);
+\t/* Kryptik: a hold counts only on a lit output. */
+\tcheckidleinhibitor(NULL);
+"""),
+    ("""\twl_signal_add(&seat->events.start_drag, &start_drag);
+""",
+     """\twl_signal_add(&seat->events.start_drag, &start_drag);
+\t/* Kryptik: a hold ends when its zone's window loses the keyboard. */
+\twl_signal_add(&seat->keyboard_state.events.focus_change, &keyboard_focus_change);
+"""),
+    ("""\twl_list_remove(&new_idle_inhibitor.link);
+""",
+     """\twl_list_remove(&new_idle_inhibitor.link);
+\twl_list_remove(&keyboard_focus_change.link);
+"""),
+    ("""\tfrontwatch();
+""",
+     """\tfrontwatch();
+\t/* Kryptik: a hold's cap, checked again when it runs out. */
+\tholdtimer = wl_event_loop_add_timer(event_loop, holdtick, NULL);
+"""),
+    ("""\t\t\tprintf("%s browsers", m->wlr_output->name);
+""",
+     """\t\t\tprintf("%s holdawake %s\\n", m->wlr_output->name, holdzone ? holdzone->zone : "");
+\t\t\tprintf("%s browsers", m->wlr_output->name);
 """),
 ]
 

@@ -21,8 +21,13 @@ pub const ALLOWED: &[(&str, u32)] = &[
     ("wp_fractional_scale_manager_v1", 1),
 ];
 
-pub fn allowed_version(interface: &str) -> Option<u32> {
-    ALLOWED.iter().find(|(n, _)| *n == interface).map(|(_, v)| *v)
+/// The idle inhibitor, for a zone whose file lets it hold the screen awake (`[desktop]
+/// hold_awake`, given as --hold-awake); no other zone is told of it. dwl counts a hold only while
+/// the zone's window is shown and has the keyboard (dwl-zone-borders.py).
+pub const HOLD_AWAKE: (&str, u32) = ("zwp_idle_inhibit_manager_v1", 1);
+
+pub fn allowed_version(interface: &str, hold_awake: bool) -> Option<u32> {
+    ALLOWED.iter().chain(hold_awake.then_some(&HOLD_AWAKE)).find(|(n, _)| *n == interface).map(|(_, v)| *v)
 }
 
 /// What the proxy serves itself: a bind of one, and every request on the objects they make, is

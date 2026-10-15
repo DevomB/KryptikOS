@@ -11,7 +11,6 @@
                         (hex & 0xFF) / 255.0f }
 /* appearance */
 static const int sloppyfocus               = 1;  /* focus follows mouse */
-static const int bypass_surface_visibility = 0;
 static const unsigned int borderpx         = 6;  /* the identity channel: wide */
 static const unsigned int bandpx           = 2;  /* how much narrower an unfocused border's colour is */
 static const unsigned int barpx            = 22; /* the bar naming a fullscreen window's zone */
@@ -20,12 +19,16 @@ static const float rootcolor[]             = COLOR(0x101418ff);
 static const float urgentcolor[]           = COLOR(KRYPTIK_URGENT_BORDER);
 static const float fullscreen_bg[]         = {0.0f, 0.0f, 0.0f, 1.0f};
 
-/* zone -> border colour and proxy uid, and a socket each; see zone-colours.h */
-#define ZONE_ENTRY(name, border, proxy) { name, COLOR(border), proxy },
+/* zone -> border colour, proxy uid and whether it may hold the screen awake, and a socket
+ * each; see zone-colours.h */
+#define ZONE_ENTRY(name, border, proxy, hold) { name, COLOR(border), proxy, hold },
 static const ZoneColor zonecolors_table[] = {
 	KRYPTIK_ZONE_COLOURS(ZONE_ENTRY)
 };
 static const float unzonedcolor[] = COLOR(KRYPTIK_UNZONED_BORDER);
+/* How long a zone's window holds the screen awake after the last key or button is pressed
+ * (dwl-zone-borders.py's checkidleinhibitor); the lock and the blanking then come as usual. */
+static const int holdawakesecs = 4 * 60 * 60;
 
 /* tagging - TAGCOUNT must be no greater than 31 */
 #define TAGCOUNT (9)

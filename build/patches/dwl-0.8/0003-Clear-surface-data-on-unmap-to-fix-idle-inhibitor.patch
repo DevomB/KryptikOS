@@ -1,0 +1,30 @@
+From 4847f97678f705352a8ffa3995c69b5bb2226207 Mon Sep 17 00:00:00 2001
+From: klim <klim@noreply.codeberg.org>
+Date: Mon, 20 Jul 2026 11:26:54 +0200
+Subject: [PATCH] Clear surface->data on unmap to fix idle-inhibitor
+ use-after-free
+
+mapnotify() stores the client's scene tree in client_surface(c)->data;
+checkidleinhibitor() later reads it back as a wlr_scene_tree and calls
+wlr_scene_node_coords() on it. unmapnotify() frees the scene tree with
+wlr_scene_node_destroy() but leaves surface->data dangling, so the next
+arrange() -> checkidleinhibitor() dereferences freed memory and crashes
+(SIGSEGV) whenever an idle inhibitor outlives the unmap.
+
+Reset the pointer to NULL on unmap so the existing !tree guard handles it.
+---
+ dwl.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/dwl.c b/dwl.c
+index df9b2ba..2e63c8c 100644
+--- a/dwl.c
++++ b/dwl.c
+@@ -2839,6 +2839,7 @@ unmapnotify(struct wl_listener *listener, void *data)
+ 	}
+ 
+ 	wlr_scene_node_destroy(&c->scene->node);
++	client_surface(c)->data = NULL;
+ 	printstatus();
+ 	motionnotify(0, NULL, 0, 0, 0, 0);
+ }

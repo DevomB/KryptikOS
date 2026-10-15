@@ -151,12 +151,8 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
     } else {
         None
     };
-    // The upstream goes by descriptor: a connect through the link reaches the socket checked here.
     let uid_s = session.to_string();
-    let words = [
-        "kryptik-wlproxy", "--zone", zone.name.as_str(), "--listen-fd", "3", "--upstream", "/proc/self/fd/4",
-        "--control-fd", "5", "--control-uid", uid_s.as_str(), "--max-clients", MAX_CLIENTS,
-    ];
+    let words = proxy_words(zone, &uid_s);
     let argv = words.iter().map(|w| CString::new(*w).map_err(|_| format!("{w:?} holds a NUL"))).collect::<Result<Vec<_>, _>>()?;
     let cexe = CString::new(exe.as_os_str().as_bytes()).map_err(|_| "the proxy's path holds a NUL".to_string())?;
     let exe_s = exe.to_str().ok_or("the proxy's path is not UTF-8")?;
@@ -172,6 +168,20 @@ pub fn start(run: &Path, exe: &Path, session: u32, zone: &Zone, root: bool) -> R
         unsafe { libc::_exit(126) }
     }
     Ok(Proxy { session, zone: zone.name.clone(), pid, socket: sock, upstream, _cgroup: cgroup })
+}
+
+/// The proxy's command line, for the session uid `uid`. The upstream goes by descriptor: a connect
+/// through the link reaches the socket checked here. The idle inhibitor is let through only for a
+/// zone whose file lets it hold the screen awake.
+fn proxy_words<'a>(zone: &'a Zone, uid: &'a str) -> Vec<&'a str> {
+    let mut w = vec![
+        "kryptik-wlproxy", "--zone", zone.name.as_str(), "--listen-fd", "3", "--upstream", "/proc/self/fd/4",
+        "--control-fd", "5", "--control-uid", uid, "--max-clients", MAX_CLIENTS,
+    ];
+    if zone.hold_awake {
+        w.push("--hold-awake");
+    }
+    w
 }
 
 /// Kill every proxy an earlier daemon left behind, as a daemon that starts has none of its own yet:

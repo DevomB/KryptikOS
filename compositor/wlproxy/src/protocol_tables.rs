@@ -6,6 +6,7 @@
 //   viewporter.xml  sha256 dcb12279a03746301fe490aaed4b38a403485a925abfce2ccfceb644e104fe71
 //   cursor-shape-v1.xml  sha256 bb57d91e53a79dadab7c612dab87c233393cee73673feefa7442cfbfdd9aed2f
 //   fractional-scale-v1.xml  sha256 5941de5d28f427ecdadddc8623a6f6af0a30b0ab4726847236ba7a7652b81316
+//   idle-inhibit-unstable-v1.xml  sha256 c2ac9f002c6669ca6c02eb9b587b8e9108e3ce6deab4a2de58b576f4f864ca38
 //
 // Each message's arguments in wire order, and how many are descriptors. A
 // new_id with no interface is wl_registry.bind's, which the client names.
@@ -498,6 +499,25 @@ pub static INTERFACES: &[Interface] = &[
         ],
         events: &[
             Message { name: "preferred_scale", args: &[Arg::Uint], fds: 0, since: 1 },
+        ],
+    },
+    Interface {
+        name: "zwp_idle_inhibit_manager_v1",
+        version: 1,
+        requests: &[
+            Message { name: "destroy", args: &[], fds: 0, since: 1 },
+            Message { name: "create_inhibitor", args: &[Arg::NewId { iface: Some("zwp_idle_inhibitor_v1") }, Arg::Object { nullable: false }], fds: 0, since: 1 },
+        ],
+        events: &[
+        ],
+    },
+    Interface {
+        name: "zwp_idle_inhibitor_v1",
+        version: 1,
+        requests: &[
+            Message { name: "destroy", args: &[], fds: 0, since: 1 },
+        ],
+        events: &[
         ],
     },
 ];

@@ -20,7 +20,9 @@ root. The decision is ADR-016 in [decisions](../decisions.md).
   `wp_cursor_shape_manager_v1` and `wp_fractional_scale_manager_v1`, and
   `wl_data_device_manager` as a global of
   its own, which it serves itself while the compositor's stays hidden
-  (below). A cursor named through `wp_cursor_shape_manager_v1` is drawn by
+  (below), and `zwp_idle_inhibit_manager_v1` to a zone whose file lets it
+  hold the screen awake (below). A cursor named through
+  `wp_cursor_shape_manager_v1` is drawn by
   the compositor from its own theme, while an image a zone draws is never
   taken. It disconnects a client
   that binds anything else, and bounds shared-memory pools at 128 MiB each
@@ -458,11 +460,16 @@ Four things are needed, each with its own review. The first three are built.
   down. It tells a zone only its output's scale, which `wl_output` gives it
   already, rounded up to a whole number. `make gui-test` has a zone's window
   hear its scale through its proxy.
-- **`zwp_idle_inhibit_manager_v1`**, so video keeps the screen awake; the
-  chrome shows which zone holds it. It comes with the browser image, under
-  the conditions the [laptop design](laptop.md#power-management-without-logind)
-  sets for holding the screen awake; until then nothing a zone does holds
-  off the lock or the blanking.
+- **Holding the screen awake.** For a zone whose file says `[desktop]
+  hold_awake = true`, `personal` and `work`, the proxy lets
+  `zwp_idle_inhibit_manager_v1` through, and dwl offers it on that zone's
+  socket alone: kryptikd reads the file for the proxy's `--hold-awake`, and
+  dwl through `zone-colours.h`. dwl counts a hold under the conditions the
+  [laptop design](laptop.md#power-management-without-logind) sets, and its
+  status names the zone holding the screen awake, for the chrome to show.
+  `make gui-test` has personal's window keep zone 0's idle timer from
+  running out while it has the keyboard, and lose its hold to a zone 0
+  window and to the lock; `untrusted` is offered no inhibitor.
 
 `xdg_activation_v1` stays hidden: it lets a client take focus, and a zone
 must not raise a window over another zone's. Input methods are in the

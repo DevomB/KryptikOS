@@ -53,6 +53,11 @@ glyph          = "★"
 label          = "VAULT"
 ```
 
+A zone whose window may hold off the lock and the blanking while it plays
+video says `[desktop] hold_awake = true`, under the conditions in the
+[laptop design](../docs/design/laptop.md#power-management-without-logind);
+`personal` and `work` do, and `untrusted` never.
+
 [Zone policy files](../docs/design/zone-policy-files.md) covers the seccomp
 policy files and the optional `[policy] landlock` file, which narrows the
 Landlock ruleset every zone gets at entry. No shipped zone names a Landlock
