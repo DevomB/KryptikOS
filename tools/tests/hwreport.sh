@@ -215,6 +215,94 @@ for f in build/service-scripts/hw-report.sh tools/install/kryptik-hwreport.sh; d
     [[ "$m" -ge 1 && "$m" -eq "$v" ]] && green "${f}: mounts the stick as FAT and nothing else" || red "${f}: ${m} mount(s), ${v} of them as FAT"
 done
 
+echo "-- the sound, by the kinds of docs/design/laptop-audio.md"
+want "the sound has its place"              '^== audio ==$'
+A="$W/audio.txt"
+# The report's audio section, from the tree as it stands.
+audio_now() {
+    KRYPTIK_HWREPORT_ROOT="$W" sh "$TOOL" > "$W/report-audio.txt" 2>&1
+    awk '$0 == "== audio ==" { on = 1; next } on && /^== .* ==$/ { exit } on' "$W/report-audio.txt" > "$A"
+}
+aud()   { if grep -qE -- "$2" "$A"; then green "$1"; else red "$1: $(paste -sd'|' "$A")"; fi; }
+noaud() { if grep -qE -- "$2" "$A"; then red "$1: $(paste -sd'|' "$A")"; else green "$1"; fi; }
+# Each kind on a machine with no other sound: the controllers, codecs, tables
+# and ACPI devices of the kind before are taken away first.
+quiet() {
+    local p
+    for p in 0000:00:1f.3 0000:04:00.5 0000:04:00.6; do
+        rm -rf "$W/sys/devices/pci0000:00/$p" "$W/sys/bus/pci/devices/$p"
+    done
+    rm -rf "$W/sys/bus/hdaudio" "$W/sys/firmware/acpi" "$W/sys/bus/acpi" "$W/sys/devices/LNXSYSTM:00" "$W/sys/devices/platform"
+}
+codec() {   # codec NAME VENDOR SUBSYSTEM: an HD Audio codec on the bus its controller's driver makes
+    put "sys/bus/hdaudio/devices/$1/vendor_id" "0x$2"; put "sys/bus/hdaudio/devices/$1/subsystem_id" "0x$3"
+}
+driver pci snd_hda_intel module
+
+quiet
+pci 0000:00:1f.3 0x040300 8086 a0c8 snd_hda_intel
+codec hdaudioC0D0 10ec0287 17aa22e6; codec hdaudioC0D2 80862812 80860101
+audio_now
+aud "HD Audio with no DSP, and the driver that took it" '^controller 0000:00:1f\.3 class 040300 8086:a0c8 rev 20 driver snd_hda_intel$'
+aud "its codec, by maker and subsystem"     '^codec 10ec0287 sub 17aa22e6$'
+aud "and the graphics' own"                 '^codec 80862812 sub 80860101$'
+aud "no NHLT table, said so"                '^nhlt: none$'
+noaud "nothing on SoundWire, no amplifier, no coprocessor" '^(soundwire|amplifier|acp) '
+
+quiet
+pci 0000:00:1f.3 0x040380 8086 a0c8 snd_hda_intel
+codec hdaudioC0D0 10ec0287 17aa22e6
+# A 36-byte header, then two endpoints of 16 bytes: a microphone array (2) and an I2S link (3).
+mkdir -p "$W/sys/firmware/acpi/tables"
+{ printf 'NHLT'; head -c 32 /dev/zero; printf '\002'
+  printf '\020\000\000\000\002'; head -c 11 /dev/zero
+  printf '\020\000\000\000\003'; head -c 11 /dev/zero; } > "$W/sys/firmware/acpi/tables/NHLT"
+audio_now
+aud "a controller with a DSP, by its class" '^controller 0000:00:1f\.3 class 040380 '
+aud "the NHLT's microphone array and I2S link" '^nhlt: 2 endpoints, pdm 1, ssp 1$'
+
+quiet
+pci 0000:00:1f.3 0x040380 8086 a0c8 snd_hda_intel
+codec hdaudioC0D2 80862812 80860101
+# The SoundWire controller under the HD Audio one, at _ADR 0x40000000, with a
+# Realtek RT711 on link 0 and an RT1316 on link 1, beside a node that is not it.
+acpi=sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0A08:00/device:20
+put "$acpi/device:21/adr" 0x00000000
+put "$acpi/device:21/device:25/adr" 0x000030025d071101
+put "$acpi/device:22/adr" 0x40000000
+put "$acpi/device:22/device:23/adr" 0x000030025d071101
+put "$acpi/device:22/device:24/adr" 0x000131025d131601
+ln -s "$W/$acpi" "$W/sys/devices/pci0000:00/0000:00:1f.3/firmware_node"
+audio_now
+aud "a part on SoundWire link 0, by maker and part" '^soundwire 0000:00:1f\.3 link 0 part 025d:0711$'
+aud "and one on link 1"                     '^soundwire 0000:00:1f\.3 link 1 part 025d:1316$'
+[[ "$(grep -c '^soundwire ' "$A")" -eq 2 ]] && green "only under the controller at 0x40000000" || red "SoundWire lines: $(grep -c '^soundwire ' "$A")"
+
+quiet
+pci 0000:04:00.5 0x048000 1022 15e2
+put sys/devices/pci0000:00/0000:04:00.5/revision 0x6f
+pci 0000:04:00.6 0x040300 1022 15e3 snd_hda_intel
+codec hdaudioC1D0 10ec0257 17aa3802
+mkdir -p "$W/sys/firmware/acpi/tables"
+{ printf 'DSDT'; head -c 60 /dev/zero; printf 'AcpDmicConnected'; head -c 8 /dev/zero; } > "$W/sys/firmware/acpi/tables/DSDT"
+audio_now
+aud "AMD's coprocessor, its revision, and no driver" '^acp 0000:04:00\.5 class 048000 1022:15e2 rev 6f driver -$'
+aud "the property its driver looks for"    '^acpi names: AcpDmicConnected$'
+aud "and the HD Audio beside it"            '^controller 0000:04:00\.6 class 040300 1022:15e3 rev 20 driver snd_hda_intel$'
+
+quiet
+pci 0000:00:1f.3 0x040300 8086 a0c8 snd_hda_intel
+codec hdaudioC0D0 10ec0287 17aa22e6
+# Two Cirrus CS35L41 amplifiers ACPI describes as one device, which nothing
+# drives, and another the firmware says is absent.
+put sys/bus/acpi/devices/CSC3551:00/status 15
+mkdir -p "$W/sys/devices/platform/CSC3551:00"
+ln -s "$W/sys/devices/platform/CSC3551:00" "$W/sys/bus/acpi/devices/CSC3551:00/physical_node"
+put sys/bus/acpi/devices/CSC3551:01/status 0
+audio_now
+aud "the amplifiers, and that nothing drives them" '^amplifier CSC3551:00 driver -$'
+noaud "not those the firmware calls absent" '^amplifier CSC3551:01'
+
 echo
 echo "${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]
