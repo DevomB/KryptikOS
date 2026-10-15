@@ -312,7 +312,9 @@ Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. The browser is Firefox in `untrusted`, `personal` and `work`, which
 carry its software image, and lynx in a terminal elsewhere; Firefox opens
-PDFs too. A zone with encrypted storage asks for its passphrase when it starts,
+PDFs too. A zone runs one Firefox: asked for again while it is open there,
+it says that Firefox is already running, and a new window comes from the
+open one (Ctrl+N). A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. Under the zones, a Network line says what
 the net zone reports: whether it is ready, the Wi-Fi network it joined (or
