@@ -182,7 +182,7 @@ medium)
     if [[ "$ZRC" -eq 0 && "$ZOUT" == *"EFI/"* ]]; then pass "medium-esp-read" "$(oneline <<<"$ZOUT")"; else fail "medium-esp-read" "rc ${ZRC}: $(oneline <<<"$ZOUT")"; fi
     as_user "kryptik-launch --stick-grant untrusted $root ro" > /dev/null 2>&1
     zrun untrusted -- kryptik-stick list /
-    if [[ "$ZRC" -ne 0 && "$ZOUT" == *"no FAT filesystem"* ]]; then pass "medium-root-refused" "$(oneline <<<"$ZOUT")"; else fail "medium-root-refused" "rc ${ZRC}: $(oneline <<<"$ZOUT")"; fi
+    if [[ "$ZRC" -ne 0 && "$ZOUT" == *"no FAT or exFAT filesystem"* ]]; then pass "medium-root-refused" "$(oneline <<<"$ZOUT")"; else fail "medium-root-refused" "rc ${ZRC}: $(oneline <<<"$ZOUT")"; fi
     ;;
 card)
     # Given to write, as a user might, an exFAT card is still only read: the reader writes FAT alone.
