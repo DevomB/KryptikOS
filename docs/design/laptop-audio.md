@@ -40,8 +40,8 @@ any of these drivers: the audio controller's PCI class (0x040100 or
 0x040380 means a DSP, 0x040300 none), an `NHLT` table under
 `/sys/firmware/acpi/tables`, and whether its ACPI tables describe SoundWire
 links or amplifiers (`CSC3551` for Cirrus's CS35L41, `TIAS2781` for TI's).
-Testing on physical hardware is planned for October 2026, and its Intel and
-AMD laptops will show which kinds they are.
+Testing on physical hardware is planned for October 2026. The Intel and AMD
+laptops tested then will show which kinds they are.
 
 ## What each needs
 
