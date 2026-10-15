@@ -10,9 +10,10 @@ import sys
 
 # Exact-string edits rather than a diff, so a different dwl fails with the text
 # not found instead of patching with fuzz. Each zone reaches dwl through a
-# socket of its own, taken from its proxy's uid alone and offered only the
-# globals the proxy lets through, and a window's zone is the socket its
-# client came through. Its border is that
+# socket of its own, taken from its proxy's uid and the session's own programs
+# alone and offered only the globals the proxy lets through, and a window's
+# zone, which places it and colours it, is the socket its client came through.
+# Its border is that
 # zone's colour; focus is shown by width (a band of the root colour when
 # unfocused), and fullscreen keeps the border under a bar that names the
 # zone. A zone's popups are drawn inside its window's frame and last while
@@ -171,6 +172,36 @@ zonecolors(Client *c)
 void
 applyrules(Client *c)
 {
+"""),
+    # applyrules: a zone's window matches the rules by its socket's zone, never by its claims.
+    ("""\t/* rule matching */
+\tconst char *appid, *title;
+\tuint32_t newtags = 0;
+\tint i;
+\tconst Rule *r;
+\tMonitor *mon = selmon, *m;
+
+\tappid = client_get_appid(c);
+\ttitle = client_get_title(c);
+""",
+     """\t/* rule matching */
+\tconst char *appid, *title;
+\tuint32_t newtags = 0;
+\tint i;
+\tconst Rule *r;
+\tMonitor *mon = selmon, *m;
+\tconst ZoneColor *z = clientzone(c);
+\tchar zoneid[64];
+
+\tappid = client_get_appid(c);
+\ttitle = client_get_title(c);
+\t/* Kryptik: a zone's window is placed by the zone its socket names, never by
+\t * what its client claims: the rules see kryptik.<zone>. and no title. */
+\tif (z) {
+\t\tsnprintf(zoneid, sizeof(zoneid), "kryptik.%s.", z->zone);
+\t\tappid = zoneid;
+\t\ttitle = "";
+\t}
 """),
     # The zones' sockets: one each, accepted by hand so that dwl knows the
     # zone of every client, and the globals a zone's client is offered.

@@ -579,6 +579,14 @@ jobs:
           if [ -f production-media.tar.zst ]; then sudo tar --zstd -xf production-media.tar.zst -C work; rm -f production-media.tar.zst; fi
           ls work/images; df -h /mnt | tail -1
 
+      # The host suites' proxy-calls traces the static proxy's live tests, as CI's Compartment layer
+      # does; root runs them with this user's cargo and rustup, which tools/acceptance.sh finds.
+      - name: The proxy-calls suite's target and strace
+        if: contains(matrix.suites, 'build')
+        run: |
+          command -v strace >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq strace; }
+          rustup target add x86_64-unknown-linux-musl
+
       # The script, not make, which turns every failure into 2; exit 2 is a part's normal answer.
       - name: Acceptance of these suites
         env:

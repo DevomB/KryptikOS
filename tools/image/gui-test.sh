@@ -98,6 +98,8 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT KEY-FOCUS-NAMED 1" "key:alt+j" "expect:GT KEY-FOCUS-NAMED 2" "key:alt+j" \
     "expect:GT KEY-FOCUS-NAMED 3" "key:alt+j" "expect:GT KEY-FOCUS-NAMED back-1" "key:alt+k" \
     "expect:GT KEY-FOCUS-NAMED back-2" "key:alt+k" "expect:GT KEY-FOCUS-NAMED back-3" "key:alt+k" \
+    "expect:GT KEY-VIEW-VAULT" "key:alt+9" "expect:GT KEY-FOCUS-VAULT" "key:alt+j" \
+    "expect:GT KEY-VAULT-BACK" "key:alt+1" \
     "expect:GT KEY-FOCUS-CLIP 1" "key:alt+j" "expect:GT KEY-FOCUS-CLIP 2" "key:alt+j" \
     "expect:GT KEY-FOCUS-CLIP 3" "key:alt+j" "expect:GT KEY-FOCUS-CLIP 4" "key:alt+j" \
     "expect:GT KEY-FOCUS-CLIP-PERSONAL" "key:alt+j" \
@@ -152,7 +154,7 @@ gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*f
 if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 25 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
 for name in session-socket compositor-running chrome-focus-record chrome-window-is-zone0 zone0-sees-capture zone-proxy-path zone-sees-needed zone-hidden-globals zone-bind-refused proxy-logged-refusal \
-            proxy-upstream-zone-socket zone-socket-allowlist zone-socket-bind-refused zone-socket-names-window \
+            proxy-upstream-zone-socket zone-socket-allowlist zone-socket-bind-refused zone-socket-names-window vault-tag-by-socket \
             proxy-own-user proxy-cgroup proxy-uid-reaches-nothing zone-socket-refuses-other-proxy proxy-uid-socket-sweep oneshot-runner-serves-root-alone \
             map-keeps-zone0-focus close-keeps-zone0-focus alone-keeps-no-keyboard alone-reached-by-key focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone menu-names-stale-statement menu-names-install-age menu-update-auto menu-names-failed-trial menu-names-armed-trial zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved zone-copy-pastes-in-zone zone-copy-stays-in-zone zone-copy-not-in-zone0 \
             move-door-unreached move-crosses-zones move-leaves-nothing-behind move-in-no-log move-door-refuses-others \
