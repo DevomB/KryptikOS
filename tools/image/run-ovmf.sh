@@ -90,6 +90,7 @@ done
 [[ "$NOMEDIA" -eq 1 && "${#DISKS[@]}" -eq 0 ]] && die "--no-media needs at least one --disk"
 [[ -n "$UNTIL" && "$MODE" != smoke ]] && die "--until is for --mode smoke"
 [[ "$HEAD2" -eq 1 && ( "$GPU" -ne 1 || "$MODE" != serve ) ]] && die "--second-head is for --gpu in --mode serve"
+[[ "$HEAD2" -eq 1 && "$S3" -eq 1 ]] && die "--second-head needs virtio-gpu, which --s3 gives up for std VGA's framebuffer"
 
 # Files only. This hands paths to a process that writes to them.
 regular_file() {
