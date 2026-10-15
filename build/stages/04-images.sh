@@ -115,8 +115,12 @@ build_image() {   # build_image NAME
     rm -f "${KRYPTIK_WORK}/.stamps/image-${name}-"*
     mkdir -p "${top}/upper" "${top}/overlay-work" "${top}/sysroot"
     # Stage 03 takes the chroot's root from KRYPTIK_WORK, so the overlay is that work tree's sysroot,
-    # and the real work tree's stamps, logs, build and images are bound into it as usual.
-    for d in .stamps logs build images; do ln -s "${KRYPTIK_WORK}/${d}" "${top}/${d}"; done
+    # and the real work tree's stamps, logs, build and images are bound into it as usual. They are
+    # made here: the images job's work tree is stage 05's hand-off, which has no images directory.
+    for d in .stamps logs build images; do
+        mkdir -p "${KRYPTIK_WORK}/${d}"
+        ln -s "${KRYPTIK_WORK}/${d}" "${top}/${d}"
+    done
     MOUNTED="$top"
     mount -t overlay overlay -o "lowerdir=${lowers}${SYSROOT},upperdir=${top}/upper,workdir=${top}/overlay-work" "${top}/sysroot"
     env KRYPTIK_WORK="$top" KRYPTIK_KRYPTIKD_BIN= KRYPTIK_WLPROXY_BIN= \
