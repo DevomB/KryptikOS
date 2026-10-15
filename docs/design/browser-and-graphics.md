@@ -22,9 +22,10 @@ root. The decision is ADR-016 in [decisions](../decisions.md).
   (below). A cursor named through `wp_cursor_shape_manager_v1` is drawn by
   the compositor from its own theme, while an image a zone draws is never
   taken. It disconnects a client
-  that binds anything else, and bounds shared-memory pools at 64 MiB each,
-  128 MiB per connection and 256 MiB per zone
-  (`compositor/wlproxy/src/policy.rs`).
+  that binds anything else, and bounds shared-memory pools at 128 MiB each
+  and 1 GiB per connection and per zone, which Firefox on two 4K heads fits
+  (`compositor/wlproxy/src/policy.rs`,
+  [resource limits](resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
 - **A zone has no GPU device.** Its `/dev` holds `null`, `zero`, `full`,
   `random`, `urandom`, `tty`, its own `/dev/shm` and a devpts instance
   (`DEVICES` in `compartments/kryptikd/src/rootfs.rs`).
