@@ -191,10 +191,11 @@ firmware from the verified root, so replacing it means re-signing the kernel.
 
 **Left out:** NVIDIA (nouveau needs tens of megabytes of GSP firmware per
 generation, and the firmware framebuffer gives those machines a display);
-Bluetooth and sound, which no zone uses yet. What is not on the list is not
-shipped, and the other way round the acceptance checks that every file a
-shipped module names (`MODULE_FIRMWARE`) and linux-firmware has ships, or that
-`build/config/firmware-accepted.txt` says why it does not.
+Bluetooth, and the firmware of sound DSPs, which nothing here drives yet.
+What is not on the list is not shipped, and the other way round the
+acceptance checks that every file a shipped module names (`MODULE_FIRMWARE`)
+and linux-firmware has ships, or that `build/config/firmware-accepted.txt`
+says why it does not.
 
 **CPU microcode** is the same decision. The early loader runs before any
 filesystem and there is no initramfs, so Intel and AMD microcode is built into
@@ -218,9 +219,9 @@ verifies or mounts the root; gives a console and keyboard before the root is
 mounted; or cannot work as a module (netfilter for the `net` zone, microcode,
 the watchdog, a few platform drivers that misbehave when loaded late).
 Everything else, including every network card, GPU and pointing device, is a
-signed module that eudev loads at coldplug. What Kryptik never uses (sound,
-network filesystems, CardBus, AGP, software RAID, conntrack helpers) is not
-built. The rule heads `build/config/kernel/boot.fragment`, and stage 05 fails
+signed module that eudev loads at coldplug. What Kryptik never uses (network
+filesystems, CardBus, AGP, software RAID, conntrack helpers) is not built.
+The rule heads `build/config/kernel/boot.fragment`, and stage 05 fails
 a kernel larger than `build/config/kernel/size-budget`.
 
 **Why:** a built-in driver is on every machine whether or not its device is. A
@@ -454,8 +455,8 @@ and the compositor routes their keys and commits to that zone's surfaces
 alone; the virtual keyboard is never offered to a zone
 ([the laptop](design/laptop.md)).
 
-This amends ADR-013, which lists sound among what is never built, and
-ADR-012, which leaves sound and Bluetooth firmware out.
+This amends ADR-012, which leaves the firmware of sound DSPs and Bluetooth
+out.
 
 **Why:** a fixed format leaves zone 0 nothing to parse, and the microphone's
 gate stays in trusted code; a sound zone would gate the microphone from the
@@ -472,23 +473,27 @@ work to route input methods by zone.
 **Rejected:** PipeWire in zone 0 with a socket per zone; a sound zone;
 bluetoothd in zone 0; one input method for all zones.
 
-## ADR-022 (proposed): Suspend wipes the disk keys
+## ADR-022: Suspend wipes the disk keys
 
-Before the machine sleeps, the launch daemon locks the screen, freezes every
-zone, and suspends the state partition and every open zone volume with
-their keys wiped (`cryptsetup luksSuspend`). At resume the lock asks for the
-state partition's passphrase, never the TPM, and each zone stays frozen
-until its own passphrase is given. Everything on the resume path runs from
-the verified root and `/run`. Hibernation stays off. The threat model
-changes: a suspended machine holds no disk key, though memory still holds
-what the zones were using ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
+Before the machine sleeps, the screen locks, and the launch daemon freezes
+every zone, lets the clean page cache go, and suspends each open zone volume
+and then the state partition with its key wiped (`cryptsetup luksSuspend`).
+At resume the lock asks for the state partition's passphrase, never the TPM,
+and the zones without a volume thaw once it is given; a zone on a volume
+stays frozen until its own passphrase. Everything on the resume path runs
+from the verified root, `/run`, `/dev`, `/proc` and `/sys`. Hibernation
+stays off. The threat model changes: a suspended machine holds no disk key
+and no cached page of a zone volume's files, though memory still holds what
+the zones' processes held, the files they had mapped included ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
 
-**Why:** a laptop is suspended far more often than it is off, and today a
-suspended Kryptik keeps every key in RAM.
+**Why:** a laptop is suspended far more often than it is off, and with the
+key in RAM, whoever gets past the lock of a suspended machine, or into its
+memory, has the state partition.
 
-**Cost:** a passphrase at every resume, and one for each zone the user
-wants back; a lock client in zone 0; zone 0 programs that touch `/var`
-stall until resume.
+**Cost:** a passphrase at every resume, and one more for each zone on a
+volume when the user goes back to it; a lock client in zone 0 that talks
+to the launch daemon itself; zone 0 programs that touch `/var` stall until
+resume, and the launch daemon answers only the lock meanwhile.
 
 **Rejected:** resuming with the TPM, which would let whoever holds the
 machine resume it; keeping the state partition's key while dropping only

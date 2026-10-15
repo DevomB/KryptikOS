@@ -444,7 +444,7 @@ fn reclaim_locked(dir: &Path, zone: &str) -> Result<(), RegistryError> {
 }
 
 /// `p` names something below `root`. starts_with alone takes `root/../user.slice`.
-fn under(p: &Path, root: &Path) -> bool {
+pub(crate) fn under(p: &Path, root: &Path) -> bool {
     p.starts_with(root) && p != root && !p.components().any(|c| c == Component::ParentDir)
 }
 

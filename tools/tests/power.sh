@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# build/service-scripts/power.sh --once against stand-in /sys trees: the power source it reads,
+# the charge, when it warns and when the charge is critical, the state it writes for the chrome,
+# and the energy preference it sets.
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+P="$ROOT/build/service-scripts/power.sh"
+PASS=0; FAIL=0
+check() {
+    if [[ "$2" == "$3" ]]; then printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1))
+    else printf '  FAIL  %s (got %q, want %q)\n' "$1" "$2" "$3"; FAIL=$((FAIL + 1)); fi
+}
+T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+fresh() { rm -rf "$T/sys" "$T/run"; mkdir -p "$T/sys/class/power_supply"; }
+supply() {   # supply NAME TYPE [ATTR=VALUE...]
+    local d="$T/sys/class/power_supply/$1" kv
+    mkdir -p "$d"; echo "$2" > "$d/type"; shift 2
+    for kv in "$@"; do echo "${kv#*=}" > "$d/${kv%%=*}"; done
+}
+set_attr() { echo "$3" > "$T/sys/class/power_supply/$1/$2"; }   # set_attr NAME ATTR VALUE
+policy() {   # policy N PREFERENCES: a cpufreq policy offering them, at its default
+    local d="$T/sys/devices/system/cpu/cpufreq/policy$1"
+    mkdir -p "$d"; echo "$2" > "$d/energy_performance_available_preferences"
+    echo default > "$d/energy_performance_preference"
+}
+pref() { cat "$T/sys/devices/system/cpu/cpufreq/policy$1/energy_performance_preference"; }
+once() { KRYPTIK_SYSFS="$T/sys" KRYPTIK_POWER_RUN="$T/run" "$P" --once; }
+ALL="default performance balance_performance balance_power power"
+
+echo "-- the source"
+fresh
+check "no supply at all, as in a VM" "$(once)" "source=mains charge=none critical=no warning=none"
+supply AC Mains online=1
+supply BAT0 Battery capacity=50 status=Charging present=1
+check "a laptop on mains" "$(once)" "source=mains charge=50 critical=no warning=none"
+set_attr AC online 0
+check "the same laptop unplugged" "$(once)" "source=battery charge=50 critical=no warning=none"
+supply ucsi USB online=1
+check "a USB charger powers it" "$(once)" "source=mains charge=50 critical=no warning=none"
+
+echo "-- the charge"
+fresh
+supply AC Mains online=0
+supply BAT0 Battery capacity=3 status=Discharging
+check "3% on battery is critical" "$(once)" "source=battery charge=3 critical=yes warning=5"
+supply BAT1 Battery capacity=60 status=Discharging
+check "but not while a second battery is full enough" "$(once)" "source=battery charge=60 critical=no warning=5"
+fresh
+supply hidpp_battery_0 Battery capacity=1 scope=Device
+check "a mouse's empty battery is not the machine's" "$(once)" "source=mains charge=none critical=no warning=none"
+fresh
+supply BAT0 Battery capacity=2 present=0
+supply BAT1 Battery capacity=fail
+check "an absent battery and a bad reading count for nothing" "$(once)" "source=mains charge=none critical=no warning=none"
+fresh
+supply AC Mains online=1
+supply BAT0 Battery capacity=2 status=Charging
+check "2% charging on mains is not critical" "$(once)" "source=mains charge=2 critical=no warning=none"
+
+echo "-- the warnings, once each a discharge"
+fresh
+supply AC Mains online=0
+supply BAT0 Battery capacity=12
+check "12% warns of nothing" "$(once)" "source=battery charge=12 critical=no warning=none"
+set_attr BAT0 capacity 9; once > /dev/null
+check "9% warns at 10%" "$(sed -n 's/^warning=//p' "$T/run/state")" 10
+set_attr BAT0 capacity 8
+check "8% stays at that warning" "$(once)" "source=battery charge=8 critical=no warning=10"
+set_attr BAT0 capacity 4
+check "4% warns at 5%" "$(once)" "source=battery charge=4 critical=no warning=5"
+set_attr BAT0 capacity 7
+check "a charge that rises again does not take a warning back" "$(once)" "source=battery charge=7 critical=no warning=5"
+set_attr AC online 1
+check "mains clears it" "$(once)" "source=mains charge=7 critical=no warning=none"
+set_attr AC online 0
+check "and the next discharge warns again" "$(once)" "source=battery charge=7 critical=no warning=10"
+check "the state the chrome reads" "$(tr '\n' ' ' < "$T/run/state")" "source=battery charge=7 critical=no warning=10 "
+echo "warning=\$(reboot)" > "$T/run/state"
+check "a state that is not the service's own is read as no warning" "$(once)" "source=battery charge=7 critical=no warning=10"
+
+echo "-- the energy preference"
+fresh
+supply AC Mains online=1
+supply BAT0 Battery capacity=80
+policy 0 "$ALL"; policy 1 "default performance"
+once > /dev/null
+check "on mains, balance_performance" "$(pref 0)" balance_performance
+check "a policy without it keeps its own" "$(pref 1)" default
+set_attr AC online 0
+once > /dev/null
+check "on battery, balance_power" "$(pref 0)" balance_power
+
+printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+[[ "$FAIL" -eq 0 ]]

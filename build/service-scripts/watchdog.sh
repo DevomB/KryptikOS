@@ -17,6 +17,11 @@ if [ "${#fds[@]}" -eq 0 ]; then
     echo "watchdog: no watchdog device on this machine; nothing to feed"
     exec sleep infinity
 fi
+# The rounds wait in bash's own sleep, loaded once here: sleep(1) would be a program started
+# every round, and while the state partition is suspended a program's loader can wait on /etc,
+# whose upper layer is there, so the feeder would starve and reset the machine at the passphrase
+# prompt.
+enable -f /usr/lib/bash/sleep sleep || echo "watchdog: bash's sleep did not load; each round starts sleep(1)" >&2
 while :; do
     for fd in "${fds[@]}"; do
         printf . >&"$fd" || echo "watchdog: a write to descriptor ${fd} failed" >&2

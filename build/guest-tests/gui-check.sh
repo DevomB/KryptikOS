@@ -27,6 +27,15 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
+#   GT KEY-VOLUME-DOWN                              press the volume-down key
+#   GT KEY-LOCK-LAYOUT                              press Alt+Shift+l
+#   GT KEY-LOCKED-VOLUME-UP                         press the volume-up key
+#   GT KEY-LOCKED-MUTE, GT KEY-LOCKED-MUTE-AGAIN    press the mute key
+#   GT KEY-LOCKED-MENU                              press Alt+p, then Escape
+#   GT KEY-LAYOUT-NEXT, GT KEY-LAYOUT-BACK          press Super+Space (the next layout)
+#   GT LOCK-TYPE-OTHER-LAYOUT, GT LOCK-TYPE-FIRST-LAYOUT
+#                                                   type the user's password and Enter
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
@@ -93,9 +102,19 @@ done
 [[ "$(s6-svstat -o up /run/service/kryptikd-serve 2>/dev/null)" = true ]] && pass "launch-daemon-up" || fail "launch-daemon-up"
 
 # --- the session ------------------------------------------------------------
+# The user's two layouts, us then de, for the lock's round with both; us is in force first, so
+# every other round types as it would with one.
+su -s /bin/sh "$USER_NAME" -c 'mkdir -p "$HOME/.config/kryptik" && printf "us de\n" > "$HOME/.config/kryptik/keyboard"'
 su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/dev/null 2>&1 &'
 if wait_for 30 test -S "$RT/wayland-0"; then pass "session-socket" "dwl listening at $RT/wayland-0"; else fail "session-socket" "$(cat "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"; fi
 pgrep -u "$USER_NAME" -x dwl >/dev/null && pass "compositor-running" || fail "compositor-running" "$(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
+           | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"
+if [[ "$dwl_env" == "KRYPTIK_LAYOUTS=us de XKB_DEFAULT_LAYOUT=us,de XKB_DEFAULT_OPTIONS=grp:win_space_toggle XKB_DEFAULT_VARIANT=, " ]]; then
+    pass "desktop-layouts" "the user's list became dwl's keymap: ${dwl_env}"
+else
+    fail "desktop-layouts" "dwl's environment: ${dwl_env:-none}"
+fi
 wait_for 20 test -f "$RT/kryptik/focus" && pass "chrome-focus-record" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "chrome-focus-record" "no $RT/kryptik/focus after 20 s"
 # The record exists before the chrome's own window has mapped: wait for the window.
 wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus" && pass "chrome-window-is-zone0" "the launcher window is recorded as zone 0 (trusted)" || fail "chrome-window-is-zone0" "$(cat "$RT/kryptik/focus" 2>/dev/null | tr '\n' ' '); terminals: $(pgrep -u "$USER_NAME" -a havoc 2>/dev/null | tr '\n' ';'); session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
@@ -788,6 +807,8 @@ for d in /proc/[0-9]*; do
     # An interpreter only as one of Kryptik's scripts; havoc only around the chrome's menu or a launch.
     case "$exe" in
         /usr/bin/s6-*|/usr/sbin/s6-*|/usr/libexec/s6-*|/usr/sbin/udevd|/usr/sbin/agetty|/usr/bin/seatd|/usr/bin/kryptikd|/usr/bin/kryptik-wlproxy|/usr/bin/kryptik-launch|/usr/bin/kryptik-lock|/usr/bin/dwl|/usr/bin/sleep) ;;
+        # Zone 0's mixer, which the zones play and record through.
+        /usr/libexec/kryptik/kryptik-sound) ;;
         /usr/bin/bash|/usr/bin/python3)
             case "$script" in /usr/libexec/kryptik/*|/usr/bin/kryptik-session|/usr/bin/kryptik-chrome) ;; *) foreign+=("$p ${cmd:0:60}") ;; esac ;;
         /usr/bin/havoc)
@@ -901,15 +922,19 @@ else
     fail "move-in-no-log" "proxy lines: $(grep -h 'move' "$PROXIES/untrusted.log" 2>/dev/null | tail -2 | tr '\n' ' '); holding the text: $(grep -rlsF moved4471 "$RT/kryptik" "$PROXIES" /run/uncaught-logs | tr '\n' ' ')"
 fi
 # The gesture's socket answers the session's user alone: root, past the socket's 0600, is
-# refused as any other uid would be.
+# refused as any other uid would be. The proxy writes the refusal and closes without reading,
+# so the request may meet a closed socket; the refusal is read all the same.
 door="$PROXIES/untrusted.control"
 refusal="$(python3 - "$door" 2>&1 <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX)
 s.settimeout(5)
 s.connect(sys.argv[1])
-s.sendall(b"take\n")
-s.shutdown(socket.SHUT_WR)
+try:
+    s.sendall(b"take\n")
+    s.shutdown(socket.SHUT_WR)
+except (BrokenPipeError, ConnectionResetError):
+    pass
 print(s.recv(200).decode(errors="replace").strip())
 PY
 )"
@@ -1199,6 +1224,100 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+
+# --- no sleep where the display would not come back --------------------------------------------
+# This VM shows through virtio-gpu, whose driver a sleep would leave waiting for good, so the
+# daemon refuses before it freezes a zone or drops a key. `kryptik suspend` locks first and is
+# told; the password opens the same session, on the same boot, and the compositor answers.
+boot0="$(< /proc/sys/kernel/random/boot_id)"
+entries0="$(dmesg 2>/dev/null | grep -c 'PM: suspend entry')"
+as_user "kryptik suspend" > "$LOG/suspend.out" 2>&1 &
+susp_pid=$!
+told_awake() { grep -q "suspend: error: the display's driver, virtio-gpu, does not come back from a sleep" "$LOG/suspend.out"; }
+if wait_for 30 told_awake; then
+    pass "suspend-refused-virtio-gpu" "kryptik suspend locked, and the daemon refused the sleep: virtio-gpu"
+else
+    fail "suspend-refused-virtio-gpu" "$(tr '\n' ' ' < "$LOG/suspend.out" | cut -c1-300)"
+fi
+# Keys in the second after the lock's label changed, as it does with the refusal, go nowhere.
+sleep 2
+echo "GT LOCK-TYPE-SUSPEND"
+susp_ended() { ! kill -0 "$susp_pid" 2>/dev/null; }
+none_suspended() { ! grep -qx 1 /sys/block/dm-*/dm/suspended 2>/dev/null; }
+still_answers() { timeout 10 su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -q 'sync done'; }
+entries="$(dmesg 2>/dev/null | grep -c 'PM: suspend entry')"
+if wait_for 30 susp_ended && grep -q '^kryptik-lock: unlocked' "$LOG/suspend.out" \
+        && [[ "$(< /proc/sys/kernel/random/boot_id)" == "$boot0" && "$entries" == "$entries0" ]] && none_suspended && still_answers; then
+    pass "suspend-refused-stays-awake" "the password unlocked the same boot, the kernel was never asked to sleep, no mapping is suspended, and the compositor answers"
+else
+    fail "suspend-refused-stays-awake" "boot $(< /proc/sys/kernel/random/boot_id) (was ${boot0}); suspend entries ${entries} (were ${entries0}); suspended mappings: $(grep -lx 1 /sys/block/dm-*/dm/suspended 2>/dev/null | tr '\n' ' '); $(tail -3 "$LOG/suspend.out" | tr '\n' ' ')"
+fi
+wait "$susp_pid" 2>/dev/null
+# The volume keys are dwl's bindings to zone 0's mixer, which runs without a card here.
+mixer() { /usr/libexec/kryptik/kryptik-sound --control status 2>&1 | sed -n 's/^master //p'; }
+master_is() { [[ "$(mixer)" == "$1" ]]; }
+m0="$(mixer)"; m0="${m0%% *}"
+echo "GT KEY-VOLUME-DOWN"
+if [[ "$m0" =~ ^[0-9]+$ ]] && wait_for 10 master_is "$(( m0 >= 5 ? m0 - 5 : 0 ))"; then
+    pass "volume-key" "the volume-down key took the mixer from ${m0} to $(mixer)"
+else
+    fail "volume-key" "before: ${m0:-no answer}; after: $(mixer)"
+fi
+# With two layouts the lock names the one in force, as Super+Space switches: the password typed
+# in de, where this keyboard's - key types another character, is refused, and typed again once
+# Super+Space is back on us, it opens the lock.
+layout_said() { grep -c "^kryptik-lock: layout $1\$" "$slog" 2>/dev/null; }
+layout_more() { [[ "$(layout_said "$1")" -gt "$2" ]]; }
+us0="$(layout_said US)"; de0="$(layout_said DE)"
+locked2="$(said locked)"; refused2="$(said refused)"; unlocked2="$(said unlocked)"
+echo "GT KEY-LOCK-LAYOUT"
+wait_for 20 more locked "$locked2" && wait_for 10 layout_more US "$us0"; named_us=$?
+# Under that lock the volume keys still act, and no other binding does: Alt+p opens no menu.
+# Escape then clears the p the lock took as typed.
+m1="$(mixer)"; m1="${m1%% *}"; up1="$(( ${m1:-0} + 5 > 100 ? 100 : ${m1:-0} + 5 ))"
+menus_locked="$(menu_windows)"
+echo "GT KEY-LOCKED-VOLUME-UP"
+wait_for 10 master_is "$up1"; went_up=$?
+echo "GT KEY-LOCKED-MUTE"
+wait_for 10 master_is "$up1 muted"; went_mute=$?
+echo "GT KEY-LOCKED-MUTE-AGAIN"
+wait_for 10 master_is "$up1"; went_back=$?
+if [[ "$m1" =~ ^[0-9]+$ && "$went_up/$went_mute/$went_back" == 0/0/0 ]]; then
+    pass "lock-passes-volume-keys" "locked, the volume-up key took the mixer from ${m1} to ${up1}, and the mute key muted it and unmuted it"
+else
+    fail "lock-passes-volume-keys" "from ${m1:-no answer}: up ${went_up}, mute ${went_mute}, unmute ${went_back} (0 is done); now $(mixer)"
+fi
+echo "GT KEY-LOCKED-MENU"
+sleep 4
+if [[ "$(menu_windows)" -eq "$menus_locked" && "$(said unlocked)" -eq "$unlocked2" ]]; then
+    pass "lock-holds-other-keys" "under the lock Alt+p opened no menu, and the session stayed locked"
+else
+    fail "lock-holds-other-keys" "menu windows: ${menus_locked} before Alt+p, $(menu_windows) after; $(grep 'kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+fi
+echo "GT KEY-LAYOUT-NEXT"
+wait_for 10 layout_more DE "$de0"; named_de=$?
+if [[ "$named_us/$named_de" == 0/0 ]]; then
+    pass "lock-names-layout" "the lock named US, then DE after Super+Space"
+else
+    fail "lock-names-layout" "$(grep 'kryptik-lock' "$slog" | tail -4 | tr '\n' ' ')"
+fi
+echo "GT LOCK-TYPE-OTHER-LAYOUT"
+if wait_for 15 more refused "$refused2"; then
+    pass "lock-refuses-other-layout" "the password typed in de was refused: $(grep '^kryptik-lock: refused' "$slog" | tail -1)"
+else
+    fail "lock-refuses-other-layout" "$(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
+us1="$(layout_said US)"
+echo "GT KEY-LAYOUT-BACK"
+wait_for 10 layout_more US "$us1"
+# The refusal's pause, which the next try waits out.
+sleep 3
+echo "GT LOCK-TYPE-FIRST-LAYOUT"
+if wait_for 20 more unlocked "$unlocked2"; then
+    pass "lock-opens-in-first-layout" "back on us, the same keys opened the lock"
+else
+    fail "lock-opens-in-first-layout" "$(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
 # chrome's record follows the monitor in use, and pulling the monitor out

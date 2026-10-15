@@ -57,8 +57,9 @@ pub fn matches(password: &[u8], hash: &str) -> bool {
     ok
 }
 
-/// Wrong passwords in a row, and when the next may be tried: the pause doubles from 2 s to 60 s,
-/// and a right one ends it.
+/// Wrong secrets in a row, and when the next may be tried: the pause doubles from 2 s to 60 s,
+/// and a right one ends it. The screen lock's login password, the state partition's passphrase
+/// and each zone volume's keep one each.
 #[derive(Debug, Default)]
 pub struct Attempts {
     failures: u32,
@@ -71,23 +72,32 @@ impl Attempts {
         self.next.and_then(|n| n.checked_duration_since(now)).filter(|d| !d.is_zero())
     }
 
-    fn failed(&mut self, now: Instant) {
+    /// "wait N s", N rounded up, while one may not be tried.
+    pub fn paused(&self, now: Instant) -> Option<String> {
+        self.wait(now).map(|w| format!("wait {} s", w.as_secs() + u64::from(w.subsec_nanos() > 0)))
+    }
+
+    pub fn failed(&mut self, now: Instant) {
         self.failures = self.failures.saturating_add(1);
         let secs = (1u64 << self.failures.min(6)).min(60);
         self.next = Some(now + Duration::from_secs(secs));
+    }
+
+    pub fn passed(&mut self) {
+        *self = Attempts::default();
     }
 }
 
 /// Check `password` against `user`'s entry in the shadow file at `shadow`. A wrong one is told as
 /// such and pauses the next; while paused, nothing is checked.
 pub fn check(shadow: &Path, user: &str, password: &[u8], attempts: &mut Attempts, now: Instant) -> Result<(), String> {
-    if let Some(w) = attempts.wait(now) {
-        return Err(format!("wait {} s", w.as_secs() + u64::from(w.subsec_nanos() > 0)));
+    if let Some(w) = attempts.paused(now) {
+        return Err(w);
     }
     let text = std::fs::read_to_string(shadow).map_err(|e| format!("{}: {e}", shadow.display()))?;
     let hash = hash_of(&text, user).ok_or_else(|| format!("{user} has no SHA-512 or SHA-256 crypt password to check"))?;
     if matches(password, &hash) {
-        *attempts = Attempts::default();
+        attempts.passed();
         Ok(())
     } else {
         attempts.failed(now);

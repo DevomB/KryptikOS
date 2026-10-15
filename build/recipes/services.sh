@@ -22,6 +22,10 @@ s_services() {
         echo "no sysctl.d fragments to install"
     fi
 
+    # Kryptik's own udev rules, on the verified root beside eudev's.
+    install -m 0644 "${KRYPTIK_ROOT}"/build/config/udev/*.rules /usr/lib/udev/rules.d/
+    ls -la /usr/lib/udev/rules.d/*kryptik*
+
     # The keyboard layouts a machine may name (keyboard.sh): a row whose console
     # keymap does not parse, or whose xkb layout is not there, fails the build.
     local table="${KRYPTIK_ROOT}/build/config/keyboard-layouts" xkb name map layout variant bad=0

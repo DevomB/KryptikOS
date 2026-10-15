@@ -1,0 +1,3 @@
+# The session's group sets the backlight: dwl's brightness keys run
+# /usr/libexec/kryptik/brightness.sh as the session's user. No zone has the /sys to reach it.
+ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp kryptik /sys%p/brightness", RUN+="/bin/chmod g+w /sys%p/brightness"

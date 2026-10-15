@@ -143,9 +143,10 @@ jobs:
           ./tools/prune-sources.sh
           ./tools/verify-signatures.sh > /dev/null 2>&1 || true
 
-      # Not from a pull request: its cache is scoped to the merge ref and would duplicate the set.
+      # From main alone, as the Distro jobs save it: a pull request's cache is scoped to its merge
+      # ref and would duplicate the set.
       - name: Save the sources
-        if: ${{ github.event_name != 'pull_request' && steps.sources.outputs.cache-hit != 'true' }}
+        if: ${{ github.ref == 'refs/heads/main' && steps.sources.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /mnt/kryptik/sources

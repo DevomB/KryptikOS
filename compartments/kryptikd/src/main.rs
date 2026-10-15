@@ -21,8 +21,10 @@ mod registry;
 mod rootfs;
 mod seccomp;
 mod serve;
+mod sound;
 mod spawn;
 mod supplicant;
+mod suspend;
 mod time;
 mod update;
 mod volume;
@@ -72,6 +74,12 @@ USAGE:
                                       close volumes no running zone holds
     kryptikd clipboard move FROM TO   the zone 0 gesture: move FROM's clipboard
                                       payload to TO, emptying FROM (both running)
+    kryptikd suspend [--awake]        freeze every zone, suspend the state partition
+                                      with its key wiped, and sleep (root; the
+                                      session asks the launch daemon, after its
+                                      screen lock); --awake keeps the machine up,
+                                      its state partition waiting for the passphrase;
+                                      with the partition suspended already, sleep
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
@@ -97,6 +105,9 @@ USAGE:
     kryptikd time committed DIR       once boot-success has committed a slot: its
                                       release (the signed manifest in DIR) is the
                                       floor if it is the newest
+    kryptikd sound zones              the zones zone 0's mixer serves, a line each,
+                                      NAME and UID: the uid the zone's root maps to,
+                                      the only peer its socket takes
     kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
                                       checked as nobody on copies: how kryptik-update
                                       apply, which runs as root, has a release checked
@@ -122,11 +133,12 @@ USAGE:
 Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
 an allowlist (see `kryptikd explain NAME`).
 
-    kryptikd volume init|passwd|backup-header|restore-header|destroy|status NAME
+    kryptikd volume init|passwd|backup-header|restore-header|destroy|status|resume NAME
                                       an encrypted zone's LUKS2 volume (root;
                                       the passphrase comes on a descriptor or
                                       the terminal, never on a command line;
-                                      destroy deletes the container and its data)
+                                      destroy deletes the container and its data;
+                                      resume gives it its key after a sleep)
 
 Transfers are a zone verb on the broker socket, sent by the zone that offers
 the file (docs/design/broker.md), not a zone 0 command; the person answers through
@@ -272,6 +284,13 @@ fn main() -> ExitCode {
         "volume" => cmd_volume(&zone_dir, &args),
         "serve" => serve::cmd_serve(&zone_dir, &args),
         "wifi" => cmd_wifi(&zone_dir, &args),
+        "sound" => match args.get(1).map(String::as_str) {
+            Some("zones") => cmd_sound_zones(&zone_dir),
+            _ => {
+                eprintln!("sound: expected `zones`");
+                ExitCode::from(2)
+            }
+        },
         "time" => cmd_time(&args),
         "check-release" => match args.as_slice() {
             [_, dir] => match update::check_release(Path::new(dir)) {
@@ -290,6 +309,7 @@ fn main() -> ExitCode {
             }
         },
         "clipboard" => cmd_clipboard(&args),
+        "suspend" => cmd_suspend(&args),
         "transfer" => {
             eprintln!(
                 "kryptikd: 'transfer' is a zone verb on the broker socket, sent by the zone\n\
@@ -329,6 +349,16 @@ fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+    }
+
+    // A zone whose volume waits for its passphrase is frozen, and thawed would wait on the
+    // volume for good: the volume gives up first, then the stop goes on as for any zone.
+    if suspend::waiting().iter().any(|z| z == name) {
+        if let Err(e) = suspend::give_up_zone(name) {
+            eprintln!("kryptikd: zone {name:?} waits for its volume's passphrase, and its volume would not give up: {e}");
+            return ExitCode::FAILURE;
+        }
+        println!("zone {name:?}: its volume waited for its passphrase and now fails every read and write");
     }
 
     match st {
@@ -747,6 +777,19 @@ fn cmd_list(dir: &Path) -> ExitCode {
     }
 }
 
+fn cmd_sound_zones(dir: &Path) -> ExitCode {
+    match zone::load_all(dir) {
+        Ok(zones) => {
+            print!("{}", sound::zones_list(&zones));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn cmd_show(dir: &Path, name: &str) -> ExitCode {
     let zones = match zone::load_all(dir) {
         Ok(z) => z,
@@ -924,10 +967,11 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
 ///   volume backup-header|restore-header NAME FILE
 ///   volume destroy NAME
 ///   volume status NAME
+///   volume resume NAME --passphrase-file F   the key again after a sleep, and the zone thawed
 fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let Some(name) = args.get(2).filter(|a| !a.starts_with("--")) else {
-        eprintln!("volume: usage: kryptikd volume init|passwd|backup-header|restore-header|destroy|status NAME ...");
+        eprintln!("volume: usage: kryptikd volume init|passwd|backup-header|restore-header|destroy|status|resume NAME ...");
         return ExitCode::from(2);
     };
     let zone = match load_zone(dir, name) {
@@ -970,7 +1014,12 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
             println!("zone      {name}");
             println!("container {vol} ({})", if present { "present" } else { "ABSENT" });
             println!("signature {}", if present { volume::signature_of(&vol) } else { "-".into() });
-            println!("mapping   {} ({})", mapper, if Path::new(&mapper).exists() { "OPEN" } else { "closed" });
+            let open = match Path::new(&mapper).exists() {
+                false => "closed",
+                true if suspend::waiting().iter().any(|z| z == name) => "OPEN, its key dropped with a sleep: volume resume gives it back",
+                true => "OPEN",
+            };
+            println!("mapping   {mapper} ({open})");
             ExitCode::SUCCESS
         }
         "init" => {
@@ -1019,6 +1068,27 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
             let Some(file) = args.get(3) else { eprintln!("volume restore-header NAME FILE"); return ExitCode::from(2) };
             done(&format!("LUKS header restored from {file}"), volume::restore_header(&vol, file))
         }
+        "resume" => {
+            if !root {
+                eprintln!("volume resume needs root; the session gives the passphrase through the menu");
+                return ExitCode::from(2);
+            }
+            let pass = match pass_from("--passphrase-file") { Ok(p) => p, Err(c) => return c };
+            match suspend::resume_zone(name, &pass) {
+                Ok(()) => {
+                    println!("volume {name:?}: its key is back, and the zone thawed");
+                    ExitCode::SUCCESS
+                }
+                Err(suspend::ResumeError::Wrong) => {
+                    eprintln!("volume: zone {name:?}: wrong passphrase");
+                    ExitCode::FAILURE
+                }
+                Err(suspend::ResumeError::Failed(e)) => {
+                    eprintln!("volume: zone {name:?}: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "destroy" => {
             if !root {
                 eprintln!("volume destroy needs root");
@@ -1035,6 +1105,57 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
 
 fn wifi_dir_from(args: &[String]) -> PathBuf {
     PathBuf::from(value(args, "--wifi-dir").unwrap_or(wifi::DEFAULT_DIR))
+}
+
+/// `kryptikd suspend [--awake]`: the launch daemon's suspend, for root. With --awake the key is
+/// dropped and the zones frozen, and the machine stays up: the way back is the same.
+fn cmd_suspend(args: &[String]) -> ExitCode {
+    let awake = match args {
+        [_] => false,
+        [_, flag] if flag == "--awake" => true,
+        _ => {
+            eprintln!("usage: kryptikd suspend [--awake]");
+            return ExitCode::from(2);
+        }
+    };
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!("kryptikd suspend: must run as root; the session asks through kryptik-lock --suspend");
+        return ExitCode::from(2);
+    }
+    if !awake {
+        if let Some(why) = suspend::sleep_refused() {
+            eprintln!("kryptikd suspend: the machine stays awake: {why}");
+            return ExitCode::FAILURE;
+        }
+    }
+    // The zones are frozen and the key gone already: only the sleep is left to do.
+    if suspend::state_suspended() {
+        if awake {
+            eprintln!("kryptikd suspend: the state partition is suspended already");
+            return ExitCode::FAILURE;
+        }
+    } else {
+        match suspend::seal() {
+            Ok(zones) => println!("kryptikd suspend: froze {zones:?}; the state partition's key is dropped"),
+            Err(e) => {
+                eprintln!("kryptikd suspend: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        if awake {
+            return ExitCode::SUCCESS;
+        }
+    }
+    match suspend::sleep() {
+        Ok(()) => {
+            println!("kryptikd suspend: woke; the state partition waits for its passphrase at the screen lock");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd suspend: the machine did not sleep: {e}; the state partition waits for its passphrase all the same");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `kryptikd time floor | status | committed DIR` (docs/design/time.md). The
