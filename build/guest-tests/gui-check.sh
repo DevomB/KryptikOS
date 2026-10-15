@@ -201,7 +201,7 @@ proxy_up="$(readlink "/proc/${ppid0:-none}/fd/4" 2>/dev/null)"
 as_user "WAYLAND_DISPLAY=$zsock /usr/libexec/kryptik/wlprobe list" > "$LOG/probe-zone-socket.out" 2>&1
 offered="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" | sort -u | tr '\n' ' ')"
 beyond="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" \
-    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter|wp_cursor_shape_manager_v1' | tr '\n' ' ')"
+    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter|wp_cursor_shape_manager_v1|wp_fractional_scale_manager_v1' | tr '\n' ' ')"
 if grep -qxF "connected $zsock" "$LOG/probe-zone-socket.out" && [[ -z "$beyond" && "$offered" == *xdg_wm_base* && "$offered" == *wl_seat* ]]; then
     pass "zone-socket-allowlist" "dwl tells untrusted's socket of ${offered% } alone"
 else
@@ -1034,6 +1034,19 @@ if since_mark cursor untrusted | grep -q 'asked for the text cursor by name' && 
     pass "zone-cursor-by-name" "the zone asked for the text cursor by name through its proxy, and its session stood"
 else
     fail "zone-cursor-by-name" "$(since_mark cursor untrusted | tail -4 | tr '\n' ' ')"
+fi
+# --- a zone's window hears the scale it is shown at ------------------------------------------
+# wp_fractional_scale_v1 through the proxy: the compositor tells each window its output's scale,
+# in 120ths, so a browser draws text sharp at 1.5 instead of being scaled down from 2. This
+# machine's output is at 1, which wlroots sends as 120 once the window is shown.
+stop_zone untrusted
+mark scale untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe scale 10" > "$LOG/launch-scale.out" 2>&1
+scale_heard() { since_mark scale untrusted | grep -q 'preferred scale '; }
+if wait_for 20 scale_heard && ! since_mark scale untrusted | grep -qE 'refused|connection closed'; then
+    pass "zone-fractional-scale" "the zone's window heard its $(since_mark scale untrusted | grep -m1 'preferred scale ') through its proxy"
+else
+    fail "zone-fractional-scale" "$(since_mark scale untrusted | tail -4 | tr '\n' ' '); $(zone_why untrusted)"
 fi
 # --- a zone's window animates on a clock of its own ----------------------------------------
 # A zone's monotonic clock starts at a random point (isolate::set_time_origin), so the
