@@ -35,6 +35,7 @@
 #   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT KEY-MENU-OPEN                                press Alt+p (a menu window for an open network)
 #   GT OPEN-TYPE N TEXT                             type TEXT and Enter (letters and digits)
+#   GT KEY-VIEW-BROWSER, GT KEY-BROWSER-BACK        press Alt+3 (a tag nothing is on), then Alt+1
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -1307,7 +1308,11 @@ fi
 
 # --- the browser, in a zone that carries it ---------------------------------------------
 # untrusted names the browser image, which the installer kept from the medium: Firefox opens a
-# page of the zone's own, and its window is drawn as untrusted's.
+# page of the zone's own, and its window is drawn as untrusted's. It starts on a tag nothing is
+# on: mapped beside the launcher, which has the keyboard, the window would wait to be picked,
+# and no key pressed at a set time can wait out a start that takes Firefox many seconds.
+echo "GT KEY-VIEW-BROWSER"
+wait_for 10 grep -qx 'zone=-' "$RT/kryptik/focus" || info "browser: a window still shows after Alt+3: $(tr '\n' ' ' < "$RT/kryptik/focus")"
 mark firefox untrusted
 launch_plain untrusted "sh -c 'printf \"<title>kryptik-page</title><p>kryptik</p>\" > /tmp/page.html && exec firefox --new-instance file:///tmp/page.html'" > "$LOG/launch-firefox.out" 2>&1 &
 if wait_for 120 grep -q '^title=.*kryptik-page' "$RT/kryptik/focus" && grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
@@ -1316,6 +1321,7 @@ else
     fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' ')"
 fi
 stop_zone untrusted
+echo "GT KEY-BROWSER-BACK"
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
