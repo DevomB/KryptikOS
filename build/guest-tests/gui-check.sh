@@ -849,6 +849,8 @@ for d in /proc/[0-9]*; do
         /usr/bin/s6-*|/usr/sbin/s6-*|/usr/libexec/s6-*|/usr/sbin/udevd|/usr/sbin/agetty|/usr/bin/seatd|/usr/bin/kryptikd|/usr/bin/kryptik-wlproxy|/usr/bin/kryptik-launch|/usr/bin/kryptik-lock|/usr/bin/dwl|/usr/bin/sleep) ;;
         # Zone 0's mixer, which the zones play and record through.
         /usr/libexec/kryptik/kryptik-sound) ;;
+        # The chrome's watch on the monitors, which gives each new one the user's scale.
+        /usr/bin/kryptik-display) ;;
         /usr/bin/bash|/usr/bin/python3)
             case "$script" in /usr/libexec/kryptik/*|/usr/bin/kryptik-session|/usr/bin/kryptik-chrome) ;; *) foreign+=("$p ${cmd:0:60}") ;; esac ;;
         /usr/bin/havoc)
