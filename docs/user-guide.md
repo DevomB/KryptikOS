@@ -331,7 +331,9 @@ for each such zone's passphrase in turn; Enter alone leaves a zone waiting,
 and the menu (Alt+p) shows it WAITING and takes its passphrase later with
 `p` and its number, or a launch into it asks. Stopping such a zone closes
 its volume without the passphrase. The power key and
-closing the lid do the same as `kryptik suspend`, locked or not. The machine
+closing the lid do the same as `kryptik suspend`, locked or not. In a virtual
+machine whose display is virtio-gpu the machine does not sleep: the screen
+locks, and `kryptik suspend` says why. The machine
 can also sleep by itself, as many minutes after the screen locks for being
 idle as `~/.config/kryptik/lock-sleep` holds, from the next login; it is
 off until resume is proven on physical hardware, and 20 is the value to
@@ -590,6 +592,9 @@ shows each timer, its timeout and whether it is running.
   so its certificate is enrolled on its own and no other build's release
   updates it.
 - No independent security review has been made.
+- A Kryptik guest whose display is virtio-gpu, as QEMU's virtio-vga is, does
+  not sleep: the kernel's virtio-gpu driver has no suspend callbacks, so the
+  display would not come back. The power key and the lid lock it instead.
 - Tested under QEMU with OVMF firmware. Testing on physical hardware is
   planned for October 2026.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
