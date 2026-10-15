@@ -186,22 +186,41 @@ static int passphrase_from_tty(int tty, const char *zone)
 	return fd;
 }
 
-static int zone_is_encrypted(const char *zone)
+/* Whether the zone is on an encrypted volume, and whether that volume waits for its passphrase
+ * since the machine slept. */
+static void zone_volume(const char *zone, int *encrypted, int *waiting)
 {
 	char req[128];
 	snprintf(req, sizeof req, "info %s\n", zone);
 	char *r = talk(req, -1);
 	if (strncmp(r, "error", 5) == 0)
 		die("%s", r);
-	int enc = strstr(r, "encrypted yes") != NULL;
+	*encrypted = strstr(r, "encrypted yes") != NULL;
+	*waiting = strstr(r, "waiting yes") != NULL;
 	free(r);
-	return enc;
+}
+
+/* The passphrase on pass_fd gives a waiting zone's volume its key, and the zone goes on. */
+static int resume_zone(const char *zone, int pass_fd)
+{
+	char req[128];
+	snprintf(req, sizeof req, "resume-zone %s\n", zone);
+	char *r = talk(req, pass_fd);
+	close(pass_fd);
+	int ok = strncmp(r, "ok", 2) == 0;
+	if (ok)
+		printf("zone %s has its volume's key again and goes on where it was\n", zone);
+	else
+		fprintf(stderr, "kryptik-launch: zone %s: %s", zone, r);
+	free(r);
+	return ok ? 0 : 1;
 }
 
 static void usage(void)
 {
 	fputs("usage: kryptik-launch [--ask | --passphrase-fd N] [--no-display] ZONE -- COMMAND [ARG...]\n"
 	      "       kryptik-launch --stop ZONE\n"
+	      "       kryptik-launch [--passphrase-fd N] --resume ZONE   (its volume's key, after a sleep)\n"
 	      "       kryptik-launch --info ZONE\n"
 	      "       kryptik-launch --runtime-dir\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
@@ -486,6 +505,7 @@ int main(int argc, char **argv)
 		else if (strcmp(argv[i], "--passphrase-fd") == 0 && i + 1 < argc) pass_fd = fd_arg(argv[++i]);
 		else if (strcmp(argv[i], "--stop") == 0) mode = "stop";
 		else if (strcmp(argv[i], "--info") == 0) mode = "info";
+		else if (strcmp(argv[i], "--resume") == 0) mode = "resume";
 		else if (strcmp(argv[i], "--runtime-dir") == 0) mode = "runtime";
 		else if (argv[i][0] == '-') usage();
 		else if (!zone) zone = argv[i];
@@ -509,6 +529,15 @@ int main(int argc, char **argv)
 		fputs(r, strncmp(r, "ok", 2) == 0 ? stdout : stderr);
 		return strncmp(r, "ok", 2) == 0 ? 0 : 1;
 	}
+	if (strcmp(mode, "resume") == 0) {
+		if (pass_fd < 0) {
+			int tty = isatty(0) ? open("/dev/tty", O_RDWR | O_CLOEXEC) : -1;
+			if (tty < 0)
+				die("--resume reads the passphrase on a terminal, or from --passphrase-fd N");
+			pass_fd = passphrase_from_tty(tty, zone);
+		}
+		return resume_zone(zone, pass_fd);
+	}
 	if (strcmp(mode, "info") == 0) {
 		char req[128];
 		snprintf(req, sizeof req, "info %s\n", zone);
@@ -521,7 +550,12 @@ int main(int argc, char **argv)
 	char **cmd = argv + sep + 1;
 	int ncmd = argc - sep - 1;
 
-	if (ask && pass_fd < 0 && zone_is_encrypted(zone)) {
+	int encrypted = 0, waiting = 0;
+	if (ask || pass_fd >= 0)
+		zone_volume(zone, &encrypted, &waiting);
+	if (ask && pass_fd < 0 && encrypted) {
+		if (waiting)
+			fprintf(stderr, "zone %s waits for its volume's passphrase since the machine slept\n", zone);
 		/* A terminal on stdin is not enough: dwl's spawn keeps the
 		 * session's stdin but calls setsid(), so /dev/tty will not open. */
 		int tty = isatty(0) ? open("/dev/tty", O_RDWR | O_CLOEXEC) : -1;
@@ -544,6 +578,11 @@ int main(int argc, char **argv)
 			die("cannot run %s: %s", CHROME_BIN, strerror(errno));
 		}
 	}
+
+	/* The zone runs already, frozen: the passphrase gives it its volume back, and it goes on
+	 * where it was rather than starting again. */
+	if (waiting)
+		return resume_zone(zone, pass_fd);
 
 	/* Every string is counted; 1024 covers the fixed words. */
 	size_t cap = 1024 + strlen(zone);

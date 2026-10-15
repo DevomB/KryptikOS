@@ -187,6 +187,16 @@ CONFIG_PINCTRL_METEORPOINT=m
 CONFIG_PINCTRL_INTEL_PLATFORM=m
 CONFIG_I2C_HID_ACPI=m
 CONFIG_HID_MULTITOUCH=m
+# Sleep on laptops that offer only s2idle, as most made since about 2020 do: the
+# platform's power controller takes the SoC to its deepest state (S0i3 on AMD,
+# S0ix on Intel), and without its driver a sleeping laptop never gets there and
+# drains its battery far sooner. Intel's needs the vendor-specific capability
+# bus and the telemetry under it. Not AMD's trace buffer, which is for debugging.
+CONFIG_AMD_PMC=m
+# CONFIG_AMD_MP2_STB is not set
+CONFIG_INTEL_VSEC=m
+CONFIG_INTEL_PMT_TELEMETRY=m
+CONFIG_INTEL_PMC_CORE=m
 # AQtion (5 and 10 GbE on desktop boards and Thunderbolt docks) and Mellanox
 # ConnectX-4 and later (servers); neither needs firmware.
 CONFIG_AQTION=m
@@ -256,6 +266,9 @@ CONFIG_BRCMFMAC_PCIE=y
 # CONFIG_BRCMFMAC_SDIO is not set
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
+# A battery and a mains supply the power suite sets by hand, as hwsim is a radio; it
+# binds no device, so nothing loads it otherwise.
+CONFIG_TEST_POWER=m
 # Airplane-mode keys that come through the platform's ACPI device rather than
 # the keyboard: Intel's HID event filter, the AMD, HP and Xiaomi wireless
 # button, and ASUS's radio control. rfkill-input acts on the key.

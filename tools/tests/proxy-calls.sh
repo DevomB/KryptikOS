@@ -32,7 +32,9 @@ fi
 # panic, and run once more; the trace checked is the run that passed.
 traced() {   # traced DIR: the live tests under strace, their output in DIR/test.log
     mkdir -p "$1"
-    strace -f -ff -qq -s 256 -o "$1/trace" "${build[@]}" > "$1/test.log" 2>&1
+    # -q, not -qq: a process's "+++ exited" or "+++ killed" line ends its run in the file, which a
+    # later thread given the same id appends to.
+    strace -f -ff -q -s 256 -o "$1/trace" "${build[@]}" > "$1/test.log" 2>&1
 }
 failures() { sed -n '/^failures:$/,$p' "$1/test.log" | head -80; }
 run="$T/run"
@@ -57,11 +59,12 @@ if [[ "$rc" -ne 0 ]]; then
     exit 1
 fi
 
-# One file per process: from the line that execs the proxy, every call it made, marked "fd"
-# when it was started as the launch daemon starts it (--listen-fd) and "path" when it was given
-# a path to bind, as only these tests do.
+# One file per process id: from the line that execs the proxy to the line that ends it, every
+# call it made, marked "fd" when it was started as the launch daemon starts it (--listen-fd) and
+# "path" when it was given a path to bind, as only these tests do.
 awk 'FNR == 1 { on = 0 }
      !on && /^execve\("[^"]*\/kryptik-wlproxy", / && / = 0$/ { on = 1; mode = index($0, "\"--listen-fd\"") ? "fd" : "path" }
+     on && /^\+\+\+ (exited|killed) / { on = 0 }
      on && /^[a-z_0-9]+\(/ { print mode "\t" $0 }' "$run"/trace.* > "$T/calls"
 cut -f2- "$T/calls" > "$T/lines"
 runs="$(grep -c '^execve(' "$T/lines")"
@@ -93,6 +96,7 @@ if [[ -n "$missing" || -n "$args" ]]; then
     for c in $missing; do
         awk -v c="$c" 'FNR == 1 { on = 0; n = 0 }
             !on && /^execve\("[^"]*\/kryptik-wlproxy", / && / = 0$/ { on = 1; exec = $0; next }
+            on && /^\+\+\+ (exited|killed) / { on = 0; n = 0; next }
             on && index($0, c "(") == 1 {
                 print "  first " c ", in " FILENAME ":"; print "    " substr(exec, 1, 240)
                 for (i = n - 3; i < n; i++) if (i >= 0) print "    " substr(prev[i % 3], 1, 200)

@@ -100,6 +100,8 @@ pub struct Zone {
     /// `[software] images = "browser viewer"`: signed images stacked over this zone's /usr
     /// (images.rs). Adding one takes a zone file on the verified root.
     pub images: Vec<String>,
+    /// `[sound] play = false`: no socket to zone 0's mixer (sound.rs). The nic zone never has one.
+    pub sound: bool,
 }
 
 /// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
@@ -139,6 +141,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "identity.uid_base",
     "transfer.to", "transfer.max_bytes",
     "software.images",
+    "sound.play",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
@@ -421,6 +424,16 @@ impl Zone {
             Some(v) => return Err(bad("network.local", v, "true or false")),
         };
 
+        let sound = match kv.get("sound.play").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone plays no sound")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("sound.play", v, "true or false")),
+        };
+
         let transfer_to: Vec<String> = match get("transfer.to") {
             None => Vec::new(),
             Some(v) => {
@@ -494,6 +507,7 @@ impl Zone {
             transfer_to,
             transfer_max,
             images,
+            sound,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),
             size: get("storage.size"),

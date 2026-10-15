@@ -69,7 +69,7 @@ done
 
 # --- every external tool, checked before the first write -------------------
 missing=""
-for tool in sfdisk partx blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
+for tool in sfdisk blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
             grep readlink lsblk head tail wc cmp cp mkdir stat tr cut basename mv mountpoint rmdir chmod rm cat sleep \
             loadkeys chattr kryptik-efiboot; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
@@ -77,6 +77,19 @@ done
 [ -z "$missing" ] || die "this system is missing:${missing}
 Refusing to start. Every tool this installer needs has to exist before it
 touches a disk, not at the moment it is first called."
+
+# Only a table the kernel reads whole (BLKRRPART) gives each partition its name (PARTNAME),
+# which kryptik_named looks up. Partitions added one at a time, as partx adds them and as sfdisk
+# does when its own re-read finds the disk busy, carry none. udev's probe of the new table keeps
+# the disk busy for a moment.
+reread_table() {   # DISK
+    n=0
+    until blockdev --rereadpt "$1" 2>/dev/null; do
+        n=$((n + 1))
+        [ "$n" -lt 100 ] || return 1
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+}
 
 # part_dev DISK N: nvme0n1 -> nvme0n1p2, vdb -> vdb2.
 part_dev() {
@@ -348,11 +361,11 @@ size=$(( slot_mib * 2048 )), type=${GPT_LINUX_ROOT_X86_64}, name="kryptik-a"
 size=$(( slot_mib * 2048 )), type=${GPT_LINUX_ROOT_X86_64}, name="kryptik-b"
 type=${GPT_LINUX_FS}, name="kryptik-state"
 SFDISK
-partx -u "$TARGET_REAL" >/dev/null 2>&1 || blockdev --rereadpt "$TARGET_REAL" >/dev/null 2>&1 || true
+reread_table "$TARGET_REAL" || die "the kernel would not read the new partition table of ${TARGET_REAL}: the disk stayed busy"
 n=0
 while { [ ! -b "$P1" ] || [ ! -b "$P4" ]; } && [ "$n" -lt 100 ]; do n=$((n + 1)); sleep 0.1 2>/dev/null || sleep 1; done
 for p in "$P1" "$P2" "$P3" "$P4"; do [ -b "$p" ] || die "partition ${p} did not appear"; done
-[ "$(blkid -s PARTLABEL -o value "$P2")" = "kryptik-a" ] || die "partition 2 is not labelled kryptik-a"
+kryptik_named kryptik-a | grep -qx "$P2" || die "the kernel does not name ${P2} kryptik-a, so the system could not find it"
 
 # --- copy, and verify what landed ------------------------------------------
 say "writing the ESP (${esp_mib} MiB)"

@@ -473,23 +473,27 @@ work to route input methods by zone.
 **Rejected:** PipeWire in zone 0 with a socket per zone; a sound zone;
 bluetoothd in zone 0; one input method for all zones.
 
-## ADR-022 (proposed): Suspend wipes the disk keys
+## ADR-022: Suspend wipes the disk keys
 
-Before the machine sleeps, the launch daemon locks the screen, freezes every
-zone, and suspends the state partition and every open zone volume with
-their keys wiped (`cryptsetup luksSuspend`). At resume the lock asks for the
-state partition's passphrase, never the TPM, and each zone stays frozen
-until its own passphrase is given. Everything on the resume path runs from
-the verified root and `/run`. Hibernation stays off. The threat model
-changes: a suspended machine holds no disk key, though memory still holds
-what the zones were using ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
+Before the machine sleeps, the screen locks, and the launch daemon freezes
+every zone, lets the clean page cache go, and suspends each open zone volume
+and then the state partition with its key wiped (`cryptsetup luksSuspend`).
+At resume the lock asks for the state partition's passphrase, never the TPM,
+and the zones without a volume thaw once it is given; a zone on a volume
+stays frozen until its own passphrase. Everything on the resume path runs
+from the verified root, `/run`, `/dev`, `/proc` and `/sys`. Hibernation
+stays off. The threat model changes: a suspended machine holds no disk key
+and no cached page of a zone volume's files, though memory still holds what
+the zones' processes held, the files they had mapped included ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
 
-**Why:** a laptop is suspended far more often than it is off, and today a
-suspended Kryptik keeps every key in RAM.
+**Why:** a laptop is suspended far more often than it is off, and with the
+key in RAM, whoever gets past the lock of a suspended machine, or into its
+memory, has the state partition.
 
-**Cost:** a passphrase at every resume, and one for each zone the user
-wants back; a lock client in zone 0; zone 0 programs that touch `/var`
-stall until resume.
+**Cost:** a passphrase at every resume, and one more for each zone on a
+volume when the user goes back to it; a lock client in zone 0 that talks
+to the launch daemon itself; zone 0 programs that touch `/var` stall until
+resume, and the launch daemon answers only the lock meanwhile.
 
 **Rejected:** resuming with the TPM, which would let whoever holds the
 machine resume it; keeping the state partition's key while dropping only

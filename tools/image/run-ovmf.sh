@@ -6,7 +6,7 @@
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
 #        [--vars-file FILE] [--mode console|smoke|serve] [--timeout N]
 #        [--log FILE] [--net none|user] [--mem MB] [--cpus N] [--gpu]
-#        [--second-head] [--sound WAV] [--allow-reboot] [--until REGEX]
+#        [--second-head] [--s3] [--sound WAV] [--allow-reboot] [--until REGEX]
 #        [--name TAG]
 #
 #   --usb IMG      the medium as a USB mass-storage device (removable)
@@ -36,6 +36,8 @@
 #   --second-head  with --gpu in serve mode: a second output on the GPU, off
 #                  until a VNC client on the printed socket asks for a size
 #                  (vm-drive.py's head: step), which plugs a monitor in
+#   --s3           offer suspend to RAM, which QEMU otherwise hides: the guest
+#                  sleeps until vm-drive.py's wakeup step
 #   --sound WAV    two HD Audio cards: the first only plays, into the file WAV
 #                  at 48 kHz, and the second plays to nothing and records
 #                  silence (QEMU's WAV writer has no input)
@@ -47,7 +49,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SELF}/../../build/lib/common.sh"
 
 USB=""; ISO=""; NOMEDIA=0; DISKS=(); TESTCTL=""; VARS="clean"; VARS_FILE=""
-MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; HEAD2=0; SOUND=""; ALLOW_REBOOT=0; NAME="vm"
+MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; HEAD2=0; S3=0; SOUND=""; ALLOW_REBOOT=0; NAME="vm"
 DISK_RO=0; DISK_4K=0; BLKDEBUG=""; UNTIL=""
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -69,11 +71,12 @@ while [[ "$#" -gt 0 ]]; do
         --cpus)      CPUS="${2:?}"; shift 2 ;;
         --gpu)       GPU=1; shift ;;
         --second-head) HEAD2=1; shift ;;
+        --s3)        S3=1; shift ;;
         --sound)     SOUND="${2:?}"; shift 2 ;;
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
         --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,43p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,44p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -133,14 +136,20 @@ ARGS=(
     -machine "q35,smm=on,accel=${ACCEL}"
     -cpu "$CPUMODEL" -smp "$CPUS" -m "$MEM"
     -global driver=cfi.pflash01,property=secure,value=on
-    -global ICH9-LPC.disable_s3=1
+    -global "ICH9-LPC.disable_s3=$((1 - S3))"
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=${CODE}"
     -drive "if=pflash,format=raw,unit=1,file=${VARS_PATH}"
     -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-pci,rng=rng0
     -rtc base=utc
     -boot menu=off
 )
-if [[ "$GPU" -eq 1 ]]; then
+if [[ "$GPU" -eq 1 && "$S3" -eq 1 ]]; then
+    # A sleep resets virtio-gpu under a driver with no .freeze or .restore (6.18's
+    # drivers/gpu/drm/virtio/virtgpu_drv.c), whose next commit then waits for good. A guest
+    # that sleeps shows through std VGA's framebuffer instead, which OVMF sets up and the
+    # kernel's simpledrm drives: it has no bochs driver, and nothing there waits on a device.
+    ARGS+=( -display none -vga std -device virtio-keyboard-pci -device virtio-mouse-pci )
+elif [[ "$GPU" -eq 1 ]]; then
     # virtio-vga, not virtio-gpu-pci: the firmware framebuffer is in its BAR,
     # so virtio-gpu replaces simpledrm and wlroots sees one DRM device (with
     # two it takes a multi-GPU path the pixman renderer cannot serve).

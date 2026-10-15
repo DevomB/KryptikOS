@@ -189,7 +189,7 @@ for s in "${SCRIPTS}"/*.sh; do
     check "${n}: valid ${interp}"    "$("$interp" -n "$s" 2>/dev/null && echo ok)"
     check "${n}: executable"  "$([[ -x "$s" ]] && echo ok)"
     # Each script must be run by a service, or sourced by a script that is,
-    # or by the installer or the update tools.
+    # or by the installer or the update tools, or bound to a key of dwl's.
     if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null; then
         green "${n}: referenced by a service"
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh 2>/dev/null \
@@ -199,6 +199,8 @@ for s in "${SCRIPTS}"/*.sh; do
         green "${n}: sourced by a script a service runs"
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "$ROOT"/tools/install/*.sh "$ROOT"/tools/update/kryptik-* 2>/dev/null; then
         green "${n}: sourced by the installer or the update tools"
+    elif grep -qF "/usr/libexec/kryptik/${n}" "$ROOT"/build/desktop/dwl-config.h 2>/dev/null; then
+        green "${n}: bound to a key in dwl's configuration"
     else
         red "${n}: installed by the stage but no service runs it"
     fi

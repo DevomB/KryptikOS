@@ -46,7 +46,7 @@ testctl_media() {
 testctl_load() {
     TESTCTL_FILE=""
     testctl_media || return 1
-    dev="$(blkid -t PARTLABEL=kryptik-testctl -o device 2>/dev/null | head -1)"
+    dev="$(/usr/libexec/kryptik/devices.sh named kryptik-testctl 2>/dev/null | head -1)"
     [ -n "$dev" ] && [ -b "$dev" ] || return 1
     mkdir -p "$TESTCTL_MNT"
     if ! mountpoint -q "$TESTCTL_MNT"; then

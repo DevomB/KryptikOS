@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers and popups.
+"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers, popups, the lid
+and the keys heeded under the screen lock.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -853,6 +854,113 @@ static void endpopups(void);
      """\t\tif (selmon->lock_surface) {
 \t\t\tendpopups();
 \t\t\tclient_notify_enter(selmon->lock_surface->surface,
+"""),
+    # The lid: dwl leaves switch devices alone, and a lid is one. Closed, it runs
+    # suspendcmd, the lock that then has the machine sleep, as the power key does;
+    # it runs while the session is locked too, when that lock is asked instead.
+    ("""#include <wlr/types/wlr_subcompositor.h>
+""",
+     """#include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_switch.h>
+"""),
+    ("""static void createpointer(struct wlr_pointer *pointer);
+""",
+     """static void createpointer(struct wlr_pointer *pointer);
+static void createswitch(struct wlr_switch *sw);
+"""),
+    ("""\tcase WLR_INPUT_DEVICE_POINTER:
+\t\tcreatepointer(wlr_pointer_from_input_device(device));
+\t\tbreak;
+""",
+     """\tcase WLR_INPUT_DEVICE_POINTER:
+\t\tcreatepointer(wlr_pointer_from_input_device(device));
+\t\tbreak;
+\tcase WLR_INPUT_DEVICE_SWITCH:
+\t\tcreateswitch(wlr_switch_from_input_device(device));
+\t\tbreak;
+"""),
+    ("""void
+inputdevice(struct wl_listener *listener, void *data)
+{
+""",
+     """/* Kryptik: a switch, the lid's or another's, with its listeners and when it came. */
+typedef struct {
+\tstruct wl_listener toggle;
+\tstruct wl_listener destroy;
+\tstruct timespec added;
+} Switch;
+
+/* Kryptik: an output other than the built-in panel is on, or only blanked: the laptop is
+ * docked, and its lid closes with the work going on elsewhere. */
+static int
+docked(void)
+{
+\tMonitor *m;
+\twl_list_for_each(m, &mons, link) {
+\t\tconst char *n = m->wlr_output->name;
+\t\tif ((m->wlr_output->enabled || m->asleep) && strncmp(n, "eDP", 3)
+\t\t\t\t&& strncmp(n, "LVDS", 4) && strncmp(n, "DSI", 3))
+\t\t\treturn 1;
+\t}
+\treturn 0;
+}
+
+static void
+switchtoggle(struct wl_listener *listener, void *data)
+{
+\tSwitch *s = wl_container_of(listener, s, toggle);
+\tstruct wlr_switch_toggle_event *event = data;
+\tstruct timespec now;
+\tif (event->switch_type != WLR_SWITCH_TYPE_LID || event->switch_state != WLR_SWITCH_STATE_ON)
+\t\treturn;
+\t/* libinput tells a lid closed already when the device comes, for a switch it trusts:
+\t * a session started with the lid shut must not sleep for it. */
+\tclock_gettime(CLOCK_MONOTONIC, &now);
+\tif (now.tv_sec - s->added.tv_sec < 2 || docked())
+\t\treturn;
+\tspawn(&(Arg){.v = suspendcmd});
+}
+
+static void
+switchdestroy(struct wl_listener *listener, void *data)
+{
+\tSwitch *s = wl_container_of(listener, s, destroy);
+\twl_list_remove(&s->toggle.link);
+\twl_list_remove(&s->destroy.link);
+\tfree(s);
+}
+
+void
+createswitch(struct wlr_switch *sw)
+{
+\tSwitch *s = ecalloc(1, sizeof(*s));
+\tclock_gettime(CLOCK_MONOTONIC, &s->added);
+\tLISTEN(&sw->events.toggle, &s->toggle, switchtoggle);
+\tLISTEN(&sw->base.events.destroy, &s->destroy, switchdestroy);
+}
+
+void
+inputdevice(struct wl_listener *listener, void *data)
+{
+"""),
+    # Locked, dwl heeds no key at all, so a laptop that starts to play aloud under the lock
+    # is silenced only by unlocking. It heeds config.h's lockedkeys instead: the volume and
+    # brightness keys, which reach no zone and nothing typed at the lock. A key held from
+    # before the lock repeats through the same table.
+    ("""\tconst Key *k;
+\tfor (k = keys; k < END(keys); k++) {
+""",
+     """\t/* Kryptik: while the session is locked, lockedkeys alone. */
+\tconst Key *k = locked ? lockedkeys : keys, *end = locked ? END(lockedkeys) : END(keys);
+\tfor (; k < end; k++) {
+"""),
+    ("""\t/* On _press_ if there is no active screen locker,
+\t * attempt to process a compositor keybinding. */
+\tif (!locked && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+""",
+     """\t/* On _press_ attempt to process a compositor keybinding, which while
+\t * the session is locked is one of lockedkeys. */
+\tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 """),
 ]
 

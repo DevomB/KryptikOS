@@ -101,6 +101,16 @@ say "lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo unreadable)"
 say "microcode=$(awk -F': ' '/^microcode/ {print $2; exit}' /proc/cpuinfo 2>/dev/null) loader=$(dmesg 2>/dev/null | grep -m1 -o 'microcode: .*' || echo none)"
 say "cgroup2=$(awk '$3=="cgroup2"{print $2; exit}' /proc/mounts 2>/dev/null || echo none)"
 
+# --- what zone 0 read of USB disks ------------------------------------------
+# eudev's database for each partition on USB: the bus its descriptors gave, and the filesystem
+# its blkid builtin found, which 59-kryptik-removable.rules keeps it from looking for.
+for p in /sys/class/block/*; do
+    [ -e "$p/partition" ] || continue
+    case "$(readlink -f "$p")" in */usb[0-9]*) ;; *) continue ;; esac
+    props="$(udevadm info --query=property --name="${p##*/}" 2>/dev/null)"
+    say "usb_partition=${p##*/} bus=$(printf '%s\n' "$props" | sed -n 's/^ID_BUS=//p') probed=$(printf '%s\n' "$props" | sed -n 's/^ID_FS_TYPE=//p' | grep . || echo no)"
+done
+
 # --- users and the login path -----------------------------------------------
 say "users=$(awk -F: '$3>=1000 && $3<65534 {printf "%s ", $1}' /etc/passwd 2>/dev/null)"
 # An empty field is a root login with no password, which a locked one is not.

@@ -321,6 +321,7 @@ pub fn pivot_into(
     broker: Option<&str>,
     wayland: Option<&str>,
     wifi_conf: Option<&str>,
+    sound: Option<&str>,
     usr: &str,
     service: bool,
 ) -> Result<String, RootfsError> {
@@ -489,6 +490,11 @@ pub fn pivot_into(
         let rk = mkdir("run/kryptik")?;
         let target = format!("{rk}/{}", WAYLAND_SOCKET_NAME);
         bind_ro_file(sock, &target)?;
+    }
+    // The zone's directory of zone 0's mixer: the directory, so the socket a restarted mixer
+    // makes in it is the one the zone reaches.
+    if let Some(dir) = sound {
+        bind_ro_dir(dir, &format!("{root}{}", crate::sound::IN_ZONE))?;
     }
 
     /* The zone's data at /home/<zone>, bound through the descriptor that was checked. Not
