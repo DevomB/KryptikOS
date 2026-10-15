@@ -581,7 +581,10 @@ mic_record 87 untrusted
 modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid-marks.err"
 marks_cam="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
 wait_for 15 pgrep -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
-sleep 2
+# Its window must be up, zone 0's and with the keyboard, before it is closed: only then has it
+# ended untrusted's fullscreen, which Alt+e is to give back.
+wait_for 15 grep -qx 'zone=0' "$RT/kryptik/focus" \
+    || info "marks: the camera's window has not taken the keyboard: $(tr '\n' ' ' < "$RT/kryptik/focus")"
 pkill -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
 wait_for 15 grep -q '^zone=untrusted' "$RT/kryptik/focus"
 echo "GT KEY-MARKS-FULLSCREEN"
