@@ -420,8 +420,8 @@ pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     (libc::SYS_setgroups, EPERM),
     (libc::SYS_capset, EPERM),
     (libc::SYS_unshare, EPERM),
-    // NSPR starts each thread with explicit scheduling, which glibc sets by the new thread's id:
-    // Firefox's own sandbox answers EPERM, and NSPR then lets its threads inherit.
+    // A thread setting its scheduling class or priority, as llama.cpp's do in Firefox, takes
+    // EPERM as a missing privilege; glibc's pthread_create and pthread_setschedparam pass it on.
     (libc::SYS_sched_setscheduler, EPERM),
     (libc::SYS_sched_setparam, EPERM),
     (libc::SYS_sched_setattr, EPERM),

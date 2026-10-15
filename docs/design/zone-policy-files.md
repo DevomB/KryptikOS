@@ -66,10 +66,11 @@ a kill, is printed with `soft` after its name and gets the same errno here:
   denied list, and `setns`, which would enter another zone's namespaces, is
   killed.
 - `sched_setscheduler`, `sched_setparam` and `sched_setattr` fail with EPERM:
-  NSPR, under Firefox, starts each thread with explicit scheduling, which
-  glibc sets by the new thread's id, and EPERM is what Firefox's own sandbox
-  answers; NSPR then lets its threads inherit. A policy may allow them, and
-  the kernel still refuses a real-time or raised priority without
+  a program that sets a thread's scheduling class or priority takes that as
+  a missing privilege, which glibc's `pthread_create` and
+  `pthread_setschedparam` pass on; Firefox's on-device inference (llama.cpp)
+  asks for `SCHED_BATCH` for its low-priority threads. A policy may allow
+  them, and the kernel still refuses a real-time or raised priority without
   `CAP_SYS_NICE`.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied

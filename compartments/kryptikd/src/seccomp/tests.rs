@@ -294,7 +294,7 @@ fn namespace_clone_fails_with_eperm() {
 
 #[test]
 fn thread_scheduling_refused_softly() {
-    // A thread started with explicit scheduling hears EPERM, as NSPR expects; a policy opens it.
+    // A thread setting its own scheduling hears EPERM, not a kill; a policy opens it.
     let p = build_program(BASE_ALLOWLIST).unwrap();
     for nr in [libc::SYS_sched_setscheduler, libc::SYS_sched_setparam, libc::SYS_sched_setattr] {
         assert_eq!(evaluate(&p, X86, nr as u32), errno_action(EPERM), "syscall {nr}");
