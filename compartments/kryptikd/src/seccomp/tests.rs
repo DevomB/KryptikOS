@@ -307,6 +307,19 @@ fn thread_scheduling_refused_softly() {
 }
 
 #[test]
+fn io_priority_refused_softly() {
+    // Lowering a thread's I/O priority hears EPERM, not a kill; reading it stays allowed.
+    let p = build_program(BASE_ALLOWLIST).unwrap();
+    assert_eq!(evaluate(&p, X86, libc::SYS_ioprio_set as u32), errno_action(EPERM));
+    assert_eq!(evaluate(&p, X86, libc::SYS_ioprio_get as u32), SECCOMP_RET_ALLOW);
+    assert!(!is_denied(libc::SYS_ioprio_set), "ioprio_set must stay addable");
+    let mut allow = BASE_ALLOWLIST.to_vec();
+    allow.push(libc::SYS_ioprio_set);
+    let p = build_program(&allow).unwrap();
+    assert_eq!(evaluate(&p, X86, libc::SYS_ioprio_set as u32), SECCOMP_RET_ALLOW, "a policy opens it");
+}
+
+#[test]
 fn unshare_fails_setns_killed() {
     // Both stay on the denied list: no policy may allow either.
     let p = build_program(BASE_ALLOWLIST).unwrap();
