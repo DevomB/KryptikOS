@@ -130,6 +130,21 @@ expect_pass "a source whose host refuses comes from the distfiles mirror" "1 dow
 grep -qF "trying fallback mirror: file://${DIST}/${d}/alpha-1.0.tar.gz" "$OUT" \
     && green "the mirror's path is the BLAKE2b of the file's name" || { red "the mirror was asked another path"; show; }
 
+# A host down, and no distfiles copy: the file comes from the row's own mirror (tools/source-mirrors.tsv),
+# its version in place of {VER}, and the lock decides as for the first URL.
+ROWM="${W}/rowmirror"
+mkdir -p "$ROWM" && cp "${UPSTREAM}/alpha-1.0.tar.gz" "${ROWM}/alpha_1.0.orig.tar.gz"
+printf 'alpha  file://%s/alpha_{VER}.orig.tar.gz  .asc\n' "$ROWM" > "${W}/mirrors"
+build_root alpha-1.0:good
+MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors" run
+expect_pass "a source whose host refuses comes from its row's mirror" "1 downloaded"
+grep -qF "trying fallback mirror: file://${ROWM}/alpha_1.0.orig.tar.gz" "$OUT" \
+    && green "the mirror's URL takes the manifest's version" || { red "the row's mirror was not asked, or asked another path"; show; }
+printf 'other bytes\n' > "${ROWM}/alpha_1.0.orig.tar.gz"
+build_root alpha-1.0:good
+MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors" run
+expect_fail "a mirror's other bytes are refused by the lock" "CHECKSUM MISMATCH for alpha-1.0.tar.gz"
+
 # --- checksum refusal -------------------------------------------------------
 
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good

@@ -33,6 +33,15 @@ Two build tools that do not ship are special cases:
 `sources.lock` pins a SHA-256 for every upstream tarball, and
 `tools/fetch-sources.sh` refuses to proceed on a mismatch.
 
+Because the lock decides, a file can come from anywhere that serves the
+same bytes. When a source's host does not answer, the fetcher asks the
+source's own mirrors in `tools/source-mirrors.tsv`, a distribution's copy
+of upstream's file such as Debian's `.orig` tarball, and then Gentoo's
+distfiles. Where such a mirror keeps upstream's signature beside the file,
+`tools/verify-signatures.sh` takes it from there when upstream's host gives
+none, and it must verify against the same key. Each mirror row was checked
+against the lock and the key when it was added.
+
 The lock alone is trust on first use: `--lock` records the hash of whatever
 was downloaded. Before committing a lock file or changing an entry, run
 `make verify` (`tools/verify-signatures.sh`), which checks detached GPG

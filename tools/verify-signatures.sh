@@ -85,14 +85,19 @@ quiet_fetch() {   # quiet_fetch URL OUT
 CANONICAL_GNU="https://ftp.gnu.org/gnu"
 
 # Overrides for tools/tests/verify-signatures.sh only.
-if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}${KRYPTIK_SIGCHECK_PROVENANCE:-}" ]]; then
+if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}${KRYPTIK_SIGCHECK_PROVENANCE:-}${KRYPTIK_SIGCHECK_MIRRORS:-}" ]]; then
     [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || die \
 "A signature-check override is set (KRYPTIK_SIGCHECK_MANIFEST /
 KRYPTIK_SIGCHECK_KEYRING / KRYPTIK_SIGCHECK_KEYSOURCE /
-KRYPTIK_SIGCHECK_PROVENANCE) but KRYPTIK_SIGCHECK_SELFTEST is not.
+KRYPTIK_SIGCHECK_PROVENANCE / KRYPTIK_SIGCHECK_MIRRORS) but KRYPTIK_SIGCHECK_SELFTEST is not.
 Refusing to verify signatures against a substituted manifest or keyring."
     warn "SELF-TEST MODE: manifest and/or keyring are substituted, not upstream"
 fi
+
+# Where upstream's signature is kept beside a mirror's copy of the file, for a host that is down
+# (tools/source-mirrors.tsv); the signature must verify as upstream's own does.
+MIRRORS="${KRYPTIK_SIGCHECK_MIRRORS:-$(dirname "${BASH_SOURCE[0]}")/source-mirrors.tsv}"
+declare -A VER_OF=()
 
 # fetch-sources.sh is the one definition of the manifest.
 manifest_source() {
@@ -701,23 +706,40 @@ verify_any() {
     report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
 }
 
+# mirror_sig NAME OUT: upstream's signature for NAME from a mirror that keeps it beside the file,
+# into OUT, the first that is an OpenPGP signature.
+mirror_sig() {
+    local u s
+    [[ -f "$MIRRORS" ]] || return 1
+    while read -r u s; do
+        u="${u//"{VER}"/"${VER_OF[$1]:-}"}"
+        if quiet_fetch "${u}${s}" "$2" && is_pgp_signature "$2"; then
+            warn "$1: upstream's signature came from ${u}${s}"
+            return 0
+        fi
+        rm -f "$2"
+    done < <(awk -v n="$1" '$1 == n && $3 != "-" { print $2, $3 }' "$MIRRORS")
+    return 1
+}
+
 # verify_detached NAME DATA SIGURL [HOW]: the signature at SIGURL over DATA, cached under its name.
 verify_detached() {
     local name="$1" data="$2" sigurl="$3" how="${4:-}"
     local sig="${SIGDIR}/${sigurl##*/}" suffix=".${sigurl##*.}"
 
-    if [[ ! -s "$sig" ]] && ! quiet_fetch "$sigurl" "$sig"; then
+    if [[ ! -s "$sig" ]] && ! quiet_fetch "$sigurl" "$sig" && ! mirror_sig "$name" "$sig"; then
         rm -f "$sig"
         warn "${name}: no ${suffix} published upstream"
         mark_unverifiable "${name} (no signature upstream)"
         report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
         return
     fi
-    # A busy host can answer with a page instead of the file: drop it and ask once more.
+    # A busy host can answer with a page instead of the file: drop it and ask once more, then a mirror.
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
         [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || sleep 5
         quiet_fetch "$sigurl" "$sig" || rm -f "$sig"
+        is_pgp_signature "$sig" || { rm -f "$sig"; mirror_sig "$name" "$sig"; }
     fi
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
@@ -834,6 +856,7 @@ echo
 while read -r name _ver url sig _; do
     [[ -z "$name" ]] && continue
     SEEN_SOURCE[$name]=1
+    VER_OF[$name]="$_ver"
     file="$(basename "$url")"
 
     # A kind this script does not know fails: skipping it would pass the row.
