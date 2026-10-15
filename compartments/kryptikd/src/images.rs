@@ -328,7 +328,7 @@ fn check_medium_with(dir: &Path, base: &str, check: &dyn Fn(&[u8], &[u8]) -> Res
     }
     for img in &m.images {
         let file = dir.join(format!("{}.img", img.name));
-        let md = fs::metadata(&file).map_err(|e| format!("image {}: {}: {e}", img.name, file.display()))?;
+        let md = fs::symlink_metadata(&file).map_err(|e| format!("image {}: {}: {e}", img.name, file.display()))?;
         if !md.is_file() || md.len() != img.bytes {
             return Err(format!("image {}: {} holds {} bytes, and the list signs {}", img.name, file.display(), md.len(), img.bytes));
         }
@@ -337,7 +337,16 @@ fn check_medium_with(dir: &Path, base: &str, check: &dyn Fn(&[u8], &[u8]) -> Res
 }
 
 fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, String> {
-    let f = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    use std::os::unix::fs::OpenOptionsExt;
+    // A regular file alone: a medium's ISO can carry a link or a FIFO, and a FIFO would block the read.
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if !f.metadata().map_err(|e| format!("{}: {e}", path.display()))?.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
     let mut bytes = Vec::new();
     f.take(max + 1).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     if bytes.len() as u64 > max {

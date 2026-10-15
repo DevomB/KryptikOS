@@ -216,9 +216,25 @@ fn a_medium_is_checked_before_anything_is_written() {
     let refused = check_medium_with(&d, &hex('1'), &yes).unwrap_err();
     assert!(refused.starts_with("image browser:"), "{refused}");
 
-    // A directory where an image should be is no image.
+    // A directory where an image should be is no image, nor is a link to one.
     std::fs::create_dir(d.join("browser.img")).unwrap();
     assert!(check_medium_with(&d, &hex('1'), &yes).is_err());
+    std::fs::remove_dir(d.join("browser.img")).unwrap();
+    std::fs::write(d.join("elsewhere"), vec![0u8; 12288]).unwrap();
+    std::os::unix::fs::symlink(d.join("elsewhere"), d.join("browser.img")).unwrap();
+    assert!(check_medium_with(&d, &hex('1'), &yes).unwrap_err().contains("holds"), "a link is not the image");
+    std::fs::remove_file(d.join("browser.img")).unwrap();
+    std::fs::rename(d.join("elsewhere"), d.join("browser.img")).unwrap();
+
+    // A FIFO in the list's place is refused at once, never waited on.
+    let list_text = std::fs::read(d.join("images.manifest")).unwrap();
+    std::fs::remove_file(d.join("images.manifest")).unwrap();
+    let fifo = std::ffi::CString::new(d.join("images.manifest").to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    assert!(check_medium_with(&d, &hex('1'), &yes).unwrap_err().contains("not a regular file"));
+    std::fs::remove_file(d.join("images.manifest")).unwrap();
+    std::fs::write(d.join("images.manifest"), &list_text).unwrap();
+    assert!(check_medium_with(&d, &hex('1'), &yes).is_ok());
 
     std::fs::remove_file(d.join("images.manifest.sig")).unwrap();
     assert!(check_medium_with(&d, &hex('1'), &yes).unwrap_err().contains("images.manifest.sig"));
