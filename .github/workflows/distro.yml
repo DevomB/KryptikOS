@@ -410,10 +410,10 @@ jobs:
 
       # The images built over this base system, up to the last step they build against (IMAGES_BASE in
       # 04-images.sh), from an earlier run: make images keeps each whose fingerprint still matches its
-      # inputs and builds the rest. Not for a tag, which builds from nothing.
+      # inputs and builds the rest. Not for a tag or a cold run, which build from nothing.
       - name: Which base system the images are built over
         id: images_key
-        if: github.ref_type != 'tag'
+        if: github.ref_type != 'tag' && env.KRYPTIK_COLD != 'true'
         run: |
           step="$(sed -n 's/^IMAGES_BASE="\([a-z0-9-]*\)"$/\1/p' build/stages/04-images.sh)"
           base="$(sudo sed -n 's/^fingerprint: //p' "$KRYPTIK_WORK/.stamps/bs-${step:-none}" | cut -c1-16)"
