@@ -16,7 +16,8 @@ import sys
 # Its border is that
 # zone's colour; focus is shown by width (a band of the root colour when
 # unfocused), and fullscreen keeps the border under a bar that names the
-# zone, and the zones that hold the microphone and the camera. A zone's
+# zone, the zones that hold the microphone and the camera, and the zone
+# holding the screen awake. A zone's
 # popups are drawn inside its window's frame and last while the window has
 # the keyboard.
 
@@ -76,6 +77,8 @@ static const unsigned char zonefont[128][7] = {
 #define MARKEVENTS (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE)
 #define SOUNDUID 87 /* the mixer's, build/services/kryptik-sound/run */
 static char miczone[16], camzone[16];
+/* The zone holding the screen awake as the bars last named it (checkidleinhibitor). */
+static const ZoneColor *barhold;
 static int markfd = -1;
 static struct wl_event_source *marktimer;
 
@@ -112,7 +115,8 @@ readmark(const char *file, uid_t owner, const char *prefix, char *out, size_t si
 /* Kryptik: a fullscreen window leaves the top barpx rows of its output to a
  * bar in its zone's colour that names the zone, outside the window's frame:
  * its surfaces and its popups are clipped to the frame. After the name, the
- * zones that hold the microphone and the camera, whichever zones they are. */
+ * zones that hold the microphone and the camera, whichever zones they are,
+ * and the zone holding the screen awake: a video in front covers the chrome. */
 static void
 zonebar(Client *c)
 {
@@ -131,6 +135,8 @@ zonebar(Client *c)
 \t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   mic %s", miczone);
 \tif (camzone[0])
 \t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   cam %s", camzone);
+\tif (barhold)
+\t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   awake %s", barhold->zone);
 \tink = 0.299f * c->zoneborder[0] + 0.587f * c->zoneborder[1]
 \t\t\t+ 0.114f * c->zoneborder[2] > 0.5f ? black : white;
 
@@ -157,8 +163,9 @@ zonebar(Client *c)
 }
 
 /* Kryptik: both files read again, and every fullscreen window's bar drawn again
- * if either holder changed. Both watches are set again too: a directory made
- * anew, or mounted over, drops its watch, which would hide every later grant. */
+ * if either holder, or the zone holding the screen awake, changed. Both watches
+ * are set again too: a directory made anew, or mounted over, drops its watch,
+ * which would hide every later grant. */
 static void
 marksupdate(void)
 {
@@ -171,10 +178,11 @@ marksupdate(void)
 \t}
 \treadmark(MICMARK, SOUNDUID, "", mic, sizeof(mic));
 \treadmark(CAMMARK, 0, "zone ", cam, sizeof(cam));
-\tif (strcmp(mic, miczone) == 0 && strcmp(cam, camzone) == 0)
+\tif (strcmp(mic, miczone) == 0 && strcmp(cam, camzone) == 0 && holdzone == barhold)
 \t\treturn;
 \tsnprintf(miczone, sizeof(miczone), "%s", mic);
 \tsnprintf(camzone, sizeof(camzone), "%s", cam);
+\tbarhold = holdzone;
 \twl_list_for_each(c, &clients, link)
 \t\tif (c->isfullscreen && c->mon)
 \t\t\tzonebar(c);
