@@ -739,7 +739,8 @@ verify_detached() {
         rm -f "$sig"
         [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || sleep 5
         quiet_fetch "$sigurl" "$sig" || rm -f "$sig"
-        is_pgp_signature "$sig" || { rm -f "$sig"; mirror_sig "$name" "$sig"; }
+        # None from a mirror either is reported just below.
+        is_pgp_signature "$sig" || { rm -f "$sig"; mirror_sig "$name" "$sig" || true; }
     fi
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
