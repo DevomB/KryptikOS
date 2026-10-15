@@ -5,11 +5,12 @@ like the clipboard, Bluetooth, suspend from the lid, the power key and
 idleness with the zone volumes' keys dropped too, power management, hotplug
 and several monitors, and keyboard layouts and input methods. Each part
 meets a rule the architecture already set: [ADR-013](../decisions.md) builds
-no sound, the architecture allows no shared D-Bus, the threat model gives up
+in only what boot needs, the architecture allows no shared D-Bus, the threat model gives up
 on a suspended machine's memory, there is no logind, and nothing reaches a
 zone except through its proxy and its broker. One section each, with its
 options, its recommendation and its check. In [decisions](../decisions.md),
-ADR-021 is proposed and ADR-022, for suspend, accepted.
+ADR-021 decides sound, ADR-022 suspend, ADR-027 Bluetooth and ADR-028
+input methods.
 
 ## Sound
 
@@ -184,7 +185,8 @@ in `make sound-test`, all of which it checks but the keys, which
 No Bluetooth until sound exists. Then a Bluetooth zone, audio only, with the
 kernel patch carried on linux-hardened (ADR-009's rebase cost) and offered
 upstream. Bluetooth keyboards and mice stay out for as long as a compromised
-bluetoothd could type into the chrome.
+bluetoothd could type into the chrome. [Bluetooth](bluetooth.md) weighs this
+again, and ADR-027 decides it: none for 1.0, then that zone.
 
 ### Check
 
