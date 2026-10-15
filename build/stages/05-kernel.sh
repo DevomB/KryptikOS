@@ -301,6 +301,13 @@ s_install() {
         return 1
     fi
     echo "HDA codec drivers loaded ahead of snd-hda-intel: $(wc -l <<<"$built")"
+    # The camera's driver loads only for a grant: built, and kept from loading by alias.
+    if [[ -z "$(find "${MODDIR}/${krel}" -name 'uvcvideo.ko*')" ]]; then
+        echo "FAIL: uvcvideo was not built (CONFIG_USB_VIDEO_CLASS=m, boot.fragment)"; return 1
+    fi
+    if ! grep -qx 'blacklist uvcvideo' "${KRYPTIK_ROOT}/build/config/modprobe.d/camera.conf"; then
+        echo "FAIL: modprobe.d/camera.conf does not keep uvcvideo from loading by alias"; return 1
+    fi
 }
 
 # The kernel is where a bootloader will look, and nowhere else.

@@ -1,9 +1,9 @@
 # Camera
 
 A video call in a zone's Firefox has the microphone, granted to one zone at a
-time from the chrome ([the laptop](laptop.md#sound)), and no camera: the
-kernel builds no video support at all. This design weighs adding one against
-the kernel code it brings into every zone's kernel. It keeps the rules the
+time from the chrome ([the laptop](laptop.md#sound)), and needs the camera
+too. This design weighs adding one against the kernel code it brings into
+every zone's kernel. It keeps the rules the
 microphone set: one zone at a time, the user's gesture in zone 0 the only way
 to grant it, and the grant visible for as long as it lasts.
 [ADR-026](../decisions.md) decides it: the grant.
@@ -90,8 +90,8 @@ loaded only for a grant.
 
 QEMU has no USB camera. The kernel's `vivid`, a test driver that makes V4L2
 devices with no hardware (as `test_power` makes a battery), stands in, built
-as a module that the zones suite alone loads; `uvcvideo` itself waits for
-the tests on physical hardware.
+as a module that the zones and desktop suites alone load; `uvcvideo`
+itself waits for the tests on physical hardware.
 
 - with no grant, no zone's `/dev/video0` opens, and loading by a camera's
   alias, as eudev does when one is plugged in, loads nothing

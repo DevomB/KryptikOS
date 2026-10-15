@@ -12,6 +12,11 @@
 #           restart, the net zone over a mac80211_hwsim radio, time claims,
 #           limits, the LUKS2 volume lifecycle, and the software images stage
 #           06 signed for this root, stacked over a zone's /usr
+#   step 2b guest-tests/stick-check.sh: a USB stick plugged in while the guest
+#           runs, given to a zone through the launch daemon, read, written,
+#           taken back and pulled out; then the install medium plugged in
+#   step 2c guest-tests/camera-check.sh: the camera granted to one zone at a
+#           time and taken back, with vivid standing in for a camera
 #   step 3  the compartment suites' [vm] rows on the target kernel (not with
 #           --skip-suites)
 #   step 4  reboot; the encrypted zone's data is still there
@@ -33,7 +38,7 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 [[ -f "$USB" ]] || die "--usb IMG is required"
-for t in python3 sfdisk truncate mkfs.ext4; do have "$t" || die "required tool not found: $t"; done
+for t in python3 sfdisk truncate mkfs.ext4 mkfs.vfat mcopy mtype mkfs.exfat fsck.exfat; do have "$t" || die "required tool not found: $t"; done
 VMDIR="${KRYPTIK_WORK}/vm"; mkdir -p "$VMDIR"
 DISK="${DISK:-${VMDIR}/zones.img}"
 [[ -e "$DISK" && ! -f "$DISK" ]] && die "refusing: ${DISK} is not a regular file"
@@ -66,7 +71,7 @@ else
     red "no signed software images for ${MVER} at ${IMAGES}: the guest's image checks have nothing to keep"
 fi
 # 3 GB, not 2: ephemeral-size-bound fills untrusted's 2G tmpfs, which is RAM, until ENOSPC.
-start_vm zones-p2 --net user --mem 3072 "${IMGARGS[@]}"
+start_vm zones-p2 --net user --mem 3072 --usb-port "${IMGARGS[@]}"
 DRIVE_TIMEOUT=900 drive "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "$(ROOTSH 'bash /usr/lib/kryptik/guest-tests/zones-check.sh 2>&1 | tee /var/log/kryptik/zones-check.log; echo ZCHECK-DONE')" \
     "expect:ZT END" "expect:ZCHECK-DONE"
@@ -102,6 +107,71 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             image-store image-runs image-needs-refused image-hidden image-explained image-list-namespace image-list-other-base image-corrupt image-toolkit image-browser; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
+
+# ---------------------------------------------------------------- step 2b --
+step "step 2b: a USB stick given to a zone, taken back and pulled out; the medium plugged in"
+# One FAT partition named DATA on a GPT stick, holding bytes whose hash only the host knows.
+STICK="${VMDIR}/stick.img"; SPART="${VMDIR}/stick-part.img"
+rm -f "$STICK" "$SPART"
+truncate -s 64M "$STICK"
+printf 'label: gpt\nstart=2048, size=126976, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="DATA"\n' | sfdisk -q "$STICK"
+truncate -s $((126976 * 512)) "$SPART"
+mkfs.vfat -n KSTICK "$SPART" > /dev/null
+head -c 300000 /dev/urandom > "${VMDIR}/hello.bin"
+mcopy -i "$SPART" "${VMDIR}/hello.bin" ::/hello.bin
+dd if="$SPART" of="$STICK" bs=512 seek=2048 conv=notrunc status=none
+rm -f "$SPART"
+SHA="$(sha256sum "${VMDIR}/hello.bin" | cut -d' ' -f1)"
+# An SD card as a camera leaves it: exFAT, made by mkfs.exfat, a photo in a directory of its own.
+CARD="${VMDIR}/card.img"; CPART="${VMDIR}/card-part.img"
+rm -f "$CARD" "$CPART"
+truncate -s 64M "$CARD"
+printf 'label: gpt\nstart=2048, size=126976, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7, name="CARD"\n' | sfdisk -q "$CARD"
+truncate -s $((126976 * 512)) "$CPART"
+mkfs.exfat -L KCARD "$CPART" > /dev/null
+head -c 300000 /dev/urandom > "${VMDIR}/photo.bin"
+python3 "${SELF}/exfat-add.py" "$CPART" "${VMDIR}/photo.bin:DCIM/100CANON/IMG_0001.JPG"
+fsck.exfat -n "$CPART" > "${VMDIR}/card-fsck.out" 2>&1 && green "the card the host made is sound by fsck.exfat" \
+    || red "the card the host made is not sound by fsck.exfat: $(tr '\n' ' ' < "${VMDIR}/card-fsck.out")"
+dd if="$CPART" of="$CARD" bs=512 seek=2048 conv=notrunc status=none
+rm -f "$CPART"
+CSHA="$(sha256sum "${VMDIR}/photo.bin" | cut -d' ' -f1)"
+SC() { ROOTSH "bash /usr/lib/kryptik/guest-tests/stick-check.sh $* 2>&1; echo STCHECK-DONE"; }
+DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
+    "plug:stick1:${STICK}" "$(SC plugged "$TUSER" "$SHA")" "expect:STCHECK-DONE" \
+    "$(SC hold "$TUSER")" "expect:ST HOLDING" "expect:STCHECK-DONE" \
+    "unplug:stick1" "$(SC pulled "$TUSER")" "expect:STCHECK-DONE" \
+    "plug:medium:${USB}:ro" "$(SC medium "$TUSER")" "expect:STCHECK-DONE" "unplug:medium" \
+    "plug:card1:${CARD}" "$(SC card "$TUSER" "$CSHA")" "expect:STCHECK-DONE" "unplug:card1"
+rc=$?
+T2B="$(txt)"
+[[ "$rc" -eq 0 ]] && green "the stick rounds ran to their end" || red "the stick rounds did not run to their end"
+for name in stick-seen stick-untouched stick-listed stick-refused-vault stick-refused-net stick-given-ro stick-mapping-unprobed \
+            stick-zone-lists stick-zone-copies stick-ro-refuses-write stick-no-node stick-ends-with-zone \
+            stick-other-zone-refused stick-eject-frees stick-eject-kept-descriptor stick-mapping-gone stick-written \
+            stick-holding stick-pulled-reads-fail stick-pulled-grant-ended stick-pulled-mapping-gone stick-no-oops \
+            medium-esp-offered medium-not-the-system medium-esp-read medium-root-refused \
+            card-exfat-lists card-exfat-copies card-exfat-not-written card-ends-with-zone; do
+    grep -q "ST PASS ${name}" <<<"$T2B" && green "guest: ${name}" || red "guest: ${name} (not passed)"
+done
+grep 'ST FAIL' <<<"$T2B" | sed 's/^/        /'
+# What untrusted put, read off the stick once it was pulled out: the zone's sync reached the image.
+put="$(mtype -i "${STICK}@@1048576" ::/put.txt 2>&1)"
+[[ "$put" == "written in untrusted" ]] && green "what untrusted put is on the stick, read by the host" || red "the stick has no put.txt from untrusted: ${put}"
+
+# ---------------------------------------------------------------- step 2c --
+step "step 2c: the camera granted to one zone at a time, with vivid standing in for one"
+DRIVE_TIMEOUT=600 drive "$(ROOTSH "bash /usr/lib/kryptik/guest-tests/camera-check.sh ${TUSER} 2>&1; echo CTCHECK-DONE")" \
+    "expect:CT END" "expect:CTCHECK-DONE"
+rc=$?
+T2C="$(txt)"
+[[ "$rc" -eq 0 ]] && green "the camera rounds ran to their end" || red "the camera rounds did not run to their end"
+for name in camera-not-by-alias camera-not-granted camera-refused-vault camera-refused-net camera-granted \
+            camera-zone-captures camera-ends-with-zone camera-other-zone-none camera-revoked \
+            camera-revoked-kept-descriptor camera-granted-again-while-running camera-ends-with-zone-again; do
+    grep -q "CT PASS ${name}" <<<"$T2C" && green "guest: ${name}" || red "guest: ${name} (not passed)"
+done
+grep 'CT FAIL' <<<"$T2C" | sed 's/^/        /'
 
 # ----------------------------------------------------------------- step 3 --
 if [[ "$SUITES" -eq 1 ]]; then

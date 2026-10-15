@@ -390,3 +390,29 @@ fn software_images_are_space_separated_names() {
         assert!(Zone::from_str(&with(bad)).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn a_zone_takes_usb_sticks_unless_its_file_says_no() {
+    assert!(Zone::from_str(VAULT).unwrap().removable, "a zone may be given a stick unless its file says no");
+    let vol = "volume = \"/dev/kryptik/vault\"";
+    let no = VAULT.replace(vol, &format!("{vol}\nremovable = false"));
+    assert!(!Zone::from_str(&no).unwrap().removable);
+    let odd = VAULT.replace(vol, &format!("{vol}\nremovable = \"yes\""));
+    assert!(Zone::from_str(&odd).is_err(), "removable is true or false");
+    let nic = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"eth0\"");
+    assert!(!Zone::from_str(&nic).unwrap().removable, "the nic zone is never given one");
+    let nic_yes = nic.replace(vol, &format!("{vol}\nremovable = true"));
+    assert!(Zone::from_str(&nic_yes).is_err(), "a nic zone file may not ask for one");
+}
+
+#[test]
+fn a_zone_may_be_granted_the_camera_unless_its_file_says_no() {
+    assert!(Zone::from_str(VAULT).unwrap().camera, "a zone may be granted the camera unless its file says no");
+    let no = format!("{VAULT}[camera]\nuse = false\n");
+    assert!(!Zone::from_str(&no).unwrap().camera);
+    let odd = format!("{VAULT}[camera]\nuse = 1\n");
+    assert!(Zone::from_str(&odd).is_err(), "use is true or false");
+    let nic = VAULT.replace("mode = \"none\"", "mode = \"nic\"\nnic = \"eth0\"");
+    assert!(!Zone::from_str(&nic).unwrap().camera, "the nic zone is never granted it");
+    assert!(Zone::from_str(&format!("{nic}[camera]\nuse = true\n")).is_err(), "a nic zone file may not ask for it");
+}

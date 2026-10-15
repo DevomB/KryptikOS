@@ -23,6 +23,7 @@
 #define _GNU_SOURCE
 #include <alsa/asoundlib.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <signal.h>
@@ -39,6 +40,9 @@
 
 #define RUN_DIR "/run/kryptik-sound"
 #define CONTROL_PATH RUN_DIR "/control/socket"
+/* Who may record, for the bar dwl draws over a fullscreen window, which covers the chrome's
+ * window that says so: the zone's name, or nothing. */
+#define HOLDER_PATH RUN_DIR "/control/microphone"
 #define RATE 48000
 #define CHANNELS 2
 #define FRAME 4                         /* bytes: two s16le samples */
@@ -374,6 +378,25 @@ static void status(struct conn *c)
 	reply(c->fd, text);
 }
 
+/* The microphone's holder, as HOLDER_PATH has it: written whole and put in place by rename, so
+ * dwl never reads half a name. */
+static void record_holder(void)
+{
+	static const char tmp[] = RUN_DIR "/control/.microphone";
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0640);
+	if (fd < 0) {
+		say("%s: %s", tmp, strerror(errno));
+		return;
+	}
+	/* Group kryptik's to read, whatever the umask: the session's compositor reads it. */
+	if (fchmod(fd, 0640) < 0)
+		say("%s: %s", tmp, strerror(errno));
+	if (granted >= 0)
+		dprintf(fd, "%s\n", zones[granted].name);
+	if (close(fd) < 0 || rename(tmp, HOLDER_PATH) < 0)
+		say("%s: %s", HOLDER_PATH, strerror(errno));
+}
+
 static void control_line(struct conn *c)
 {
 	char a[16] = "", b[40] = "", d[16] = "";
@@ -398,12 +421,14 @@ static void control_line(struct conn *c)
 		/* One zone at a time: a grant moves, and what another zone recorded ends. */
 		end_records(z);
 		granted = z;
+		record_holder();
 		say("the microphone is granted to %s", zones[z].name);
 	} else if (!strcmp(a, "revoke") && n <= 2) {
 		if (granted >= 0 && (n == 1 || z == granted)) {
 			end_records(-1);
 			say("the microphone is taken back from %s", zones[granted].name);
 			granted = -1;
+			record_holder();
 		}
 	} else
 		answer = "error: status | volume [ZONE] N|+N|-N | mute [ZONE] on|off|toggle | grant ZONE | revoke [ZONE]\n";
@@ -572,6 +597,12 @@ static void play_out(void)
 		close_pcm(&out);
 		return;
 	}
+	/* A card pulled out (a USB device) keeps its pointer where it stopped and frees no period,
+	 * so nothing would be written to it to find out: its state says so. */
+	if (snd_pcm_state(out) == SND_PCM_STATE_DISCONNECTED) {
+		recovered(&out, -ENODEV);
+		return;
+	}
 	int16_t buf[PERIOD * CHANNELS];
 	for (;;) {
 		snd_pcm_sframes_t avail = snd_pcm_avail_update(out);
@@ -683,6 +714,8 @@ int main(int argc, char **argv)
 	if (read_zones(argv[1]) < 0)
 		return 1;
 	int control = listen_at(CONTROL_PATH, 0660);
+	/* A record a mixer that died left behind would name a zone that may not record. */
+	record_holder();
 	if (control < 0)
 		say("no control socket at %s: %s; volume and the microphone stay as they are", CONTROL_PATH, strerror(errno));
 	say("mixing for %d zone(s)", nzones);

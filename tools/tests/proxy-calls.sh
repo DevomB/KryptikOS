@@ -28,13 +28,13 @@ if ! "${build[@]}" --no-run > "$T/build.log" 2>&1; then
     echo "proxy calls: FAIL, the live tests did not build for $TARGET"
     exit 1
 fi
-# strace slows every call the tests and the proxy make, so a failed run is named, test and
-# panic, and run once more; the trace checked is the run that passed.
-traced() {   # traced DIR: the live tests under strace, their output in DIR/test.log
+# strace slows every call the proxy makes, so a failed run is named, test and panic, and run once
+# more; the trace checked is the run that passed.
+traced() {   # traced DIR: the live tests, each proxy under strace into DIR/proxy.*, output DIR/test.log
     mkdir -p "$1"
-    # -q, not -qq: a process's "+++ exited" or "+++ killed" line ends its run in the file, which a
-    # later thread given the same id appends to.
-    strace -f -ff -q -s 256 -o "$1/trace" "${build[@]}" > "$1/test.log" 2>&1
+    # The tests start each proxy under a strace of its own (live.rs: proxy_command), one file a
+    # start: traced whole, the tests' threads could leave their calls in a proxy's file.
+    KRYPTIK_PROXY_TRACE="$1" "${build[@]}" > "$1/test.log" 2>&1
 }
 failures() { sed -n '/^failures:$/,$p' "$1/test.log" | head -80; }
 run="$T/run"
@@ -59,13 +59,15 @@ if [[ "$rc" -ne 0 ]]; then
     exit 1
 fi
 
-# One file per process id: from the line that execs the proxy to the line that ends it, every
+# One file per proxy start: from the line that execs the proxy to the line that ends it, every
 # call it made, marked "fd" when it was started as the launch daemon starts it (--listen-fd) and
-# "path" when it was given a path to bind, as only these tests do.
+# "path" when it was given a path to bind, as only these tests do. strace -f writes each line
+# after its task's id, so a thread the proxy may one day start is read in the same file.
 awk 'FNR == 1 { on = 0 }
+     { sub(/^(\[pid +[0-9]+\]|[0-9]+) +/, "") }
      !on && /^execve\("[^"]*\/kryptik-wlproxy", / && / = 0$/ { on = 1; mode = index($0, "\"--listen-fd\"") ? "fd" : "path" }
      on && /^\+\+\+ (exited|killed) / { on = 0 }
-     on && /^[a-z_0-9]+\(/ { print mode "\t" $0 }' "$run"/trace.* > "$T/calls"
+     on && /^[a-z_0-9]+\(/ { print mode "\t" $0 }' "$run"/proxy.* > "$T/calls"
 cut -f2- "$T/calls" > "$T/lines"
 runs="$(grep -c '^execve(' "$T/lines")"
 fd_runs="$(grep -c "^fd	execve(" "$T/calls")"
@@ -95,6 +97,7 @@ if [[ -n "$missing" || -n "$args" ]]; then
     # three calls before it.
     for c in $missing; do
         awk -v c="$c" 'FNR == 1 { on = 0; n = 0 }
+            { sub(/^(\[pid +[0-9]+\]|[0-9]+) +/, "") }
             !on && /^execve\("[^"]*\/kryptik-wlproxy", / && / = 0$/ { on = 1; exec = $0; next }
             on && /^\+\+\+ (exited|killed) / { on = 0; n = 0; next }
             on && index($0, c "(") == 1 {
@@ -102,7 +105,7 @@ if [[ -n "$missing" || -n "$args" ]]; then
                 for (i = n - 3; i < n; i++) if (i >= 0) print "    " substr(prev[i % 3], 1, 200)
                 print "  > " substr($0, 1, 240); exit
             }
-            on { prev[n % 3] = $0; n++ }' "$run"/trace.*
+            on { prev[n % 3] = $0; n++ }' "$run"/proxy.*
     done
     [[ -n "$args" ]] && echo "made with arguments its filter kills: $(sort -u <<<"$args" | head -5 | tr '\n' ';')"
     echo "proxy calls: FAIL"

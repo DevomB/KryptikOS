@@ -1,0 +1,6 @@
+# A USB stick's partition given to a zone is a device-mapper mapping, kryptik-stick-ZONE
+# (stick.rs). Device-mapper's own rules, after 10-dm.rules, would run blkid on it and parse the
+# stick's superblock in zone 0 as root, through the mapping, which 59-kryptik-removable.rules
+# keeps them from doing on the partition itself: the mapping is the zone's to read.
+SUBSYSTEM=="block", KERNEL=="dm-*", ATTR{dm/name}=="kryptik-stick-*", ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}="1", ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}="1"
+SUBSYSTEM=="block", KERNEL=="dm-*", ENV{DM_NAME}=="kryptik-stick-*", ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}="1", ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}="1"

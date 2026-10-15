@@ -1,8 +1,8 @@
 # Removable storage
 
 Someone hands the user a USB stick with a PDF on it, or the user wants a
-document out of `work` and onto a stick. Nothing in Kryptik does either
-today. This design keeps the rules the architecture already set: zone 0
+document out of `work` and onto a stick. This design is how Kryptik does
+both, and keeps the rules the architecture already set: zone 0
 runs no user applications ([ADR-003](../decisions.md)), a zone reaches
 zone 0 only through its proxy and its [broker](broker.md), and every zone
 shares one kernel, so whatever the kernel parses for one zone it parses
@@ -66,8 +66,14 @@ The zone then needs a reader that works on the descriptor itself. Opening
 permissions refuse the zone's uid. mtools, exfat-fuse and ntfs-3g all take
 a path, so the reader is Kryptik's own. In Rust, the `fatfs` crate reads
 and writes FAT12, FAT16 and FAT32 with long names over anything that seeks.
-exFAT, which sticks of 64 GB and more come formatted with, needs a reader
-chosen or written with the same care. NTFS waits.
+exFAT, which sticks of 64 GB and more and every SD card over 32 GB come
+formatted with, has a reader of Kryptik's own in the same program
+(`tools/stick/src/exfat.rs`), as no crate reads it with the care a hostile
+volume needs: the boot sector checked against the stick's size and by its
+checksum, the up-case table by its length and checksum, each entry set by
+its checksum before any field of it is used, every run and chain inside the
+heap, and the directory clusters a command reads counted, so a chain that
+loops through unused entries stops. NTFS waits.
 
 ## Options
 
@@ -97,8 +103,8 @@ chosen or written with the same care. NTFS waits.
 ADR-025 decides: no mount. It adds nothing to the shared kernel, and the
 reader would serve FUSE too, so the work is not lost if FUSE follows.
 FUSE needs a decision of its own, weighed against the kernel code it adds,
-if copying first proves too clumsy. FAT comes first; exFAT is a named gap
-until its reader is chosen.
+if copying first proves too clumsy. FAT is read and written; exFAT is read,
+and written only once its reader has been through acceptance.
 
 - **The user picks the zone.** When a stick appears, the chrome names it
   from sysfs, not from its filesystem: vendor, model, size and its

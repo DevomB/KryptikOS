@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Checks build/licences against the Rust release, crates and musl in kryptikd and kryptik-wlproxy.
+# Checks build/licences against the Rust release, crates and musl in kryptikd, kryptik-wlproxy and
+# kryptik-stick.
 #
 #   ./tools/check-rust-licences.sh DIST
 #
@@ -60,7 +61,8 @@ while read -r name ver; do
 done < <(awk '/^\[\[package\]\]/ { n = v = "" }
               /^name = / { n = $3 } /^version = / { v = $3 }
               /^source = "registry\+/ { gsub(/"/, "", n); gsub(/"/, "", v); print n, v }' \
-             "${KRYPTIK_ROOT}/compartments/kryptikd/Cargo.lock" "${KRYPTIK_ROOT}/compositor/Cargo.lock" | sort -u)
+             "${KRYPTIK_ROOT}/compartments/kryptikd/Cargo.lock" "${KRYPTIK_ROOT}/compositor/Cargo.lock" \
+             "${KRYPTIK_ROOT}/tools/stick/Cargo.lock" | sort -u)
 for d in "${LIC}"/rust-*/; do
     [[ -d "$d" ]] || continue
     d="$(basename "$d")"
