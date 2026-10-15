@@ -86,6 +86,18 @@ args="$(grep -E '^socket\(' "$T/lines" | grep -v '^socket(AF_UNIX,'
         grep -E '^(mmap|mprotect)\(.*PROT_EXEC' "$T/lines")"
 if [[ -n "$missing" || -n "$args" ]]; then
     [[ -n "$missing" ]] && echo "made by the proxy and missing from PROXY_ALLOWLIST: $(tr '\n' ' ' <<<"$missing")"
+    # Where each first came from: the run's exec line, whose arguments name the test, and the
+    # three calls before it.
+    for c in $missing; do
+        awk -v c="$c" 'FNR == 1 { on = 0; n = 0 }
+            !on && /^execve\("[^"]*\/kryptik-wlproxy", / && / = 0$/ { on = 1; exec = $0; next }
+            on && index($0, c "(") == 1 {
+                print "  first " c ", in " FILENAME ":"; print "    " substr(exec, 1, 240)
+                for (i = n - 3; i < n; i++) if (i >= 0) print "    " substr(prev[i % 3], 1, 200)
+                print "  > " substr($0, 1, 240); exit
+            }
+            on { prev[n % 3] = $0; n++ }' "$run"/trace.*
+    done
     [[ -n "$args" ]] && echo "made with arguments its filter kills: $(sort -u <<<"$args" | head -5 | tr '\n' ';')"
     echo "proxy calls: FAIL"
     exit 1
