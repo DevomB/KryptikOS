@@ -1,0 +1,21 @@
+Subject: [PATCH] Build ATK alone without libxml2
+
+Only the accessibility bridge's tests use libxml2, and an atk_only build
+makes neither the bridge nor its tests, so it need not require it.
+---
+ meson.build | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -151,7 +151,8 @@
+   endif
+ endif
+ gmodule_dep = dependency('gmodule-2.0', version: gmodule_req_version)
+-libxml_dep = dependency('libxml-2.0', version: libxml_req_version)
++# Only the bridge's tests use it, and atk_only builds neither.
++libxml_dep = dependency('libxml-2.0', version: libxml_req_version, required: not get_option('atk_only'))
+ 
+ x11_deps = []
+ x11_dep = dependency('x11', required: get_option('x11'))

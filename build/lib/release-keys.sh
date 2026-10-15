@@ -46,7 +46,7 @@ dev_keys() {
     # for re-signing the channel's statement, for that alone; and the
     # control-disk key's, which arms an unattended install and nothing else.
     {
-        printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-release.pub")"
+        printf 'kryptik-release namespaces="kryptik-release,kryptik-media,kryptik-image" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-release.pub")"
         printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-latest.pub")"
         printf 'kryptik-testctl namespaces="kryptik-testctl" %s\n' "$(cut -d' ' -f1,2 "${rel}/kryptik-testctl.pub")"
     } > "${rel}/release-signers"
@@ -72,7 +72,7 @@ EOF
 
 # A probe signed by each developer key and by a foreign one, in each namespace,
 # verified through the anchor as its readers verify: only the release key, in
-# kryptik-release and kryptik-media, the statement key, in kryptik-latest, and
+# kryptik-release, kryptik-media and kryptik-image, the statement key, in kryptik-latest, and
 # the control-disk key, in kryptik-testctl, may pass. The production keys sign
 # nothing but what they are for, so this runs for development alone.
 probe_anchor() {
@@ -82,7 +82,7 @@ probe_anchor() {
     ssh-keygen -q -t ed25519 -N "" -f "$t/foreign" < /dev/null
     printf 'probe\n' > "$t/probe"
     for key in "$RELEASE_KEY" "$LATEST_KEY" "$tkey" "$t/foreign"; do
-        for ns in kryptik-release kryptik-media kryptik-latest kryptik-testctl; do
+        for ns in kryptik-release kryptik-media kryptik-image kryptik-latest kryptik-testctl; do
             case "$ns" in
                 kryptik-latest)  who=kryptik-latest ;;
                 kryptik-testctl) who=kryptik-testctl ;;
@@ -90,7 +90,7 @@ probe_anchor() {
             esac
             want=refused
             case "$key:$ns" in
-                "$RELEASE_KEY:kryptik-release"|"$RELEASE_KEY:kryptik-media"|"$LATEST_KEY:kryptik-latest"|"$tkey:kryptik-testctl") want=accepted ;;
+                "$RELEASE_KEY:kryptik-release"|"$RELEASE_KEY:kryptik-media"|"$RELEASE_KEY:kryptik-image"|"$LATEST_KEY:kryptik-latest"|"$tkey:kryptik-testctl") want=accepted ;;
             esac
             rm -f "$t/probe.sig"
             # A refusal counts only when there was a signature to refuse.
@@ -178,8 +178,8 @@ private_ok() {
     [[ "$owner" == 0 || "$owner" == "$who" ]] || die "$1 belongs to uid ${owner}, not to root or the user running the build (${who})"
 }
 
-# kryptik-release, held to kryptik-release (manifests) and kryptik-media (the
-# media's checksums), kryptik-latest, held to kryptik-latest alone, and
+# kryptik-release, held to kryptik-release (manifests), kryptik-media (the
+# media's checksums) and kryptik-image (image lists), kryptik-latest, held to kryptik-latest alone, and
 # kryptik-testctl, if listed, held to kryptik-testctl alone (the control disk
 # that arms an unattended install), with Ed25519 keys (a security key's
 # included). A principal may be listed more
@@ -191,7 +191,7 @@ anchor_ok() {
     while read -r p ns t k _; do
         case "$p" in ""|"#"*) continue ;; esac
         case "$p" in
-            kryptik-release) want='namespaces="kryptik-release,kryptik-media"' ;;
+            kryptik-release) want='namespaces="kryptik-release,kryptik-media,kryptik-image"' ;;
             kryptik-latest)  want='namespaces="kryptik-latest"' ;;
             kryptik-testctl) want='namespaces="kryptik-testctl"' ;;
             *) die "${a}: ${p} is neither kryptik-release, kryptik-latest nor kryptik-testctl" ;;

@@ -85,14 +85,19 @@ quiet_fetch() {   # quiet_fetch URL OUT
 CANONICAL_GNU="https://ftp.gnu.org/gnu"
 
 # Overrides for tools/tests/verify-signatures.sh only.
-if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}${KRYPTIK_SIGCHECK_PROVENANCE:-}" ]]; then
+if [[ -n "${KRYPTIK_SIGCHECK_MANIFEST:-}${KRYPTIK_SIGCHECK_KEYRING:-}${KRYPTIK_SIGCHECK_KEYSOURCE:-}${KRYPTIK_SIGCHECK_PROVENANCE:-}${KRYPTIK_SIGCHECK_MIRRORS:-}" ]]; then
     [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || die \
 "A signature-check override is set (KRYPTIK_SIGCHECK_MANIFEST /
 KRYPTIK_SIGCHECK_KEYRING / KRYPTIK_SIGCHECK_KEYSOURCE /
-KRYPTIK_SIGCHECK_PROVENANCE) but KRYPTIK_SIGCHECK_SELFTEST is not.
+KRYPTIK_SIGCHECK_PROVENANCE / KRYPTIK_SIGCHECK_MIRRORS) but KRYPTIK_SIGCHECK_SELFTEST is not.
 Refusing to verify signatures against a substituted manifest or keyring."
     warn "SELF-TEST MODE: manifest and/or keyring are substituted, not upstream"
 fi
+
+# Where upstream's signature is kept beside a mirror's copy of the file, for a host that is down
+# (tools/source-mirrors.tsv); the signature must verify as upstream's own does.
+MIRRORS="${KRYPTIK_SIGCHECK_MIRRORS:-$(dirname "${BASH_SOURCE[0]}")/source-mirrors.tsv}"
+declare -A VER_OF=()
 
 # fetch-sources.sh is the one definition of the manifest.
 manifest_source() {
@@ -256,6 +261,31 @@ PINNED_FPRS=(
 
     # libexpat names no signer: gentoo.org's WKD serves this for sping@gentoo.org (source-notes.tsv)
     "3176EF7DB2367F1FCA4F306B1F9B0E909AF37285"   # Sebastian Pipping, expat
+
+    # https://www.alsa-project.org/wiki/Download (retrieved 2026-10-13) states this fingerprint
+    # and links the key, https://www.alsa-project.org/files/pub/gpg-release-key-v1.txt.
+    "F04DF50737AC1A884C4B3D718380596DA6E59C91"   # ALSA Release Team, alsa-lib
+
+    # The software images' sources (build/images/versions.env).
+    # https://github.com/PCRE2Project/pcre2/blob/main/SECURITY.md (retrieved 2026-10-13) names it for
+    # 10.45 on, cross-signed by Philip Hazel's earlier key. It signs with a subkey GitHub's copy lacks.
+    "A95536204A3BB489715231282A98E77EB6F24CA8"   # Nicholas Wilson, pcre2
+    # cairographics.org names the signer, not the key; https://gitlab.gnome.org/ebassi.gpg serves this
+    # one under his GNOME account (retrieved 2026-10-13). It signs the checksum lists since 1.18.0.
+    "53EF3DC3B63E2899271BD26322E8091EEA11BBB7"   # Emmanuele Bassi, cairo
+    # FreeType publishes only the long id BE6C3AAC63AD8E3F: docs/release in its repository since
+    # 2.12.0, and each release announcement. This key ends in it and has signed every release since.
+    "E30674707856409FF1948010BE6C3AAC63AD8E3F"   # Werner Lemberg, freetype (long id alone: weaker)
+    # Mozilla's security blog of 2026-08-10 states it with its new signing subkey 827E6586...76767AA3,
+    # as does the KEY file beside each release. key-provenance.tsv takes the key from that file.
+    "14F26682D0916CDD81E37B6D61B7B526D98F0353"   # Mozilla Software Releases, firefox
+    # https://static.rust-lang.org/rust-key.gpg.ascii (retrieved 2026-10-13), beside the releases.
+    "108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE"   # Rust Language, rustc, cargo and rust-std
+    # https://releases.llvm.org/release-keys.asc (retrieved 2026-10-13), the release managers' keys.
+    "D574BD5D1D0E98895E3BF90044F2485E45D59042"   # Tobias Hieta, LLVM's release builds
+    # https://github.com/nodejs/node#release-keys (retrieved 2026-10-15) lists the releasers' keys, which
+    # its release-keys repository serves. Each release is signed by one releaser; this one signs 24.22.0.
+    "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C"   # Richard Lau, Node.js
 )
 
 # Primaries and subkeys: GOODSIG names a subkey, while pins and keys.manifest hold primaries.
@@ -338,6 +368,16 @@ load_key_provenance() {
                     fi
                     ;;
                 wkd)  [[ "$l" == *@*.* ]]     || why="a wkd locator must be an email address" ;;
+                origin)
+                    if [[ "$l" == https://* ]] || [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" && "$l" == file://* ]]; then
+                        :
+                    else
+                        why="an origin locator must be an https URL"
+                    fi
+                    # It says where the key is taken from, never who signs: the pin says that.
+                    [[ " ${PINNED_FPRS[*]} " == *" ${f} "* ]] \
+                        || why="an origin row is for a key pinned in PINNED_FPRS"
+                    ;;
                 *)    why="unknown kind '${k}'" ;;
             esac
         fi
@@ -404,7 +444,7 @@ import_provenance_keys_for() {
 
         tmp="$(mktemp)"
         case "${PROV_KIND[$i]}" in
-            korg|github|savannah)
+            korg|github|savannah|origin)
                 if ! curl -fsSL --max-time 30 --retry 2 --retry-delay 5 -o "$tmp" "${PROV_LOC[$i]}" 2>/dev/null; then
                     warn "${name}: could not fetch the published key from ${PROV_LOC[$i]}"
                     PROV_MISSED[$i]=1
@@ -697,23 +737,41 @@ verify_any() {
     report "$name" no-signature-upstream "none of .sig/.asc/.sign is published"
 }
 
+# mirror_sig NAME OUT: upstream's signature for NAME from a mirror that keeps it beside the file,
+# into OUT, the first that is an OpenPGP signature.
+mirror_sig() {
+    local u s
+    [[ -f "$MIRRORS" ]] || return 1
+    while read -r u s; do
+        u="${u//"{VER}"/"${VER_OF[$1]:-}"}"
+        if quiet_fetch "${u}${s}" "$2" && is_pgp_signature "$2"; then
+            warn "$1: upstream's signature came from ${u}${s}"
+            return 0
+        fi
+        rm -f "$2"
+    done < <(awk -v n="$1" '$1 == n && $3 != "-" { print $2, $3 }' "$MIRRORS")
+    return 1
+}
+
 # verify_detached NAME DATA SIGURL [HOW]: the signature at SIGURL over DATA, cached under its name.
 verify_detached() {
     local name="$1" data="$2" sigurl="$3" how="${4:-}"
     local sig="${SIGDIR}/${sigurl##*/}" suffix=".${sigurl##*.}"
 
-    if [[ ! -s "$sig" ]] && ! quiet_fetch "$sigurl" "$sig"; then
+    if [[ ! -s "$sig" ]] && ! quiet_fetch "$sigurl" "$sig" && ! mirror_sig "$name" "$sig"; then
         rm -f "$sig"
         warn "${name}: no ${suffix} published upstream"
         mark_unverifiable "${name} (no signature upstream)"
         report "$name" no-signature-upstream "no ${suffix} published beside the tarball"
         return
     fi
-    # A busy host can answer with a page instead of the file: drop it and ask once more.
+    # A busy host can answer with a page instead of the file: drop it and ask once more, then a mirror.
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
         [[ "${KRYPTIK_SIGCHECK_SELFTEST:-0}" == "1" ]] || sleep 5
         quiet_fetch "$sigurl" "$sig" || rm -f "$sig"
+        # None from a mirror either is reported just below.
+        is_pgp_signature "$sig" || { rm -f "$sig"; mirror_sig "$name" "$sig" || true; }
     fi
     if ! is_pgp_signature "$sig"; then
         rm -f "$sig"
@@ -754,6 +812,11 @@ verify_sums() {
     local listname="${signame%.*}"
     local list="${SIGDIR}/${listname}" want got
 
+    # A list named alike for every release (Node.js's SHASUMS256.txt) may be cached from an earlier
+    # one: if it does not name FILE, it and its signature are fetched again.
+    if [[ -s "$list" && -z "$(listed_digest "$list" "$file")" ]]; then
+        rm -f "$list" "${SIGDIR}/${signame}"
+    fi
     if [[ ! -s "$list" ]] && ! quiet_fetch "${url%/*}/${listname}" "$list"; then
         rm -f "$list"
         warn "${name}: no ${listname} published upstream"
@@ -830,11 +893,12 @@ echo
 while read -r name _ver url sig _; do
     [[ -z "$name" ]] && continue
     SEEN_SOURCE[$name]=1
+    VER_OF[$name]="$_ver"
     file="$(basename "$url")"
 
     # A kind this script does not know fails: skipping it would pass the row.
     case "$sig" in
-        gnu|kernel|sig|asc|stem.sig|sums:?*|probe|sha256|sha256.txt|tag|none) ;;
+        gnu|kernel|sig|asc|stem.sig|sums:?*|probe|sha256|sha256.txt|sha256sum|stem.sha256sum|tag|none) ;;
         *)
             err "${name}: the manifest declares no signature kind this script knows ('${sig}')"
             FAILED=$((FAILED + 1)); FAILED_LIST+=("${name} (unknown signature kind '${sig}')")
@@ -859,8 +923,8 @@ while read -r name _ver url sig _; do
         stem.sig) verify_detached "$name" "${KRYPTIK_SOURCES}/${file}" "${url%.tar.*}.sig" ;;
         sums:*)   verify_sums     "$name" "$url" "$file" "${sig#sums:}" ;;
         probe)    verify_any      "$name" "$url" "$file" ;;
-        sha256|sha256.txt|tag)
-            what="the publisher's .${sig}"
+        sha256|sha256.txt|sha256sum|stem.sha256sum|tag)
+            what="the publisher's .${sig#stem.}"
             [[ "$sig" == tag ]] && what="the signed tag"
             warn "${name}: no OpenPGP signature upstream; ${what} is verify-provenance's"
             mark_unsigned "${name} (${what}, see verify-provenance)"

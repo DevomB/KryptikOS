@@ -64,6 +64,19 @@ exec >/dev/console 2>&1
 # a shutdown daemon that ignored the request.
 echo "kryptik: rc.shutdown starting"
 
+# A disk key dropped for a sleep and never given back, the state partition's or a zone
+# volume's, would hold the unmount after this script for good: each such mapping now fails
+# every read and write instead. The sleep flushed it first, so nothing written is lost.
+for d in /sys/block/dm-*; do
+    [ "$(cat "$d/dm/suspended" 2>/dev/null)" = 1 ] || continue
+    n="$(cat "$d/dm/name" 2>/dev/null)"
+    case "$n" in
+        kryptik-state|kryptik-zone-*)
+            dmsetup wipe_table "$n" && echo "kryptik: ${n} waited for its passphrase; it now fails every read and write" \
+                || echo "kryptik: ${n} waits for its passphrase, and dmsetup wipe_table failed" ;;
+    esac
+done
+
 if [ -d /run/service ] && command -v s6-rc >/dev/null 2>&1; then
     echo "kryptik: bringing services down"
     # -t: a service that will not stop must not wedge the shutdown forever.

@@ -39,7 +39,7 @@ ESP="$(part_dev "$DISK" 1)"; SA="$(part_dev "$DISK" 2)"; SB="$(part_dev "$DISK" 
 [ "$(lbl "$ESP")" = kryptik-esp ] || die "${ESP} is not labelled kryptik-esp; is ${DISK} a Kryptik installation?"
 [ "$(lbl "$SA")" = kryptik-a ] && [ "$(lbl "$SB")" = kryptik-b ] && [ "$(lbl "$ST")" = kryptik-state ] || die "${DISK} does not carry Kryptik's partition layout"
 for lblname in kryptik-state kryptik-media; do
-    for d in $(blkid -t PARTLABEL="$lblname" -o device 2>/dev/null); do
+    for d in $(/usr/libexec/kryptik/devices.sh named "$lblname"); do
         case "$(readlink -f "$d")" in "$DISK"*) [ "$lblname" = kryptik-state ] && [ "$d" = "$ST" ] && continue; die "${DISK} is the medium; refusing" ;; esac
     done
 done

@@ -72,10 +72,7 @@ fail()    { err  "[$1] $2";           FAIL_N=$((FAIL_N+1));       FAIL_LIST+=("[
 unavail() { warn "[$1] UNVERIFIED: $2"; UNAVAIL_N=$((UNAVAIL_N+1)); UNAVAIL_LIST+=("[$1] $2"); report "$1" unverified   "$2"; }
 prereq()  { warn "[$1] CANNOT CHECK: $2"; PREREQ_N=$((PREREQ_N+1)); PREREQ_LIST+=("[$1] $2"); report "$1" uncheckable  "$2"; }
 
-lock_hash_for() {
-    [[ -f "$KRYPTIK_LOCK" ]] || return 1
-    awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$KRYPTIK_LOCK"
-}
+lock_hash_for() { lock_entry "$1"; }
 
 # http_get URL DEST: curl's exit status decides; HTTP_CODE only tells a 404 from no answer.
 http_get() {
@@ -236,10 +233,11 @@ verify_hm_tree() {
     fi
 }
 
-# verify_published_sha256 NAME URL SUFFIX: a publisher's checksum, over the same TLS as the tarball.
+# verify_published_sha256 NAME URL SUFFIX [SUM-URL]: a publisher's checksum, over the same TLS as the
+# tarball, at URL+SUFFIX unless SUM-URL says where.
 verify_published_sha256() {
     local name="$1" url="$2" suffix="$3"
-    local sum="${url}${suffix}"
+    local sum="${4:-${url}${suffix}}"
     RSRC="$name"
     local file; file="$(basename "$url")"
     local body="${WORK}/${file}${suffix}"
@@ -282,8 +280,11 @@ verify_published_sha256() {
         return
     fi
 
+    # The line naming the file where the list names files (GNOME's lists the news beside it), else
+    # the first digest.
     local expected
-    expected="$(awk 'NF{print $1; exit}' "$body" 2>/dev/null || true)"
+    expected="$(awk -v f="$file" 'NF >= 2 && ($2 == f || $2 == "*" f) { print $1; exit }' "$body" 2>/dev/null || true)"
+    [[ -n "$expected" ]] || expected="$(awk 'NF{print $1; exit}' "$body" 2>/dev/null || true)"
     if [[ ! "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
         fail pub "${name}: ${sum} is not a sha256 digest (got $(head -c 80 "$body" | tr -d '\n' || true))"
         return
@@ -312,7 +313,7 @@ MANIFEST="${WORK}/manifest"
 "${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list > "$MANIFEST" \
     || die "tools/fetch-sources.sh --list failed, so there is nothing to check against."
 mapfile -t TAG_ROWS < <(awk '$4 == "tag"' "$MANIFEST")
-mapfile -t SUM_ROWS < <(awk '$4 == "sha256" || $4 == "sha256.txt"' "$MANIFEST")
+mapfile -t SUM_ROWS < <(awk '$4 == "sha256" || $4 == "sha256.txt" || $4 == "sha256sum" || $4 == "stem.sha256sum"' "$MANIFEST")
 
 log "Signed tags"
 for row in "${TAG_ROWS[@]}"; do
@@ -338,7 +339,10 @@ echo
 log "Publisher checksums"
 for row in "${SUM_ROWS[@]}"; do
     read -r name _ url sig _ <<< "$row"
-    verify_published_sha256 "$name" "$url" ".${sig}"
+    case "$sig" in
+        stem.sha256sum) verify_published_sha256 "$name" "$url" ".sha256sum" "${url%.tar.*}.sha256sum" ;;
+        *)              verify_published_sha256 "$name" "$url" ".${sig}" ;;
+    esac
 done
 
 echo

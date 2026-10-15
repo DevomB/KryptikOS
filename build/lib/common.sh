@@ -9,6 +9,9 @@ KRYPTIK_WORK="${KRYPTIK_WORK:-${KRYPTIK_ROOT}/build/work}"
 KRYPTIK_OUT="${KRYPTIK_OUT:-${KRYPTIK_ROOT}/out}"
 # shellcheck disable=SC2034  # consumed by tools/fetch-sources.sh
 KRYPTIK_LOCK="${KRYPTIK_ROOT}/sources.lock"
+# The software images' sources, locked apart from the root's: no stage 04 input names them.
+# shellcheck disable=SC2034
+KRYPTIK_IMAGES_LOCK="${KRYPTIK_ROOT}/build/images/sources.lock"
 
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
     C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'
@@ -152,6 +155,18 @@ LFS stages that need privilege escalate explicitly and narrowly."
 load_config() {
     # shellcheck source=/dev/null
     source "${KRYPTIK_ROOT}/build/config/versions.env"
+    # The software images' pins, apart for the same reason as their lock.
+    # shellcheck source=/dev/null
+    if [[ -f "${KRYPTIK_ROOT}/build/images/versions.env" ]]; then source "${KRYPTIK_ROOT}/build/images/versions.env"; fi
+}
+
+# lock_entry FILE: FILE's hash in sources.lock or the images' lock, or failure.
+lock_entry() {
+    local l
+    for l in "$KRYPTIK_LOCK" "$KRYPTIK_IMAGES_LOCK"; do
+        [[ -f "$l" ]] && awk -v f="$1" '$2 == f { print $1; found=1; exit } END { exit !found }' "$l" && return 0
+    done
+    return 1
 }
 
 load_hardening() {

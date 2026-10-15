@@ -174,7 +174,7 @@ pub fn default_volume_path(zone: &str) -> String {
     format!("{DEFAULT_VOLUME_DIR}/{zone}.luks")
 }
 
-fn run(what: &str, prog: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<String, (i32, String)> {
+pub(crate) fn run(what: &str, prog: &str, args: &[&str], stdin: Option<&[u8]>) -> Result<String, (i32, String)> {
     let mut cmd = Command::new(prog);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
@@ -293,7 +293,11 @@ pub fn close_mapping(zone: &str, mountpoint: &str) -> Result<(), VolumeError> {
         return Err(VolumeError::Invariant(format!("{mountpoint} is still busy after the zone exited: {last}")));
     }
     if Path::new(&mapper).exists() {
-        run("cryptsetup close", "cryptsetup", &["close", &mapper_name(zone)], None).map_err(|e| tool_err("cryptsetup close", e))?;
+        if let Err(e) = run("cryptsetup close", "cryptsetup", &["close", &mapper_name(zone)], None) {
+            // A volume given up after a sleep has an error table, which cryptsetup may not know
+            // as its own: device-mapper removes it all the same.
+            run("dmsetup remove", "dmsetup", &["remove", &mapper_name(zone)], None).map_err(|_| tool_err("cryptsetup close", e))?;
+        }
     }
     if Path::new(&mapper).exists() {
         return Err(VolumeError::Invariant(format!("{mapper} still exists after cryptsetup close")));
@@ -352,8 +356,12 @@ pub fn init(zone: &str, volume: &str, size: u64, pass: &Passphrase, uid: u32, gi
     let mapper = mapper_path(zone);
     run("cryptsetup open", "cryptsetup", &["open", "--type", "luks2", "--key-file", "-", volume, &mapper_name(zone)], Some(pass.as_bytes()))
         .map_err(|e| tool_err("cryptsetup open", e))?;
-    let owner = format!("{uid}:{gid}");
-    let r = run("mkfs.ext4", "mkfs.ext4", &["-q", "-F", "-E", &format!("root_owner={owner}"), "-L", &format!("kryptik-{zone}"), &mapper], None);
+    /* Every inode table is written now: left to ext4's lazy thread, they would be written for
+     * minutes after the first mount, through the loop device onto the state partition, where a
+     * suspend that has dropped that partition's key keeps the thread waiting and the kernel
+     * from sleeping. */
+    let options = format!("root_owner={uid}:{gid},lazy_itable_init=0");
+    let r = run("mkfs.ext4", "mkfs.ext4", &["-q", "-F", "-E", &options, "-L", &format!("kryptik-{zone}"), &mapper], None);
     let c = run("cryptsetup close", "cryptsetup", &["close", &mapper_name(zone)], None);
     r.map_err(|e| tool_err("mkfs.ext4", e))?;
     c.map_err(|e| tool_err("cryptsetup close", e))?;
@@ -440,6 +448,32 @@ pub fn destroy(zone: &str, volume: &str) -> Result<(), VolumeError> {
     run("cryptsetup luksErase", "cryptsetup", &["luksErase", "--batch-mode", volume], None)
         .map_err(|e| tool_err("cryptsetup luksErase", e))?;
     fs::remove_file(p).map_err(|e| VolumeError::Io(format!("{volume}: {e}")))
+}
+
+/// Suspend a mapping and wipe its key from the kernel (`cryptsetup luksSuspend`); its filesystem
+/// is flushed and frozen first, and its I/O waits until a key is given again.
+pub fn suspend_mapping(mapper: &str) -> Result<(), VolumeError> {
+    run("cryptsetup luksSuspend", "cryptsetup", &["luksSuspend", mapper], None)
+        .map(drop)
+        .map_err(|e| tool_err("cryptsetup luksSuspend", e))
+}
+
+/// Give a suspended zone volume its key again (`cryptsetup luksResume`); its I/O goes on.
+pub fn resume_mapping(zone: &str, pass: &Passphrase) -> Result<(), VolumeError> {
+    match run("cryptsetup luksResume", "cryptsetup", &["luksResume", "--key-file", "-", &mapper_name(zone)], Some(pass.as_bytes())) {
+        Ok(_) => Ok(()),
+        Err((2, _)) => Err(VolumeError::WrongPassphrase { zone: zone.into() }),
+        Err(e) => Err(tool_err("cryptsetup luksResume", e)),
+    }
+}
+
+/// Give up a suspended zone volume without its key: its table becomes one that fails every read
+/// and write (`dmsetup wipe_table`), so what waits on it gets an error, the zone can be stopped
+/// and the volume closed as any other. The suspend flushed it first, so nothing written is lost.
+pub fn fail_mapping(zone: &str) -> Result<(), VolumeError> {
+    run("dmsetup wipe_table", "dmsetup", &["wipe_table", &mapper_name(zone)], None)
+        .map(drop)
+        .map_err(|e| tool_err("dmsetup wipe_table", e))
 }
 
 /// Zones with a mapping under /dev/mapper, for `gc`.

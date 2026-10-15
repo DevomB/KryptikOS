@@ -1,0 +1,46 @@
+--- a/toolkit/components/remote/moz.build
++++ b/toolkit/components/remote/moz.build
+@@ -36,7 +36,7 @@
+             "RemoteUtils.h",
+         ]
+         CXXFLAGS += CONFIG["MOZ_DBUS_CFLAGS"]
+-    else:
++    elif CONFIG["MOZ_X11"]:
+         SOURCES += [
+             "nsGTKRemoteServer.cpp",
+             "nsXRemoteClient.cpp",
+--- a/toolkit/components/remote/nsRemoteService.cpp
++++ b/toolkit/components/remote/nsRemoteService.cpp
+@@ -7,7 +7,7 @@
+ #  ifdef MOZ_ENABLE_DBUS
+ #    include "nsDBusRemoteServer.h"
+ #    include "nsDBusRemoteClient.h"
+-#  else
++#  elif defined(MOZ_X11)
+ #    include "nsGTKRemoteServer.h"
+ #    include "nsXRemoteClient.h"
+ #  endif
+@@ -195,8 +195,10 @@
+ #ifdef MOZ_WIDGET_GTK
+ #  if defined(MOZ_ENABLE_DBUS)
+   client = MakeUnique<nsDBusRemoteClient>(mStartupToken);
++#  elif defined(MOZ_X11)
++  client = MakeUnique<nsXRemoteClient>(mStartupToken);
+ #  else
+-  client = MakeUnique<nsXRemoteClient>(mStartupToken);
++  return NS_ERROR_NOT_AVAILABLE;
+ #  endif
+ #elif defined(XP_WIN)
+   client = MakeUnique<nsWinRemoteClient>();
+@@ -257,8 +259,10 @@
+ #ifdef MOZ_WIDGET_GTK
+ #  if defined(MOZ_ENABLE_DBUS)
+   mRemoteServer = MakeUnique<nsDBusRemoteServer>();
++#  elif defined(MOZ_X11)
++  mRemoteServer = MakeUnique<nsGTKRemoteServer>();
+ #  else
+-  mRemoteServer = MakeUnique<nsGTKRemoteServer>();
++  return;
+ #  endif
+ #elif defined(XP_WIN)
+   mRemoteServer = MakeUnique<nsWinRemoteServer>();

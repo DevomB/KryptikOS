@@ -121,7 +121,10 @@ the author, with their findings fixed:
   across zones, and pools are bounded per connection and per zone. Whether
   the compositor's share of that memory is charged to the zone's cgroup is
   still a measurement to make
-  ([resource limits](design/resource-limits-and-ephemeral-zones.md#tests)).
+  ([resource limits](design/resource-limits-and-ephemeral-zones.md#tests)),
+  and the bounds hold it only while the pools live: a zone that keeps a
+  pool's descriptor keeps what the compositor faulted
+  ([Wayland shared memory](design/resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
 
 The broker's request parser and the proxy's wire parser have seeded mutation
 tests with corpora in the tree. Coverage-guided fuzzing is not run.

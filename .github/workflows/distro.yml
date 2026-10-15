@@ -47,7 +47,7 @@ env:
   HOST_PACKAGES: >-
     build-essential bison flex texinfo gawk m4 patch perl python3 python3-pip
     xz-utils bzip2 zstd cpio rsync bc curl git openssl libssl-dev libelf-dev
-    e2fsprogs dosfstools mtools xorriso util-linux cryptsetup-bin sbsigntool
+    e2fsprogs dosfstools mtools exfatprogs xorriso util-linux cryptsetup-bin sbsigntool
     qemu-system-x86 ovmf musl-tools file
 
 # Caches are keyed on the stamps' digest and saved after a failure too; the stage 05 tree's key starts with the toolchain's.
@@ -86,6 +86,7 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           sources: fetch
+          image-sources: ${{ github.ref_type == 'tag' && 'fetch' || '' }}
 
       # CI's gates once more, so a tag never outruns them.
       - name: The release's sources are signed, and their provenance holds
@@ -130,7 +131,11 @@ jobs:
 
       - name: Stage 01, the cross toolchain (unprivileged)
         timeout-minutes: 200
-        run: make toolchain
+        # The root's sources alone: make's own sources would fetch every image's from upstream too,
+        # which no stage here reads and whose cache only the images' jobs restore.
+        run: |
+          ./tools/fetch-sources.sh --root
+          make -o sources toolchain
 
       - name: Stage 02, the temporary tools (unprivileged)
         id: stage02
@@ -196,8 +201,8 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  system:
-    name: Stages 04-06 (base system, kernel, media)
+  base:
+    name: Stages 04-05 (base system, kernel)
     needs: toolchain
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -252,7 +257,7 @@ jobs:
           for i in "$d"/*/install.sh; do "$i" --prefix=/mnt/kryptik/rust --disable-ldconfig > /dev/null; done
           echo /mnt/kryptik/rust/bin >> "$GITHUB_PATH"
 
-      - name: kryptikd and kryptik-wlproxy, static
+      - name: kryptikd, kryptik-wlproxy and kryptik-stick, static
         run: |
           want="$(sed -n 's/.*  rustc-\([0-9.]*\)-x86_64-unknown-linux-gnu\.tar\.xz$/\1/p' build/config/rust.lock)"
           rustc --version | grep -qF "rustc ${want} " || { echo "refusing to build what ships with $(rustc --version); the pin is ${want}"; exit 1; }
@@ -262,19 +267,21 @@ jobs:
           export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/kryptik --remap-path-prefix=${home}=/cargo --remap-path-prefix=${CARGO_TARGET_DIR}=/target"
           (cd compartments/kryptikd && cargo build --locked --release --target x86_64-unknown-linux-musl)
           (cd compositor && cargo build --locked --release --target x86_64-unknown-linux-musl -p wlproxy --bin kryptik-wlproxy)
+          (cd tools/stick && cargo build --locked --release --target x86_64-unknown-linux-musl)
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptikd /mnt/kryptik/kryptikd-musl
           cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptik-wlproxy /mnt/kryptik/kryptik-wlproxy-musl
-          for b in /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl; do
+          cp /mnt/kryptik/cargo/x86_64-unknown-linux-musl/release/kryptik-stick /mnt/kryptik/kryptik-stick-musl
+          for b in /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl /mnt/kryptik/kryptik-stick-musl; do
             ! grep -aqF -e "$GITHUB_WORKSPACE" -e "$home" -e "$CARGO_TARGET_DIR" "$b" || { echo "$b names a path of this build"; exit 1; }
           done
-          file /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl
+          file /mnt/kryptik/kryptikd-musl /mnt/kryptik/kryptik-wlproxy-musl /mnt/kryptik/kryptik-stick-musl
           # The licence texts build/licences ships for what they link.
           tools/check-rust-licences.sh /mnt/kryptik/rust-dist
 
       - name: Stage 04, the base system (in the chroot, as root)
         id: stage04
         timeout-minutes: 180
-        run: make system KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl
+        run: make system KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl KRYPTIK_STICK_BIN=/mnt/kryptik/kryptik-stick-musl
 
       - name: Stage 05, the hardened kernel
         timeout-minutes: 90
@@ -338,17 +345,204 @@ jobs:
           path: /mnt/kryptik/work-after-05.tar.zst
           key: ${{ steps.progress05.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Drop the cache tarball before the media are built
+      - name: Drop the cache tarball
         if: always()
         run: rm -f /mnt/kryptik/work-after-05.tar.zst
+
+      # The next jobs' tree, as the cache keeps it, with the logs. Never the module signing key, as anyone
+      # who can read the repository can read an artifact: the stage 06 job's stage 05 makes a new one.
+      - name: Pack the stage 04-05 tree for the next jobs
+        run: |
+          cd /mnt/kryptik
+          members=(.stamps sysroot logs)
+          kernel_tree="build/linux-$(sed -n 's/^V_LINUX=//p' "$GITHUB_WORKSPACE/build/config/versions.env")"
+          [ -d "work/$kernel_tree" ] && members+=("$kernel_tree")
+          sudo tar -I 'zstd -T0' -cf work-after-05.tar.zst -C work --anchored \
+            --exclude='sysroot/proc/*' --exclude='sysroot/sys/*' --exclude='sysroot/dev/*' \
+            --exclude='sysroot/run/*' --exclude='sysroot/kryptik*/*' \
+            --exclude="$kernel_tree/certs/signing_key.pem" "${members[@]}"
+          if sudo tar -I zstd -tf work-after-05.tar.zst | grep -E 'certs/signing_key\.pem$|keys/release/'; then echo "a private key is in the tarball"; exit 1; fi
+          sudo chown "$(id -u):$(id -g)" work-after-05.tar.zst
+          ls -la work-after-05.tar.zst
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: work-after-05
+          path: /mnt/kryptik/work-after-05.tar.zst
+          # A tag's stage 06 job may be re-run after its owner's approval, so it keeps a week.
+          retention-days: ${{ github.ref_type == 'tag' && 7 || 1 }}
+          compression-level: 0
+
+      - name: Stage logs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: logs-base
+          path: /mnt/kryptik/work/logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # The software images in a job of their own: Firefox alone takes hours, which beside a stage 04 built
+  # from nothing (a tag's, or a new pin's) and stage 06 would not fit one job's six.
+  images:
+    name: Software images (the toolkit, the browser)
+    needs: [toolchain, base]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/prepare
+        with:
+          sources: fetch
+          image-sources: fetch
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: work-after-05
+          path: /mnt/kryptik
+
+      - name: Unpack the stage 04-05 tree
+        run: |
+          cd /mnt/kryptik
+          sudo tar --zstd -xf work-after-05.tar.zst -C work
+          rm -f work-after-05.tar.zst
+          ls work; sudo du -sh work/sysroot
+
+      # The images built over this base system, up to the last step they build against (IMAGES_BASE in
+      # 04-images.sh), from an earlier run: make images keeps each whose fingerprint still matches its
+      # inputs and builds the rest. Not for a tag, which builds from nothing.
+      - name: Which base system the images are built over
+        id: images_key
+        if: github.ref_type != 'tag'
+        run: |
+          step="$(sed -n 's/^IMAGES_BASE="\([a-z0-9-]*\)"$/\1/p' build/stages/04-images.sh)"
+          base="$(sudo sed -n 's/^fingerprint: //p' "$KRYPTIK_WORK/.stamps/bs-${step:-none}" | cut -c1-16)"
+          if [ -n "$base" ]; then echo "prefix=images-v1-${{ needs.toolchain.outputs.ttfp }}-${base}-" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Software images from an earlier run (cached)
+        id: images_cache
+        if: steps.images_key.outputs.prefix != ''
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: /mnt/kryptik/images-cache.tar.zst
+          key: ${{ steps.images_key.outputs.prefix }}
+          restore-keys: |
+            ${{ steps.images_key.outputs.prefix }}
+
+      - name: Unpack the cached images
+        if: steps.images_cache.outputs.cache-matched-key != ''
+        run: |
+          cd /mnt/kryptik
+          sudo tar --zstd -xf images-cache.tar.zst -C work
+          rm -f images-cache.tar.zst
+          sudo sed -n 's/^\(name\|fingerprint\): //p' work/image-build/*/record | paste - - || true
+
+      # Stage 06 packs what this builds. The browser takes some three hours or more when its tree is not
+      # cached, the toolkit some minutes.
+      - name: Software images (over the base system, in the chroot)
+        id: images
+        timeout-minutes: 330
+        run: make -o system images
+
+      # Each image's tree and record, never an overlay's upper or work directory; saved when they changed.
+      - name: Pack the images for their cache
+        id: images_pack
+        if: ${{ !cancelled() && steps.images.outcome == 'success' && steps.images_key.outputs.prefix != '' }}
+        run: |
+          d="$(cd "$KRYPTIK_WORK" && sudo cat image-build/*/record 2>/dev/null | sha256sum | cut -c1-16)"
+          key="${{ steps.images_key.outputs.prefix }}${d}-"
+          case "${{ steps.images_cache.outputs.cache-matched-key }}" in "$key"*) echo "the images are the cached ones"; exit 0 ;; esac
+          cd /mnt/kryptik
+          sudo tar -I 'zstd -T0' -cf images-cache.tar.zst -C work --exclude='image-build/*/upper' \
+            --exclude='image-build/*/overlay-work' --exclude='image-build/*/sysroot' image-build
+          sudo chown "$(id -u):$(id -g)" images-cache.tar.zst
+          ls -la images-cache.tar.zst
+          echo "key=${key}${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+      # A cache that cannot be saved costs the next run time, not this one its verdict.
+      - name: Save the images
+        if: ${{ !cancelled() && steps.images_pack.outputs.key != '' }}
+        continue-on-error: true
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: /mnt/kryptik/images-cache.tar.zst
+          key: ${{ steps.images_pack.outputs.key }}
+
+      - name: Drop the images' tarball
+        if: always()
+        run: rm -f /mnt/kryptik/images-cache.tar.zst
+
+      # Each image's tree and record for stage 06, cached or not, and the stamps and logs the build left.
+      # A layer that does not ship keeps only its record: stage 06 reads no more of it.
+      - name: Pack the images for the next job
+        run: |
+          cd /mnt/kryptik
+          layers=()
+          for rec in work/image-build/*/record; do
+            if [ "$(sudo sed -n 's/^ships: //p' "$rec")" = no ]; then layers+=(--exclude="image-build/$(basename "$(dirname "$rec")")/tree"); fi
+          done
+          sudo tar -I 'zstd -T0' -cf images-tree.tar.zst -C work --exclude='image-build/*/upper' \
+            --exclude='image-build/*/overlay-work' --exclude='image-build/*/sysroot' "${layers[@]}" image-build .stamps logs
+          sudo chown "$(id -u):$(id -g)" images-tree.tar.zst
+          ls -la images-tree.tar.zst
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: images-tree
+          path: /mnt/kryptik/images-tree.tar.zst
+          retention-days: ${{ github.ref_type == 'tag' && 7 || 1 }}
+          compression-level: 0
+
+      - name: Stage logs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: logs-images
+          path: /mnt/kryptik/work/logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  system:
+    name: Stage 06 (the media)
+    needs: [base, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/prepare
+        with:
+          sources: restore
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: work-after-05
+          path: /mnt/kryptik
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: images-tree
+          path: /mnt/kryptik
+
+      - name: Unpack the stage 04-05 tree and the images
+        run: |
+          cd /mnt/kryptik
+          sudo tar --zstd -xf work-after-05.tar.zst -C work
+          sudo tar --zstd -xf images-tree.tar.zst -C work
+          rm -f work-after-05.tar.zst images-tree.tar.zst
+          ls work; sudo du -sh work/sysroot work/image-build
+
+      # The tree came without its module signing key, so stage 05 builds and signs again with a new one,
+      # as after a cache restore; stage 06 relinks the kernel from that tree.
+      - name: Stage 05, keyed afresh
+        timeout-minutes: 90
+        run: make -o system kernel
 
       # The throwaway production pair, then A and B; a production release is only bound here, where upstream build scripts ran as root.
       - name: Stage 06, the media (production 1.0.0 and 1.0.1, release A and the update B)
         id: media
         timeout-minutes: 90
         run: |
-          bins=(KRYPTIK_KRYPTIKD_BIN=/mnt/kryptik/kryptikd-musl KRYPTIK_WLPROXY_BIN=/mnt/kryptik/kryptik-wlproxy-musl)
-          make production-pair "${bins[@]}"
+          make production-pair
           ls -la "$KRYPTIK_WORK/images-production"
           # A tag's version decides its role; elsewhere the dispatch input does.
           ROLE=development
@@ -363,7 +557,7 @@ jobs:
           echo "a ${ROLE} release: ${VER_B}, updating from ${VER_A}"
           echo "role=${ROLE}" >> "$GITHUB_OUTPUT"
           if [ "$ROLE" = development ]; then
-            for v in "$VER_A" "$VER_B"; do make media KRYPTIK_VERSION="$v" "${bins[@]}"; done
+            for v in "$VER_A" "$VER_B"; do make media KRYPTIK_VERSION="$v"; done
             ls -la "$KRYPTIK_WORK/images" | grep -E 'usb.img|\.iso|payload'
             exit 0
           fi
@@ -382,7 +576,7 @@ jobs:
             sudo rm -rf "$KRYPTIK_WORK/images"
             sudo find "$KRYPTIK_WORK/.stamps" -maxdepth 1 -name 'img-*' -delete
             make media KRYPTIK_MEDIA_PHASE=bind KRYPTIK_ROLE=production KRYPTIK_KEYS="$pub" \
-              KRYPTIK_VERSION="$v" KRYPTIK_CHANNEL="$channel" "${bins[@]}"
+              KRYPTIK_VERSION="$v" KRYPTIK_CHANNEL="$channel"
             sudo mkdir -p "$KRYPTIK_WORK/bound/$v/stamps"
             sudo mv "$KRYPTIK_WORK/images" "$KRYPTIK_WORK/bound/$v/images"
             sudo cp -a "$KRYPTIK_WORK/.stamps"/img-* "$KRYPTIK_WORK/bound/$v/stamps/"
@@ -567,6 +761,8 @@ jobs:
         with:
           vm: 'true'
           sources: restore
+          # The inputs suite checks every source against both locks; the other parts read only the root's.
+          image-sources: ${{ contains(matrix.suites, 'inputs') && 'restore' || '' }}
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -719,6 +915,7 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           sources: fetch
+          image-sources: fetch
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: kryptik-release

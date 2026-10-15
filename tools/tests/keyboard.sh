@@ -82,6 +82,26 @@ kb kb_store nosuchlayout 2>/dev/null; rc=$?
 KB_VAR="$T/no-such-directory/KryptikKeyboard" kb kb_store de 2>/dev/null; rc=$?
 [[ "$rc" -ne 0 ]] && ok "without firmware variables a store fails" || bad "a store with no efivars succeeded"
 
+echo "-- the desktop's own layouts, from the user's list"
+desk() {   # desk CONTENT: what kb_export_desktop exports for a list holding CONTENT
+    printf '%s' "$1" > "$T/desktop"
+    sh -c '. "$1"; kb_load us > /dev/null; kb_export_xkb; kb_export_desktop "$2"
+           echo "${XKB_DEFAULT_LAYOUT}/${XKB_DEFAULT_VARIANT}/${XKB_DEFAULT_OPTIONS:-}/${KRYPTIK_LAYOUTS:-}"' sh "$LIB" "$T/desktop"
+}
+[[ "$(desk 'us de-nodeadkeys')" == "us,de/,nodeadkeys/grp:win_space_toggle/us de-nodeadkeys" ]] \
+    && ok "two layouts, their variants in order, and Super+Space to switch" || bad "two layouts gave '$(desk 'us de-nodeadkeys')'"
+[[ "$(desk $'fr\n')" == "fr///fr" ]] && ok "one layout: no switch" || bad "one layout gave '$(desk $'fr\n')'"
+[[ "$(desk 'us de fr it')" == "us,de,fr,it/,,,/grp:win_space_toggle/us de fr it" ]] \
+    && ok "four, as many as a keymap holds" || bad "four gave '$(desk 'us de fr it')'"
+[[ "$(desk 'us de fr it es')" == "us///" ]] && ok "a fifth leaves the machine's layout alone" || bad "five gave '$(desk 'us de fr it es')'"
+[[ "$(desk 'us klingon')" == "us///" ]] && ok "a name the table lacks leaves the machine's layout" || bad "an unknown name gave '$(desk 'us klingon')'"
+[[ "$(desk 'de;us *')" == "de,us/,/grp:win_space_toggle/de us" ]] && ok "other characters only part names, and reach no shell as a pattern" || bad "'de;us *' gave '$(desk 'de;us *')'"
+[[ "$(desk 'de us-x')" == "us///" ]] && ok "a name with more to it is not the name" || bad "'de us-x' gave '$(desk 'de us-x')'"
+[[ "$(desk '')" == "us///" ]] && ok "an empty list is none" || bad "an empty list gave '$(desk '')'"
+rm -f "$T/desktop"
+[[ "$(sh -c '. "$1"; kb_export_desktop "$2"; echo "${KRYPTIK_LAYOUTS:-none}"' sh "$LIB" "$T/desktop")" == none ]] \
+    && ok "no list, nothing changed" || bad "no list changed something"
+
 echo "-- the installer asks under the layout it installs"
 INST="$ROOT/tools/install/kryptik-install.sh"
 at() { grep -nF -- "$1" "$INST" | head -1 | cut -d: -f1; }

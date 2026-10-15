@@ -6,6 +6,8 @@
 #   GT KEY-FOCUS-ZONE, GT KEY-FOCUS-OVERSIZE,
 #   GT KEY-FOCUS-FORGED, GT KEY-FOCUS-PERSONAL      press Alt+j (explicit focus)
 #   GT KEY-FULLSCREEN, GT KEY-FULLSCREEN-AGAIN      press Alt+e (fullscreen, then back)
+#   GT KEY-MARKS-FULLSCREEN                         press Alt+e (fullscreen again)
+#   GT SCREENSHOT-MARKS, GT SCREENSHOT-NO-MARKS     take a screenshot
 #   GT KEY-FOCUS-AWAY, GT KEY-FOCUS-CHILD, GT KEY-FOCUS-PARENT,
 #   GT KEY-FOCUS-BELOW, GT KEY-FOCUS-LATE            press Alt+j
 #   GT KEY-ZOOM-BELOW, GT KEY-ZOOM-AGAIN            press Alt+Return (zoom)
@@ -27,6 +29,15 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
+#   GT KEY-VOLUME-DOWN                              press the volume-down key
+#   GT KEY-LOCK-LAYOUT                              press Alt+Shift+l
+#   GT KEY-LOCKED-VOLUME-UP                         press the volume-up key
+#   GT KEY-LOCKED-MUTE, GT KEY-LOCKED-MUTE-AGAIN    press the mute key
+#   GT KEY-LOCKED-MENU                              press Alt+p, then Escape
+#   GT KEY-LAYOUT-NEXT, GT KEY-LAYOUT-BACK          press Super+Space (the next layout)
+#   GT LOCK-TYPE-OTHER-LAYOUT, GT LOCK-TYPE-FIRST-LAYOUT
+#                                                   type the user's password and Enter
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
@@ -35,6 +46,9 @@
 #   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT KEY-MENU-OPEN                                press Alt+p (a menu window for an open network)
 #   GT OPEN-TYPE N TEXT                             type TEXT and Enter (letters and digits)
+#   GT KEY-VIEW-BROWSER, GT KEY-BROWSER-BACK        press Alt+3 (a tag nothing is on), then Alt+1
+#   GT KEY-VT-ADMIN, GT KEY-VT-DESKTOP              press Ctrl+Alt+F2, then Ctrl+Alt+F1
+#   GT KEY-MENU-AFTER-VT                            press Alt+p
 #   GT END
 # Verdicts: "GT PASS|FAIL|INFO name - detail".
 set -u
@@ -93,9 +107,19 @@ done
 [[ "$(s6-svstat -o up /run/service/kryptikd-serve 2>/dev/null)" = true ]] && pass "launch-daemon-up" || fail "launch-daemon-up"
 
 # --- the session ------------------------------------------------------------
+# The user's two layouts, us then de, for the lock's round with both; us is in force first, so
+# every other round types as it would with one.
+su -s /bin/sh "$USER_NAME" -c 'mkdir -p "$HOME/.config/kryptik" && printf "us de\n" > "$HOME/.config/kryptik/keyboard"'
 su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/dev/null 2>&1 &'
 if wait_for 30 test -S "$RT/wayland-0"; then pass "session-socket" "dwl listening at $RT/wayland-0"; else fail "session-socket" "$(cat "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"; fi
 pgrep -u "$USER_NAME" -x dwl >/dev/null && pass "compositor-running" || fail "compositor-running" "$(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
+           | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"
+if [[ "$dwl_env" == "KRYPTIK_LAYOUTS=us de XKB_DEFAULT_LAYOUT=us,de XKB_DEFAULT_OPTIONS=grp:win_space_toggle XKB_DEFAULT_VARIANT=, " ]]; then
+    pass "desktop-layouts" "the user's list became dwl's keymap: ${dwl_env}"
+else
+    fail "desktop-layouts" "dwl's environment: ${dwl_env:-none}"
+fi
 wait_for 20 test -f "$RT/kryptik/focus" && pass "chrome-focus-record" "$(tr '\n' ' ' < "$RT/kryptik/focus")" || fail "chrome-focus-record" "no $RT/kryptik/focus after 20 s"
 # The record exists before the chrome's own window has mapped: wait for the window.
 wait_for 20 grep -q '^zone=0' "$RT/kryptik/focus" && pass "chrome-window-is-zone0" "the launcher window is recorded as zone 0 (trusted)" || fail "chrome-window-is-zone0" "$(cat "$RT/kryptik/focus" 2>/dev/null | tr '\n' ' '); terminals: $(pgrep -u "$USER_NAME" -a havoc 2>/dev/null | tr '\n' ';'); session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
@@ -544,6 +568,46 @@ fi
 sleep 2
 echo "GT SCREENSHOT-FULLSCREEN"
 sleep 6
+# The bar over a fullscreen window also names the zones that hold the microphone and the camera,
+# as the window covers the chrome's own windows that say so: the microphone's holder as the
+# mixer records it, and the camera granted with vivid standing in for one. The camera's window,
+# opening on the grant, ends the fullscreen as any zone 0 window does; closed, Alt+e puts it back.
+# The mixer's directory is first made anew, as a restart that made it again would: the compositor's
+# watch stays with the old one, and the mark must come all the same.
+micdir=/run/kryptik-sound/control
+micrec="$micdir/microphone"
+mic_record() {   # mic_record OWNER ZONE: a record of who may record, as OWNER writes it
+    printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0640 "$micrec.t" && mv -f "$micrec.t" "$micrec"
+}
+mv "$micdir" "$micdir.before" && install -d -m 2750 -o 87 -g kryptik "$micdir"
+mic_record 87 untrusted
+modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid-marks.err"
+marks_cam="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
+wait_for 15 pgrep -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
+# Its window must be up, zone 0's and with the keyboard, before it is closed: only then has it
+# ended untrusted's fullscreen, which Alt+e is to give back.
+wait_for 15 grep -qx 'zone=0' "$RT/kryptik/focus" \
+    || info "marks: the camera's window has not taken the keyboard: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+pkill -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
+wait_for 15 grep -q '^zone=untrusted' "$RT/kryptik/focus"
+echo "GT KEY-MARKS-FULLSCREEN"
+if wait_for 20 grep -q '^fullscreen=1' "$RT/kryptik/focus" && grep -q '^zone=untrusted' "$RT/kryptik/focus"; then
+    pass "marks-fullscreen" "untrusted fullscreen again, holding the camera (${marks_cam}) and the microphone"
+else
+    fail "marks-fullscreen" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); camera: ${marks_cam}; vivid: $(tr '\n' ' ' < "$LOG/vivid-marks.err")"
+fi
+sleep 2
+echo "GT SCREENSHOT-MARKS"
+sleep 6
+# Taken back; and a record of the microphone's holder the mixer did not write counts for nothing.
+as_user "kryptik-launch --camera-revoke" > /dev/null 2>&1
+mic_record 0 untrusted
+sleep 2
+echo "GT SCREENSHOT-NO-MARKS"
+sleep 6
+# The mixer's own directory back, its control socket in it.
+rm -rf "$micdir" && mv "$micdir.before" "$micdir"
+modprobe -r vivid uvcvideo 2>/dev/null
 echo "GT KEY-FULLSCREEN-AGAIN"
 wait_for 20 grep -q '^fullscreen=0' "$RT/kryptik/focus" && pass "fullscreen-off-again" || fail "fullscreen-off-again"
 # Alt+p opens another menu window (the chrome's text menu in a zone 0 terminal), closed once seen.
@@ -788,6 +852,10 @@ for d in /proc/[0-9]*; do
     # An interpreter only as one of Kryptik's scripts; havoc only around the chrome's menu or a launch.
     case "$exe" in
         /usr/bin/s6-*|/usr/sbin/s6-*|/usr/libexec/s6-*|/usr/sbin/udevd|/usr/sbin/agetty|/usr/bin/seatd|/usr/bin/kryptikd|/usr/bin/kryptik-wlproxy|/usr/bin/kryptik-launch|/usr/bin/kryptik-lock|/usr/bin/dwl|/usr/bin/sleep) ;;
+        # Zone 0's mixer, which the zones play and record through.
+        /usr/libexec/kryptik/kryptik-sound) ;;
+        # The chrome's watch on the monitors, which gives each new one the user's scale.
+        /usr/bin/kryptik-display) ;;
         /usr/bin/bash|/usr/bin/python3)
             case "$script" in /usr/libexec/kryptik/*|/usr/bin/kryptik-session|/usr/bin/kryptik-chrome) ;; *) foreign+=("$p ${cmd:0:60}") ;; esac ;;
         /usr/bin/havoc)
@@ -901,15 +969,19 @@ else
     fail "move-in-no-log" "proxy lines: $(grep -h 'move' "$PROXIES/untrusted.log" 2>/dev/null | tail -2 | tr '\n' ' '); holding the text: $(grep -rlsF moved4471 "$RT/kryptik" "$PROXIES" /run/uncaught-logs | tr '\n' ' ')"
 fi
 # The gesture's socket answers the session's user alone: root, past the socket's 0600, is
-# refused as any other uid would be.
+# refused as any other uid would be. The proxy writes the refusal and closes without reading,
+# so the request may meet a closed socket; the refusal is read all the same.
 door="$PROXIES/untrusted.control"
 refusal="$(python3 - "$door" 2>&1 <<'PY'
 import socket, sys
 s = socket.socket(socket.AF_UNIX)
 s.settimeout(5)
 s.connect(sys.argv[1])
-s.sendall(b"take\n")
-s.shutdown(socket.SHUT_WR)
+try:
+    s.sendall(b"take\n")
+    s.shutdown(socket.SHUT_WR)
+except (BrokenPipeError, ConnectionResetError):
+    pass
 print(s.recv(200).decode(errors="replace").strip())
 PY
 )"
@@ -1108,6 +1180,15 @@ said() { grep -c "^kryptik-lock: $1" "$slog" 2>/dev/null; }
 more() { [[ "$(said "$1")" -gt "$2" ]]; }
 entered0() { grep -c 'keyboard entered the window' "$LOG/lock-zone0.out"; }
 back0() { [[ "$(entered0)" -ge 2 ]]; }
+# The lock takes the camera back too: vivid stands in for one, granted to untrusted before this
+# round's windows open, so the chrome's camera window is up and under them by then.
+modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid.err"
+cam_given="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
+wait_for 15 pgrep -u "$USER_NAME" -f 'kryptik-chrome --camera untrusted'
+# Mapped after lock-0's window, the camera's would take the keyboard from it: it must have it first.
+wait_for 15 grep -qx 'zone=0' "$RT/kryptik/focus" \
+    || info "lock: the camera's window has not taken the keyboard: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+sleep 1
 as_user "/usr/libexec/kryptik/wlprobe oversize 0 300 lock-0" > "$LOG/lock-zone0.out" 2>&1 &
 lock0_pid=$!
 wait_for 15 grep -q 'keyboard entered the window' "$LOG/lock-zone0.out"
@@ -1123,6 +1204,13 @@ if wait_for 20 more locked "$locked0" && wait_for 10 lock_popup_done && wait_for
 else
     fail "lock-takes-keyboard" "lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); zone 0's window: $(tr '\n' ' ' < "$LOG/lock-zone0.out"); the zone's: $(since_mark lock untrusted | tail -3 | tr '\n' ' ')"
 fi
+if wait_for 10 grep -q '^kryptik-lock: the camera was taken back from zone untrusted' "$slog" \
+    && [[ "$("$KD" camera status 2>&1)" == none* && ! -e /run/kryptik-camera/untrusted/video0 ]]; then
+    pass "lock-takes-camera" "granted to untrusted (${cam_given}), the camera went back as the screen locked"
+else
+    fail "lock-takes-camera" "granted: ${cam_given}; $("$KD" camera status 2>&1); lock: $(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' '); vivid: $(tr '\n' ' ' < "$LOG/vivid.err")"
+fi
+modprobe -r vivid uvcvideo 2>/dev/null
 sleep 2
 echo "GT SCREENSHOT-LOCKED"
 sleep 6
@@ -1199,6 +1287,100 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+
+# --- no sleep where the display would not come back --------------------------------------------
+# This VM shows through virtio-gpu, whose driver a sleep would leave waiting for good, so the
+# daemon refuses before it freezes a zone or drops a key. `kryptik suspend` locks first and is
+# told; the password opens the same session, on the same boot, and the compositor answers.
+boot0="$(< /proc/sys/kernel/random/boot_id)"
+entries0="$(dmesg 2>/dev/null | grep -c 'PM: suspend entry')"
+as_user "kryptik suspend" > "$LOG/suspend.out" 2>&1 &
+susp_pid=$!
+told_awake() { grep -q "suspend: error: the display's driver, virtio-gpu, does not come back from a sleep" "$LOG/suspend.out"; }
+if wait_for 30 told_awake; then
+    pass "suspend-refused-virtio-gpu" "kryptik suspend locked, and the daemon refused the sleep: virtio-gpu"
+else
+    fail "suspend-refused-virtio-gpu" "$(tr '\n' ' ' < "$LOG/suspend.out" | cut -c1-300)"
+fi
+# Keys in the second after the lock's label changed, as it does with the refusal, go nowhere.
+sleep 2
+echo "GT LOCK-TYPE-SUSPEND"
+susp_ended() { ! kill -0 "$susp_pid" 2>/dev/null; }
+none_suspended() { ! grep -qx 1 /sys/block/dm-*/dm/suspended 2>/dev/null; }
+still_answers() { timeout 10 su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -q 'sync done'; }
+entries="$(dmesg 2>/dev/null | grep -c 'PM: suspend entry')"
+if wait_for 30 susp_ended && grep -q '^kryptik-lock: unlocked' "$LOG/suspend.out" \
+        && [[ "$(< /proc/sys/kernel/random/boot_id)" == "$boot0" && "$entries" == "$entries0" ]] && none_suspended && still_answers; then
+    pass "suspend-refused-stays-awake" "the password unlocked the same boot, the kernel was never asked to sleep, no mapping is suspended, and the compositor answers"
+else
+    fail "suspend-refused-stays-awake" "boot $(< /proc/sys/kernel/random/boot_id) (was ${boot0}); suspend entries ${entries} (were ${entries0}); suspended mappings: $(grep -lx 1 /sys/block/dm-*/dm/suspended 2>/dev/null | tr '\n' ' '); $(tail -3 "$LOG/suspend.out" | tr '\n' ' ')"
+fi
+wait "$susp_pid" 2>/dev/null
+# The volume keys are dwl's bindings to zone 0's mixer, which runs without a card here.
+mixer() { /usr/libexec/kryptik/kryptik-sound --control status 2>&1 | sed -n 's/^master //p'; }
+master_is() { [[ "$(mixer)" == "$1" ]]; }
+m0="$(mixer)"; m0="${m0%% *}"
+echo "GT KEY-VOLUME-DOWN"
+if [[ "$m0" =~ ^[0-9]+$ ]] && wait_for 10 master_is "$(( m0 >= 5 ? m0 - 5 : 0 ))"; then
+    pass "volume-key" "the volume-down key took the mixer from ${m0} to $(mixer)"
+else
+    fail "volume-key" "before: ${m0:-no answer}; after: $(mixer)"
+fi
+# With two layouts the lock names the one in force, as Super+Space switches: the password typed
+# in de, where this keyboard's - key types another character, is refused, and typed again once
+# Super+Space is back on us, it opens the lock.
+layout_said() { grep -c "^kryptik-lock: layout $1\$" "$slog" 2>/dev/null; }
+layout_more() { [[ "$(layout_said "$1")" -gt "$2" ]]; }
+us0="$(layout_said US)"; de0="$(layout_said DE)"
+locked2="$(said locked)"; refused2="$(said refused)"; unlocked2="$(said unlocked)"
+echo "GT KEY-LOCK-LAYOUT"
+wait_for 20 more locked "$locked2" && wait_for 10 layout_more US "$us0"; named_us=$?
+# Under that lock the volume keys still act, and no other binding does: Alt+p opens no menu.
+# Escape then clears the p the lock took as typed.
+m1="$(mixer)"; m1="${m1%% *}"; up1="$(( ${m1:-0} + 5 > 100 ? 100 : ${m1:-0} + 5 ))"
+menus_locked="$(menu_windows)"
+echo "GT KEY-LOCKED-VOLUME-UP"
+wait_for 10 master_is "$up1"; went_up=$?
+echo "GT KEY-LOCKED-MUTE"
+wait_for 10 master_is "$up1 muted"; went_mute=$?
+echo "GT KEY-LOCKED-MUTE-AGAIN"
+wait_for 10 master_is "$up1"; went_back=$?
+if [[ "$m1" =~ ^[0-9]+$ && "$went_up/$went_mute/$went_back" == 0/0/0 ]]; then
+    pass "lock-passes-volume-keys" "locked, the volume-up key took the mixer from ${m1} to ${up1}, and the mute key muted it and unmuted it"
+else
+    fail "lock-passes-volume-keys" "from ${m1:-no answer}: up ${went_up}, mute ${went_mute}, unmute ${went_back} (0 is done); now $(mixer)"
+fi
+echo "GT KEY-LOCKED-MENU"
+sleep 4
+if [[ "$(menu_windows)" -eq "$menus_locked" && "$(said unlocked)" -eq "$unlocked2" ]]; then
+    pass "lock-holds-other-keys" "under the lock Alt+p opened no menu, and the session stayed locked"
+else
+    fail "lock-holds-other-keys" "menu windows: ${menus_locked} before Alt+p, $(menu_windows) after; $(grep 'kryptik-lock' "$slog" | tail -2 | tr '\n' ' ')"
+fi
+echo "GT KEY-LAYOUT-NEXT"
+wait_for 10 layout_more DE "$de0"; named_de=$?
+if [[ "$named_us/$named_de" == 0/0 ]]; then
+    pass "lock-names-layout" "the lock named US, then DE after Super+Space"
+else
+    fail "lock-names-layout" "$(grep 'kryptik-lock' "$slog" | tail -4 | tr '\n' ' ')"
+fi
+echo "GT LOCK-TYPE-OTHER-LAYOUT"
+if wait_for 15 more refused "$refused2"; then
+    pass "lock-refuses-other-layout" "the password typed in de was refused: $(grep '^kryptik-lock: refused' "$slog" | tail -1)"
+else
+    fail "lock-refuses-other-layout" "$(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
+us1="$(layout_said US)"
+echo "GT KEY-LAYOUT-BACK"
+wait_for 10 layout_more US "$us1"
+# The refusal's pause, which the next try waits out.
+sleep 3
+echo "GT LOCK-TYPE-FIRST-LAYOUT"
+if wait_for 20 more unlocked "$unlocked2"; then
+    pass "lock-opens-in-first-layout" "back on us, the same keys opened the lock"
+else
+    fail "lock-opens-in-first-layout" "$(grep 'kryptik-lock' "$slog" | tail -3 | tr '\n' ' ')"
+fi
 # --- a second monitor, plugged in and pulled out -------------------------------------------
 # A zone's window on the new monitor is framed and named as on the first, the
 # chrome's record follows the monitor in use, and pulling the monitor out
@@ -1208,11 +1390,22 @@ outputs() { as_user "/usr/libexec/kryptik/wlprobe list" 2>/dev/null | grep -c ' 
 heads() { [[ "$(outputs)" -eq "$1" ]]; }
 focus_output() { sed -n 's/^output=//p' "$RT/kryptik/focus" 2>/dev/null; }
 first_head="$(focus_output)"
+# The user's choices for the monitors, which the watcher the chrome runs makes whenever one
+# comes: the first as it is, and any other at scale 2.
+displays() { as_user "/usr/bin/kryptik-display" 2>&1; }
+first_name="$(displays | awk 'NR == 1 { print $1 }')"
+as_user "mkdir -p \$HOME/.config/kryptik && printf '%s 1\n* 2\n' '$first_name' > \$HOME/.config/kryptik/display"
 echo "GT HEAD-ON"
 if wait_for 30 heads 2; then
     pass "second-head-appears" "the compositor offers two outputs once the second is plugged in"
 else
     fail "second-head-appears" "$(outputs) output(s); connectors: $(for s in /sys/class/drm/card*-*/status; do printf '%s=%s ' "${s%/status}" "$(cat "$s" 2>/dev/null)"; done)"
+fi
+second_scaled() { displays | grep -v "^${first_name} " | grep -q '  scale 2  '; }
+if [[ -n "$first_name" ]] && wait_for 15 second_scaled && displays | grep -q "^${first_name}  scale 1  "; then
+    pass "second-head-scale-chosen" "the new monitor came at the scale the user's * line asks, the first as its own line asks: $(displays | tr '\n' '|')"
+else
+    fail "second-head-scale-chosen" "$(displays | tr '\n' '|'); session.log: $(grep 'kryptik-display' "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"
 fi
 echo "GT KEY-FOCUS-HEAD"
 on_second_head() { local o; o="$(focus_output)"; [[ -n "$o" && "$o" != "$first_head" ]]; }
@@ -1222,6 +1415,24 @@ else
     fail "chrome-follows-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
 second_head="$(focus_output)"
+# What a zone is told of the monitors: both, each named by its number with no make or model,
+# as the zone's proxy rewrites them, and the second at the scale chosen for it.
+mark outs untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe outputs" > "$LOG/launch-outputs.out" 2>&1
+told_outputs() { since_mark outs untrusted | grep -q 'outputs [0-9]'; }
+wait_for 20 told_outputs
+zone_outs="$(since_mark outs untrusted)"
+named="$(grep -c ' name "output-[0-9]*"' <<<"$zone_outs")"
+described="$(grep -c ' description "output-[0-9]*"' <<<"$zone_outs")"
+blank="$(grep -c ' geometry .* make "" model ""' <<<"$zone_outs")"
+if [[ "$named" -eq 2 && "$described" -eq 2 && "$blank" -eq 2 ]] && grep -q ' scale 2$' <<<"$zone_outs" \
+   && grep -q ' scale 1$' <<<"$zone_outs"; then
+    pass "zone-sees-heads-unnamed" "two outputs named by number, with no make or model, one at scale 2"
+else
+    fail "zone-sees-heads-unnamed" "$(tr '\n' '|' <<<"$zone_outs" | cut -c1-400); launch: $(tr '\n' ' ' < "$LOG/launch-outputs.out")"
+fi
+# The probe's zone stops, so the window below starts untrusted afresh on the second head.
+stop_zone untrusted
 launch_plain untrusted "havoc" > "$LOG/launch-havoc-head2.out" 2>&1
 sleep 3
 echo "GT KEY-FOCUS-HEAD-WINDOW"
@@ -1244,6 +1455,7 @@ if wait_for 30 heads 1; then pass "second-head-gone" "one output again"; else fa
 pgrep -u "$USER_NAME" -x dwl > /dev/null && pass "compositor-survives-unplug" "dwl still runs" \
     || fail "compositor-survives-unplug" "session.log: $(tail -4 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
 test -e /run/kryptik/zones/untrusted/init.pid && pass "zone-survives-unplug" "untrusted still runs" || fail "zone-survives-unplug" "$(zone_why untrusted)"
+as_user "rm -f \$HOME/.config/kryptik/display"
 back_on_first_head() { [[ "$(focus_output)" == "$first_head" ]]; }
 wait_for 20 back_on_first_head && pass "chrome-back-on-first-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")" \
     || fail "chrome-back-on-first-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
@@ -1304,6 +1516,60 @@ if wait_for 60 scan_answered; then
 else
     fail "chrome-wifi-scan" "kryptik-launch --wifi-scan: $(tr '\n' ' ' <<<"$scan_said" | cut -c1-200)"
 fi
+
+# --- the browser, in a zone that carries it ---------------------------------------------
+# untrusted names the browser image, which the installer kept from the medium: Firefox opens a
+# page of the zone's own, and its window is drawn as untrusted's. It starts on a tag nothing is
+# on: mapped beside the launcher, which has the keyboard, the window would wait to be picked,
+# and no key pressed at a set time can wait out a start that takes Firefox many seconds.
+echo "GT KEY-VIEW-BROWSER"
+wait_for 10 grep -qx 'zone=-' "$RT/kryptik/focus" || info "browser: a window still shows after Alt+3: $(tr '\n' ' ' < "$RT/kryptik/focus")"
+mark firefox untrusted
+launch_plain untrusted "sh -c 'printf \"<title>kryptik-page</title><p>kryptik</p>\" > /tmp/page.html && exec firefox --new-instance file:///tmp/page.html'" > "$LOG/launch-firefox.out" 2>&1 &
+ff_page() { grep -q '^title=.*kryptik-page' "$RT/kryptik/focus" && grep -qx 'zone=untrusted' "$RT/kryptik/focus"; }
+if wait_for 120 ff_page; then
+    pass "browser-window" "Firefox from the browser image opened a page in untrusted: $(grep '^title=' "$RT/kryptik/focus")"
+    # Its idle startup tasks and its startup cache's first write come later, the write at most
+    # 60 s after the cache's last entry: a call the zone's filter kills there ends Firefox after
+    # its window has shown.
+    sleep 90
+    if ff_page; then
+        pass "browser-stays-up" "Firefox's window is still untrusted's 90 s after its page showed"
+    else
+        fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | tail -2 | tr '\n' ' ')"
+    fi
+else
+    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' ')"
+fi
+stop_zone untrusted
+echo "GT KEY-BROWSER-BACK"
+
+# --- the administration login, a console away ---------------------------------------------
+# Ctrl+Alt+F2 puts tty2's login in front, and Ctrl+Alt+F1 brings the desktop back, which answers
+# its clients and takes keys as before. Last, so a desktop that did not come back ends no round.
+vt_is() { [[ "$(fgconsole 2>/dev/null)" == "$1" ]]; }
+answers() { timeout 10 su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -q 'sync done'; }
+menus_vt="$(menu_windows)"
+echo "GT KEY-VT-ADMIN"
+if wait_for 15 vt_is 2; then
+    pass "vt-admin-login" "Ctrl+Alt+F2 put tty2's login in front"
+else
+    fail "vt-admin-login" "the console in front is $(fgconsole 2>&1)"
+fi
+echo "GT KEY-VT-DESKTOP"
+if wait_for 15 vt_is 1 && wait_for 15 answers; then
+    pass "vt-desktop-back" "Ctrl+Alt+F1 brought the desktop back, and the compositor answers a client"
+else
+    fail "vt-desktop-back" "console $(fgconsole 2>&1); dwl $(pgrep -u "$USER_NAME" -x dwl > /dev/null && echo running || echo gone); session.log: $(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+fi
+echo "GT KEY-MENU-AFTER-VT"
+more_menus() { [[ "$(menu_windows)" -gt "$menus_vt" ]]; }
+if wait_for 15 more_menus; then
+    pass "vt-desktop-takes-keys" "Alt+p opened the menu after the switch back"
+else
+    fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after"
+fi
+pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the

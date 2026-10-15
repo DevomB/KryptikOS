@@ -1,0 +1,2 @@
+# The policy lines a zone that names the probe image must have (images.manifest's needs lines).
+allow-syscall mlockall

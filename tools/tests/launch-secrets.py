@@ -41,22 +41,28 @@ def main():
             daemon.settimeout(5)
 
             def receive():
-                with daemon.accept()[0] as conn:
-                    conn.settimeout(5)
-                    request, ancillary, _, _ = conn.recvmsg(16384, socket.CMSG_SPACE(4))
-                    for level, kind, data in ancillary:
-                        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                            fds = array.array("i")
-                            fds.frombytes(data)
-                            for fd in fds:
-                                try:
-                                    received.append(os.read(fd, 4096))
-                                finally:
-                                    os.close(fd)
-                    while chunk := conn.recv(4096):
-                        request += chunk
-                    requests.append(request)
-                    conn.sendall(b"ok 1234\n")
+                # Given a passphrase, the launcher first asks whether the zone waits for one since a
+                # sleep, then runs.
+                for _ in range(2):
+                    with daemon.accept()[0] as conn:
+                        conn.settimeout(5)
+                        request, ancillary, _, _ = conn.recvmsg(16384, socket.CMSG_SPACE(4))
+                        for level, kind, data in ancillary:
+                            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                                fds = array.array("i")
+                                fds.frombytes(data)
+                                for fd in fds:
+                                    try:
+                                        received.append(os.read(fd, 4096))
+                                    finally:
+                                        os.close(fd)
+                        while chunk := conn.recv(4096):
+                            request += chunk
+                        requests.append(request)
+                        if request.startswith(b"info work"):
+                            conn.sendall(b"encrypted yes\nrunning no\nwaiting no\nlabel WORK\nend\n")
+                        else:
+                            conn.sendall(b"ok 1234\n")
 
             receiver = threading.Thread(target=receive)
             receiver.start()
@@ -70,10 +76,56 @@ def main():
                 assert not receiver.is_alive(), "test daemon did not finish"
                 assert run.returncode == 0, run.stderr.decode(errors="replace")
                 assert received == [b"test-passphrase-only"], "the daemon did not receive the passphrase"
-                assert requests and requests[0].startswith(b"run work wayland pass=fd\n"), f"the request: {requests!r}"
+                runs = [r for r in requests if r.startswith(b"run ")]
+                assert runs and runs[0].startswith(b"run work wayland pass=fd\n"), f"the requests: {requests!r}"
                 print("PASS: the daemon receives the passphrase and the request for a display, and no proxy is started here")
             finally:
                 receiver.join(timeout=6)
+
+        # A zone that waits for its volume's passphrase since a sleep: the passphrase goes with
+        # resume-zone, and nothing is launched, whether a command was given or --resume.
+        launch_socket.unlink()
+        requests = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as daemon:
+            daemon.bind(str(launch_socket))
+            daemon.listen(1)
+            daemon.settimeout(5)
+
+            def resume(count):
+                for _ in range(count):
+                    with daemon.accept()[0] as conn:
+                        conn.settimeout(5)
+                        request, ancillary, _, _ = conn.recvmsg(16384, socket.CMSG_SPACE(4))
+                        for level, kind, data in ancillary:
+                            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                                fds = array.array("i")
+                                fds.frombytes(data)
+                                for fd in fds:
+                                    try:
+                                        received.append(os.read(fd, 4096))
+                                    finally:
+                                        os.close(fd)
+                        requests.append(request)
+                        if request.startswith(b"info work"):
+                            conn.sendall(b"encrypted yes\nrunning yes\nwaiting yes\nlabel WORK\nend\n")
+                        else:
+                            conn.sendall(b"ok\n")
+
+            for argv, count in ((["--passphrase-fd", "{fd}", "work", "--", "/bin/true"], 2),
+                                (["--passphrase-fd", "{fd}", "--resume", "work"], 1)):
+                requests.clear()
+                received.clear()
+                server = threading.Thread(target=resume, args=(count,))
+                server.start()
+                with secret.open("rb") as f:
+                    run = subprocess.run([str(work / "launcher")] + [a.format(fd=f.fileno()) for a in argv],
+                                         pass_fds=(f.fileno(),), capture_output=True, timeout=8)
+                server.join(timeout=6)
+                assert run.returncode == 0, run.stderr.decode(errors="replace")
+                assert requests[-1] == b"resume-zone work\n", f"the daemon was asked {requests!r}"
+                assert received == [b"test-passphrase-only"], "the passphrase did not come with resume-zone"
+                assert b"goes on where it was" in run.stdout, run.stdout
+            print("PASS: a zone that waits since a sleep gets its passphrase through resume-zone, and nothing launches")
 
 
 if __name__ == "__main__":

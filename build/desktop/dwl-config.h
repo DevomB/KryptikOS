@@ -91,10 +91,22 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
  * chrome's menu, a text program in a zone 0 terminal of its own */
 static const char *termcmd[]      = { "kryptik-launch", "--ask", "work",      "--", "havoc", NULL };
 static const char *personalcmd[]  = { "kryptik-launch", "--ask", "personal",  "--", "havoc", NULL };
-static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "havoc", "lynx", NULL };
+static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "firefox", NULL };
 static const char *menucmd[]      = { "havoc", "/usr/bin/kryptik-chrome", "--menu", NULL };
 /* The screen lock, opened by the login password (docs/design/laptop.md). */
 static const char *lockcmd[]      = { "kryptik-lock", NULL };
+/* The power key and a closed lid: the lock, then the machine's sleep; a lock already up is
+ * asked to have it sleep. */
+static const char *suspendcmd[]   = { "kryptik-lock", "--suspend", NULL };
+/* Zone 0's mixer (docs/design/laptop.md): the volume in steps, mute, and the microphone taken
+ * back from whichever zone holds it. */
+static const char *volupcmd[]     = { "/usr/libexec/kryptik/kryptik-sound", "--control", "volume +5", NULL };
+static const char *voldowncmd[]   = { "/usr/libexec/kryptik/kryptik-sound", "--control", "volume -5", NULL };
+static const char *mutecmd[]      = { "/usr/libexec/kryptik/kryptik-sound", "--control", "mute toggle", NULL };
+static const char *micbackcmd[]   = { "/usr/libexec/kryptik/kryptik-sound", "--control", "revoke", NULL };
+/* The backlight a step up or down, which udev lets the session's group set. */
+static const char *brightupcmd[]  = { "/usr/libexec/kryptik/brightness.sh", "up", NULL };
+static const char *brightdowncmd[] = { "/usr/libexec/kryptik/brightness.sh", "down", NULL };
 
 static const Key keys[] = {
 	/* modifier                  key                  function          argument */
@@ -103,6 +115,13 @@ static const Key keys[] = {
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_p,           spawn,            {.v = personalcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_u,           spawn,            {.v = untrustedcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_l,           spawn,            {.v = lockcmd} },
+	{ 0,                         XKB_KEY_XF86PowerOff, spawn,           {.v = suspendcmd} },
+	{ 0,                         XKB_KEY_XF86AudioRaiseVolume, spawn,   {.v = volupcmd} },
+	{ 0,                         XKB_KEY_XF86AudioLowerVolume, spawn,   {.v = voldowncmd} },
+	{ 0,                         XKB_KEY_XF86AudioMute,        spawn,   {.v = mutecmd} },
+	{ 0,                         XKB_KEY_XF86AudioMicMute,     spawn,   {.v = micbackcmd} },
+	{ 0,                         XKB_KEY_XF86MonBrightnessUp,   spawn,  {.v = brightupcmd} },
+	{ 0,                         XKB_KEY_XF86MonBrightnessDown, spawn,  {.v = brightdowncmd} },
 	{ MODKEY,                    XKB_KEY_j,           focusstack,       {.i = +1} },
 	{ MODKEY,                    XKB_KEY_k,           focusstack,       {.i = -1} },
 	{ MODKEY,                    XKB_KEY_i,           incnmaster,       {.i = +1} },
@@ -138,6 +157,18 @@ static const Key keys[] = {
 #define CHVT(n) { WLR_MODIFIER_CTRL|WLR_MODIFIER_ALT,XKB_KEY_XF86Switch_VT_##n, chvt, {.ui = (n)} }
 	CHVT(1), CHVT(2), CHVT(3), CHVT(4), CHVT(5), CHVT(6),
 	CHVT(7), CHVT(8), CHVT(9), CHVT(10), CHVT(11), CHVT(12),
+};
+
+/* The only keys heeded while the session is locked (Kryptik's patch to dwl): how loud and how
+ * bright, and the microphone taken back, none of which reaches a zone or the lock's password.
+ * The power key is the lock's own, as a lock already up has the machine sleep. */
+static const Key lockedkeys[] = {
+	{ 0,                         XKB_KEY_XF86AudioRaiseVolume, spawn,   {.v = volupcmd} },
+	{ 0,                         XKB_KEY_XF86AudioLowerVolume, spawn,   {.v = voldowncmd} },
+	{ 0,                         XKB_KEY_XF86AudioMute,        spawn,   {.v = mutecmd} },
+	{ 0,                         XKB_KEY_XF86AudioMicMute,     spawn,   {.v = micbackcmd} },
+	{ 0,                         XKB_KEY_XF86MonBrightnessUp,   spawn,  {.v = brightupcmd} },
+	{ 0,                         XKB_KEY_XF86MonBrightnessDown, spawn,  {.v = brightdowncmd} },
 };
 
 static const Button buttons[] = {

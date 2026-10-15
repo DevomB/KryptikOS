@@ -270,7 +270,7 @@ else
     echo
 fi
 
-export KRYPTIK_LOCK KRYPTIK_SOURCES MD OFFLINE JSON KEYSTATE
+export KRYPTIK_LOCK KRYPTIK_IMAGES_LOCK KRYPTIK_SOURCES MD OFFLINE JSON KEYSTATE
 INV_COMMIT="$(git -C "$KRYPTIK_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 export INV_COMMIT
 python3 - "$MANIFEST" "$SIGREP" "$PROVREP" "$IDREP" "$LICREP" "$ARTREP" "$NOTES_TSV" <<'PYEOF'
@@ -338,14 +338,16 @@ CLASS_ORDER = {k: i for i, (k, _) in enumerate(CLASSES)}
 manifest = [(r[0], r[1], r[2]) for r in rows(manifest_path) if len(r) >= 3]
 
 lock = {}
-try:
-    with open(lock_path) as fh:
-        for line in fh:
-            parts = line.split()
-            if len(parts) >= 2:
-                lock[parts[1]] = parts[0]
-except OSError:
-    pass
+# The root's lock and the software images'.
+for path in (lock_path, os.environ.get("KRYPTIK_IMAGES_LOCK", "")):
+    try:
+        with open(path) as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 2:
+                    lock[parts[1]] = parts[0]
+    except OSError:
+        pass
 
 sig = {}
 for r in rows(sig_path):

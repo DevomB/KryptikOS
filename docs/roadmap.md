@@ -183,24 +183,43 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **A destroy verb.** `kryptikd volume destroy NAME` erases a stopped
       zone's key slots and deletes its container; it refuses an open volume
       ([design](design/encrypted-volumes.md)). The zone's definition stays.
+- [ ] **Memory a zone makes the compositor hold.** A page of a zone's
+      shared-memory pool that dwl reads before the zone writes it is charged
+      to dwl, not to the zone's `memory_max`, and a zone that keeps the
+      pool's descriptor keeps that page after the pool is gone; the proxy's
+      bounds hold it only while the pools live
+      ([Wayland shared memory](design/resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
+      First the measurement (`wlprobe charge`), then the proxy punching each
+      pool's range once the pool and its buffers are gone, refusing a pool it
+      cannot punch, and a `memory.max` on the session's cgroup.
 
 ## Version 2
 
 A desktop someone can live in, built the same way.
 
-- **Applications.** A graphical browser and the toolkit stack under it, per
-  zone, with GPU rendering decided zone by zone; a mail client, a document
-  viewer, a file manager that understands transfers between zones.
-- **Software from somewhere.** A package manager and a signed binary
-  repository, or zones that carry their own userland. An ADR first.
-- **The laptop.** Per-zone sound brokered like the clipboard,
-  suspend and resume with volume keys dropped across it, power management,
-  hotplug and multiple monitors, and a second keyboard layout to switch to.
-- **USB sticks.** Decided (ADR-025): read in the zone the user gives one
-  to, through a descriptor and a reader of Kryptik's own, never mounted;
-  FAT first, exFAT a named gap, FUSE a later decision of its own
+- **Applications.** Built: the GTK toolkit and Firefox ESR over it, in
+  `untrusted`, `personal` and `work`, its PDF viewer the document viewer
+  ([browser and graphics](design/browser-and-graphics.md)). Still to come:
+  GPU rendering decided zone by zone, a mail client, and a file manager that
+  understands transfers between zones.
+- **Software from somewhere.** Built: signed software images (ADR-015),
+  built over the root and signed with each release, carried on its install
+  media and in its update payload, and opened with dm-verity and stacked
+  read-only over the `/usr` of the zones that name them
+  ([software delivery](design/software-delivery.md)). Not decided: a package
+  manager, or images released apart from the root.
+- **The laptop.** What the laptop design asked for is built: sound mixed in
+  zone 0 for each zone, the microphone granted to one zone at a time;
+  suspend with the state partition's and each zone volume's keys dropped,
+  by `kryptik suspend`, the power key, the lid or idleness; the power
+  source, a low battery and brightness; up to four keyboard layouts to
+  switch between; and each monitor at the scale the user picks, a built-in
+  high-resolution panel at 2 by itself ([status](status.md)).
+- **USB sticks.** Built (ADR-025): read in the zone the user gives one to,
+  through a descriptor and a reader of Kryptik's own, never mounted; FAT
+  read and written, exFAT read, FUSE a later decision of its own
   ([removable storage](design/removable-storage.md)).
-- **A camera.** Decided (ADR-026): granted to one zone at a time, as the
+- **A camera.** Built (ADR-026): granted to one zone at a time, as the
   microphone is, its driver loaded only for the grant
   ([camera](design/camera.md)).
 - **Bluetooth.** Decided (ADR-027): none for 1.0, where calls use USB or

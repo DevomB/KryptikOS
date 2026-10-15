@@ -21,7 +21,9 @@ commit="$(git -C "$KRYPTIK_ROOT" rev-parse HEAD 2>/dev/null)" || die "${KRYPTIK_
 OUT="${OUT:-${KRYPTIK_OUT}/source-${commit:0:12}}"
 [[ ! -e "$OUT" ]] || die "${OUT} already exists"
 mkdir -p "$OUT/sources" "$OUT/signatures" "$OUT/crates"
-LOCK="${KRYPTIK_ROOT}/sources.lock"
+# The root's and the software images' locks: the bundle is everything a release is built from.
+LOCKS=("$KRYPTIK_LOCK")
+[[ ! -f "$KRYPTIK_IMAGES_LOCK" ]] || LOCKS+=("$KRYPTIK_IMAGES_LOCK")
 
 log "Source bundle for ${commit} in ${OUT}"
 # Each tarball is checked against sources.lock as it is copied.
@@ -29,8 +31,7 @@ n=0
 while read -r name _ver url sig _; do
     [[ -n "$name" ]] || continue
     f="${url##*/}"
-    want="$(awk -v f="$f" '$2 == f { print $1; exit }' "$LOCK")"
-    [[ -n "$want" ]] || die "${name}: ${f} is not in sources.lock"
+    want="$(lock_entry "$f")" || die "${name}: ${f} is not in sources.lock or build/images/sources.lock"
     [[ -f "${KRYPTIK_SOURCES}/${f}" ]] || die "${name}: ${f} is not downloaded; run make sources"
     [[ "$(sha256_of "${KRYPTIK_SOURCES}/${f}")" == "$want" ]] || die "${name}: ${f} does not match sources.lock"
     [[ -f "$OUT/sources/${f}" ]] || { cp "${KRYPTIK_SOURCES}/${f}" "$OUT/sources/"; n=$((n + 1)); }
@@ -46,9 +47,10 @@ missing=()
 while read -r hash f; do
     [[ -z "$hash" || "$hash" == \#* ]] && continue
     [[ -f "$OUT/sources/${f}" ]] || missing+=("$f")
-done < "$LOCK"
-[[ "${#missing[@]}" -eq 0 ]] || die "sources.lock names what the bundle lacks: ${missing[*]}"
-cp "$LOCK" "$OUT/"
+done < <(cat "${LOCKS[@]}")
+[[ "${#missing[@]}" -eq 0 ]] || die "the locks name what the bundle lacks: ${missing[*]}"
+cp "$KRYPTIK_LOCK" "$OUT/"
+[[ ! -f "$KRYPTIK_IMAGES_LOCK" ]] || cp "$KRYPTIK_IMAGES_LOCK" "$OUT/images-sources.lock"
 ok "${n} tarballs, $(find "$OUT/signatures" -type f | wc -l) signatures"
 
 git -C "$KRYPTIK_ROOT" archive --format=tar.gz --prefix="kryptik-${commit:0:12}/" \
@@ -61,6 +63,22 @@ for ws in compartments/kryptikd compositor; do
         || die "cargo vendor failed in ${ws}"
 done
 ok "the crates of both Rust workspaces"
+
+# A crate a software image is built with, cbindgen for the browser, comes with the crates its own lock
+# names, which fetch-sources.sh fetched into sources/images/crates/: each, held to that lock's hash.
+nc=0
+while read -r _ _ url _; do
+    f="${url##*/}"
+    [[ "$f" == *.crate ]] || continue
+    while read -r cname cver csum; do
+        c="${KRYPTIK_SOURCES}/images/crates/${cname}-${cver}.crate"
+        [[ -f "$c" ]] || die "crate ${cname} ${cver}, which ${f} is built from, is not downloaded; run make sources"
+        [[ "$(sha256_of "$c")" == "$csum" ]] || die "crate ${cname} ${cver} does not match ${f}'s Cargo.lock"
+        mkdir -p "$OUT/crates/images"
+        [[ -f "$OUT/crates/images/${c##*/}" ]] || { cp "$c" "$OUT/crates/images/"; nc=$((nc + 1)); }
+    done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --crates "${KRYPTIK_SOURCES}/${f}")
+done < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list)
+ok "${nc} crates the software images' crates are built from"
 
 (cd "$OUT" && {
     printf '# Kryptik corresponding source for commit %s\n' "$commit"

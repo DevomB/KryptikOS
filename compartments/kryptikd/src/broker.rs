@@ -109,6 +109,8 @@ pub enum Request {
     UpdateLatest { plen: usize, slen: usize },
     UpdatePoll,
     UpdatePut { name: String, offset: u64, len: usize },
+    /// `stick`: the USB stick partition the user gave this zone, as one descriptor (stick.rs).
+    Stick,
     Unknown(String),
 }
 
@@ -125,6 +127,7 @@ impl Request {
             Request::UpdateLatest { .. } => "update-latest",
             Request::UpdatePoll => "update-poll",
             Request::UpdatePut { .. } => "update-put",
+            Request::Stick => "stick",
             Request::Unknown(_) => "unknown verb",
         }
     }
@@ -206,6 +209,8 @@ pub fn parse_request(line: &str) -> Result<Request, String> {
             }
         }
         ("update-put", _) => Err("usage: update-put <name> <offset> <len>, then the bytes".into()),
+        ("stick", []) => Ok(Request::Stick),
+        ("stick", _) => Err("usage: stick".into()),
         ("", _) => Err("empty request".into()),
         _ => Ok(Request::Unknown(verb.to_string())),
     }
@@ -752,6 +757,13 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<&'static str
                 Err(e) => reply(fd, &format!("error: clipboard: {e}\n")),
             }
         }
+        Ok(Request::Stick) => match crate::stick::open_for(zone) {
+            Ok((stick, g)) => {
+                (s.log)(&format!("kryptikd[zone {zone}]: stick: {} handed over, {}", g.partition, g.mode()));
+                reply_with_fd(fd, &format!("ok {} {}\n", g.mode(), g.what), stick.as_raw_fd());
+            }
+            Err(why) => reply(fd, &format!("error: {why}\n")),
+        },
         Ok(Request::NotAZoneVerb(v)) => reply(fd, &format!("error: {v} is a zone 0 act, not a zone verb\n")),
         Ok(Request::Unknown(_)) => reply(fd, "error: unknown verb\n"),
     }
@@ -825,6 +837,27 @@ fn recv_into(fd: RawFd, out: &mut [u8], started: Instant) -> io::Result<usize> {
 
 fn reply(fd: RawFd, text: &str) {
     send_all(fd, text.as_bytes());
+}
+
+/// One short reply line with a descriptor beside its first byte; the zone owns its copy after.
+fn reply_with_fd(fd: RawFd, text: &str, pass: RawFd) {
+    let mut iov = libc::iovec { iov_base: text.as_ptr() as *mut libc::c_void, iov_len: text.len() };
+    let mut space = [0u64; 4];
+    // SAFETY: an all-zero msghdr is valid; the pointers set below outlive the call.
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = space.as_mut_ptr().cast();
+    // SAFETY: CMSG_SPACE and CMSG_LEN compute sizes; the header written lies within `space`.
+    unsafe {
+        msg.msg_controllen = libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as _;
+        let c = libc::CMSG_FIRSTHDR(&msg);
+        (*c).cmsg_level = libc::SOL_SOCKET;
+        (*c).cmsg_type = libc::SCM_RIGHTS;
+        (*c).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(c).cast::<RawFd>(), pass);
+        libc::sendmsg(fd, &msg, libc::MSG_NOSIGNAL);
+    }
 }
 
 fn send_all(fd: RawFd, mut data: &[u8]) {

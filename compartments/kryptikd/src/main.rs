@@ -6,10 +6,12 @@
 #![cfg_attr(fuzzing, no_main, allow(dead_code))]
 
 mod broker;
+mod camera;
 mod caps;
 mod cgroup;
 mod consent;
 mod files;
+mod images;
 mod isolate;
 mod landlock;
 mod netlink;
@@ -21,8 +23,11 @@ mod registry;
 mod rootfs;
 mod seccomp;
 mod serve;
+mod sound;
 mod spawn;
+mod stick;
 mod supplicant;
+mod suspend;
 mod time;
 mod update;
 mod volume;
@@ -49,6 +54,8 @@ USAGE:
                    [--target]         and require what a Kryptik kernel must have:
                                       root, unprivileged userns restricted, cgroup2
                                       with memory+pids, every zone with [identity]
+                   [--images FILE]    and hold each zone's images to an image list:
+                                      listed, and what they need granted
     kryptikd list  [--zones DIR]      list configured zones
     kryptikd show  NAME [--zones DIR]
     kryptikd explain NAME             what starting this zone would do
@@ -72,6 +79,12 @@ USAGE:
                                       close volumes no running zone holds
     kryptikd clipboard move FROM TO   the zone 0 gesture: move FROM's clipboard
                                       payload to TO, emptying FROM (both running)
+    kryptikd suspend [--awake]        freeze every zone, suspend the state partition
+                                      with its key wiped, and sleep (root; the
+                                      session asks the launch daemon, after its
+                                      screen lock); --awake keeps the machine up,
+                                      its state partition waiting for the passphrase;
+                                      with the partition suspended already, sleep
     kryptikd serve [--rootfs DIR]     the launch daemon the desktop session talks
                    [--socket PATH]    to (root; --socket PATH runs a developer
                    [--group G]        instance that serves only your own uid)
@@ -97,9 +110,30 @@ USAGE:
     kryptikd time committed DIR       once boot-success has committed a slot: its
                                       release (the signed manifest in DIR) is the
                                       floor if it is the newest
+    kryptikd sound zones              the zones zone 0's mixer serves, a line each,
+                                      NAME and UID: the uid the zone's root maps to,
+                                      the only peer its socket takes
+    kryptikd stick list               the USB stick partitions a zone may be given
+                                      now, a line each: NAME and how the chrome names it
+    kryptikd stick grant ZONE PART ro|rw
+                                      give ZONE the partition PART, read-only or to
+                                      write (root; the session asks the launch daemon)
+    kryptikd stick eject ZONE         take it back: every read and write on it fails
+    kryptikd camera grant ZONE        give ZONE the camera until it is taken back, the
+                                      zone stops or the screen locks (root; the
+                                      session asks the launch daemon)
+    kryptikd camera revoke            take it back: the zone's node goes, and every
+                                      descriptor on it fails
+    kryptikd camera status            the zone that holds it, or none
     kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
                                       checked as nobody on copies: how kryptik-update
                                       apply, which runs as root, has a release checked
+    kryptikd check-images DIR BASE [OUT]
+                                      a medium's images.manifest and its signature in
+                                      DIR, checked as a kept list is, for root BASE,
+                                      and each image it names there at its size: the
+                                      installer's check before it writes anything;
+                                      with OUT, the two files as checked, written there
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -122,11 +156,12 @@ USAGE:
 Only descriptors 0, 1 and 2 reach the zone; the environment is rebuilt from
 an allowlist (see `kryptikd explain NAME`).
 
-    kryptikd volume init|passwd|backup-header|restore-header|destroy|status NAME
+    kryptikd volume init|passwd|backup-header|restore-header|destroy|status|resume NAME
                                       an encrypted zone's LUKS2 volume (root;
                                       the passphrase comes on a descriptor or
                                       the terminal, never on a command line;
-                                      destroy deletes the container and its data)
+                                      destroy deletes the container and its data;
+                                      resume gives it its key after a sleep)
 
 Transfers are a zone verb on the broker socket, sent by the zone that offers
 the file (docs/design/broker.md), not a zone 0 command; the person answers through
@@ -143,7 +178,7 @@ fn main() -> ExitCode {
     let zone_dir = zone_dir_from(&args);
 
     match args[0].as_str() {
-        "check" => cmd_check(&zone_dir, args.iter().any(|a| a == "--target")),
+        "check" => cmd_check(&zone_dir, args.iter().any(|a| a == "--target"), value(&args, "--images").map(Path::new)),
         "list" if args.iter().any(|a| a == "--running") => cmd_list_running(&zone_dir),
         "list" => cmd_list(&zone_dir),
         "show" => match args.get(1) {
@@ -272,7 +307,32 @@ fn main() -> ExitCode {
         "volume" => cmd_volume(&zone_dir, &args),
         "serve" => serve::cmd_serve(&zone_dir, &args),
         "wifi" => cmd_wifi(&zone_dir, &args),
+        "sound" => match args.get(1).map(String::as_str) {
+            Some("zones") => cmd_sound_zones(&zone_dir),
+            _ => {
+                eprintln!("sound: expected `zones`");
+                ExitCode::from(2)
+            }
+        },
+        "stick" => cmd_stick(&zone_dir, &args),
+        "camera" => cmd_camera(&zone_dir, &args),
         "time" => cmd_time(&args),
+        "check-images" => match args.as_slice() {
+            [_, dir, base] | [_, dir, base, _] => match images::check_medium(Path::new(dir), base, args.get(3).map(Path::new)) {
+                Ok(said) => {
+                    print!("{said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("kryptikd: check-images: {why}");
+                    ExitCode::FAILURE
+                }
+            },
+            _ => {
+                eprintln!("usage: kryptikd check-images DIR BASE [OUT]");
+                ExitCode::from(2)
+            }
+        },
         "check-release" => match args.as_slice() {
             [_, dir] => match update::check_release(Path::new(dir)) {
                 Ok(said) => {
@@ -290,6 +350,7 @@ fn main() -> ExitCode {
             }
         },
         "clipboard" => cmd_clipboard(&args),
+        "suspend" => cmd_suspend(&args),
         "transfer" => {
             eprintln!(
                 "kryptikd: 'transfer' is a zone verb on the broker socket, sent by the zone\n\
@@ -329,6 +390,16 @@ fn cmd_stop(name: &str, now: bool, base: &str) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+    }
+
+    // A zone whose volume waits for its passphrase is frozen, and thawed would wait on the
+    // volume for good: the volume gives up first, then the stop goes on as for any zone.
+    if suspend::waiting().iter().any(|z| z == name) {
+        if let Err(e) = suspend::give_up_zone(name) {
+            eprintln!("kryptikd: zone {name:?} waits for its volume's passphrase, and its volume would not give up: {e}");
+            return ExitCode::FAILURE;
+        }
+        println!("zone {name:?}: its volume waited for its passphrase and now fails every read and write");
     }
 
     match st {
@@ -553,8 +624,12 @@ fn zone_dir_from(args: &[String]) -> PathBuf {
     PathBuf::from(value(args, "--zones").unwrap_or(DEFAULT_ZONE_DIR))
 }
 
-fn cmd_check(dir: &Path, target: bool) -> ExitCode {
+fn cmd_check(dir: &Path, target: bool, image_list: Option<&Path>) -> ExitCode {
     let mut failed = false;
+    // Read unsigned, as the build writes it before signing; a zone start checks the signature.
+    let list = image_list.map(|p| {
+        std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())).and_then(|t| images::parse(&t))
+    });
     let euid = unsafe { libc::geteuid() };
     if target {
         println!("target contract: required (--target)");
@@ -708,6 +783,36 @@ fn cmd_check(dir: &Path, target: bool) -> ExitCode {
                         }
                     }
                 }
+                if !z.images.is_empty() {
+                    let granted = z.seccomp.as_ref().and_then(|rel| policy::load(&policy::resolve(dir, rel)).ok());
+                    match &list {
+                        None => println!("             images {}: held to the signed list when the zone starts", z.images.join(" ")),
+                        Some(Err(e)) => {
+                            eprintln!("             images: {e}");
+                            failed = true;
+                        }
+                        Some(Ok(m)) => {
+                            if let Err(e) = images::requires_met(m, &z.images) {
+                                eprintln!("             {e}");
+                                failed = true;
+                            }
+                            for name in &z.images {
+                                let held = m.images.iter().any(|i| &i.name == name);
+                                match images::needs_met(m, name, granted.as_ref()) {
+                                    Ok(()) if held => println!("             image {name}: listed, and what it needs is granted"),
+                                    Ok(()) => {
+                                        eprintln!("             image {name}: the list holds no such image");
+                                        failed = true;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("             {e}");
+                                        failed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if target && z.uid_base.is_none() {
                     eprintln!(
                         "  --target: zone {:?} declares no [identity] uid_base; a root launch cannot start it",
@@ -742,6 +847,94 @@ fn cmd_list(dir: &Path) -> ExitCode {
         }
         Err(e) => {
             eprintln!("kryptikd: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_sound_zones(dir: &Path) -> ExitCode {
+    match zone::load_all(dir) {
+        Ok(zones) => {
+            print!("{}", sound::zones_list(&zones));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_stick(dir: &Path, args: &[String]) -> ExitCode {
+    let word = |i: usize| args.get(i).map(String::as_str).filter(|a| !a.starts_with("--"));
+    let done = match (word(1), word(2), word(3), word(4)) {
+        (Some("list"), None, ..) => {
+            for p in stick::eligible() {
+                println!("{} {}", p.name, p.what);
+            }
+            return ExitCode::SUCCESS;
+        }
+        (Some("grant"), Some(name), Some(part), Some(mode @ ("ro" | "rw"))) => match load_zone(dir, name) {
+            Ok(zone) => stick::grant(&zone, part, mode == "rw").map(|g| format!("zone {name:?} given {}, {}", g.what, g.mode())),
+            Err(c) => return c,
+        },
+        (Some("eject"), Some(name), None, _) => match load_zone(dir, name) {
+            Ok(_) => match stick::eject(name) {
+                Ok(true) => Ok(format!("zone {name:?}: its stick taken back")),
+                Ok(false) => Err(format!("zone {name:?} holds no stick")),
+                Err(e) => Err(e),
+            },
+            Err(c) => return c,
+        },
+        _ => {
+            eprintln!("stick: usage: kryptikd stick list | grant ZONE PARTITION ro|rw | eject ZONE");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(said) => {
+            println!("{said}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: stick: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_camera(dir: &Path, args: &[String]) -> ExitCode {
+    let word = |i: usize| args.get(i).map(String::as_str).filter(|a| !a.starts_with("--"));
+    let done = match (word(1), word(2)) {
+        (Some("status"), None) => {
+            match camera::holder() {
+                Some(g) => println!("zone {} holds {} ({})", g.zone, g.name, g.node),
+                None => println!("none{}", if camera::stayed() { "; its driver stayed loaded" } else { "" }),
+            }
+            return ExitCode::SUCCESS;
+        }
+        (Some("grant"), Some(name)) => match load_zone(dir, name) {
+            Ok(zone) => camera::grant(&zone).map(|g| format!("zone {} holds {}", g.zone, g.name)),
+            Err(c) => return c,
+        },
+        (Some("revoke"), None) => match camera::revoke() {
+            Ok(Some(e)) if e.stayed => Ok(format!("taken back from zone {}; its driver stays loaded, still held", e.zone)),
+            Ok(Some(e)) => Ok(format!("taken back from zone {}", e.zone)),
+            Ok(None) => Ok("no zone held it".to_string()),
+            Err(e) => Err(e),
+        },
+        _ => {
+            eprintln!("camera: usage: kryptikd camera grant ZONE | revoke | status");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(said) => {
+            println!("{said}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: camera: {e}");
             ExitCode::FAILURE
         }
     }
@@ -924,10 +1117,11 @@ fn run_options_from(args: &[String]) -> Result<spawn::RunOptions, String> {
 ///   volume backup-header|restore-header NAME FILE
 ///   volume destroy NAME
 ///   volume status NAME
+///   volume resume NAME --passphrase-file F   the key again after a sleep, and the zone thawed
 fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let Some(name) = args.get(2).filter(|a| !a.starts_with("--")) else {
-        eprintln!("volume: usage: kryptikd volume init|passwd|backup-header|restore-header|destroy|status NAME ...");
+        eprintln!("volume: usage: kryptikd volume init|passwd|backup-header|restore-header|destroy|status|resume NAME ...");
         return ExitCode::from(2);
     };
     let zone = match load_zone(dir, name) {
@@ -970,7 +1164,12 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
             println!("zone      {name}");
             println!("container {vol} ({})", if present { "present" } else { "ABSENT" });
             println!("signature {}", if present { volume::signature_of(&vol) } else { "-".into() });
-            println!("mapping   {} ({})", mapper, if Path::new(&mapper).exists() { "OPEN" } else { "closed" });
+            let open = match Path::new(&mapper).exists() {
+                false => "closed",
+                true if suspend::waiting().iter().any(|z| z == name) => "OPEN, its key dropped with a sleep: volume resume gives it back",
+                true => "OPEN",
+            };
+            println!("mapping   {mapper} ({open})");
             ExitCode::SUCCESS
         }
         "init" => {
@@ -1019,6 +1218,27 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
             let Some(file) = args.get(3) else { eprintln!("volume restore-header NAME FILE"); return ExitCode::from(2) };
             done(&format!("LUKS header restored from {file}"), volume::restore_header(&vol, file))
         }
+        "resume" => {
+            if !root {
+                eprintln!("volume resume needs root; the session gives the passphrase through the menu");
+                return ExitCode::from(2);
+            }
+            let pass = match pass_from("--passphrase-file") { Ok(p) => p, Err(c) => return c };
+            match suspend::resume_zone(name, &pass) {
+                Ok(()) => {
+                    println!("volume {name:?}: its key is back, and the zone thawed");
+                    ExitCode::SUCCESS
+                }
+                Err(suspend::ResumeError::Wrong) => {
+                    eprintln!("volume: zone {name:?}: wrong passphrase");
+                    ExitCode::FAILURE
+                }
+                Err(suspend::ResumeError::Failed(e)) => {
+                    eprintln!("volume: zone {name:?}: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         "destroy" => {
             if !root {
                 eprintln!("volume destroy needs root");
@@ -1035,6 +1255,57 @@ fn cmd_volume(dir: &Path, args: &[String]) -> ExitCode {
 
 fn wifi_dir_from(args: &[String]) -> PathBuf {
     PathBuf::from(value(args, "--wifi-dir").unwrap_or(wifi::DEFAULT_DIR))
+}
+
+/// `kryptikd suspend [--awake]`: the launch daemon's suspend, for root. With --awake the key is
+/// dropped and the zones frozen, and the machine stays up: the way back is the same.
+fn cmd_suspend(args: &[String]) -> ExitCode {
+    let awake = match args {
+        [_] => false,
+        [_, flag] if flag == "--awake" => true,
+        _ => {
+            eprintln!("usage: kryptikd suspend [--awake]");
+            return ExitCode::from(2);
+        }
+    };
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!("kryptikd suspend: must run as root; the session asks through kryptik-lock --suspend");
+        return ExitCode::from(2);
+    }
+    if !awake {
+        if let Some(why) = suspend::sleep_refused() {
+            eprintln!("kryptikd suspend: the machine stays awake: {why}");
+            return ExitCode::FAILURE;
+        }
+    }
+    // The zones are frozen and the key gone already: only the sleep is left to do.
+    if suspend::state_suspended() {
+        if awake {
+            eprintln!("kryptikd suspend: the state partition is suspended already");
+            return ExitCode::FAILURE;
+        }
+    } else {
+        match suspend::seal() {
+            Ok(zones) => println!("kryptikd suspend: froze {zones:?}; the state partition's key is dropped"),
+            Err(e) => {
+                eprintln!("kryptikd suspend: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        if awake {
+            return ExitCode::SUCCESS;
+        }
+    }
+    match suspend::sleep() {
+        Ok(()) => {
+            println!("kryptikd suspend: woke; the state partition waits for its passphrase at the screen lock");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd suspend: the machine did not sleep: {e}; the state partition waits for its passphrase all the same");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `kryptikd time floor | status | committed DIR` (docs/design/time.md). The
