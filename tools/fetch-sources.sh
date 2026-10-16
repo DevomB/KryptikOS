@@ -330,12 +330,22 @@ fetch_attempt() {
 # a host refuses HEAD, as a presigned object store does for a release download. The last answer's
 # status decides, not curl's exit. --max-filesize stops a host that ignores the range and starts a
 # whole tarball; above a redirect's or an error page's body, as some curls apply it to each answer.
-# A timeout or a 5xx is asked twice more before the place counts as not serving.
+# A timeout or a 5xx is asked twice more before the place counts as not serving. A host that gave
+# no answer at all (no address, no connection, nothing in time) is not asked again this run, so one
+# that hangs costs a minute, not a minute for each file it holds.
+declare -A SILENT=()
 serves() {
+    local host="${1#*://}" code rc=0
+    # A file:// URL has no host; the key is never empty, which bash refuses.
+    host="${host%%/*}"
+    [[ -z "${SILENT[h:${host}]:-}" ]] || return 1
     curl -fsIL --connect-timeout 15 --max-time 45 -o /dev/null "$1" 2>/dev/null && return 0
-    local code
     code="$(curl -sL -r 0-0 --max-filesize 65536 --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 3 \
-        -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" || true
+        -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" || rc=$?
+    if [[ "$code" == 000 && ( "$rc" -eq 6 || "$rc" -eq 7 || "$rc" -eq 28 ) ]]; then
+        SILENT[h:${host}]=1
+        warn "${host} gave no answer: its other places count as not serving this run"
+    fi
     [[ "$code" == 200 || "$code" == 206 ]]
 }
 
@@ -343,25 +353,39 @@ serves() {
 # place serves would stop a build from an empty cache, and one only a single place serves is one
 # outage away from that (docs/supply-chain.md).
 if [[ "$MODE" == probe ]]; then
-    total=0 lone=0 none=0
-    while IFS='|' read -r _ name ver url _; do
-        [[ -n "$name" ]] || continue
-        total=$((total + 1))
-        mapfile -t places < <(locations_of "$url" "$name" "$ver")
-        up=() down=()
+    total=0 lone=0 none=0 again=()
+    # probe_one NAME VER URL [last]: every place asked. One that no place serves is put by for a
+    # last look at the end of the run, and named only if that look finds none either.
+    probe_one() {
+        local u
+        local -a places up=() down=()
+        mapfile -t places < <(locations_of "$3" "$1" "$2")
         for u in "${places[@]}"; do
             if serves "$u"; then up+=("$u"); else down+=("$u"); fi
         done
         if [[ "${#up[@]}" -eq 0 ]]; then
-            err "${name} ${ver}: no place serves it (asked ${places[*]})"
+            if [[ -z "${4:-}" ]]; then again+=("$1|$2|$3"); return 0; fi
+            err "$1 $2: no place serves it (asked ${places[*]})"
             none=$((none + 1))
         elif [[ "${#up[@]}" -eq 1 ]]; then
-            warn "${name} ${ver}: only ${up[0]} serves it${down[*]:+; not ${down[*]}}"
+            warn "$1 $2: only ${up[0]} serves it${down[*]:+; not ${down[*]}}"
             lone=$((lone + 1))
         else
-            ok "${name} ${ver}: ${#up[@]} of ${#places[@]} places${down[*]:+; not ${down[*]}}"
+            ok "$1 $2: ${#up[@]} of ${#places[@]} places${down[*]:+; not ${down[*]}}"
         fi
+    }
+    while IFS='|' read -r _ name ver url _; do
+        [[ -n "$name" ]] || continue
+        total=$((total + 1))
+        probe_one "$name" "$ver" "$url"
     done < <(all_sources)
+    # The last look asks every host afresh: one silent for a moment earlier in the run is not
+    # taken as gone for good.
+    SILENT=()
+    for s in "${again[@]}"; do
+        IFS='|' read -r name ver url <<< "$s"
+        probe_one "$name" "$ver" "$url" last
+    done
     [[ "$none" -eq 0 ]] || die "${none} of ${total} source(s) served by no place: a build from an empty cache stops at them"
     ok "${total} source(s), each served somewhere; ${lone} by one place alone"
     exit 0
