@@ -32,6 +32,7 @@ esac
 [ -n "$R" ] || [ "$(id -u)" = 0 ] || die "must run as root: the kernel log is root's to read"
 
 one() { [ -r "$1" ] && head -n 1 "$1" 2>/dev/null; }          # a file's first line
+int() { v="$(one "$1")"; case "$v" in ''|-|*[!0-9-]*|?*-*) ;; *) printf '%s' "$v" ;; esac; }  # a whole number or nothing
 hex() { v="$(one "$1")"; v="${v#0x}"; printf '%s' "${v:--}"; }  # the same, without 0x
 target() { [ -e "$1" ] && basename "$(readlink -f "$1")"; }   # what a link names
 kmsg() { if [ -n "$R" ]; then cat "$R/dmesg" 2>/dev/null; else dmesg 2>/dev/null; fi; }
@@ -386,6 +387,11 @@ laptop() {
             # The status last, as it may be two words ("Not charging").
             printf 'power_supply %s type Battery scope %s capacity %s technology %s status %s\n' "${p##*/}" \
                 "${s:-System}" "${c:--}" "${k:--}" "${st:--}"
+            # What it gives or takes now: power_now where it reports that, otherwise current_now
+            # times voltage_now, the two ways ACPI batteries report it. Microwatts, then milliwatts.
+            pw="$(int "$p/power_now")"; i="$(int "$p/current_now")"; u="$(int "$p/voltage_now")"
+            [ -n "$pw" ] || { [ -n "$i" ] && [ -n "$u" ] && pw=$(( i * u / 1000000 )); }
+            [ -z "$pw" ] || printf 'battery %s power %s mW\n' "${p##*/}" "$(( pw / 1000 ))"
         else
             o="$(one "$p/online")"
             printf 'power_supply %s type %s online %s\n' "${p##*/}" "${t:--}" "${o:--}"
