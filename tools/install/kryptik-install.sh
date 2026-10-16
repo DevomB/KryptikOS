@@ -69,7 +69,7 @@ done
 
 # --- every external tool, checked before the first write -------------------
 missing=""
-for tool in sfdisk blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
+for tool in sfdisk blockdev flock blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
             grep readlink lsblk head tail wc cmp cp mkdir stat tr cut basename mv mountpoint rmdir chmod rm cat sleep \
             loadkeys chattr kryptik-efiboot; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
@@ -80,8 +80,8 @@ touches a disk, not at the moment it is first called."
 
 # Only a table the kernel reads whole (BLKRRPART) gives each partition its name (PARTNAME),
 # which kryptik_named looks up. Partitions added one at a time, as partx adds them and as sfdisk
-# does when its own re-read finds the disk busy, carry none. udev's probe of the new table keeps
-# the disk busy for a moment.
+# does when its own re-read finds the disk busy, carry none. A program that still has an old
+# partition open keeps the disk busy for a moment.
 reread_table() {   # DISK
     n=0
     until blockdev --rereadpt "$1" 2>/dev/null; do
@@ -329,6 +329,12 @@ kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOU
 
 # --- partition -------------------------------------------------------------
 say "partitioning (sfdisk, GPT: kryptik-esp, kryptik-a, kryptik-b, kryptik-state)"
+# The disk stays locked until the install ends, as udev asks of whatever writes a partition
+# table. When sfdisk closes the disk, eudev re-reads its table unless the disk is locked, and a
+# re-read after ours drops the new partitions while they are named and written. The lock dies
+# with this process; sfdisk and the tools after it take none of their own.
+exec 7<"$TARGET_REAL"
+flock -w 30 -x 7 || die "another program held ${TARGET} locked for 30 seconds; nothing was written"
 P1="$(part_dev "$TARGET_REAL" 1)"; P2="$(part_dev "$TARGET_REAL" 2)"
 P3="$(part_dev "$TARGET_REAL" 3)"; P4="$(part_dev "$TARGET_REAL" 4)"
 GPT_ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
