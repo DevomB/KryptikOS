@@ -868,11 +868,13 @@ done
 # commands from a fixed table, and dwl's own filter refuses exec (compositor-separation design).
 dwl_pid="$(pgrep -u "$USER_NAME" -xo dwl)"
 spawner="$(pgrep -u "$USER_NAME" -x -P "${dwl_pid:-0}" dwl-spawner)"
-if grep -qE '^Seccomp:[[:space:]]+2$' "/proc/${dwl_pid:-0}/status" 2>/dev/null \
+# Every thread carries the filter, not the leader alone.
+unfiltered="$(for s in /proc/"${dwl_pid:-0}"/task/*/status; do grep -qE '^Seccomp:[[:space:]]+2$' "$s" 2>/dev/null || echo "${s%/status}"; done)"
+if [[ -z "$unfiltered" ]] && grep -qE '^Seccomp:[[:space:]]+2$' "/proc/${dwl_pid:-0}/status" 2>/dev/null \
    && grep -qE '^NoNewPrivs:[[:space:]]+1$' "/proc/${dwl_pid:-0}/status" 2>/dev/null && [[ -n "$spawner" ]]; then
     pass "dwl-execs-nothing" "dwl ${dwl_pid} runs under its no-exec filter, and its spawner is ${spawner}"
 else
-    fail "dwl-execs-nothing" "dwl ${dwl_pid:-gone}: $(grep -E '^(Seccomp|NoNewPrivs):' "/proc/${dwl_pid:-0}/status" 2>&1 | tr '\n' ' '); spawner: ${spawner:-none}; $(pgrep -u "$USER_NAME" -a dwl | tr '\n' ';')"
+    fail "dwl-execs-nothing" "dwl ${dwl_pid:-gone}: $(grep -E '^(Seccomp|NoNewPrivs):' "/proc/${dwl_pid:-0}/status" 2>&1 | tr '\n' ' '); threads without the filter: ${unfiltered:-none}; spawner: ${spawner:-none}; $(pgrep -u "$USER_NAME" -a dwl | tr '\n' ';')"
 fi
 # And it reads only below its own list and writes no file (Landlock), as its session log says.
 if grep -q '^dwl: confined: reads only below its ' "$RT/kryptik/session.log" 2>/dev/null; then

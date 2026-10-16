@@ -151,9 +151,13 @@ confines itself as a zone is confined:
   commands. Built: dwl forks the spawner once the status command runs,
   closes everything in it but one end of a socket, and sends it a key's
   command as its index in `spawncmds` (`build/desktop/dwl-config.h`). Then
-  dwl sets no-new-privileges and a filter that refuses exec, ptrace and
-  `process_vm_writev`, and kills calls of another architecture. The
-  spawner is not dumpable and ends with dwl.
+  dwl sets no-new-privileges and a filter, on every thread, that refuses
+  exec, ptrace and `process_vm_writev`, and kills calls of another
+  architecture. `kernel.yama.ptrace_scope = 3` already refuses dwl
+  `/proc/PID/mem`, `pidfd_getfd` and `process_vm_readv` into the chrome and
+  the lock, forked before the filter, so the filter is a second wall there.
+  The spawner is not dumpable and ends with dwl. If it goes, dwl ends the
+  login rather than run on with keys and a lid that no longer lock.
 
 seatd passes it its devices, including hotplugged ones, as descriptors, so
 dwl never opens `/dev`. Running it under `kryptikd run` as a zone of its own
