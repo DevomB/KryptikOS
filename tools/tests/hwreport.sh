@@ -350,7 +350,7 @@ put sys/bus/acpi/devices/OVTI02C1:00/status 0
 laptop_now
 lap "each backlight with its kind and range" '^backlight intel_backlight type raw max 19200$'
 lap "the firmware's as well"                 '^backlight acpi_video0 type firmware max 100$'
-lap "the battery's charge and kind"          '^power_supply BAT0 type Battery scope System status Discharging capacity 87 technology Li-ion$'
+lap "the battery's charge and kind"          '^power_supply BAT0 type Battery scope System capacity 87 technology Li-ion status Discharging$'
 lap "mains, and whether they are on"         '^power_supply AC type Mains online 1$'
 lap "a device's battery, named as the device's" '^power_supply hidpp_battery_0 type Battery scope Device '
 nolap "never a battery's serial number"     'BAT-SECRET-7'
