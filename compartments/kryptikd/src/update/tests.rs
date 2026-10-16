@@ -34,6 +34,9 @@ fn parse_pointer_rejects_malformed() {
         ("a short hash", good.replace(SHA, &SHA[..63])),
         ("an uppercase hash", good.replace(SHA, &SHA.to_uppercase())),
         ("a version with a space", good.replace("version: 1.0.3", "version: 1.0 3")),
+        ("the version .., incoming/'s parent", good.replace("version: 1.0.3", "version: ..")),
+        ("the version .", good.replace("version: 1.0.3", "version: .")),
+        ("a version starting with a dot", good.replace("version: 1.0.3", "version: .1.0")),
         ("a base with a space", good.replace("base: 1.0.3/", "base: 1.0.3/ x")),
     ] {
         assert!(parse_pointer(&bad).is_err(), "{what} was accepted");
