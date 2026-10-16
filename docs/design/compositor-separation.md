@@ -152,15 +152,19 @@ confines itself as a zone is confined:
   device is plugged in), and the microphone's and the camera's marks
   (`/run/kryptik-sound`, `/run/kryptik-camera`). It may also read and
   remove the chrome's request for a browser in front, in
-  `$XDG_RUNTIME_DIR/kryptik/front`, which it makes first. It writes no file,
-  opens no TCP, and, where the kernel has Landlock ABI 6, reaches no
-  abstract socket and signals no process outside its own domain: the lock,
-  the chrome, the user's zones' launchers. dwl started with a command of its
-  own (`-s`, as in a test) keeps its signals to end that command when it
-  exits. The zones' sockets and its own are made before then, and its own
-  socket and lock stay behind when it exits, until the next login's dwl
-  takes them over. A rule holds a directory as it was at login: one that is
-  made again while dwl runs is not covered.
+  `$XDG_RUNTIME_DIR/kryptik/front`, which it makes first. It writes no file
+  but the keymaps wlroots gives its keyboards, each in a file it makes under
+  `/dev/shm` and unlinks at once. A keyboard added later (back from another
+  console, or plugged in) gets one there, or wlroots leaves it out of dwl's
+  keyboard group and its keys reach nothing. It opens no TCP, and, where
+  the kernel has Landlock ABI 6, reaches no abstract socket and signals no
+  process outside its own domain: the lock, the chrome, the user's zones'
+  launchers. dwl started with a command of its own (`-s`, as in a test)
+  keeps its signals to end that command when it exits. The zones' sockets
+  and its own are made before then, and its own socket and lock stay behind
+  when it exits, until the next login's dwl takes them over. A rule holds a
+  directory as it was at login: one that is made again while dwl runs is
+  not covered.
   Landlock binds the calling thread alone, so dwl confines itself only while
   it has one thread, and says how many it had. A kernel without Landlock
   leaves dwl as it was, and the session log says so;
