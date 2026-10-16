@@ -96,6 +96,17 @@ firmware() {
     tpm=none
     for t in "$SYS"/class/tpm/tpm*; do [ -e "$t" ] && tpm="version $(one "$t/tpm_version_major")"; done
     printf 'tpm: %s\n' "$tpm"
+    # What confines a device's DMA: the IOMMUs in use, their groups by how they translate (DMA
+    # strict, DMA-FQ lazy, identity not at all), and what Thunderbolt lets a plugged device do.
+    units=""
+    for u in "$SYS"/class/iommu/*; do [ -e "$u" ] && units="${units:+$units }${u##*/}"; done
+    groups="$(for g in "$SYS"/kernel/iommu_groups/*/type; do one "$g"; done | sort | uniq -c \
+        | awk '{ printf "%s%s %s", s, $1, $2; s = ", " }')"
+    printf 'iommu: %s\n' "${units:-none}${groups:+; groups: $groups}"
+    for d in "$SYS"/bus/thunderbolt/devices/domain*; do
+        [ -e "$d" ] && printf 'thunderbolt %s: security %s, iommu protection %s\n' "${d##*/}" \
+            "$(one "$d/security")" "$(one "$d/iommu_dma_protection")"
+    done
 }
 
 cpu() {

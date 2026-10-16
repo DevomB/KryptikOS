@@ -316,6 +316,19 @@ aud "the amplifiers, and that nothing drives them" '^amplifier CSC3551:00 driver
 noaud "not those the firmware calls absent" '^amplifier CSC3551:01'
 listed "the listing: the amplifiers, by their ACPI name" "HD Audio codec 10ec0287; amplifiers CSC3551, not driven"
 
+echo "-- what confines a device's DMA"
+put sys/class/iommu/dmar0/uevent ''
+put sys/class/iommu/dmar1/uevent ''
+put sys/kernel/iommu_groups/0/type DMA
+put sys/kernel/iommu_groups/1/type DMA
+put sys/kernel/iommu_groups/2/type identity
+put sys/bus/thunderbolt/devices/domain0/security user
+put sys/bus/thunderbolt/devices/domain0/iommu_dma_protection 1
+KRYPTIK_HWREPORT_ROOT="$W" sh "$TOOL" > "$W/report-dma.txt" 2>&1
+dma() { if grep -qE -- "$2" "$W/report-dma.txt"; then green "$1"; else red "$1: $(grep -E '^(iommu|thunderbolt)' "$W/report-dma.txt" | paste -sd'|')"; fi; }
+dma "the IOMMUs in use, and their groups by how they translate" '^iommu: dmar0 dmar1; groups: 2 DMA, 1 identity$'
+dma "and what Thunderbolt lets a plugged device do"            '^thunderbolt domain0: security user, iommu protection 1$'
+
 echo "-- what a laptop has that the others lack"
 want "the laptop has its place"             '^== laptop ==$'
 L="$W/laptop.txt"

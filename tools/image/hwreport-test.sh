@@ -89,6 +89,7 @@ want "$R1" '^booted: the usb medium$'                         "it says what boot
 want "$R1" '^sys_vendor: QEMU'                                "the machine, by its maker"
 want "$R1" '^secure boot: off$'                               "Secure Boot as the firmware has it"
 want "$R1" '^microcode: '                                     "the processor's microcode"
+want "$R1" '^iommu: '                                         "what confines a device's DMA"
 want "$R1" ' class 0c0330 .* driver xhci_hcd'                 "a PCI device with the driver that took it"
 want "$R1" ' interface class 08/06/50 driver usb-storage$'    "the stick's own interface, by its driver"
 want "$R1" '^sd[a-z] .*\(the root is here\).*usb-storage \(built in\)' "the disk the root is on, through built-in drivers"
