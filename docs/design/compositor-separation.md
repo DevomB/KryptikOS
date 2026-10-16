@@ -208,7 +208,9 @@ session keeps the group, and dwl runs without it.
   and the asker's groups less `kryptik`, sets no-new-privileges and a
   parent-death signal, and runs with an environment the daemon makes, plus
   the session's keymap. The daemon answers `started <pid>` at once and
-  again when dwl ends, which ends the login.
+  again when dwl ends, which ends the login. dwl also ends with the daemon,
+  so a daemon that ends, as one s6 starts again after a crash, ends the
+  login too.
 - Everything that asks the daemon for anything keeps the group: the chrome,
   which the spawner starts once dwl names its display, the lock, and the
   keys' commands.
