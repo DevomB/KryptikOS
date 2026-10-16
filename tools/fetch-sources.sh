@@ -285,24 +285,49 @@ locations_of() {
     fi
 }
 
-# fetch_one URL DEST [NAME VER]: try each mirror in order.
+# held FILE SHA256: whether FILE has the lock's bytes; one that has not is removed. Without a
+# SHA256, as while the lock is written, any file is held.
+held() {
+    [[ -z "$2" || "$(sha256_of "$1")" == "$2" ]] && return 0
+    rm -f "$1"
+    return 1
+}
+
+# whole URL DEST SHA256: URL fetched from its first byte, held to SHA256.
+whole() {
+    fetch_attempt "$1" "$2" fresh || return 1
+    held "$2" "$3" && return 0
+    warn "${1} serves other bytes than the lock's"
+    return 1
+}
+
+# fetch_one URL DEST [NAME VER [SHA256]]: try each mirror in order. With SHA256, a file resumed
+# from an earlier .part that comes out wrong is fetched again whole, and a place that serves other
+# bytes is passed over for the next: a mirror can drift from the lock while its host is down.
 fetch_one() {
-    local url="$1" dest="$2"
+    local url="$1" dest="$2" want="${5:-}"
     local -a urls
     mapfile -t urls < <(locations_of "$url" "${3:-}" "${4:-}")
 
     # Resume, else start over: an over-long .part fails every resume (curl 33 or 36, HTTP 416).
-    local u attempt=0
+    local u attempt=0 part
     for u in "${urls[@]}"; do
         attempt=$((attempt + 1))
         [[ "$attempt" -gt 1 ]] && warn "trying fallback mirror: ${u}"
 
-        if fetch_attempt "$u" "$dest" resume; then return 0; fi
-
-        if [[ -s "${dest}.part" ]]; then
+        part=0; [[ -s "${dest}.part" ]] && part=1
+        if fetch_attempt "$u" "$dest" resume; then
+            held "$dest" "$want" && return 0
+            if [[ "$part" -eq 1 ]]; then
+                warn "the file resumed from an earlier partial file has other bytes than the lock's; starting over"
+                whole "$u" "$dest" "$want" && return 0
+            else
+                warn "${u} serves other bytes than the lock's"
+            fi
+        elif [[ -s "${dest}.part" ]]; then
             warn "resume failed; discarding the partial file and starting over"
             rm -f "${dest}.part"
-            if fetch_attempt "$u" "$dest" fresh; then return 0; fi
+            whole "$u" "$dest" "$want" && return 0
         fi
         warn "failed from ${u}"
     done
@@ -421,7 +446,7 @@ fetch_crates() {
             [[ "$(sha256_of "$dest")" == "$sum" ]] \
                 || die "CHECKSUM MISMATCH for crate ${name} ${ver}: it CHANGED after $(basename "$crate")'s Cargo.lock locked it. Do not delete it before finding out why."
         else
-            fetch_one "${KRYPTIK_CRATES:-https://static.crates.io/crates}/${name}/${name}-${ver}.crate" "$dest" \
+            fetch_one "${KRYPTIK_CRATES:-https://static.crates.io/crates}/${name}/${name}-${ver}.crate" "$dest" "" "" "$sum" \
                 || die "download failed: crate ${name} ${ver}, which $(basename "$crate") builds from"
             [[ "$(sha256_of "$dest")" == "$sum" ]] \
                 || die "CHECKSUM MISMATCH for crate ${name} ${ver}, downloaded just now: not the hash $(basename "$crate")'s Cargo.lock gives. Remove ${dest} and retry."
@@ -518,7 +543,9 @@ while IFS='|' read -r owner name ver url _; do
         cached=$((cached + 1))
     else
         log "fetching ${name} ${ver}"
-        if ! fetch_one "$url" "$dest" "$name" "$ver"; then
+        want=""
+        [[ "$MODE" == lock ]] || want="$(lookup_hash "$file" "$lock")" || want=""
+        if ! fetch_one "$url" "$dest" "$name" "$ver" "$want"; then
             die "download failed: ${name} ${ver} (every mirror tried). Re-run to resume."
         fi
         fetched=$((fetched + 1))
