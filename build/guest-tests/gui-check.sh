@@ -74,7 +74,7 @@ wait_for() {   # wait_for SECONDS CMD...
 zone_log() { cat "/var/log/kryptik/zone-$1.log" 2>/dev/null; }
 # A filter kill below the zone's pid 1 shows only in the kernel's audit line (type=1326).
 zone_why() {   # zone_why ZONE: the registry, both logs, what runs and the filter's last kills
-    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "/run/kryptik-proxy/$UID_/$1.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | tail -3 | tr '\n' ' ')"
+    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "/run/kryptik-proxy/$UID_/$1.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | grep -av 'comm="dwl"' | tail -3 | tr '\n' ' ')"
 }
 mark() { echo "--- $1 ---" >> "/var/log/kryptik/zone-$2.log" 2>/dev/null; }
 since_mark() {   # since_mark MARK ZONE: the zone's log after the marker line
@@ -1599,14 +1599,14 @@ if wait_for 120 ff_page; then
         pass "browser-stays-up" "Firefox's window is still untrusted's 90 s after its page showed"
     else
         ff_broke="browser-stays-up"
-        fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | tail -2 | tr '\n' ' ')"
+        fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | grep -av 'comm="dwl"' | tail -2 | tr '\n' ' ')"
     fi
 else
     # A start that shows nothing prints nothing in the zone either. The host prints FAIL lines
     # alone, so this one carries what the proxy refused, what the zone's filter killed, and
     # whether Firefox still runs and where it waits.
     ff_broke="browser-window"
-    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); zone: $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); proxy: $(tail -4 "$plog" 2>/dev/null | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp|segfault|traps:' | tail -4 | tr '\n' ' '); firefox: $(ps -eo pid=,stat=,wchan:24=,etime=,args= 2>/dev/null | grep '[f]irefox' | head -8 | cut -c1-120 | tr '\n' ';'); launch: $(tail -3 "$LOG/launch-firefox.out" 2>/dev/null | tr '\n' ' ')"
+    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); zone: $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); proxy: $(tail -4 "$plog" 2>/dev/null | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp|segfault|traps:' | grep -av 'comm="dwl"' | tail -4 | tr '\n' ' '); firefox: $(ps -eo pid=,stat=,wchan:24=,etime=,args= 2>/dev/null | grep '[f]irefox' | head -8 | cut -c1-120 | tr '\n' ';'); launch: $(tail -3 "$LOG/launch-firefox.out" 2>/dev/null | tr '\n' ' ')"
 fi
 stop_zone untrusted
 echo "GT KEY-BROWSER-BACK"
@@ -1658,6 +1658,12 @@ if [[ -n "$ff_broke" ]]; then
     fi
     fail "browser-window-trace" "${ff_broke} failed; untrusted's filter, notifying instead of killing, refused Firefox in zone 0 over ${ffset:-no browser /usr set}:${ff_calls:- nothing}"
 fi
+
+# What dwl called outside its filter's list over the whole suite, which the filter logs (audit
+# type 1326) and lets through, by number and how often: the list's next entries, until none.
+dwl_unlisted="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -a 'comm="dwl"' | grep -ao ' syscall=[0-9]*' \
+    | sort | uniq -c | awk '{ printf "%s%s x%s", s, substr($2, 9), $1; s = ", " }')"
+info "dwl's calls outside its list: ${dwl_unlisted:-none}"
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
