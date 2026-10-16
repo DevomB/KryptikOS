@@ -187,6 +187,12 @@ CONFIG_PINCTRL_METEORPOINT=m
 CONFIG_PINCTRL_INTEL_PLATFORM=m
 CONFIG_I2C_HID_ACPI=m
 CONFIG_HID_MULTITOUCH=m
+# From Lunar Lake on, a touchpad or touch screen may sit behind the Touch Host Controller rather
+# than an LPSS I2C controller: QuickI2C for its I2C mode, QuickSPI for its SPI mode, which Meteor
+# Lake's touch screens use too. Modules eudev loads by the THC's PCI id; no firmware.
+CONFIG_INTEL_THC_HID=m
+CONFIG_INTEL_QUICKI2C=m
+CONFIG_INTEL_QUICKSPI=m
 # Sleep on laptops that offer only s2idle, as most made since about 2020 do: the
 # platform's power controller takes the SoC to its deepest state (S0i3 on AMD,
 # S0ix on Intel), and without its driver a sleeping laptop never gets there and
