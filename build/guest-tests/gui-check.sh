@@ -1539,7 +1539,10 @@ if wait_for 120 ff_page; then
         fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | tail -2 | tr '\n' ' ')"
     fi
 else
-    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' ')"
+    # A start that shows nothing prints nothing in the zone either. The host prints FAIL lines
+    # alone, so this one carries what the proxy refused, what the zone's filter killed, and
+    # whether Firefox still runs and where it waits.
+    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); zone: $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); proxy: $(tail -4 "$plog" 2>/dev/null | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp|segfault|traps:' | tail -4 | tr '\n' ' '); firefox: $(ps -eo pid=,stat=,wchan:24=,etime=,args= 2>/dev/null | grep '[f]irefox' | head -8 | cut -c1-120 | tr '\n' ';'); launch: $(tail -3 "$LOG/launch-firefox.out" 2>/dev/null | tr '\n' ' ')"
 fi
 stop_zone untrusted
 echo "GT KEY-BROWSER-BACK"
