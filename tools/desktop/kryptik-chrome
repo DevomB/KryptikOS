@@ -161,6 +161,7 @@ camera_now() {
 # bash's own sleep where it loads, so a loop that sleeps each second forks nothing for it; a
 # shell without enable keeps the program.
 sleep_builtin() {
+    # shellcheck disable=SC3044 # /bin/sh is bash in the image; command -v keeps dash from it
     command -v enable > /dev/null 2>&1 && enable -f /usr/lib/bash/sleep sleep 2> /dev/null
     return 0
 }
