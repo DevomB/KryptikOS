@@ -158,7 +158,10 @@ charged there. A zone that pushes the compositor past the bound therefore ends
 the desktop, not the machine: the kernel reclaims, and then kills inside the
 group. The daemon moves only the asker. It refuses root, and any process in
 a zone's or a proxy's cgroup. A desktop the daemon cannot bound starts
-anyway, and the session log says so.
+anyway, and the session log says so. Each login gets a new group. Zones
+keep running when the desktop ends, and the pages of the pools they keep
+stay charged to the old group. Removing it moves those charges to the root,
+so they do not count against the next desktop's bound.
 
 **Closing it, not built yet.** The proxy would keep a duplicate of each
 pool's descriptor and punch the pool's range (`fallocate` with

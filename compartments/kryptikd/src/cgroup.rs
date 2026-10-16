@@ -402,6 +402,11 @@ pub fn join_desktop_under(root: &Path, procfs: &Path, uid: u32, pid: i32) -> Res
     }
     ensure_subtree_control(root)?;
     let group = root.join(DESKTOP_GROUP);
+    /* A fresh group for each login. A zone that outlived the last desktop and kept its pools'
+     * descriptors keeps their pages charged to the last group: removed, it takes those charges to
+     * the root, and they do not count against this desktop. EBUSY keeps a group that is still
+     * populated. */
+    let _ = fs::remove_dir(&group);
     if !group.exists() {
         fs::create_dir(&group).map_err(|e| io_err(&group, e))?;
     }
