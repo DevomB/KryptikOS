@@ -175,7 +175,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             second-head-scale-chosen zone-sees-heads-unnamed \
-            vt-admin-login vt-desktop-back vt-desktop-takes-keys \
+            vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
