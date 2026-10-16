@@ -1233,18 +1233,17 @@ confineexec(void)
      """static void confineexec(void);
 static void confinefs(void);
 """),
-    ("""\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0)
+    ("""\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
 \t\tdie("startup: the no-exec filter:");
 }
 """,
-     """\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0)
+     """\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
 \t\tdie("startup: the no-exec filter:");
 }
 
 /* Kryptik: from here dwl writes no file and reads only what it needs while it runs: keymaps and
  * cursors under /usr, hotplug under /sys and udev's, and the microphone's and the camera's marks.
  * No TCP either. Any failure leaves dwl as it was, and says so: the desktop still starts. */
-long syscall(long number, ...);
 static void
 confinefs(void)
 {
