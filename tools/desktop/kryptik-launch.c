@@ -666,20 +666,18 @@ static int desktop_main(int argc, char **argv)
 	for (last = p = said; *p; p++)
 		if (*p == '\n' && p[1])
 			last = p + 1;
-	const char *nl = *last && last[strlen(last) - 1] == '\n' ? "" : "\n";
-	if (ran)
-		fprintf(stderr, "kryptik-launch: the desktop ended: %s%s",
-			strncmp(last, "started ", 8) == 0 ? "the launch daemon is gone\n" : last, nl);
-	else
-		fprintf(stderr, "kryptik-launch: no desktop: %s%s", last, nl);
+	const char *why = ran && strncmp(last, "started ", 8) == 0 ? "the launch daemon is gone\n" : last;
+	const char *nl = *why && why[strlen(why) - 1] == '\n' ? "" : "\n";
+	fprintf(stderr, "kryptik-launch: %s: %s%s", ran ? "the desktop ended" : "no desktop", why, nl);
 	/* The spawner, told by its socket, ends the chrome if it started one, then itself. */
 	close(sv[1]);
 	close(st[1]);
 	while (waitpid(spawner, NULL, 0) < 0 && errno == EINTR)
 		;
-	/* Said on the terminal too, which the login prompt clears once the login ends. */
-	if (!ran && isatty(STDOUT_FILENO)) {
-		printf("No desktop: %s%s", last, nl);
+	/* Said on the terminal too, which the login prompt clears once the login ends: a desktop that
+	 * did not start, or a dwl that ended any way but a logout. */
+	if ((!ran || strcmp(why, "ok dwl exited 0\n") != 0) && isatty(STDOUT_FILENO)) {
+		printf("%s: %s%s", ran ? "The desktop ended" : "No desktop", why, nl);
 		fflush(stdout);
 		sleep(5);
 	}
