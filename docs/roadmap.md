@@ -167,9 +167,9 @@ work in zones from a terminal and a text browser, and keep it up to date.
       sysctls as applied.
 - [x] **Signatures as a gate.** `tools/verify-signatures.sh --strict` runs
       on every push in CI's source-manifest job. Every key has a published
-      route to its fingerprint (`tools/key-provenance.tsv`), except ten that
-      have no usable key (elfutils, file, flex, libevdev, libmnl, lvm2,
-      wpa_supplicant, xkeyboard-config, zlib, zstd), which
+      route to its fingerprint (`tools/key-provenance.tsv`), except six that
+      have no usable key (elfutils, file, flex, libevdev, libmnl,
+      wpa_supplicant), which
       `tools/source-notes.tsv` accepts with the routes that were tried; a
       note left after its key is held fails the gate.
 - [x] **Zone 0 runs no user application, proven.** The desktop suite reads
