@@ -59,7 +59,7 @@ echo "  guest summary: ${summary:-none}"
 gp="$(sed -n 's/.*passed=\([0-9]*\).*/\1/p' <<<"$summary")"; gf="$(sed -n 's/.*failed=\([0-9]*\).*/\1/p' <<<"$summary")"
 if [[ -n "$summary" && "${gf:-1}" -eq 0 && "${gp:-0}" -ge 8 ]]; then green "every guest check passed (${gp})"; else red "guest checks: ${gp:-0} passed, ${gf:-?} failed"; fi
 grep 'GT FAIL' <<<"$T" | sed 's/^/        /'
-for name in power-service sleep-drivers chrome-power-mains power-on-battery chrome-power-battery battery-warnings power-on-mains-again zone-running; do
+for name in power-service sleep-drivers chrome-power-mains power-on-battery chrome-power-battery battery-warnings power-on-mains-again power-weak-charger zone-running; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
