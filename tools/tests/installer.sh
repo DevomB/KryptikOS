@@ -327,6 +327,15 @@ else
 fi
 grep -v '^ *#' "$INSTALLER" | grep -qw partx && red "the installer adds partitions with partx, which leaves them nameless" \
     || green "the installer has no partx, whose partitions the kernel leaves nameless"
+locked="$(grep -n '^flock -w [0-9]* -x 7 || die' "$INSTALLER" | cut -d: -f1)"
+opened="$(grep -n '^exec 7<"\$TARGET_REAL"$' "$INSTALLER" | cut -d: -f1)"
+[[ "$opened" =~ ^[0-9]+$ && "$locked" =~ ^[0-9]+$ && "$opened" -lt "$locked" && "$locked" -lt "$written" ]] \
+    && green "the whole disk is locked before its table is written, so eudev's own re-read gives way" \
+    || red "the disk is opened at line ${opened:-none} and locked at ${locked:-none}; the table is written from ${written:-none}"
+# A tool that waited for the lock this process holds would never get it.
+grep -v '^ *#' "$INSTALLER" | grep -qE -- '--lock|LOCK_BLOCK_DEVICE' \
+    && red "a tool the installer runs asks for a lock on the disk it holds" \
+    || green "no tool the installer runs asks for a lock on the disk it holds"
 grep -q '^kryptik_named kryptik-a | grep -qx "\$P2" || die' "$INSTALLER" \
     && green "the written table is checked by the name the kernel gives, as the system will find it" \
     || red "the installer does not check partition 2's name through kryptik_named"
