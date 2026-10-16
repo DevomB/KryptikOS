@@ -1796,7 +1796,14 @@ vt_is() { [[ "$(fgconsole 2>/dev/null)" == "$1" ]]; }
 answers() { timeout 10 su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -q 'sync done'; }
 # The input devices the seat handed dwl: it lets them go while tty2 is in front, and libinput takes
 # them back a moment after dwl answers clients again. A key pressed before that is lost.
-dwl_inputs() { ls -l "/proc/$(pgrep -u "$USER_NAME" -x dwl | head -1)/fd" 2>/dev/null | grep -c '/dev/input/event'; }
+dwl_inputs() {
+    local p f n=0
+    p="$(pgrep -u "$USER_NAME" -xo dwl)" || { echo 0; return; }
+    for f in "/proc/$p/fd/"*; do
+        [[ "$(readlink "$f" 2>/dev/null)" == /dev/input/event* ]] && n=$((n + 1))
+    done
+    echo "$n"
+}
 menus_vt="$(menu_windows)"; inputs_vt="$(dwl_inputs)"
 echo "GT KEY-VT-ADMIN"
 if wait_for 15 vt_is 2; then
