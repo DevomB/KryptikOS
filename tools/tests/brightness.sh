@@ -42,6 +42,9 @@ light intel_backlight raw 1000 1000; run restore
 check "restore puts the kept level back" "$(level intel_backlight)" 550
 light intel_backlight raw 2000 2000; run restore
 check "a panel whose range changed takes the same share" "$(level intel_backlight)" 1100
+echo "intel_backlight 0550 01000" > "$T/config/kryptik/brightness"; light intel_backlight raw 1000 1000; run restore
+check "a record with leading zeros reads as decimal" "$(level intel_backlight)" 550
+light intel_backlight raw 2000 2000
 echo "intel_backlight 0 1000" > "$T/config/kryptik/brightness"; run restore
 check "never restored to dark" "$(level intel_backlight)" 20
 echo "acpi_video0 50 100" > "$T/config/kryptik/brightness"; light intel_backlight raw 1000 700; run restore

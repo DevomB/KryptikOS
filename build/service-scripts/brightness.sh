@@ -54,8 +54,9 @@ if [ "$1" = restore ]; then
     # Nothing kept, or kept for another panel: the level the firmware chose stays.
     name="" level="" was=""
     read -r name level was 2>/dev/null < "$KEPT" || :
-    [[ "$name" == "${d##*/}" && "$level" =~ ^[0-9]+$ && "$was" =~ ^[1-9][0-9]*$ ]] || exit 0
-    new=$(( level * max / was ))
+    [[ "$name" == "${d##*/}" && "$level" =~ ^[0-9]+$ && "$was" =~ ^[0-9]*[1-9][0-9]*$ ]] || exit 0
+    # Decimal whatever its zeros: a record edited by hand may lead with one.
+    new=$(( 10#$level * max / 10#$was ))
 else
     step=$(( max / 20 )); [ "$step" -gt 0 ] || step=1
     if [ "$1" = up ]; then new=$(( now + step )); else new=$(( now - step )); fi
