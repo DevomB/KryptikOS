@@ -31,8 +31,12 @@ pub struct Pointer {
     pub base: String,
 }
 
+/// A version names a directory under incoming/ (`staging`): it starts with a letter or digit, so
+/// neither `.` nor `..` is one.
 fn is_version(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-' | b'~'))
+    s.len() <= 32
+        && s.as_bytes().first().is_some_and(|b| b.is_ascii_alphanumeric())
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-' | b'~'))
 }
 
 /// The magic line, then each key once; an unknown key is refused, never half-understood.
