@@ -37,8 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      # alsa-lib's headers for tools/tests/sound-tools.sh, which compiles the sound's C programs.
+      - name: Install shellcheck and alsa-lib's headers
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck libasound2-dev
 
       - name: Syntax check every script
         run: |
