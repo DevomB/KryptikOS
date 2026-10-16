@@ -220,14 +220,12 @@ pub fn seal() -> Result<Vec<String>, String> {
     Ok(zones)
 }
 
-/// One more seal that stopped with a zone volume's key gone, counted at `path`. Best effort: the
-/// count only opens the chrome's window, and its menu names a waiting zone either way.
+/// One more seal that stopped with a zone volume's key gone, counted at `path`, 0644 whatever the
+/// daemon's umask, as the session reads it. Best effort: the count only opens the chrome's window,
+/// and its menu names a waiting zone either way.
 fn count_left_waiting(path: &Path) {
     let n: u64 = fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-    let tmp = path.with_extension("new");
-    if fs::write(&tmp, format!("{}\n", n + 1)).is_ok() {
-        let _ = fs::rename(&tmp, path);
-    }
+    let _ = crate::files::write_atomic(path, &[format!("{}\n", n + 1).as_bytes()], 0o644, None);
 }
 
 /// Put the machine to sleep (suspend to RAM); returns once it has woken, or with why it did not

@@ -1,4 +1,5 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 
 /// A /sys/block of the kernel's shape: device-mapper devices with a name and a suspended flag.
 fn sys_block(dir: &Path, devices: &[(&str, &str, &str)]) {
@@ -80,7 +81,8 @@ fn a_seal_that_left_a_zone_waiting_counts_itself() {
     fs::write(&f, "garbage").unwrap();
     count_left_waiting(&f);
     assert_eq!(fs::read_to_string(&f).unwrap(), "1\n", "a count it cannot read starts again");
-    assert!(!dir.join("left-waiting.new").exists(), "the count is renamed into place");
+    assert!(!dir.join(format!(".left-waiting.{}", std::process::id())).exists(), "the count is renamed into place");
+    assert_eq!(fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o644, "the session's group reads it");
     // No directory to write in: nothing, and no panic.
     count_left_waiting(&dir.join("absent").join("left-waiting"));
     let _ = fs::remove_dir_all(&dir);
