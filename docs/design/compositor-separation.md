@@ -200,15 +200,18 @@ The next part takes the group away first, and the uid after:
    that today moves the asker into `kryptik-desktop` instead starts
    `/usr/bin/dwl` there. It runs as the same uid with the user's groups less
    `kryptik`, with no-new-privileges, and gets the spawner's socket and the
-   pipe's write end as descriptors. The daemon answers when dwl exits, so
-   the login still ends with it. dwl gains an option to take its spawner's
-   socket instead of forking one, and keeps the rest of its confinement.
-   The microphone's holder moves too: dwl reads it through the group today,
-   as `/run/kryptik-sound/control` is the group's alone. The record moves
-   out of that directory and becomes readable by anyone on the host, as the
-   camera's grant already is. It names only the zone that holds the
-   microphone, which the screen shows anyway, and no zone sees
-   `/run/kryptik-sound`. A check reads dwl's `Groups:` and finds no
+   pipe's write end as descriptors. The daemon holds the request as one of
+   its jobs, as it does a launch, so it serves other requests meanwhile,
+   and answers when dwl exits, so the login still ends with it. dwl gains
+   an option to take its spawner's socket instead of forking one, and keeps
+   the rest of its confinement. The microphone's holder moves too: dwl
+   reads it through the group today, as `/run/kryptik-sound/control` is
+   the group's alone. The mixer writes the record in
+   `/run/kryptik-sound/marks` instead, readable by anyone on the host, as
+   the camera's grant already is, and `control` keeps only the socket. The
+   record names only the zone that holds the microphone, which the screen
+   shows anyway, and no zone sees `/run/kryptik-sound`. dwl still takes it
+   only as the mixer's own. A check reads dwl's `Groups:` and finds no
    `kryptik`, and the microphone's mark still shows.
 2. **Signals.** Landlock's signal scope (ABI 6) keeps dwl from signalling
    any process outside its own domain: the lock, the chrome, the user's
