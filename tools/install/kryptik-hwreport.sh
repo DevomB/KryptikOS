@@ -368,6 +368,12 @@ laptop() {
     done
     printf 'sleep states: %s\n' "$(one "$SYS/power/state")"
     printf 'sleep mem: %s\n' "$(one "$SYS/power/mem_sleep")"
+    # The sleeps since boot, and how long the last kept the hardware in its deepest state: an
+    # s2idle laptop that never gets there drains its battery asleep. Deep sleep counts no time here.
+    st="$SYS/power/suspend_stats"
+    ok="$(one "$st/success")"; ko="$(one "$st/fail")"; last="$(one "$st/last_hw_sleep")"; all="$(one "$st/total_hw_sleep")"
+    printf 'sleep stats: %s successful, %s failed, hardware asleep %s us last, %s us in all\n' \
+        "${ok:--}" "${ko:--}" "${last:--}" "${all:--}"
     # Intel's image processing units by PCI ID: the IPU6 and IPU7 ones 6.18's drivers bind (ipu6.h,
     # staging ipu7.h), and IPU8's, which staging ipu7 names but does not bind yet.
     for d in "$SYS"/bus/pci/devices/*; do
