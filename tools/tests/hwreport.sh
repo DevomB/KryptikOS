@@ -398,6 +398,12 @@ put sys/class/power_supply/BAT0/status Discharging
 put sys/class/power_supply/BAT0/capacity 87
 put sys/class/power_supply/BAT0/technology Li-ion
 put sys/class/power_supply/BAT0/serial_number BAT-SECRET-7
+put sys/class/power_supply/BAT0/power_now 7213000
+# A second battery that reports current and voltage instead of power.
+put sys/class/power_supply/BAT1/type Battery
+put sys/class/power_supply/BAT1/status Discharging
+put sys/class/power_supply/BAT1/current_now 1500000
+put sys/class/power_supply/BAT1/voltage_now 11400000
 put sys/class/power_supply/AC/type Mains
 put sys/class/power_supply/AC/online 1
 # A mouse's battery, which is the device's and not the machine's.
@@ -423,6 +429,9 @@ lap "each backlight with its kind and range" '^backlight intel_backlight type ra
 lap "the firmware's as well"                 '^backlight acpi_video0 type firmware max 100$'
 lap "the battery's charge and kind"          '^power_supply BAT0 type Battery scope System capacity 87 technology Li-ion status Discharging$'
 lap "mains, and whether they are on"         '^power_supply AC type Mains online 1$'
+lap "what the battery draws, by its power"   '^battery BAT0 power 7213 mW$'
+lap "or by its current and voltage"          '^battery BAT1 power 17100 mW$'
+nolap "no draw for a battery that reports none" '^battery hidpp_battery_0 '
 lap "a device's battery, named as the device's" '^power_supply hidpp_battery_0 type Battery scope Device '
 nolap "never a battery's serial number"     'BAT-SECRET-7'
 lap "the sleep states the kernel offers"     '^sleep states: freeze mem disk$'
