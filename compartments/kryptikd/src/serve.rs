@@ -837,12 +837,13 @@ fn start_desktop(cfg: &ServeConfig, conn: UnixStream, uid: u32, asker: i32, text
     })();
     match started {
         Ok((pid, out, err, at)) => {
-            eprintln!("kryptikd serve: uid {uid}'s desktop: dwl {pid} in {at}, without group {}", cfg.group);
+            eprintln!("kryptikd serve: the desktop: dwl {pid} in {at}, without group {}", cfg.group);
             reply(&conn, &format!("started {pid}\n"));
             jobs.push(Job { conn, pid, what: JobKind::Desktop { uid }, out, err, exited: None });
         }
         Err(e) => {
-            eprintln!("kryptikd serve: uid {uid}'s desktop: {e}");
+            // The reason goes to the asker, whose session log and terminal say it.
+            eprintln!("kryptikd serve: no desktop for pid {asker}");
             reply(&conn, &format!("error: {e}\n"));
         }
     }
@@ -908,13 +909,13 @@ fn finish_job(j: &mut Job, st: i32) {
             reply(&j.conn, &format!("error: the machine did not sleep: {why}; the state partition waits for its passphrase\n"));
         }
         // Only a child that could not become dwl writes to the job's stderr: dwl writes the log.
-        JobKind::Desktop { uid } => {
+        JobKind::Desktop { .. } => {
             let failed = read_back(&mut j.err);
             if failed.trim().is_empty() {
-                eprintln!("kryptikd serve: uid {uid}'s desktop ended: dwl {}", exit_text(st));
+                eprintln!("kryptikd serve: the desktop ended: dwl {} {}", j.pid, exit_text(st));
                 reply(&j.conn, &format!("ok dwl {}\n", exit_text(st)));
             } else {
-                eprintln!("kryptikd serve: uid {uid}'s desktop did not start: {}", failed.trim());
+                eprintln!("kryptikd serve: the desktop did not start: dwl {}: {}", j.pid, failed.trim());
                 reply(&j.conn, &format!("error: dwl did not start: {}\n", failed.trim()));
             }
         }
