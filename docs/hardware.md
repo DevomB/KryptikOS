@@ -96,7 +96,7 @@ let the row's note name what did not work:
 | a charger too weak for the machine, such as a phone's USB-C one | the Power line says on battery though plugged in, and the warnings at 10% and 5% come as they do unplugged |
 | on an AMD laptop whose `sleep` line says s2idle, a sleep of two minutes | it wakes to the lock, not to a fresh boot: the watchdog does not feed AMD's TCO timer there, as it would count through the sleep, and the report's line for it says inactive |
 | an SD card in the laptop's own reader | the window that asks which zone gets a stick opens, as for a USB stick |
-| a USB headset, and `c` and a zone's number in the menu | it plays what the zone plays, and records there once granted |
+| a USB headset, plugged in while a zone plays, then `c` and a zone's number in the menu | it takes what the zone plays within a second, and records there once granted |
 | an external monitor on a laptop with two GPUs, an AMD one beside the built-in | it shows the desktop, whose frames wlroots copies to the second GPU's ports; dark, the row's note names both, as the listing's `display` line does |
 | a laptop with NVIDIA's graphics beside Intel's or AMD's | the desktop shows on the built-in screen; a monitor on a port the NVIDIA chip drives stays dark, as 1.0 drives none, and the listing's `gpu` line says whether that chip stayed powered |
 | a USB-C or Thunderbolt dock: its monitor, its USB ports and its Ethernet | the monitor shows where the laptop drives USB-C itself; a Thunderbolt or USB4 dock's own USB ports and Ethernet stay dark, as 1.0 builds no Thunderbolt driver, and the row's note says which worked |
