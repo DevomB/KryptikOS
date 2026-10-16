@@ -137,7 +137,12 @@ user and reach dwl's own socket through its group. After start-up, dwl
 confines itself as a zone is confined:
 
 - a seccomp filter from the calls `kryptikd seccomp-trace` finds it making
-  under the desktop suite;
+  under the desktop suite. Built in part: dwl's filter lists 75 calls, what
+  the headless suite traces dwl making once confined (`dwl-headless.sh`
+  under strace) and what screens, input devices, the seat, cursors and
+  keymaps add. A call outside the list is let through but logged (audit
+  type 1326), and the desktop suite says which. Once it has run with none,
+  the filter refuses them;
 - Landlock with read-only `/usr` (keymaps compile from
   `/usr/share/X11/xkb`) and nothing else. Built: once the spawner runs, dwl
   may read below `/usr` (keymaps, cursors), `/sys`, `/run/udev` and
@@ -272,9 +277,10 @@ favour of moving the protocol into the zones, which does shrink it.
    proxy bug gives the zone nothing it did not have. Built.
 3. **The compositor as its own user, confined,** with the spawner. Built
    so far: the spawner; a filter that refuses dwl exec, ptrace and
-   `process_vm_writev`; Landlock, with its signal scope; and dwl without
-   group `kryptik`. Still to do: its own user, and a filter of the calls it
-   is traced making.
+   `process_vm_writev`; Landlock, with its signal scope; dwl without group
+   `kryptik`; and a list of the calls it is traced making, outside which it
+   logs. Still to do: its own user, and refusing what is outside the list
+   once the desktop suite logs nothing.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.
 

@@ -1189,14 +1189,34 @@ startspawner(void)
 \t_exit(0);
 }
 
+/* Kryptik: the calls dwl makes once it runs: what the headless suite traces it making
+ * (dwl-headless.sh), and what screens, input devices, the seat, cursors and keymaps add. The
+ * hottest come first, as the filter tries them in turn. */
+static const int dwlcalls[] = {
+\tSYS_epoll_wait, SYS_epoll_pwait, SYS_epoll_pwait2, SYS_recvmsg, SYS_sendmsg, SYS_ioctl, SYS_read,
+\tSYS_write, SYS_clock_gettime, SYS_timerfd_settime, SYS_close, SYS_fcntl, SYS_mmap, SYS_munmap,
+\tSYS_futex, SYS_accept4, SYS_epoll_ctl, SYS_getsockopt, SYS_openat, SYS_fstat, SYS_newfstatat,
+\tSYS_statx, SYS_stat, SYS_lstat, SYS_lseek, SYS_pread64, SYS_getdents64, SYS_readlinkat,
+\tSYS_readlink, SYS_access, SYS_faccessat, SYS_faccessat2, SYS_inotify_add_watch,
+\tSYS_inotify_rm_watch, SYS_brk, SYS_mremap, SYS_madvise, SYS_mprotect, SYS_memfd_create,
+\tSYS_ftruncate, SYS_timerfd_create, SYS_timerfd_gettime, SYS_eventfd2, SYS_dup, SYS_dup3,
+\tSYS_poll, SYS_ppoll, SYS_getrandom, SYS_clock_getres, SYS_gettimeofday, SYS_clock_nanosleep,
+\tSYS_nanosleep, SYS_sched_yield, SYS_getpid, SYS_gettid, SYS_getuid, SYS_geteuid, SYS_getgid,
+\tSYS_getegid, SYS_uname, SYS_rt_sigaction, SYS_rt_sigprocmask, SYS_rt_sigreturn,
+\tSYS_restart_syscall, SYS_kill, SYS_tgkill, SYS_wait4, SYS_waitid, SYS_mkdir, SYS_unlink,
+\tSYS_landlock_create_ruleset, SYS_landlock_add_rule, SYS_landlock_restrict_self, SYS_exit,
+\tSYS_exit_group,
+};
+
 /* Kryptik: dwl execs nothing once the spawner runs, and reaches into no other process; calls of
- * another ABI are refused too, on every thread dwl has (TSYNC). syscall() is glibc's, which
- * _POSIX_C_SOURCE hides. */
+ * another ABI are refused too, on every thread dwl has (TSYNC). A call outside dwlcalls is let
+ * through but logged (audit type 1326, which the desktop suite reads back) until the suite runs
+ * with none. syscall() is glibc's, which _POSIX_C_SOURCE hides. */
 long syscall(long number, ...);
 static void
 confineexec(void)
 {
-\tstruct sock_filter f[] = {
+\tstruct sock_filter f[12 + LENGTH(dwlcalls)] = {
 \t\tBPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
 \t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
 \t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
@@ -1207,9 +1227,16 @@ confineexec(void)
 \t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ptrace, 1, 0),
 \t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_process_vm_writev, 0, 1),
 \t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
-\t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
 \t};
 \tstruct sock_fprog prog = { .len = (unsigned short)LENGTH(f), .filter = f };
+\tsize_t i, n = LENGTH(dwlcalls);
+
+\t/* Each listed call jumps to the last instruction, ALLOW; past the list comes LOG. */
+\tfor (i = 0; i < n; i++)
+\t\tf[10 + i] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)dwlcalls[i],
+\t\t\t(unsigned char)(n - i), 0);
+\tf[10 + n] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_LOG);
+\tf[11 + n] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
 \tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0
 \t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
 \t\tdie("startup: the no-exec filter:");
