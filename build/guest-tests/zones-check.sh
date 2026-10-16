@@ -1816,7 +1816,10 @@ else
         irun imgok /usr/bin/kryptik-probe
         rc1="$ZRC"; said1="$ZOUT $ZERR"
         irun imgok /usr/bin/kryptik-probe
-        if [[ "$rc1" -ne 0 && "$said1" == *"Input/output error"* && "$ZRC" -ne 0 && "$ZERR" == *"read back other than signed"* ]]; then
+        # EIO in either C library's words: kryptikd is static musl ("I/O error"), the image's
+        # programs are glibc's ("Input/output error").
+        if [[ "$rc1" -ne 0 && ( "$said1" == *"Input/output error"* || "$said1" == *"I/O error"* ) \
+              && "$ZRC" -ne 0 && "$ZERR" == *"read back other than signed"* ]]; then
             pass "image-corrupt" "a flipped block reads as an I/O error in the zone, and the next start is refused"
         else
             fail "image-corrupt" "first rc ${rc1}: $(tail -2 <<<"$said1" | tr '\n' ' '); then rc ${ZRC}: $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
