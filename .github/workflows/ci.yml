@@ -37,8 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      # dosfstools, mtools and xorriso for media-same.sh, which stage 06's media functions need.
+      - name: Install shellcheck and the media tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck dosfstools mtools xorriso
 
       - name: Syntax check every script
         run: |
@@ -75,12 +76,6 @@ jobs:
             echo "did not run (not passes):$skipped"
           fi
           exit $fail
-
-      # Stage 06's media functions on stand-ins, made twice: the same bytes (reproducible-builds.md).
-      - name: The media come out the same twice
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq dosfstools mtools xorriso
-          tools/tests/media-same.sh
 
       - name: Shellcheck
         # Every tracked file whose first line names a shell.

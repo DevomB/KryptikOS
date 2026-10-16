@@ -25,7 +25,9 @@ sha256_of_stdin() { sha256sum | cut -d' ' -f1; }
 
 if grep -qx 'export TZ=UTC' "$S06"; then ok "stage 06 runs in UTC, where mtools writes FAT times"; else bad "stage 06 does not set TZ=UTC"; fi
 export TZ=UTC SOURCE_DATE_EPOCH=1760000000
-IMG="$T/img"; ESP_MIB=64; KRYPTIK_VERSION=1.2.3; SB_CERT="$T/sb.crt"
+IMG="$T/img"; KRYPTIK_VERSION=1.2.3; SB_CERT="$T/sb.crt"
+# shellcheck disable=SC2034  # read by make_esp, sourced above
+ESP_MIB=64
 mkdir -p "$IMG/kernels" "$T/medium"
 for k in media-usb slot-a slot-b; do head -c 200000 /dev/zero | tr '\0' "${k:0:1}" > "$IMG/kernels/${k}.signed.efi"; done
 head -c 4194304 /dev/zero | tr '\0' r > "$IMG/kryptik-root.img"
