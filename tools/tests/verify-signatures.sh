@@ -939,6 +939,28 @@ if [[ "$RC" -ne 0 ]] && grep -qF -- "--unread-warns eases --strict; give both" "
 else
     red "--unread-warns alone is refused (exit ${RC})"; show
 fi
+# It eases nothing else: a copy that answers with another key still fails,
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  korg  file://${PROV}/good.asc  2026-09-11  unknown  deliberately the wrong key"
+runprov --strict --unread-warns --report="${W}/r10.tsv"
+if [[ "$RC" -ne 0 && "$(klass_of "${W}/r10.tsv" unknown)" == "published-key-changed" ]]; then
+    green "--unread-warns still fails a locator that serves another key"
+else
+    red "--unread-warns still fails a locator that serves another key (exit ${RC}, got $(klass_of "${W}/r10.tsv" unknown))"; show
+fi
+# and a key held but unaudited stays unaudited when its copy does not answer.
+fresh_root
+write_manifest unknown
+run --fetch-unknown-keys
+prov_table "${UNKFPR}  korg  file://${PROV}/missing.asc  2026-09-11  unknown  its published copy gone"
+runprov --strict --unread-warns
+if [[ "$RC" -ne 0 ]] && grep -qF "signed by unaudited keys" "$OUT"; then
+    green "--unread-warns still fails an unaudited key whose copy did not answer"
+else
+    red "--unread-warns still fails an unaudited key whose copy did not answer (exit ${RC})"; show
+fi
+rm -f "${FAKE}/keys.manifest"
 
 # --- malformed provenance rows ----------------------------------------------
 
