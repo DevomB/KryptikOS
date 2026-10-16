@@ -189,36 +189,12 @@ jobs:
             /mnt/kryptik/sources/.signatures
           key: ${{ steps.image_sources.outputs.cache-primary-key }}
 
-      # Informational, as mirrors go down; a one-byte ranged GET, since some GNU mirrors refuse HEAD.
-      - name: Every source URL is reachable
+      # Informational, as hosts go down: every place each source is kept, asked as a fetch asks them.
+      # The weekly Source reachability job is the one that fails on a source no place serves.
+      - name: Every source is served somewhere
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         continue-on-error: true
-        run: |
-          reach() {
-            curl -fsSL --range 0-0 --retry 3 --retry-delay 2 \
-                 --connect-timeout 20 --max-time 60 -o /dev/null "$1"
-          }
-
-          missing=0
-          while read -r name ver url _; do
-            if reach "$url"; then
-              echo "  ok        $name $ver"
-              continue
-            fi
-            # Same fallback as fetch-sources.sh: mirrors.kernel.org for GNU.
-            fallback="${url/https:\/\/ftpmirror.gnu.org/https://mirrors.kernel.org/gnu}"
-            if [ "$fallback" != "$url" ] && reach "$fallback"; then
-              echo "  ok        $name $ver  (via fallback mirror)"
-            else
-              echo "  UNREACHED $name $ver  $url"
-              missing=$((missing + 1))
-            fi
-          done < <(./tools/fetch-sources.sh --list)
-          echo
-          if [ "$missing" -gt 0 ]; then
-            echo "$missing source(s) unreachable; investigate if the same one fails across several runs."
-          else
-            echo "all sources reachable"
-          fi
+        run: ./tools/fetch-sources.sh --probe
 
       - name: Provenance of unsigned sources
         # Strict on push and schedule; informational on pull requests, where a fork gets no token.
