@@ -98,8 +98,9 @@ firmware() {
         | awk '{ printf "%s%s %s", s, $1, $2; s = ", " }')"
     printf 'iommu: %s\n' "${units:-none}${groups:+; groups: $groups}"
     for d in "$SYS"/bus/thunderbolt/devices/domain*; do
-        [ -e "$d" ] && printf 'thunderbolt %s: security %s, iommu protection %s\n' "${d##*/}" \
-            "$(one "$d/security")" "$(one "$d/iommu_dma_protection")"
+        [ -e "$d" ] || continue
+        s="$(one "$d/security")"; p="$(one "$d/iommu_dma_protection")"
+        printf 'thunderbolt %s: security %s, iommu protection %s\n' "${d##*/}" "${s:--}" "${p:--}"
     done
 }
 
