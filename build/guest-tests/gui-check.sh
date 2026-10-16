@@ -938,7 +938,8 @@ if [[ -z "$unfiltered" ]] && grep -qE '^Seccomp:[[:space:]]+2$' "/proc/${dwl_pid
 else
     fail "dwl-execs-nothing" "dwl ${dwl_pid:-gone}: $(grep -E '^(Seccomp|NoNewPrivs):' "/proc/${dwl_pid:-0}/status" 2>&1 | tr '\n' ' '); threads without the filter: ${unfiltered:-none}; spawner: ${spawner:-none}; $(pgrep -u "$USER_NAME" -a dwl | tr '\n' ';')"
 fi
-# And it reads only below its own list and writes no file (Landlock), as its session log says:
+# And it reads only below its own list and writes no file but keymaps under /dev/shm (Landlock),
+# as its session log says:
 # every path of the list there, one thread to bind, and no signal outside its domain (ABI 6).
 if grep -qE '^dwl: confined: reads only below ([0-9]+) of its \1 paths, .*, signals nothing outside it \(1 thread, ' "$RT/kryptik/session.log" 2>/dev/null; then
     pass "dwl-confined-to-its-files" "$(grep -m1 '^dwl: confined: ' "$RT/kryptik/session.log")"
@@ -1824,7 +1825,7 @@ more_menus() { [[ "$(menu_windows)" -gt "$menus_vt" ]]; }
 if wait_for 15 more_menus; then
     pass "vt-desktop-takes-keys" "Alt+p opened the menu after the switch back"
 else
-    fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after; dwl's input devices: ${inputs_vt} before the switch, $(dwl_inputs) after"
+    fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after; dwl's input devices: ${inputs_vt} before the switch, $(dwl_inputs) after; session.log: $(grep -a 'keymap' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
 fi
 pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 

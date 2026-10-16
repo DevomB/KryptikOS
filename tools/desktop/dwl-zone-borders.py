@@ -1654,7 +1654,7 @@ confineexec(void)
 
 \t/* Mark stdout as non-blocking to avoid the startup script
 """),
-    # Landlock: dwl reads only what it needs once it runs, and writes no file.
+    # Landlock: dwl reads only what it needs once it runs, and writes no file but its keymaps.
     ("""#include <linux/seccomp.h>
 """,
      """#include <linux/seccomp.h>
@@ -1703,14 +1703,14 @@ struct rulesetattr {
 \t__u64 handled_access_fs, handled_access_net, scoped;
 };
 
-/* Kryptik: from here dwl writes no file and reads only what it needs while it runs: keymaps and
- * cursors under /usr, hotplug under /sys and udev's, the microphone's and the camera's marks, and
- * the chrome's request for a browser in front, which it may also remove. No TCP, and, where the
- * kernel has Landlock's scopes, no abstract socket and no signal outside its domain: the session's
- * spawner starts the chrome, so dwl signals nothing. A rule holds a directory as it was at login:
- * one made again later is not covered. Landlock binds the calling thread alone, so dwl
- * confines itself only while it has one. Any failure leaves dwl as it was, and says so: the
- * desktop still starts. */
+/* Kryptik: from here dwl reads only what it needs while it runs: keymaps and cursors under /usr,
+ * hotplug under /sys and udev's, the microphone's and the camera's marks, and the chrome's request
+ * for a browser in front, which it may also remove. It writes no file but the keymaps wlroots
+ * makes under /dev/shm. No TCP, and, where the kernel has Landlock's scopes, no abstract socket
+ * and no signal outside its domain: the session's spawner starts the chrome, so dwl signals
+ * nothing. A rule holds a directory as it was at login: one made again later is not covered.
+ * Landlock binds the calling thread alone, so dwl confines itself only while it has one. Any
+ * failure leaves dwl as it was, and says so: the desktop still starts. */
 static void
 confinefs(void)
 {
@@ -1730,7 +1730,7 @@ confinefs(void)
 \t};
 \tconst char *rt = getenv("XDG_RUNTIME_DIR"), *signals = "";
 \tchar line[64], front[256];
-\tsize_t i, added = 0, paths = LENGTH(readable) + 1;
+\tsize_t i, added = 0, paths = LENGTH(readable) + 2;
 \tlong abi, threads = -1;
 \tFILE *f;
 \tint set, r = 0;
@@ -1762,6 +1762,13 @@ confinefs(void)
 \tfor (i = 0; i < LENGTH(readable) && r >= 0; i++)
 \t\tif ((r = landlockpath(set, readable[i], LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)) > 0)
 \t\t\tadded++;
+\t/* wlroots gives each keyboard its keymap in a file it makes under /dev/shm and unlinks at once.
+\t * A keyboard added later (back from another console, plugged in) without one is left out of
+\t * dwl's keyboard group, and its keys reach nothing. */
+\tif (r >= 0 && (r = landlockpath(set, "/dev/shm", LANDLOCK_ACCESS_FS_READ_FILE
+\t\t\t| LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_MAKE_REG
+\t\t\t| LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_TRUNCATE)) > 0)
+\t\tadded++;
 \t/* The chrome's request for a browser in front: made here while dwl may still make it, 0700. */
 \tif (r >= 0 && rt && snprintf(front, sizeof(front), "%s/kryptik/front", rt) < (int)sizeof(front)) {
 \t\tmkdir(front, 0700);
@@ -1772,7 +1779,7 @@ confinefs(void)
 \tif (r >= 0 && syscall(SYS_landlock_restrict_self, set, 0) < 0)
 \t\tfprintf(stderr, "dwl: not confined to its files: landlock_restrict_self: %s\\n", strerror(errno));
 \telse if (r >= 0)
-\t\tfprintf(stderr, "dwl: confined: reads only below %zu of its %zu paths, writes no file and has no TCP%s"
+\t\tfprintf(stderr, "dwl: confined: reads only below %zu of its %zu paths, writes no file but keymaps under /dev/shm and has no TCP%s"
 \t\t\t" (1 thread, Landlock ABI %ld)\\n", added, paths, signals, abi);
 \tclose(set);
 }
