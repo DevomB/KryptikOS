@@ -162,17 +162,28 @@ fi
 # The calls dwl makes once its filter is on, for that filter's list: dwl again under strace, a
 # client listing its globals and drawing a window, and each call named once (said, not required).
 if command -v strace > /dev/null 2>&1; then
+    : > "$W/trace-status"
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1 \
-        strace -f -qq -o "$W/trace" "$DWL/dwl" -s "cat > /dev/null" > "$W/trace-dwl.log" 2>&1 &
+        strace -f -qq -o "$W/trace" "$DWL/dwl" -s "cat > '$W/trace-status'" > "$W/trace-dwl.log" 2>&1 &
     tracer=$!
-    for _ in $(seq 40); do [[ -S "$RT/wayland-0" ]] && break; sleep 0.5; done
+    # The first status line comes once dwl has confined itself; the confined dwl before it could
+    # not remove its socket, so the socket is no sign of this one.
+    for _ in $(seq 60); do [[ -s "$W/trace-status" ]] && break; sleep 0.5; done
+    traced="$(pgrep -x -P "$tracer" dwl)"
     WAYLAND_DISPLAY=wayland-0 timeout 20 "$W/wlprobe" list > /dev/null 2>&1
     WAYLAND_DISPLAY=wayland-0 timeout 20 "$W/wlprobe" oversize 0 3 kryptik-trace > /dev/null 2>&1
-    pkill -TERM -x -P "$tracer" dwl
-    wait "$tracer"
+    [[ -n "$traced" ]] && kill -TERM "$traced"
+    for _ in $(seq 40); do kill -0 "$tracer" 2>/dev/null || break; sleep 0.5; done
+    kill -9 "$tracer" $traced 2>/dev/null
+    wait "$tracer" 2>/dev/null
     # dwl's own lines (the trace's first pid) after its seccomp call.
     calls="$(awk 'NR == 1 { me = $1 } $1 == me && /seccomp\(SECCOMP_SET_MODE_FILTER/ { on = 1; next }
                   on && $1 == me && match($2, /^[a-z_0-9]+\(/) { print substr($2, 1, RLENGTH - 1) }' "$W/trace" | sort -u)"
     echo "INFO: dwl's calls once confined ($(wc -w <<<"$calls")): $(tr '\n' ' ' <<<"$calls")"
 fi
+# What dwl called outside its filter's list in every run above, which the filter logs (audit
+# type 1326) and lets through: by number, with how often (said, not required).
+unlisted="$(sudo dmesg 2>/dev/null | grep -a 'type=1326' | grep -a 'comm="dwl"' | grep -ao ' syscall=[0-9]*' \
+    | sort | uniq -c | awk '{ printf "%s%s x%s", s, substr($2, 9), $1; s = ", " }')"
+echo "INFO: dwl's calls outside its list: ${unlisted:-none}"
 exit "$fail"

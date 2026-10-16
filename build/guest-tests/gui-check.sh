@@ -1659,6 +1659,12 @@ if [[ -n "$ff_broke" ]]; then
     fail "browser-window-trace" "${ff_broke} failed; untrusted's filter, notifying instead of killing, refused Firefox in zone 0 over ${ffset:-no browser /usr set}:${ff_calls:- nothing}"
 fi
 
+# What dwl called outside its filter's list over the whole suite, which the filter logs (audit
+# type 1326) and lets through, by number and how often: the list's next entries, until none.
+dwl_unlisted="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -a 'comm="dwl"' | grep -ao ' syscall=[0-9]*' \
+    | sort | uniq -c | awk '{ printf "%s%s x%s", s, substr($2, 9), $1; s = ", " }')"
+info "dwl's calls outside its list: ${dwl_unlisted:-none}"
+
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
 # last focus record to the state partition (p4, log/kryptik/) for a post-mortem.
