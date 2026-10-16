@@ -13,7 +13,10 @@ in place of a reset, and says what fails safe in each.
   `watchdog.sh`, which opens every `/dev/watchdog*` and writes to each every
   10 s, checking nothing else. `WATCHDOG_NOWAYOUT` means closing a device
   does not stop it. A machine whose userspace is no longer scheduled resets,
-  and the state suite proves it by stopping the feeder.
+  and the state suite proves it by stopping the feeder. On a machine that
+  sleeps to idle (s2idle), AMD's TCO timer is left unopened: its driver,
+  unlike Intel's, does not stop it for that sleep, so it would reset the
+  machine a minute into each one.
 - **s6 restarts what dies.** `kryptikd-serve`, `net-zone`, `seatd`, `eudev`,
   the gettys and the feeder are longruns, and `s6-supervise` starts each
   again when it exits, at most once a second. A service that dies at every

@@ -312,6 +312,45 @@ else
     fail "volume-steps" "${stepped}; ${top}"
 fi
 
+# The levels outlast the mixer, never the microphone's grant. A restart starts from the last
+# mixer's record in /run; a boot, with /run empty, from what the finish script kept on the state
+# partition. Removing the record stands in for the boot here.
+REC=/run/kryptik-sound/control/levels KEPT=/var/lib/kryptik-sound/levels
+restarted() { local p; p="$(pgrep -xo kryptik-sound)"; [[ -n "$p" && "$p" != "$was" ]] && running; }
+restart_mixer() { was="$(pgrep -xo kryptik-sound)"; s6-svc -r /run/service/kryptik-sound; wait_for 20 restarted; }
+ctl volume 35 > /dev/null; ctl mute on > /dev/null; ctl volume work 40 > /dev/null; ctl mute work on > /dev/null
+ctl grant untrusted > /dev/null
+if restart_mixer && [[ "$(st master)" == "master 35 muted" && "$(st "zone work")" == "zone work 40 muted" ]] \
+   && ! ctl status | grep -q ' granted' && [[ "$(stat -c '%a %u' "$KEPT" 2>&1)" == "600 0" ]] \
+   && grep -qx 'master 35 muted' "$KEPT" && grep -qx 'zone work 40 muted' "$KEPT"; then
+    pass "levels-kept" "restarted at master 35 muted and work 40 muted, without the grant, and kept in ${KEPT}"
+else
+    fail "levels-kept" "mixer ${was}, now $(pgrep -xo kryptik-sound); status: $(ctl status 2>&1 | tr '\n' ' '); kept: $(stat -c '%a %u' "$KEPT" 2>&1) $(tr '\n' ' ' < "$KEPT" 2>&1)"
+fi
+ctl volume 45 > /dev/null; rm -f "$REC"
+if restart_mixer && [[ "$(st master)" == "master 35 muted" && "$(st "zone work")" == "zone work 40 muted" ]]; then
+    pass "levels-kept-boot" "with no record in /run, the mixer started at the kept levels, not at the 45 that never reached them"
+else
+    fail "levels-kept-boot" "status: $(ctl status 2>&1 | tr '\n' ' '); kept: $(tr '\n' ' ' < "$KEPT" 2>&1)"
+fi
+# The mixer's uid writes the record: root keeps only the lines a record holds.
+printf 'master 20\nzone work 30 muted granted\nroot:x:0:0::/root:/bin/sh\nzone dev 101\n' > "$REC"
+if restart_mixer && [[ "$(cat "$KEPT" 2>&1)" == "master 20" && "$(st master)" == "master 20" ]] && ! ctl status | grep -q ' granted'; then
+    pass "levels-kept-filtered" "of a record with other lines, root kept only master 20, and the mixer granted nothing"
+else
+    fail "levels-kept-filtered" "kept: $(tr '\n' ' ' < "$KEPT" 2>&1); status: $(ctl status 2>&1 | tr '\n' ' ')"
+fi
+# And it is read with the mixer's rights: a record linked to a file only root may read keeps nothing.
+( umask 077; echo 'master 7' > /run/sound-check-root-only )
+ln -sfn /run/sound-check-root-only "$REC"
+if restart_mixer && [[ "$(cat "$KEPT" 2>&1)" == "master 20" && "$(st master)" == "master 20" && ! -L "$REC" ]]; then
+    pass "levels-kept-unread" "of a record linked to a file only root may read, nothing was kept or started from"
+else
+    fail "levels-kept-unread" "kept: $(tr '\n' ' ' < "$KEPT" 2>&1); record: $(ls -l "$REC" 2>&1); status: $(ctl status 2>&1 | tr '\n' ' ')"
+fi
+rm -f /run/sound-check-root-only
+ctl mute off > /dev/null; ctl volume 100 > /dev/null; ctl mute work off > /dev/null; ctl volume work 100 > /dev/null
+
 # --- a USB sound card ----------------------------------------------------------------------
 # A USB card plugged in takes the sound: the mixer picks a card each time it opens one, a USB
 # device first, and closes it after 5 s with nothing to play. Pulled out mid-tone, the card is

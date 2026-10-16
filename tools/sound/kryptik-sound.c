@@ -43,6 +43,12 @@
 /* Who may record, for the bar dwl draws over a fullscreen window, which covers the chrome's
  * window that says so: the zone's name, or nothing. */
 #define HOLDER_PATH RUN_DIR "/marks/microphone"
+/* The volumes and mutes, as status says them less the microphone's grant, for the mixer's next
+ * start: in /run, so a change never waits on a disk a sleep has sealed. The service's finish
+ * script keeps them on the state partition, and after a boot its run script puts them back at
+ * KEPT_PATH, so root never writes in the mixer's directory. */
+#define LEVELS_PATH RUN_DIR "/control/levels"
+#define KEPT_PATH RUN_DIR "/levels"
 #define RATE 48000
 #define CHANNELS 2
 #define FRAME 4                         /* bytes: two s16le samples */
@@ -275,11 +281,13 @@ static int named(snd_mixer_elem_t *e, const char *const *names)
 }
 
 /* The card's own controls at unity and on, so the mixer's volumes are the only ones that act:
- * a card can come up muted, and nothing else here sets it. */
+ * a card can come up muted, and nothing else here sets it. USB audio names a headset's controls
+ * Headset and a microphone's Mic where the device gives them no name. On HD Audio a Mic control
+ * is the loopback into the output, a playback one, which the capture side here leaves alone. */
 static void levels(int card)
 {
-	static const char *const play[] = { "Master", "PCM", "Speaker", "Headphone", "Front", "Line Out", NULL };
-	static const char *const rec[] = { "Capture", NULL };
+	static const char *const play[] = { "Master", "PCM", "Speaker", "Headphone", "Headset", "Front", "Line Out", NULL };
+	static const char *const rec[] = { "Capture", "Mic", "Headset", NULL };
 	char hw[16];
 	snprintf(hw, sizeof hw, "hw:%d", card);
 	snd_mixer_t *m;
@@ -398,6 +406,50 @@ static void record_holder(void)
 		say("%s: %s", HOLDER_PATH, strerror(errno));
 }
 
+/* The levels, written whole and put in place by rename, as the holder is. */
+static void record_levels(void)
+{
+	static const char tmp[] = RUN_DIR "/control/.levels";
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+	if (fd < 0) {
+		say("%s: %s", tmp, strerror(errno));
+		return;
+	}
+	dprintf(fd, "master %d%s\n", master, master_muted ? " muted" : "");
+	for (int i = 0; i < nzones; i++)
+		dprintf(fd, "zone %s %d%s\n", zones[i].name, zones[i].volume, zones[i].muted ? " muted" : "");
+	if (close(fd) < 0 || rename(tmp, LEVELS_PATH) < 0)
+		say("%s: %s", LEVELS_PATH, strerror(errno));
+}
+
+/* The levels to start at: the last mixer's record after a restart, or after a boot those the run
+ * script put back. A zone's go by its name, one no longer listed is dropped, and any other line is
+ * ignored: nothing in either can grant the microphone. */
+static void restore_levels(void)
+{
+	FILE *f = fopen(LEVELS_PATH, "re");
+	char line[128], name[64], word[16];
+	int v;
+	if (!f)
+		f = fopen(KEPT_PATH, "re");
+	if (!f)
+		return;
+	while (fgets(line, sizeof line, f)) {
+		word[0] = 0;
+		if (sscanf(line, "master %d %15s", &v, word) >= 1 && v >= 0 && v <= 100) {
+			master = v;
+			master_muted = !strcmp(word, "muted");
+		} else if (sscanf(line, "zone %63s %d %15s", name, &v, word) >= 2 && v >= 0 && v <= 100) {
+			int z = zone_named(name);
+			if (z >= 0) {
+				zones[z].volume = v;
+				zones[z].muted = !strcmp(word, "muted");
+			}
+		}
+	}
+	fclose(f);
+}
+
 static void control_line(struct conn *c)
 {
 	char a[16] = "", b[40] = "", d[16] = "";
@@ -433,6 +485,8 @@ static void control_line(struct conn *c)
 		}
 	} else
 		answer = "error: status | volume [ZONE] N|+N|-N | mute [ZONE] on|off|toggle | grant ZONE | revoke [ZONE]\n";
+	if ((is_volume || is_mute) && answer && !strcmp(answer, "ok\n"))
+		record_levels();
 	if (answer)
 		reply(c->fd, answer);
 	end_conn(c);
@@ -717,6 +771,9 @@ int main(int argc, char **argv)
 	int control = listen_at(CONTROL_PATH, 0660);
 	/* A record a mixer that died left behind would name a zone that may not record. */
 	record_holder();
+	/* The levels to start at, and at once the record of them a stop keeps. */
+	restore_levels();
+	record_levels();
 	if (control < 0)
 		say("no control socket at %s: %s; volume and the microphone stay as they are", CONTROL_PATH, strerror(errno));
 	say("mixing for %d zone(s)", nzones);
@@ -730,6 +787,7 @@ int main(int argc, char **argv)
 		if (control >= 0)
 			p[n] = (struct pollfd){ .fd = control, .events = POLLIN }, of[n++] = NULL;
 		long long now = now_ms();
+		int pending = 0;
 		for (int i = 0; i < MAX_CONNS; i++) {
 			struct conn *c = &conns[i];
 			if (!c->fd)
@@ -738,6 +796,7 @@ int main(int argc, char **argv)
 				end_conn(c);
 				continue;
 			}
+			pending |= c->kind == HELLO || c->kind == CONTROL;
 			/* A stream whose ring is full is not read: its zone waits. One that hung up is
 			 * not watched, only mixed until it ends. */
 			if (c->hup)
@@ -755,6 +814,10 @@ int main(int argc, char **argv)
 				of[n + i] = NULL;
 			n += m > 0 ? m : 0;
 		}
+		/* With the card closed and no connection that must say what it is in time, nothing is
+		 * due: the mixer sleeps until something connects, and a laptop's processor with it. */
+		if (!pending)
+			timeout = -1;
 		if (out || in || playing())
 			timeout = 10;
 		if (poll(p, (nfds_t)n, timeout) < 0 && errno != EINTR) {

@@ -416,3 +416,35 @@ fn a_zone_may_be_granted_the_camera_unless_its_file_says_no() {
     assert!(!Zone::from_str(&nic).unwrap().camera, "the nic zone is never granted it");
     assert!(Zone::from_str(&format!("{nic}[camera]\nuse = true\n")).is_err(), "a nic zone file may not ask for it");
 }
+
+#[test]
+fn hold_awake_is_off_unless_the_file_says_so() {
+    let with = |v: &str| VAULT.replace("[ui]", &format!("[desktop]\nhold_awake = {v}\n[ui]"));
+    assert!(!Zone::from_str(VAULT).unwrap().hold_awake, "no [desktop], no hold");
+    assert!(Zone::from_str(&with("true")).unwrap().hold_awake);
+    assert!(!Zone::from_str(&with("false")).unwrap().hold_awake);
+    for bad in ["yes", "1", "on"] {
+        assert!(Zone::from_str(&with(bad)).is_err(), "{bad:?}");
+    }
+    let nic = with("true").replace("mode = \"none\"", "mode = \"nic\"");
+    let err = Zone::from_str(&nic).unwrap_err();
+    assert!(format!("{err}").contains("hold the screen awake"), "got: {err}");
+}
+
+/// Video in the user's own zones may hold the screen awake; untrusted, where unknown links open,
+/// never; nor a zone without the browser, which would have nothing to hold it with.
+#[test]
+fn the_shipped_zones_that_hold_the_screen_awake() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zones");
+    let mut holding: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("toml"))
+        .map(|p| Zone::from_file(&p).expect("a shipped zone parses"))
+        .filter(|z| z.hold_awake)
+        .map(|z| z.name)
+        .collect();
+    holding.sort();
+    assert_eq!(holding, ["personal", "work"]);
+}

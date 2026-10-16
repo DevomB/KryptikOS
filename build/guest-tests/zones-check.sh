@@ -1683,6 +1683,17 @@ grep -q /usr/lib/libhardened_malloc.so /proc/self/maps && pass "allocator-zone0"
 zrun untrusted 30 -- grep -c /usr/lib/libhardened_malloc.so /proc/self/maps
 [[ "$ZRC" = 0 ]] && pass "allocator-zone" "a process in untrusted runs on it too" || fail "allocator-zone" "rc=$ZRC $(tail -1 "$LOG/untrusted.err")"
 
+# --- shadow stacks in a zone: lenient (spawn.rs zone_environment) ------------
+# On a CPU with shadow stacks a zone's program that loads a library without the CET note, as
+# Firefox does libxul, runs on without its own; glibc reads the tunable only where the exec is not
+# secure, which LD_SHOW_AUXV shows (it says nothing in a secure one).
+zrun untrusted 30 -- sh -c 'echo "tunables=$GLIBC_TUNABLES"; LD_SHOW_AUXV=1 /bin/true | grep AT_SECURE'
+if [[ "$ZOUT" == *"tunables=glibc.cpu.x86_shstk=permissive"* && "$ZOUT" =~ AT_SECURE:[[:space:]]+0 ]]; then
+    pass "zone-shadow-stack-lenient" "a zone's command has glibc.cpu.x86_shstk=permissive, and AT_SECURE 0 for glibc to read it"
+else
+    fail "zone-shadow-stack-lenient" "rc=$ZRC: ${ZOUT//$'\n'/ } $(tail -1 "$LOG/untrusted.err")"
+fi
+
 # --- the installed root: privilege only where the allowlist says ------------
 # Stage 06 fails the build on any other bit; expected here: the entries of
 # build/config/setuid-allowlist.txt, and no file capabilities.
