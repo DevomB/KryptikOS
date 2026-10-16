@@ -486,7 +486,9 @@ and the power key, idle and inhibitors, suspend, and runtime directories
     pressed, whatever window took the press (`holdawakesecs` in dwl's
     configuration); then the lock comes as usual. dwl's status names the
     zone holding the screen awake (`<output> holdawake <zone>`), for the
-    chrome to show for as long as it does.
+    chrome to show for as long as it does, and the bar over a fullscreen
+    window names it beside the microphone's and the camera's holders: a
+    video in front covers the chrome.
   - The moment no hold qualifies, the lock and the blanking count input
     alone again.
 - The chrome's menu has a Power line, from the power service's state: on
