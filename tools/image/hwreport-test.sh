@@ -95,6 +95,9 @@ want "$R1" '^sd[a-z] .*\(the root is here\).*usb-storage \(built in\)' "the disk
 want "$R1" '^== missing ==$'                                  "what the image lacks has its place"
 want "$R1" '^== kernel log ==$'                               "the kernel log is there"
 want "$R1" 'Linux version .*hardened'                         "from its first line"
+# QEMU here has no sound device and its firmware no NHLT: the section is there, and says so.
+want "$R1" '^== audio ==$'                                    "the sound has its place"
+want "$R1" '^nhlt: none$'                                     "and no DSP microphones, as QEMU's firmware describes none"
 deny "$R1" '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}'               "no hardware address"
 deny "$R1" '[Ss]erial ?[Nn]umber[:=] ?[^< ]'                  "no serial number"
 deny "$R1" '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "no UUID"
