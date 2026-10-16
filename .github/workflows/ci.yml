@@ -76,6 +76,12 @@ jobs:
           fi
           exit $fail
 
+      # Stage 06's media functions on stand-ins, made twice: the same bytes (reproducible-builds.md).
+      - name: The media come out the same twice
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq dosfstools mtools xorriso
+          tools/tests/media-same.sh
+
       - name: Shellcheck
         # Every tracked file whose first line names a shell.
         run: |
