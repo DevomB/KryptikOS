@@ -170,6 +170,12 @@ vary desktop '/^backlight /d; /^power_supply /d; /^"Lid Switch"/d'
 has desktop "  laptop     none of a laptop's parts: no backlight, battery or lid switch" "a desktop has none of them, and says so"
 vary s2idle 's/^sleep mem: .*/sleep mem: [s2idle]/'
 has s2idle "  sleep      mem is s2idle, the only kind offered" "s2idle with no deep beside it"
+vary s2slept 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 2 successful, 0 failed, hardware asleep 1800000000 us last, 3600000000 us in all'
+has s2slept "  sleep      mem is s2idle, the only kind offered; its last sleep kept the hardware asleep 1800 s" "an s2idle sleep that reached the hardware's state, and for how long"
+vary s2awake 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all'
+has s2awake "  sleep      mem is s2idle, the only kind offered; its last sleep never reached the hardware's sleep state, which drains the battery" "one that never got there"
+vary deepslept '/^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all'
+has deepslept "  sleep      mem is deep; s2idle also offered" "deep sleep, which counts no hardware time, is not judged by it"
 vary nomem 's/^sleep states: .*/sleep states: freeze disk/'
 has nomem "  sleep      no sleep to memory (offered: freeze disk)" "no mem at all"
 vary mipi '/^3-4/d

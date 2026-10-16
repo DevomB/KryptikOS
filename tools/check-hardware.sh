@@ -76,18 +76,26 @@ laptop_of() {
 }
 
 # sleep_of REPORT: what a sleep to memory is on the machine, deep (S3) or
-# s2idle, and the other kinds it offers.
+# s2idle, and the other kinds it offers; for s2idle, after a sleep, whether
+# the last one reached the hardware's own sleep state.
 sleep_of() {
-    local l states mem chosen others
+    local l states mem chosen others out ok hw
     grep -qxF '== laptop ==' "$1" || { echo "not in this report"; return; }
     l="$(section laptop "$1")"
     states="$(field 'sleep states' <<<"$l")"; mem="$(field 'sleep mem' <<<"$l")"
     grep -qw mem <<<"$states" || { echo "no sleep to memory (offered: ${states:-nothing})"; return; }
     chosen="$(grep -o '\[[a-z0-9]*\]' <<<"$mem" | tr -d '[]')"
     others="$(tr ' ' '\n' <<<"$mem" | grep -v '^\[' | grep . | paste -sd' ' -)"
-    if [[ -z "$chosen" ]]; then echo "mem offered, of no kind the report names"
-    elif [[ -z "$others" ]]; then echo "mem is ${chosen}, the only kind offered"
-    else echo "mem is ${chosen}; ${others} also offered"; fi
+    if [[ -z "$chosen" ]]; then out="mem offered, of no kind the report names"
+    elif [[ -z "$others" ]]; then out="mem is ${chosen}, the only kind offered"
+    else out="mem is ${chosen}; ${others} also offered"; fi
+    # Deep sleep counts no hardware time, so only s2idle's last sleep is judged.
+    read -r ok hw <<<"$(awk '$1 == "sleep" && $2 == "stats:" { print $3, $9 }' <<<"$l")"
+    if [[ "$chosen" == s2idle && "${ok:-}" =~ ^[0-9]+$ && "$ok" -gt 0 && "${hw:-}" =~ ^[0-9]+$ ]]; then
+        if [[ "$hw" -eq 0 ]]; then out+="; its last sleep never reached the hardware's sleep state, which drains the battery"
+        else out+="; its last sleep kept the hardware asleep $(( hw / 1000000 )) s"; fi
+    fi
+    echo "$out"
 }
 
 # camera_of REPORT: a USB video device and what drives it; and a MIPI
