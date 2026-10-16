@@ -67,6 +67,8 @@ SYS_BLOCK=/sys/class/block
 # kryptikd's record of the camera's grant (camera.rs), and its note that the driver stayed loaded.
 CAMERA=/run/kryptik-camera/grant
 CAMERA_STAYED=/run/kryptik-camera/stayed
+# kryptikd's count of sleeps that failed after a zone volume's key went (suspend.rs).
+LEFT=/run/kryptik-launch/left-waiting
 
 die() { echo "kryptik-chrome: $*" >&2; exit 1; }
 
@@ -201,7 +203,8 @@ run_status() {
     # as the battery reaches 10% and again 5%, a window warns of the power-off at 3%; and once
     # the state partition is back after a sleep, a window asks for each waiting zone's passphrase.
     (
-        shown="" filming="" warned="" waited="" blocks="" seen=""
+        shown="" filming="" warned="" suspended="" blocks="" seen=""
+        left="$(cat "$LEFT" 2>/dev/null)"
         while :; do
             mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
             if [ -n "$mic" ] && [ "$mic" != "$shown" ]; then
@@ -218,12 +221,16 @@ run_status() {
                 "$TERMINAL" /usr/bin/kryptik-chrome --battery &
             fi
             warned="$w"
-            if ! dm_suspended kryptik-state; then
-                wz="$(waiting_zones | tr '\n' ' ')"
-                if [ -n "$wz" ] && [ "$wz" != "$waited" ]; then
-                    "$TERMINAL" /usr/bin/kryptik-chrome --waiting &
-                fi
-                waited="$wz"
+            # Opened when the state partition comes back from a suspension seen here: kryptikd
+            # suspends each zone's volume first, and a look in between would find a zone waiting
+            # with the state partition up and start a terminal that then stops on it. A sleep that
+            # failed after a volume's key went, the state partition never suspended, counts itself.
+            l="$(cat "$LEFT" 2>/dev/null)"
+            if dm_suspended kryptik-state; then
+                suspended=1
+            elif [ -n "$suspended" ] || [ "$l" != "$left" ]; then
+                suspended="" left="$l"
+                [ -z "$(waiting_zones)" ] || "$TERMINAL" /usr/bin/kryptik-chrome --waiting &
             fi
             # A stick plugged in opens the window that asks which zone gets it.
             set -- "$SYS_BLOCK"/*

@@ -307,6 +307,14 @@ fn thread_scheduling_refused_softly() {
 }
 
 #[test]
+fn quota_read_refused_softly() {
+    // Reading a quota hears EPERM, not a kill; quotactl stays denied, so no policy opens it.
+    let p = build_program(BASE_ALLOWLIST).unwrap();
+    assert_eq!(evaluate(&p, X86, libc::SYS_quotactl as u32), errno_action(EPERM));
+    assert!(is_denied(libc::SYS_quotactl), "quotactl must stay denied");
+}
+
+#[test]
 fn io_priority_refused_softly() {
     // Lowering a thread's I/O priority hears EPERM, not a kill; reading it stays allowed.
     let p = build_program(BASE_ALLOWLIST).unwrap();
