@@ -50,9 +50,9 @@
 ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
 SOUND=/usr/libexec/kryptik/kryptik-sound
-# The mixer's record of who holds the microphone (kryptik-sound.c), group kryptik's to read: the
-# watcher reads it each second and asks the mixer only when it changes.
-MICREC=/run/kryptik-sound/control/microphone
+# The mixer's record of who holds the microphone (kryptik-sound.c), which anyone on the host reads:
+# the watcher reads it each second and asks the mixer only when it changes.
+MICREC=/run/kryptik-sound/marks/microphone
 # havoc takes the program as plain arguments: it has no -e, and exits on an unknown option.
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
