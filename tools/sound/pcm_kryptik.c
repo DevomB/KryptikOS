@@ -135,6 +135,31 @@ static int kr_close(snd_pcm_ioplug_t *io)
 	return 0;
 }
 
+/* The mixer's end closed, as a grant of the microphone to another zone closes a record: that
+ * is an error. As alsa-lib reads the socket's poll, a hang-up is readable, so a reader would
+ * wait for frames that never come, for ever and at full speed. */
+static int kr_poll_revents(snd_pcm_ioplug_t *io, struct pollfd *pfd, unsigned int nfds,
+		unsigned short *revents)
+{
+	kryptik_t *k = io->private_data;
+	*revents = nfds ? pfd[0].revents : 0;
+	if (*revents & (POLLERR | POLLNVAL))
+		return 0;
+	if (io->stream == SND_PCM_STREAM_PLAYBACK) {
+		if (*revents & POLLHUP)
+			*revents |= POLLERR;
+		return 0;
+	}
+	/* Less than a frame left: the end, if the mixer hung up or a peek finds the stream over. */
+	int bytes = 0;
+	char c;
+	if (!(*revents & (POLLIN | POLLHUP)) || ioctl(k->fd, FIONREAD, &bytes) < 0 || bytes >= FRAME)
+		return 0;
+	if ((*revents & POLLHUP) || recv(k->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT) == 0)
+		*revents |= POLLERR;
+	return 0;
+}
+
 static const snd_pcm_ioplug_callback_t callbacks = {
 	.start = kr_start,
 	.stop = kr_stop,
@@ -143,6 +168,7 @@ static const snd_pcm_ioplug_callback_t callbacks = {
 	.prepare = kr_prepare,
 	.delay = kr_delay,
 	.close = kr_close,
+	.poll_revents = kr_poll_revents,
 };
 
 /* The mixer's socket, told what this stream is; its answer, "ok" or why not. */

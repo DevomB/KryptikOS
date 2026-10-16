@@ -70,6 +70,14 @@ USAGE:
                                     to four, the first in force, Super+Space to
                                     switch; none named prints them, and
                                     `desktop machine` goes back to the machine's
+    $PROG display                   the session's monitors: name, scale, mode,
+                                    place, make and model (in the session)
+    $PROG display NAME SCALE [X Y]  that monitor at SCALE, 0.5 to 4 (1.5 draws
+                                    everything half as large again), its top
+                                    left corner at X,Y if given; kept for every
+                                    login; NAME * is any monitor no line names
+    $PROG display NAME auto         that monitor as it comes: 2 for a built-in
+                                    panel of 192 dpi or more, else 1
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
@@ -476,6 +484,31 @@ desktop_layouts() {
     echo "The state passphrase at boot is still asked under the machine's: $(kb_current)."
 }
 
+# The user's choices for the session's monitors, which kryptik-display makes now and, run by
+# the chrome, at every login and whenever a monitor comes: a line per monitor, NAME SCALE [X Y].
+cmd_display() {
+    local file="${XDG_CONFIG_HOME:-$HOME/.config}/kryptik/display" name="${1:-}" scale="${2:-}" tmp
+    [[ -n "${WAYLAND_DISPLAY:-}" ]] || die "display sets the session's monitors: run it in the session, from a zone 0 terminal"
+    [[ $# -eq 0 ]] && exec kryptik-display
+    [[ $# -eq 2 || ( $# -eq 4 && "$scale" != auto ) ]] || die "display takes nothing, NAME SCALE [X Y], or NAME auto" 2
+    [[ "$name" == '*' || "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]] || die "not a monitor's name as \`$PROG display\` lists it: ${name}" 2
+    if [[ "$scale" != auto ]]; then
+        [[ "$scale" =~ ^[0-9](\.[0-9]{1,3})?$ ]] && awk -v s="$scale" 'BEGIN { exit !(s >= 0.5 && s <= 4) }' \
+            || die "SCALE is a number from 0.5 to 4, as 1, 1.25, 1.5 or 2: ${scale}" 2
+    fi
+    if [[ $# -eq 4 ]]; then
+        [[ "$3" =~ ^-?[0-9]{1,5}$ && "$4" =~ ^-?[0-9]{1,5}$ ]] || die "X and Y are whole pixels: $3 $4" 2
+        [[ "$name" != '*' ]] || die "a place is one monitor's, not every monitor's" 2
+    fi
+    mkdir -p "${file%/*}" || die "could not make ${file%/*}"
+    tmp="${file}.$$"
+    {
+        [[ -f "$file" ]] && awk -v n="$name" '$1 != n' "$file"
+        [[ "$scale" == auto ]] || echo "${name} ${scale}${3:+ $3 $4}"
+    } > "$tmp" && mv -f "$tmp" "$file" || { rm -f "$tmp"; die "could not write ${file}"; }
+    exec kryptik-display apply
+}
+
 # --- argument parsing -------------------------------------------------------
 load_conf
 
@@ -507,6 +540,7 @@ case "$cmd" in
     state)   cmd_state "$@" ;;
     suspend) cmd_suspend "$@" ;;
     keyboard) cmd_keyboard "$@" ;;
+    display) cmd_display "$@" ;;
     ""|help) usage ;;
     # Commands users will expect, answered with why they do not exist.
     transfer|copy|clipboard|paste|mount)

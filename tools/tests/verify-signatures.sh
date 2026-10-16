@@ -409,6 +409,32 @@ else
     red "the stem-named signature was cached under the tarball's name"
 fi
 
+# A host that gives no signature: upstream's own, kept beside a mirror's copy (tools/source-mirrors.tsv,
+# {VER} for the row's version), verifies the file as upstream's would, and is cached under the name
+# upstream's has. One over other data is a bad signature, not a missing one.
+printf 'fixture payload for mirrored\n' > "${SRC}/mirrored.tar.gz"
+mkdir -p "${W}/mirror"
+fixgpg --yes --local-user good@example.test --armor \
+    --detach-sign -o "${W}/mirror/mirrored_1.0.orig.tar.gz.asc" "${SRC}/mirrored.tar.gz" >/dev/null 2>&1
+printf 'mirrored  file://%s/mirrored_{VER}.orig.tar.gz  .asc\n' "${W}/mirror" > "${W}/mirrors.tsv"
+: > "${W}/manifest"; add_row mirrored sig
+rm -f "${SRC}/.signatures/mirrored.tar.gz.sig"
+fresh_root; KRYPTIK_SIGCHECK_MIRRORS="${W}/mirrors.tsv" run --strict
+expect_pass "upstream's signature from a row's mirror verifies the file" "verified:     1"
+grep -qF "upstream's signature came from file://${W}/mirror/mirrored_1.0.orig.tar.gz.asc" "$OUT" \
+    && green "the report says where the signature came from" || { red "the mirror's signature went unnamed"; show; }
+[[ -s "${SRC}/.signatures/mirrored.tar.gz.sig" ]] \
+    && green "it is cached under the name upstream's signature has" || red "the mirror's signature was not cached"
+printf 'other data\n' > "${W}/other"
+fixgpg --yes --local-user good@example.test --armor \
+    --detach-sign -o "${W}/mirror/mirrored_1.0.orig.tar.gz.asc" "${W}/other" >/dev/null 2>&1
+rm -f "${SRC}/.signatures/mirrored.tar.gz.sig"
+fresh_root; KRYPTIK_SIGCHECK_MIRRORS="${W}/mirrors.tsv" run
+expect_fail "a mirror's signature over other data is a bad signature" "BAD SIGNATURE"
+rm -f "${SRC}/.signatures/mirrored.tar.gz.sig"
+fresh_root; run
+expect_pass "with no mirror listed, the missing signature is reported as before" "no .sig published upstream"
+
 # probe does not guess a stem: a stem-named file can be another file's signature.
 write_manifest stemmed
 fresh_root; run

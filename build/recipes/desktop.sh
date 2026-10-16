@@ -3,6 +3,7 @@
 # The launch client, session and chrome scripts, and the Wayland proxy built outside (as kryptikd).
 s_desktop() {
     local wl="$1" wl_sha="${2:-absent}" launch_sha="${3:-none}" session_sha="${4:-none}" chrome_sha="${5:-none}" probe_sha="${6:-none}" lock_sha="${7:-none}" dwl_ver="${8:-none}"
+    local display_sha="${9:-none}" wlroots_ver="${10:-none}"
     [[ "$wl" == "none" ]] && wl=""
     local d="${KRYPTIK_ROOT}/tools/desktop"
     echo "inputs: wlprobe.c ${probe_sha}"
@@ -10,10 +11,12 @@ s_desktop() {
     echo "        kryptik-session   ${session_sha}"
     echo "        kryptik-chrome    ${chrome_sha}"
     echo "        kryptik-lock.c    ${lock_sha}"
+    echo "        kryptik-display.c ${display_sha}"
+    echo "        wlroots' protocols v${wlroots_ver}"
     echo "        dwl's protocols   v${dwl_ver}"
     echo "        kryptik-wlproxy   ${wl:-<none>} (${wl_sha})"
     local f
-    for f in kryptik-launch.c kryptik-session kryptik-chrome wlprobe.c kryptik-lock.c; do
+    for f in kryptik-launch.c kryptik-session kryptik-chrome wlprobe.c kryptik-lock.c kryptik-display.c; do
         [[ -f "$d/$f" ]] || { echo "missing ${d}/${f}"; return 1; }
     done
     install -d -m 0755 /usr/libexec/kryptik
@@ -56,6 +59,24 @@ s_desktop() {
     out="$(/usr/bin/kryptik-lock --help 2>&1 || true)"
     [[ "$out" == *usage:* ]] || { echo "FAIL: kryptik-lock does not run here: ${out}"; return 1; }
     echo "kryptik-lock: built and runs"
+
+    # The monitors' scale and place: a client of wlroots' output management, whose description
+    # wlroots' pinned source carries. dwl serves it to zone 0 alone; no zone's proxy offers it.
+    local wlrsrc
+    gen="$(mktemp -d)"
+    wlrsrc="$(unpack "wlroots-${V_WLROOTS}.tar.gz" "wlroots-${V_WLROOTS}")"
+    xml="${wlrsrc}/protocol/wlr-output-management-unstable-v1.xml"
+    [[ -f "$xml" ]] || { echo "FAIL: no ${xml}"; rm -rf "$gen" "$wlrsrc"; return 1; }
+    wayland-scanner client-header "$xml" "$gen/wlr-output-management-unstable-v1-client-protocol.h"
+    wayland-scanner private-code "$xml" "$gen/wlr-output-management-unstable-v1-protocol.c"
+    # shellcheck disable=SC2086,SC2046
+    gcc ${CFLAGS} ${LDFLAGS} -I"$gen" -o /usr/bin/kryptik-display "$d/kryptik-display.c" "$gen"/*-protocol.c \
+        $(pkg-config --cflags --libs wayland-client)
+    rm -rf "$gen" "$wlrsrc"
+    chmod 0755 /usr/bin/kryptik-display
+    out="$(/usr/bin/kryptik-display --help 2>&1 || true)"
+    [[ "$out" == *usage:* ]] || { echo "FAIL: kryptik-display does not run here: ${out}"; return 1; }
+    echo "kryptik-display: built and runs"
 
     install -m 0755 "$d/kryptik-session" /usr/bin/kryptik-session
     install -m 0755 "$d/kryptik-chrome" /usr/bin/kryptik-chrome
