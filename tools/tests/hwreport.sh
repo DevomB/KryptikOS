@@ -304,6 +304,20 @@ listed "the listing: microphones on AMD's coprocessor" \
     "HD Audio codec 10ec0257; microphones on AMD's coprocessor (rev 6f, AcpDmicConnected), not driven"
 
 quiet
+pci 0000:04:00.5 0x048000 1022 15e2
+put sys/devices/pci0000:00/0000:04:00.5/revision 0x70
+# AMD's SoundWire controller under its coprocessor, at _ADR 5, with a Realtek
+# RT722 on link 0, beside the microphones' node at _ADR 2.
+acpi=sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0A08:00/device:30
+put "$acpi/device:31/adr" 0x00000002
+put "$acpi/device:32/adr" 0x00000005
+put "$acpi/device:32/device:33/adr" 0x000030025d072201
+ln -s "$W/$acpi" "$W/sys/devices/pci0000:00/0000:04:00.5/firmware_node"
+audio_now
+aud "a part on SoundWire behind AMD's coprocessor" '^soundwire 0000:04:00\.5 link 0 part 025d:0722$'
+[[ "$(grep -c '^soundwire ' "$A")" -eq 1 ]] && green "only under the controller at 5" || red "SoundWire lines: $(grep -c '^soundwire ' "$A")"
+
+quiet
 pci 0000:00:1f.3 0x040300 8086 a0c8 snd_hda_intel
 codec hdaudioC0D0 10ec0287 17aa22e6
 # Two Cirrus CS35L41 amplifiers ACPI describes as one device, which nothing
