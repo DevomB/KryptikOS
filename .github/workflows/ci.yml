@@ -194,6 +194,9 @@ jobs:
       - name: Every source is served somewhere
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         continue-on-error: true
+        # It takes about three minutes; bounded, so a host that answers slowly holds up the
+        # signature gate after it for no longer than this.
+        timeout-minutes: 8
         run: ./tools/fetch-sources.sh --probe
 
       - name: Provenance of unsigned sources

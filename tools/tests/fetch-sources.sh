@@ -171,6 +171,17 @@ grep -qF "alpha 1.0: only file://${ROWM}/alpha_1.0.orig.tar.gz serves it; not ht
 MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" run --probe
 expect_fail "--probe fails on a source no place serves" "alpha 1.0: no place serves it (asked https://127.0.0.1:9/alpha-1.0.tar.gz)"
 
+# A host that gives no answer at all is asked once a run: its other places count as not serving.
+{ printf 'alpha|1.0|https://127.0.0.1:9/alpha-1.0.tar.gz|probe|listing\n'
+  printf 'beta|2.0|https://127.0.0.1:9/beta-2.0.tar.gz|probe|listing\n'; } > "${W}/manifest-silent"
+MANIFEST="${W}/manifest-silent" MIRROR_DISTFILES="" run --probe
+expect_fail "--probe counts a silent host's later places as not serving" "beta 2.0: no place serves it"
+if [[ "$(grep -c '127.0.0.1:9 gave no answer' "$OUT")" -eq 1 ]]; then
+    green "and asks a silent host once a run, saying so"
+else
+    red "a silent host was not asked once, or not said so: $(grep -c '127.0.0.1:9 gave no answer' "$OUT")"; show
+fi
+
 # A host that refuses HEAD, as an object store refuses a URL presigned for GET: the probe asks for
 # one byte, and the last answer's status decides. Python's server ignores the range, so a file it
 # has comes whole (alpha) or is stopped at the cap (big), a redirect's body comes first (moved),
