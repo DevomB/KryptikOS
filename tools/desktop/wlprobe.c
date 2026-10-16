@@ -24,7 +24,6 @@
  *   A held window's app_id is $WLPROBE_APP_ID (at most 255 bytes), or wlprobe.
  *   Every held window prints "keyboard entered|left the window|the child"
  *   as wl_keyboard reports it: where the keys go, not what a record says.
- *   The keyboard is asked for once the seat has one.
  *   wlprobe charge            map one unwritten 4 MiB shmem buffer for 10 s;
  *                             compare zone and compositor cgroup memory.current
  *   wlprobe cursor SECONDS [shape]
