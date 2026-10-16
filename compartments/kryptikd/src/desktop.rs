@@ -76,9 +76,11 @@ pub fn ids_of(status: &str) -> Option<(u32, u32, Vec<u32>)> {
     Some((uid, gid, groups))
 }
 
-/// The login's groups less `kryptik`: dwl's.
-pub fn groups_without(groups: &[u32], kryptik: u32) -> Vec<u32> {
-    groups.iter().copied().filter(|&g| g != kryptik).collect()
+/// dwl's groups: the login's less `kryptik`, and `seat`, which the login does not hold.
+pub fn groups_for_dwl(groups: &[u32], kryptik: u32, seat: u32) -> Vec<u32> {
+    let mut dwl: Vec<u32> = groups.iter().copied().filter(|&g| g != kryptik && g != seat).collect();
+    dwl.push(seat);
+    dwl
 }
 
 /// The descriptors the session hands over, in its order.

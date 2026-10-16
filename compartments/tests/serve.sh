@@ -172,7 +172,7 @@ r="$(ask 'clipboard-move alpha beta\n')"
 if [[ "$r" == "error:"* && "$r" == *"not running"* ]]; then pass "S3g clipboard-move of zones that are not running is refused: ${r%$'\n'}"; else fail "S3g: $r"; fi
 # The desktop is the installed system's: a root run would start dwl in its cgroup.
 if (( PRIVILEGED == 1 )); then
-    elsewhere "S3h desktop starts dwl in kryptik-desktop without group kryptik (gui-check's desktop-memory-bound, dwl-without-group)"
+    elsewhere "S3h desktop starts dwl in kryptik-desktop in group seat and without group kryptik (gui-check's desktop-memory-bound, dwl-without-group, seat-is-dwls)"
 else
     r="$(ask 'desktop\nend\n')"
     if [[ "$r" == "error: a developer instance starts no desktop"* ]]; then pass "S3h desktop needs a root daemon, and says why: ${r%$'\n'}"; else fail "S3h desktop: $r"; fi

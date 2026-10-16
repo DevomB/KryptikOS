@@ -175,7 +175,7 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             second-head-scale-chosen zone-sees-heads-unnamed \
-            vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group dwl-confined-to-its-files \
+            vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group seat-is-dwls dwl-confined-to-its-files \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \

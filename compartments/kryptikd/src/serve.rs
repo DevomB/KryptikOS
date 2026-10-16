@@ -24,7 +24,8 @@
 //!                `ok <zone>`, `ok <zone> stayed` (its driver still loaded) or `ok none`
 //!              desktop, `env NAME=VALUE` lines for dwl's keymap, `end`, with three descriptors
 //!                (the spawner's socket, dwl's status, the log): dwl started as the login's user
-//!                without group kryptik, answered `started <pid>`, then again when dwl ends
+//!                in group seat and without group kryptik, answered `started <pid>`, then again
+//!                when dwl ends
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
@@ -828,7 +829,9 @@ fn start_desktop(cfg: &ServeConfig, conn: UnixStream, uid: u32, asker: i32, text
         if real != uid || gid == ours {
             return Err(format!("pid {asker} is not a login of uid {uid}'s"));
         }
-        let groups = crate::desktop::groups_without(&groups, ours);
+        // seatd answers group seat, which dwl alone of the session holds.
+        let seat = gid_of_group("seat").ok_or("no group seat")?;
+        let groups = crate::desktop::groups_for_dwl(&groups, ours, seat);
         let env = crate::desktop::environment(&runtime, &keymap);
         let out = memfile("kryptikd-desktop-out")?;
         let err = memfile("kryptikd-desktop-err")?;
@@ -837,7 +840,7 @@ fn start_desktop(cfg: &ServeConfig, conn: UnixStream, uid: u32, asker: i32, text
     })();
     match started {
         Ok((pid, out, err, at)) => {
-            eprintln!("kryptikd serve: uid {uid}'s desktop: dwl {pid} in {at}, without group {}", cfg.group);
+            eprintln!("kryptikd serve: uid {uid}'s desktop: dwl {pid} in {at}, in group seat and without {}", cfg.group);
             reply(&conn, &format!("started {pid}\n"));
             jobs.push(Job { conn, pid, what: JobKind::Desktop { uid }, out, err, exited: None });
         }

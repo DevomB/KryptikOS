@@ -3,7 +3,8 @@
 daemon for dwl with three descriptors: the spawner's socket, dwl's status and the log. When the
 daemon starts dwl, the launcher lasts until dwl's end and then waits for the spawner, which ends
 the chrome it started on dwl's status. When the daemon does not start dwl, refused, failing or
-absent, the launcher becomes dwl itself (-S), with the group, and says so."""
+absent, there is no desktop, as the login has no seat to start one on: the launcher says why, ends
+the spawner, which started nothing, and exits 1."""
 from pathlib import Path
 import array
 import os
@@ -15,8 +16,8 @@ import threading
 import time
 
 # The stand-in for /usr/bin/dwl: the spawner (-X) starts its command on descriptor 4 once dwl
-# names its display, and ends with dwl's end of the socket; dwl itself (-S) names its display and
-# writes one status line.
+# names its display, and ends with dwl's end of the socket. Anything else, dwl itself among it,
+# says so and fails.
 STANDIN = r'''#!/usr/bin/env python3
 import os, socket, subprocess, sys
 args = sys.argv[1:]
@@ -29,9 +30,6 @@ if args[:2] == ["-X", "3"]:
             chrome = subprocess.Popen(cmd, stdin=4, env=dict(os.environ, WAYLAND_DISPLAY=m.decode()))
     if chrome:
         chrome.wait()
-elif args == ["-S", "3"]:
-    socket.socket(fileno=3).send(b"wayland-fallback")
-    print("fallback status", flush=True)
 else:
     sys.exit("stand-in dwl: " + " ".join(args))
 '''
@@ -115,17 +113,22 @@ def main():
         cases = [
             ("the daemon starts dwl", starts, "wayland-test", "status from dwl\n",
              ["the daemon starts dwl as pid 4242, without group kryptik", "the desktop ended: ok dwl exited 0"]),
-            ("the daemon refuses", answers(b"error: uid 1000's desktop runs already\n"), "wayland-fallback", "fallback status\n",
-             ["dwl starts with group kryptik, in the session's process: error: uid 1000's desktop runs already"]),
+            ("the daemon refuses", answers(b"error: uid 1000's desktop runs already\n"), None, None,
+             ["no desktop: error: uid 1000's desktop runs already"]),
             ("dwl did not start", answers(b"started 4242\nerror: dwl did not start: setresuid: Operation not permitted\n"),
-             "wayland-fallback", "fallback status\n", ["dwl starts with group kryptik", "error: dwl did not start: setresuid"]),
-            ("no daemon answers", None, "wayland-fallback", "fallback status\n", [f"dwl starts with group kryptik, in the session's process: {launch_socket}:"]),
+             None, None, ["the daemon starts dwl as pid 4242", "no desktop: error: dwl did not start: setresuid"]),
+            ("no daemon answers", None, None, None, [f"no desktop: {launch_socket}:"]),
         ]
         for case, act, want_display, want_status, said in cases:
             rc, err, request = launch(act)
-            assert rc == 0, f"{case}: exit {rc}: {err}"
+            assert rc == (0 if want_display else 1), f"{case}: exit {rc}: {err}"
+            assert "stand-in dwl" not in err, f"{case}: the launcher ran dwl itself: {err}"
             for line in said:
                 assert line in err, f"{case}: stderr says {err!r}, not {line!r}"
+            if want_display is None:
+                assert not display.exists() and not chrome_out.exists(), f"{case}: a chrome started with no dwl"
+                print(f"PASS: {case}: no desktop and no chrome, and stderr says why")
+                continue
             for _ in range(50):
                 if chrome_out.exists() and chrome_out.read_text() == want_status:
                     break

@@ -49,14 +49,14 @@ log="$rt/kryptik/session.log"
 
 {
     echo "kryptik-session: $(id -un) uid $(id -u) on $(tty 2>/dev/null || echo '?') at $(date -Iseconds 2>/dev/null || date)"
-    for g in seat kryptik; do
-        if ! id -Gn | tr ' ' '\n' | grep -qx "$g"; then
-            echo "kryptik-session: WARNING: not in group $g - the desktop will not work fully"
-        fi
-    done
+    # Group kryptik asks the launch daemon for everything; seat is dwl's, which the daemon gives it.
+    if ! id -Gn | tr ' ' '\n' | grep -qx kryptik; then
+        echo "kryptik-session: WARNING: not in group kryptik - the desktop will not work fully"
+    fi
 } >> "$log"
 
-# dwl, which the launch daemon starts without group kryptik in the desktop's cgroup (its
-# memory.max bounds what a zone can make the compositor hold), and the chrome on dwl's status,
-# which this login's spawner starts with every group; when dwl exits, the login ends.
+# dwl, which the launch daemon starts in group seat and without group kryptik, in the desktop's
+# cgroup (its memory.max bounds what a zone can make the compositor hold), and the chrome on dwl's
+# status, which this login's spawner starts with every group of the login; when dwl exits, or
+# the daemon starts none, the login ends.
 exec /usr/bin/kryptik-launch --desktop -- /usr/bin/kryptik-chrome 2>> "$log"
