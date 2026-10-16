@@ -145,6 +145,77 @@ build_root alpha-1.0:good
 MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors" run
 expect_fail "a mirror's other bytes are refused by the lock" "CHECKSUM MISMATCH for alpha-1.0.tar.gz"
 
+# --- the probe: every place asked, nothing downloaded -------------------------
+
+# Each source at two places: its own and a mirror row's.
+SECOND="${W}/second"
+mkdir -p "$SECOND" && cp "${UPSTREAM}"/*.tar.gz "$SECOND/"
+for n in alpha beta gamma; do printf '%s  file://%s/%s-{VER}.tar.gz  -\n' "$n" "$SECOND" "$n"; done > "${W}/mirrors-all"
+build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-all" run --probe
+expect_pass "--probe finds every source served at both its places" "3 source(s), each served somewhere; 0 by one place alone"
+if [[ -z "$(ls -A "${FAKE}/sources")" ]]; then
+    green "--probe downloads nothing"
+else
+    red "--probe left files in sources/: $(ls -A "${FAKE}/sources" | tr '\n' ' ')"
+fi
+
+# Its own host refuses and its row's mirror has the file: served, by one place alone.
+cp "${UPSTREAM}/alpha-1.0.tar.gz" "${ROWM}/alpha_1.0.orig.tar.gz"
+MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors" run --probe
+expect_pass "--probe counts a source that only its row's mirror serves" "1 source(s), each served somewhere; 1 by one place alone"
+grep -qF "alpha 1.0: only file://${ROWM}/alpha_1.0.orig.tar.gz serves it; not https://127.0.0.1:9/alpha-1.0.tar.gz" "$OUT" \
+    && green "--probe names the place that serves it and the one that does not" || { red "--probe did not name both places"; show; }
+
+# No place has it: the probe fails, naming the source and every place it asked.
+MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" run --probe
+expect_fail "--probe fails on a source no place serves" "alpha 1.0: no place serves it (asked https://127.0.0.1:9/alpha-1.0.tar.gz)"
+
+# A host that refuses HEAD, as an object store refuses a URL presigned for GET: the probe asks for
+# one byte, and the last answer's status decides. Python's server ignores the range, so a file it
+# has comes whole (alpha) or is stopped at the cap (big), a redirect's body comes first (moved),
+# and a missing file gets a page; whatever exit the curl at hand gives for each.
+NH="${W}/nohead-files"
+mkdir -p "$NH" && cp "${UPSTREAM}/alpha-1.0.tar.gz" "$NH/" && head -c 204800 /dev/urandom > "${NH}/big-1.0.tar.gz"
+cat > "${W}/nohead.py" <<'PY'
+import functools, http.server, sys
+class NoHead(http.server.SimpleHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_error(405)
+    def do_GET(self):
+        if self.path.startswith("/moved/"):
+            body = b"moved " * 400
+            self.send_response(302)
+            self.send_header("Location", self.path[len("/moved"):])
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+    def log_message(self, *args):
+        pass
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(NoHead, directory=sys.argv[1]))
+print(srv.server_address[1], flush=True)
+srv.serve_forever()
+PY
+python3 -I "${W}/nohead.py" "$NH" > "${W}/nohead.port" 2>/dev/null &
+NOHEAD=$!
+trap 'kill "$NOHEAD" 2>/dev/null; rm -rf "$W"' EXIT
+for _ in $(seq 1 50); do [[ -s "${W}/nohead.port" ]] && break; sleep 0.1; done
+port="$(head -1 "${W}/nohead.port")"
+{
+    printf 'alpha|1.0|http://127.0.0.1:%s/moved/alpha-1.0.tar.gz|probe|listing\n' "$port"
+    printf 'big|1.0|http://127.0.0.1:%s/big-1.0.tar.gz|probe|listing\n' "$port"
+    printf 'omega|9.0|http://127.0.0.1:%s/omega-9.0.tar.gz|probe|listing\n' "$port"
+} > "${W}/manifest-nohead"
+MANIFEST="${W}/manifest-nohead" MIRROR_DISTFILES="" run --probe
+expect_fail "--probe asks a host that refuses HEAD for one byte, and a missing file fails" "omega 9.0: no place serves it"
+grep -qF "alpha 1.0: only http://127.0.0.1:${port}/moved/alpha-1.0.tar.gz serves it" "$OUT" \
+    && green "there, a file behind a redirect counts" || { red "--probe misread the redirect"; show; }
+grep -qF "big 1.0: only http://127.0.0.1:${port}/big-1.0.tar.gz serves it" "$OUT" \
+    && green "there, a whole file stopped at the cap counts" || { red "--probe misread the file sent whole"; show; }
+kill "$NOHEAD" 2>/dev/null; wait "$NOHEAD" 2>/dev/null
+
 # --- checksum refusal -------------------------------------------------------
 
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good

@@ -428,6 +428,9 @@ pub const REFUSED_SOFTLY: &[(libc::c_long, u32)] = &[
     // Firefox lowers the I/O priority of the thread writing its startup cache and writes at the
     // normal one when refused; killed, the browser ends seconds after its window shows.
     (libc::SYS_ioprio_set, EPERM),
+    // Denied, but Firefox's disk-space check reads the user's quota from its network cache's
+    // thread at start and keeps statfs's answer when refused; killed, no window ever shows.
+    (libc::SYS_quotactl, EPERM),
 ];
 
 const fn errno_action(e: u32) -> u32 {

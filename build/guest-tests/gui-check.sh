@@ -1635,6 +1635,7 @@ wait_for 10 grep -qx 'zone=-' "$RT/kryptik/focus" || info "browser: a window sti
 mark firefox untrusted
 launch_plain untrusted "sh -c 'printf \"<title>kryptik-page</title><p>kryptik</p>\" > /tmp/page.html && exec firefox --new-instance file:///tmp/page.html'" > "$LOG/launch-firefox.out" 2>&1 &
 ff_page() { grep -q '^title=.*kryptik-page' "$RT/kryptik/focus" && grep -qx 'zone=untrusted' "$RT/kryptik/focus"; }
+ff_broke=""
 if wait_for 120 ff_page; then
     # With its app_id as the proxy stamped it, which the browser key matches (dwl-config.h).
     pass "browser-window" "Firefox from the browser image opened a page in untrusted: $(grep -E '^(title|appid)=' "$RT/kryptik/focus" | tr '\n' ' ')"
@@ -1645,10 +1646,15 @@ if wait_for 120 ff_page; then
     if ff_page; then
         pass "browser-stays-up" "Firefox's window is still untrusted's 90 s after its page showed"
     else
+        ff_broke="browser-stays-up"
         fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | tail -2 | tr '\n' ' ')"
     fi
 else
-    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' ')"
+    # A start that shows nothing prints nothing in the zone either. The host prints FAIL lines
+    # alone, so this one carries what the proxy refused, what the zone's filter killed, and
+    # whether Firefox still runs and where it waits.
+    ff_broke="browser-window"
+    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); zone: $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); proxy: $(tail -4 "$plog" 2>/dev/null | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp|segfault|traps:' | tail -4 | tr '\n' ' '); firefox: $(ps -eo pid=,stat=,wchan:24=,etime=,args= 2>/dev/null | grep '[f]irefox' | head -8 | cut -c1-120 | tr '\n' ';'); launch: $(tail -3 "$LOG/launch-firefox.out" 2>/dev/null | tr '\n' ' ')"
 fi
 # --- a second launch puts the open browser in front ----------------------------------------
 # Alt+1 shows another tag; the browser key then views Firefox's tag, 3, on its monitor and
@@ -1667,7 +1673,7 @@ ff_count() {
 ff_front() { ff_page && grep -qx 'tagset=4' "$RT/kryptik/focus"; }
 ff_away() { ! grep -q '^title=.*kryptik-page' "$RT/kryptik/focus"; }
 ff_record() { echo "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); browsers: $(tr '\n' ' ' < "$RT/kryptik/browsers" 2>/dev/null)"; }
-front="$RT/kryptik/browser-front"
+front="$RT/kryptik/front/browser-front"
 ff_before="$(ff_count)"
 echo "GT KEY-BROWSER-AWAY"
 wait_for 10 ff_away || info "browser: Alt+1 left the keyboard with Firefox: $(ff_record)"
@@ -1733,6 +1739,27 @@ else
     fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after"
 fi
 pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
+
+# --- what untrusted's filter refuses Firefox, after a browser check failed ------------------
+# A kill's audit line names one call. Here the filter notifies instead: Firefox runs as the user
+# in zone 0 under `kryptikd seccomp-trace --zone untrusted`, in a mount and pid namespace of its
+# own with untrusted's /usr set bound over /usr and no render or sound node, so one round names
+# every call the filter refuses. A soft refusal gets the errno a zone gets, a kill ENOSYS, and
+# Firefox goes on. After the last key step: the window it maps could take a key meant for a check.
+if [[ -n "$ff_broke" ]]; then
+    ffset="$(awk '$1 == "kryptik-usr" && $2 ~ /browser-/ { print $2 }' /proc/self/mounts | tail -1)"
+    ff_calls=""
+    if [[ -n "$ffset" ]]; then
+        ff_calls="$(FFSET="$ffset" FFUSER="$USER_NAME" FFRT="$RT" timeout -k 5 120 \
+            unshare -m -p -f --mount-proc --kill-child sh -c '
+                mount --bind "$FFSET" /usr || exit 1
+                for d in /dev/dri /dev/snd; do [ -d "$d" ] && mount -t tmpfs -o mode=0755 none "$d"; done
+                exec su -s /bin/bash "$FFUSER" -c "h=\$(mktemp -d) && cd \$h && printf \"<title>kryptik-page</title><p>kryptik</p>\" > page.html && HOME=\$h XDG_RUNTIME_DIR=$FFRT WAYLAND_DISPLAY=wayland-0 timeout -k 5 60 /usr/bin/kryptikd seccomp-trace --zones /usr/lib/kryptik/zones --zone untrusted -- firefox --new-instance file://\$h/page.html"' 2>&1 \
+            | sed -n 's/^.*KRYPTIK_SECCOMP_DENIED //p' | sort | uniq -c | sort -rn \
+            | awk '{ n = $1; $1 = ""; printf "%s x%d;", $0, n }')"
+    fi
+    fail "browser-window-trace" "${ff_broke} failed; untrusted's filter, notifying instead of killing, refused Firefox in zone 0 over ${ffset:-no browser /usr set}:${ff_calls:- nothing}"
+fi
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the
