@@ -104,6 +104,8 @@ deny "$R1" '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "no UU
 LISTING="$("${SELF}/../check-hardware.sh" "$R1" 2>&1)"
 if grep -q '^  carries    reported; short of certified:$' <<<"$LISTING"; then green "check-hardware.sh reads it: a reported listing"
 else red "check-hardware.sh does not read the medium's report as reported"; sed 's/^/        /' <<<"$LISTING" | tail -8; fi
+grep -qF '  audio      no audio device' <<<"$LISTING" && green "the listing's sound line: no audio device, as QEMU has none here" \
+    || red "audio line: $(grep '^  audio' <<<"$LISTING")"
 if [[ "$PRISTINE_FSCK" -eq 0 ]]; then
     if fsck_esp "$ASKED"; then green "the stick's filesystem is clean after the write"
     else red "the stick's filesystem is not clean after the write"; sed 's/^/        /' "${VMDIR}/hwreport-fsck.txt" | head -8; fi
