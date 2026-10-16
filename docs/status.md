@@ -62,7 +62,9 @@ media it tested.
   stopping the feeder). A crashed service or a frozen desktop is not
   detected, because a false reboot is worse than the hang. A hung kernel is
   reset only by a hardware timer (Intel TCO, AMD SP5100) or the lockup
-  detectors.
+  detectors. AMD's timer is not fed on a machine that sleeps to idle, as it
+  would count through each sleep, so there the lockup detectors alone catch
+  a hung kernel.
 - glibc is 2.40 with upstream's maintained release branch applied as of
   2026-09-10 (`build/patches/glibc-2.40/`). Nothing moves the pin along the
   branch automatically, though `tools/check-source-currency.sh` reports when
