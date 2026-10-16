@@ -272,6 +272,15 @@ jobs:
       - name: Compositor tests
         run: tools/tests/compositor.sh
 
+      # Kryptik's patches and edits to dwl, compiled against the pinned wlroots' headers: a C
+      # error in them shows here, not hours into a Distro build.
+      - name: dwl compiles with Kryptik's edits
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwayland-dev libwayland-bin libxkbcommon-dev libinput-dev \
+              libpixman-1-dev libdrm-dev libudev-dev pkg-config
+          tools/tests/dwl-compile.sh
+
       # The static proxy under strace: every call it makes is on its seccomp list.
       - name: The proxy's calls are on its filter's list
         run: |
