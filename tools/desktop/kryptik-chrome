@@ -48,6 +48,9 @@
 ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
 SOUND=/usr/libexec/kryptik/kryptik-sound
+# The mixer's record of who holds the microphone (kryptik-sound.c), group kryptik's to read: the
+# watcher reads it each second and asks the mixer only when it changes.
+MICREC=/run/kryptik-sound/control/microphone
 # havoc takes the program as plain arguments: it has no -e, and exits on an unknown option.
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
@@ -116,22 +119,50 @@ status_to_focus() {
     done
 }
 
-# Whether the device-mapper device NAME is suspended, from sysfs alone.
+# Whether the device-mapper device NAME is suspended, from sysfs alone. Read with read, not cat:
+# the watcher asks each second, and a fork for each mapping costs a laptop its idle.
 dm_suspended() {
-    for d in /sys/block/dm-*; do
-        [ "$(cat "$d/dm/name" 2>/dev/null)" = "$1" ] || continue
-        [ "$(cat "$d/dm/suspended" 2>/dev/null)" = 1 ]
+    for d in "$SYS_BLOCK"/dm-*; do
+        dm_name="" dm_susp=""
+        IFS= read -r dm_name 2>/dev/null < "$d/dm/name"
+        [ "$dm_name" = "$1" ] || continue
+        IFS= read -r dm_susp 2>/dev/null < "$d/dm/suspended"
+        [ "$dm_susp" = 1 ]
         return
     done
     return 1
 }
 # The zones whose volume lost its key with a sleep and waits, frozen, for its passphrase.
 waiting_zones() {
-    for d in /sys/block/dm-*; do
-        [ "$(cat "$d/dm/suspended" 2>/dev/null)" = 1 ] || continue
-        n="$(cat "$d/dm/name" 2>/dev/null)"
-        case "$n" in kryptik-zone-*) printf '%s\n' "${n#kryptik-zone-}" ;; esac
+    for d in "$SYS_BLOCK"/dm-*; do
+        dm_name="" dm_susp=""
+        IFS= read -r dm_susp 2>/dev/null < "$d/dm/suspended"
+        [ "$dm_susp" = 1 ] || continue
+        IFS= read -r dm_name 2>/dev/null < "$d/dm/name"
+        case "$dm_name" in kryptik-zone-*) printf '%s\n' "${dm_name#kryptik-zone-}" ;; esac
     done
+}
+# power_now NAME and camera_now: what power_field and camera_zone say, put in $pf and $cz by the
+# shell itself, for the watcher that looks each second.
+power_now() {
+    pf=""
+    [ -r "$POWER" ] || return 0
+    while IFS= read -r pl; do
+        case "$pl" in "$1="*) pf="${pl#"$1="}"; return 0 ;; esac
+    done < "$POWER"
+}
+camera_now() {
+    cz=""
+    [ -r "$CAMERA" ] || return 0
+    while IFS= read -r cl; do
+        case "$cl" in "zone "*) cz="${cl#zone }"; return 0 ;; esac
+    done < "$CAMERA"
+}
+# bash's own sleep where it loads, so a loop that sleeps each second forks nothing for it; a
+# shell without enable keeps the program.
+sleep_builtin() {
+    command -v enable > /dev/null 2>&1 && enable -f /usr/lib/bash/sleep sleep 2> /dev/null
+    return 0
 }
 
 run_status() {
@@ -162,6 +193,7 @@ run_status() {
     (
         exec 9> "$CONSENT/watcher.lock" 2>/dev/null || exit 0
         flock -n 9 || exit 0
+        sleep_builtin
         # Writes create, never follow or clobber: group kryptik can plant links here.
         # That also makes each .dialog claim one exclusive create.
         set -C
@@ -185,30 +217,38 @@ run_status() {
     # While a zone holds the microphone, a window of the chrome's says so, and when it records;
     # as the battery reaches 10% and again 5%, a window warns of the power-off at 3%; and once
     # the state partition is back after a sleep, a window asks for each waiting zone's passphrase.
+    # Each look reads files and forks nothing while nothing changes.
     (
-        shown="" filming="" warned="" suspended="" blocks="" seen=""
-        left="$(cat "$LEFT" 2>/dev/null)"
+        shown="" filming="" warned="" suspended="" blocks="" seen="" mic="" rec="" recseen=""
+        left=""; IFS= read -r left 2>/dev/null < "$LEFT"
+        sleep_builtin
         while :; do
-            mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
+            # The mixer is asked who holds the microphone only when its record changes: the record
+            # says that something changed, the mixer's answer says what.
+            rec=""; IFS= read -r rec 2>/dev/null < "$MICREC"
+            if [ "$rec" != "$recseen" ]; then
+                recseen="$rec"
+                mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
+            fi
             if [ -n "$mic" ] && [ "$mic" != "$shown" ]; then
                 "$TERMINAL" /usr/bin/kryptik-chrome --microphone "$mic" &
             fi
             shown="$mic"
-            cam="$(camera_zone)"
-            if [ -n "$cam" ] && [ "$cam" != "$filming" ]; then
-                "$TERMINAL" /usr/bin/kryptik-chrome --camera "$cam" &
+            camera_now
+            if [ -n "$cz" ] && [ "$cz" != "$filming" ]; then
+                "$TERMINAL" /usr/bin/kryptik-chrome --camera "$cz" &
             fi
-            filming="$cam"
-            w="$(power_field warning)"
-            if [ -n "$w" ] && [ "$w" != "$warned" ]; then
+            filming="$cz"
+            power_now warning
+            if [ -n "$pf" ] && [ "$pf" != "$warned" ]; then
                 "$TERMINAL" /usr/bin/kryptik-chrome --battery &
             fi
-            warned="$w"
+            warned="$pf"
             # Opened when the state partition comes back from a suspension seen here: kryptikd
             # suspends each zone's volume first, and a look in between would find a zone waiting
             # with the state partition up and start a terminal that then stops on it. A sleep that
             # failed after a volume's key went, the state partition never suspended, counts itself.
-            l="$(cat "$LEFT" 2>/dev/null)"
+            l=""; IFS= read -r l 2>/dev/null < "$LEFT"
             if dm_suspended kryptik-state; then
                 suspended=1
             elif [ -n "$suspended" ] || [ "$l" != "$left" ]; then
