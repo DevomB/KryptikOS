@@ -57,12 +57,13 @@ git -C "$KRYPTIK_ROOT" archive --format=tar.gz --prefix="kryptik-${commit:0:12}/
     -o "$OUT/kryptik-${commit:0:12}.tar.gz" "$commit"
 ok "the repository at ${commit:0:12}"
 
-# kryptikd and kryptik-wlproxy link their crates statically, so the crates are corresponding source.
-for ws in compartments/kryptikd compositor; do
+# kryptikd, kryptik-wlproxy and kryptik-stick link their crates statically, so the crates are
+# corresponding source.
+for ws in compartments/kryptikd compositor tools/stick; do
     (cd "${KRYPTIK_ROOT}/${ws}" && cargo vendor --locked --versioned-dirs "$OUT/crates/${ws##*/}" > /dev/null) \
         || die "cargo vendor failed in ${ws}"
 done
-ok "the crates of both Rust workspaces"
+ok "the crates of the three Rust workspaces"
 
 # A crate a software image is built with, cbindgen for the browser, comes with the crates its own lock
 # names, which fetch-sources.sh fetched into sources/images/crates/: each, held to that lock's hash.
