@@ -1628,6 +1628,11 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
             let dir = std::path::Path::new(up::STATE_DIR);
             let running = up::running_version();
             let mut said = verb.to_string();
+            // kryptik-update reads the stage while it applies it, which fetch and forget may clear.
+            if matches!(verb, "update-fetch" | "update-forget") && jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
+                reply(&conn, "error: an update is being applied\n");
+                return None;
+            }
             let done = match verb {
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
@@ -1642,11 +1647,6 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                         .map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n"))
                 }
                 "update-forget" => {
-                    // kryptik-update reads the stage while it applies it.
-                    if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
-                        reply(&conn, "error: an update is being applied\n");
-                        return None;
-                    }
                     up::forget(dir).map(|v| {
                         format!("{v} is no longer fetched, and what had arrived of it is deleted; automatic fetching passes it over, and `kryptik update fetch` asks for it again\n")
                     })
