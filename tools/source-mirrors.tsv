@@ -18,6 +18,9 @@ wayland-protocols  https://deb.debian.org/debian/pool/main/w/wayland-protocols/w
 wayland-protocols  https://distfiles.alpinelinux.org/distfiles/edge/wayland-protocols-{VER}.tar.xz                    -
 xkeyboard-config   https://deb.debian.org/debian/pool/main/x/xkeyboard-config/xkeyboard-config_{VER}.orig.tar.xz      .asc
 pixman             https://deb.debian.org/debian/pool/main/p/pixman/pixman_{VER}.orig.tar.gz                          -
+libdrm             https://ftp2.osuosl.org/pub/blfs/conglomeration/libdrm/libdrm-{VER}.tar.xz                         -
+# Void names its package after the series, so the row moves with a series change.
+wlroots            https://sources.voidlinux.org/wlroots0.19-{VER}/wlroots-{VER}.tar.gz                              -
 hicolor-icon-theme https://deb.debian.org/debian/pool/main/h/hicolor-icon-theme/hicolor-icon-theme_{VER}.orig.tar.xz  .asc
 hicolor-icon-theme https://distfiles.alpinelinux.org/distfiles/v3.22/hicolor-icon-theme-{VER}.tar.xz                  -
 cairo              https://ftp2.osuosl.org/pub/blfs/conglomeration/cairo/cairo-{VER}.tar.xz                           -
