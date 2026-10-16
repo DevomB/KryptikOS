@@ -332,6 +332,12 @@ fn environment_is_allowlist() {
     assert_eq!(get("LC_ALL"), Some("C.UTF-8"));
     assert_eq!(get("KRYPTIK_ZONE"), Some("t"));
     assert_eq!(get("USER"), Some("root"));
+    assert_eq!(get("GLIBC_TUNABLES"), Some("glibc.cpu.x86_shstk=permissive"));
+    // The caller's own tunables never reach the zone.
+    let caller = vec![("GLIBC_TUNABLES".to_string(), "glibc.cpu.hwcaps=-AVX2".to_string())];
+    let env = zone_environment(&z("routed"), "/home/t", &caller, false);
+    assert_eq!(env.iter().filter(|(n, _)| n == "GLIBC_TUNABLES").count(), 1);
+    assert!(env.iter().any(|(n, v)| n == "GLIBC_TUNABLES" && v == "glibc.cpu.x86_shstk=permissive"));
 }
 
 #[test]

@@ -1510,6 +1510,10 @@ pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)], wa
         ("LOGNAME".into(), "root".into()),
         ("SHELL".into(), "/bin/sh".into()),
         ("KRYPTIK_ZONE".into(), zone.name.clone()),
+        /* glibc (--enable-cet) refuses, in a process with a shadow stack, a library without the
+         * CET note, which an image may hold (Firefox's libxul and NSPR). Lenient, such a program
+         * runs on without its shadow stack where the CPU has one, rather than fail to load it. */
+        ("GLIBC_TUNABLES".into(), "glibc.cpu.x86_shstk=permissive".into()),
     ];
     for (k, v) in caller {
         if ENV_PASSTHROUGH.contains(&k.as_str()) && env_value_is_sane(v) {
