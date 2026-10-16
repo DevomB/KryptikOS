@@ -287,14 +287,14 @@ PINNED_FPRS=(
     # its release-keys repository serves. Each release is signed by one releaser; this one signs 24.22.0.
     "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C"   # Richard Lau, Node.js
     # https://sourceware.org/pub/lvm2/mcsontos.pubkey.asc (retrieved 2026-10-16), the key file beside
-    # the releases, there since 2026-09-30.
+    # the releases, there since 2026-09-30: the key already signing them, 2.03.42 among them.
     "D501A478440AE2FD130A1BE8B9112431E509039F"   # Marian Csontos, lvm2
     # https://facebook.github.io/zstd/signing-key.asc (retrieved 2026-10-16), on zstd's own site;
     # zstd.net/signing-key.asc, the address its maintainers gave in facebook/zstd#2520, redirects there.
     "4EF4AC63455FC9F4545D9B7DEF8FE99528B52FFD"   # Zstandard Release Signing Key, zstd
     # zlib.net links its "PGP key" to https://madler.net/madler/pgp.html (retrieved 2026-10-16), the
     # author's own page, which carries this key armoured.
-    "5ED46A6721D365587791E2AA783FCD8E58BCAFBA"   # Mark Adler, zlib (DSA-1024: weak)
+    "5ED46A6721D365587791E2AA783FCD8E58BCAFBA"   # Mark Adler, zlib (DSA-1024 with SHA-1: weak)
     # https://gitlab.freedesktop.org/svu.gpg (retrieved 2026-10-16) serves this one under his account
     # on the forge xkeyboard-config is developed on; it signs 2.48's tag and tarball.
     "FFB4CCD275AAA422F5F9808E0661D98FC933A145"   # Sergey Udaltsov, xkeyboard-config
