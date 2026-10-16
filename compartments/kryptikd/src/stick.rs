@@ -191,6 +191,18 @@ fn dmsetup(args: &[&str]) -> Result<(), String> {
     Err(format!("dmsetup {}: {}", args[0], String::from_utf8_lossy(&out.stderr).trim()))
 }
 
+/// The mapping's table, in two targets: device-mapper passes a lone target's ioctls on to a disk
+/// it maps whole, SCSI commands (SG_IO) among them, which a stick given whole would take from its
+/// zone. The second target is the last 64 KiB, a multiple of any sector size a disk can have.
+fn table(p: &Partition) -> Result<String, String> {
+    const TAIL: u64 = 128;
+    if p.sectors <= TAIL {
+        return Err(format!("{} is too small to give", p.name));
+    }
+    let head = p.sectors - TAIL;
+    Ok(format!("0 {head} linear /dev/{n} 0\n{head} {TAIL} linear /dev/{n} {head}", n = p.name))
+}
+
 /// The partition `name` given to `zone`, read-only unless `writable`: its mapping made, holding
 /// the partition so nothing else mounts it, and the zone's record written.
 pub fn grant(zone: &crate::zone::Zone, name: &str, writable: bool) -> Result<Grant, String> {
@@ -207,7 +219,7 @@ pub fn grant(zone: &crate::zone::Zone, name: &str, writable: bool) -> Result<Gra
     }
     let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     let p = partition_in(Path::new("/sys"), &mounts, name)?;
-    let table = format!("0 {} linear /dev/{} 0", p.sectors, p.name);
+    let table = table(&p)?;
     let mut args = vec!["create", map.as_str(), "--table", table.as_str()];
     if !writable {
         args.push("--readonly");
