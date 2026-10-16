@@ -64,10 +64,9 @@ laptop_of() {
     l="$(section laptop "$1")"
     bl="$(awk '$1 == "backlight" { printf "%s%s (%s)", sep, $2, $4; sep = ", " }' <<<"$l")"
     [[ -z "$bl" ]] || parts+=("backlight ${bl}")
-    # A mouse's or a headset's battery is the device's, not the machine's. The
-    # kind is the line's last word, as a status may be two ("Not charging").
+    # A mouse's or a headset's battery is the device's, not the machine's.
     bat="$(awk '$1 == "power_supply" && $4 == "Battery" && $6 == "System" {
-        printf "%s%s%s", sep, $2, ($NF == "-" ? "" : " (" $NF ")"); sep = ", " }' <<<"$l")"
+        printf "%s%s%s", sep, $2, ($10 == "-" ? "" : " (" $10 ")"); sep = ", " }' <<<"$l")"
     [[ -z "$bat" ]] || parts+=("battery ${bat}")
     mains="$(awk '$1 == "power_supply" && $4 == "Mains" { printf "%s%s", sep, $2; sep = " " }' <<<"$l")"
     [[ -z "$mains" ]] || parts+=("mains ${mains}")

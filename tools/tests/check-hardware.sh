@@ -85,7 +85,7 @@ nhlt: 2 endpoints, pdm 1, ssp 1
 == laptop ==
 backlight intel_backlight type raw max 19200
 power_supply AC type Mains online 1
-power_supply BAT0 type Battery scope System status Discharging capacity 87 technology Li-ion
+power_supply BAT0 type Battery scope System capacity 87 technology Li-ion status Discharging
 sleep states: freeze mem
 sleep mem: s2idle [deep]
 
@@ -160,10 +160,10 @@ has as-is "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); 
 has as-is "  sleep      mem is deep; s2idle also offered" "what a sleep to memory is, and what else is offered"
 has as-is "  camera     USB video 13d3:5411, driven by uvcvideo" "a USB camera, once, by its device's IDs"
 has as-is "  bluetooth  USB 8087:0026, not driven" "a Bluetooth controller, once, and that nothing drives it"
-vary mouse '/^power_supply BAT0/a power_supply hidpp_battery_0 type Battery scope Device status Discharging capacity 40 technology -'
+vary mouse '/^power_supply BAT0/a power_supply hidpp_battery_0 type Battery scope Device capacity 40 technology - status Discharging'
 has mouse "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "a mouse's battery is not the machine's"
 vary resting 's/status Discharging/status Not charging/'
-has resting "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "a status of two words leaves the kind"
+has resting "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "a status of two words, last on the line, leaves the kind"
 vary desktop '/^backlight /d; /^power_supply /d; /^"Lid Switch"/d'
 has desktop "  laptop     none of a laptop's parts: no backlight, battery or lid switch" "a desktop has none of them, and says so"
 vary s2idle 's/^sleep mem: .*/sleep mem: [s2idle]/'
