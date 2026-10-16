@@ -32,10 +32,11 @@ SOURCE_DATE_EPOCH ?= $(shell git -C "$(ROOT)" log -1 --format=%ct 2>/dev/null ||
 ifneq ($(SOURCE_DATE_EPOCH),)
 export SOURCE_DATE_EPOCH
 endif
-# kryptikd and kryptik-wlproxy are static Rust binaries built outside the
-# chroot and installed by stage 04.
+# kryptikd, kryptik-wlproxy and kryptik-stick are static Rust binaries built
+# outside the chroot and installed by stage 04.
 KRYPTIK_KRYPTIKD_BIN ?=
 KRYPTIK_WLPROXY_BIN ?=
+KRYPTIK_STICK_BIN ?=
 
 export KRYPTIK_ROOT := $(ROOT)
 # Read through the shell: versions.env is shell syntax, not make syntax.
@@ -81,6 +82,7 @@ CHROOT_ENV := KRYPTIK_ROOT="$(ROOT)" \
               $(if $(SOURCE_DATE_EPOCH),SOURCE_DATE_EPOCH="$(SOURCE_DATE_EPOCH)") \
               KRYPTIK_KRYPTIKD_BIN="$(KRYPTIK_KRYPTIKD_BIN)" \
               KRYPTIK_WLPROXY_BIN="$(KRYPTIK_WLPROXY_BIN)" \
+              KRYPTIK_STICK_BIN="$(KRYPTIK_STICK_BIN)" \
               TERM="$(TERM)" \
               NO_COLOR="$(NO_COLOR)" \
               $(if $(CARGO_TARGET_DIR),CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)") \
@@ -92,11 +94,11 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: help paths check sources lock verify verify-provenance check-pins \
         validate-kernel validate-kernel-hardened validate-kernel-boot check-kernel-eol \
         resolve-kernel-config check-kernel-hardening \
-        toolchain temp-tools sysroot-ready system kernel \
+        toolchain temp-tools sysroot-ready system images kernel \
         chroot chroot-enter chroot-umount chroot-status \
         iso media production-pair ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
         media-refused-foreign-keys install-test integrity-test update-test \
-        state-test keyboard-test zones-test gui-test acceptance \
+        state-test keyboard-test zones-test gui-test suspend-test sound-test power-test acceptance \
         zones zone-test launcher-test zone-tests cli-test serve-test \
         test test-libc-unwind smoke-userspace \
         audit-artifacts audit-artifacts-strict manifest verify-manifest source-bundle \
@@ -112,6 +114,7 @@ help:
 	@echo "  make temp-tools  stage 02: temporary tools"
 	@echo "                   (stages 01 and 02 are UNPRIVILEGED - run them as you)"
 	@echo "  make system      stage 04: hardened base system"
+	@echo "  make images      software images over the base system (build/images)"
 	@echo "  make kernel      stage 05: hardened kernel"
 	@echo "  make iso         stage 06: verified root image, signed kernels, USB image + ISO"
 	@echo "  make media       stage 06 only (sysroot and kernel already built)"
@@ -133,6 +136,9 @@ help:
 	@echo "  make integrity-test  Secure Boot enforced, foreign boot file refused, root tamper refused, recovery"
 	@echo "  make update-test PAYLOAD_A=.. PAYLOAD_B=..  A/B update, rollback, refusals, interruptions"
 	@echo "  make state-test | zones-test | gui-test    the state partition, zones, the desktop"
+	@echo "  make suspend-test  sleep with the state partition's key dropped, and the way back at the lock"
+	@echo "  make sound-test  the sound card, its codec bound at boot"
+	@echo "  make power-test  the power source followed, and a critical battery's orderly power-off"
 	@echo "  make keyboard-test  a keyboard layout at the passphrase prompt, on the console, for the session"
 	@echo
 	@echo "  make verify      verify upstream GPG signatures on fetched sources"
@@ -175,6 +181,7 @@ help:
 	@echo "  KRYPTIK_BUILD_COMMIT = $(KRYPTIK_BUILD_COMMIT)"
 	@echo "  KRYPTIK_KRYPTIKD_BIN = $(if $(KRYPTIK_KRYPTIKD_BIN),$(KRYPTIK_KRYPTIKD_BIN),(not set - the image will have no kryptikd))"
 	@echo "  KRYPTIK_WLPROXY_BIN  = $(if $(KRYPTIK_WLPROXY_BIN),$(KRYPTIK_WLPROXY_BIN),(not set - zones will have no display))"
+	@echo "  KRYPTIK_STICK_BIN    = $(if $(KRYPTIK_STICK_BIN),$(KRYPTIK_STICK_BIN),(not set - zones will read no USB stick))"
 	@echo "  KRYPTIK_CHANNEL  = $${KRYPTIK_CHANNEL:-(not set - the image fetches no updates)}"
 	@echo "  KRYPTIK_ROLE     = $(KRYPTIK_ROLE)"
 	@echo "  KRYPTIK_KEYS     = $(if $(KRYPTIK_KEYS),$(KRYPTIK_KEYS),(not set - only a development image can be built))"
@@ -273,6 +280,10 @@ sysroot-ready:
 system: sysroot-ready
 	@$(CHROOT_RUN) run /kryptik/build/stages/04-base-system.sh
 
+# Root for the overlay each image builds through; its rows run in the chroot over it.
+images: system
+	@$(SUDO) env $(CHROOT_ENV) "$(STAGES)"/04-images.sh
+
 # The EOL check needs the network and the chroot has none, so it runs here first.
 kernel: check-kernel-eol system
 	@$(CHROOT_RUN) run /kryptik/build/stages/05-kernel.sh
@@ -362,6 +373,18 @@ zones-test:
 gui-test:
 	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
 	@"$(TOOLS)"/image/gui-test.sh --usb "$(MEDIA_USB)"
+
+suspend-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/suspend-test.sh --usb "$(MEDIA_USB)"
+
+sound-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/sound-test.sh --usb "$(MEDIA_USB)"
+
+power-test:
+	@test -n "$(MEDIA_USB)" || { echo "no USB image under $(KRYPTIK_WORK)/images; run make iso"; exit 1; }
+	@"$(TOOLS)"/image/power-test.sh --usb "$(MEDIA_USB)"
 
 # Every acceptance suite, one verdict, as root. MEDIA_USB/MEDIA_ISO are passed
 # on only when named explicitly; otherwise acceptance.sh tests the

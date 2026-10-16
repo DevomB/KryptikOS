@@ -11,6 +11,9 @@ mode = "none"
 [storage]
 mode   = "encrypted"
 volume = "/var/lib/kryptik/volumes/vault.luks"
+# No USB stick is ever given to this zone: what holds the keys reads no filesystem anyone
+# may have written, and copies nothing out to one.
+removable = false
 
 [policy]
 seccomp  = "policy/vault.seccomp"
@@ -18,6 +21,15 @@ seccomp  = "policy/vault.seccomp"
 [limits]
 memory_max = "2G"
 pids_max   = 128
+
+[sound]
+# No socket to zone 0's mixer: secrets have no use for sound, and a sound is a way out to the
+# room that nothing mediates.
+play = false
+
+[camera]
+# Never granted the camera: secrets have no use for it, and what it sees is the room.
+use = false
 
 [identity]
 # Root inside maps to host uid/gid 393216, nobody to 458750; fixed, never derived from zone order.

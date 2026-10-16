@@ -52,109 +52,8 @@ tree_digest() {
     done | LC_ALL=C sort -z | xargs -0r sha256sum | sed "s|  ${KRYPTIK_ROOT}/|  |" | sha256_of_stdin
 }
 
-# --- hardening exceptions ---------------------------------------------------
-
-# The flags to drop for a package, from hardening-exceptions.txt.
-exception_flags_for() {
-    local pkg="$1" f="${KRYPTIK_ROOT}/build/config/hardening-exceptions.txt"
-    [[ -f "$f" ]] || return 0
-    awk -v p="$pkg" '!/^[[:space:]]*#/ && $1 == p { print $2 }' "$f"
-}
-
-# Hardening minus the package's exceptions; a -final row takes its package's.
-set_flags_for() {
-    local pkg="$1" drop
-    export CFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING}"
-    export CXXFLAGS="${KRYPTIK_OPT} ${KRYPTIK_CFLAGS_HARDENING} ${KRYPTIK_CXXFLAGS_HARDENING}"
-    export LDFLAGS="${KRYPTIK_LDFLAGS_HARDENING}"
-
-    while read -r drop; do
-        [[ -z "$drop" ]] && continue
-        warn "${pkg}: dropping ${drop} (justified exception)"
-        CFLAGS="${CFLAGS//${drop}/}"
-        CXXFLAGS="${CXXFLAGS//${drop}/}"
-        LDFLAGS="${LDFLAGS//${drop}/}"
-    done < <(exception_flags_for "${pkg%-final}")
-
-    export CFLAGS CXXFLAGS LDFLAGS
-}
-
-# --- step machinery ---------------------------------------------------------
-
-# The shared step() calls this after printing the tail of a failed log.
-step_failure_hint() {
-    # Two locals: one `local` expands all its words before assigning any.
-    local name="$1"
-    local logfile="${LOGS}/${STAMP_PREFIX}${name}.log"
-
-    # The error can be thousands of lines above the tail; show likely causes.
-    if [[ -f "$logfile" ]]; then
-        local hits
-        hits="$(grep -nE '^(make(\[[0-9]+\])?: \*\*\*|.*: \*\*\* )|\[ERROR\]|undefined (symbol|reference)|No such file or directory|Permission denied|command not found|configure: error|fatal error|cannot find -l|ModuleNotFoundError|ImportError|^[A-Za-z_.]*Error:|Could not build' \
-                "$logfile" 2>/dev/null | tail -15)"
-        if [[ -n "$hits" ]]; then
-            err ""
-            err "Lines in ${logfile} that look like the actual cause:"
-            printf '%s\n' "$hits" | sed 's/^/    /' >&2
-        fi
-    fi
-
-    err ""
-    err "Check the actual error before assuming it is the hardening flags."
-    err "The first stage 04 failure looked like one and was not - it was a"
-    err "missing native glibc and no generated locales."
-    err ""
-    err "If it IS a hardening incompatibility, add an entry to"
-    err "build/config/hardening-exceptions.txt WITH a justification, so"
-    err "only that flag is dropped and only for that package."
-}
-
-# Native build: no --host, as this runs on the target.
-native_build() {
-    local tarball="$1" dirname="$2"; shift 2
-    local src; src="$(unpack "$tarball" "$dirname")"
-    cd "$src"
-    ./configure --prefix=/usr "$@"
-    make
-    make install
-}
-
-# meson packages; the Wayland stack is meson-only. --buildtype=plain leaves the
-# flags to the hardening CFLAGS (release adds -O3 and -DNDEBUG), and
-# --wrap-mode=nodownload keeps a subproject from fetching unlocked sources.
-meson_build() {
-    local tarball="$1" dirname="$2"; shift 2
-    local src; src="$(unpack "$tarball" "$dirname")"
-    cd "$src"
-    meson setup build --prefix=/usr --buildtype=plain --wrap-mode=nodownload "$@"
-    ninja -C build
-    ninja -C build install
-}
-
-# cmake only generates json-c's build files (cryptsetup needs json-c for LUKS2
-# headers) and stays out of the image. The chroot runs Kitware's binary, pinned
-# in sources.lock and never installed, instead of a long source build; where it
-# cannot run, s_cmake builds from source with its bundled libraries. Unpacked
-# on demand: the build tree is cleared between runs, and a resumed json-c step
-# must not rely on a skipped cmake step.
-prebuilt_cmake() {
-    local dir="${BUILDDIR}/cmake-${V_CMAKE}-linux-x86_64"
-    if [[ ! -x "${dir}/bin/cmake" ]]; then
-        rm -rf "$dir"
-        tar -xf "${KRYPTIK_SOURCES}/cmake-${V_CMAKE}-linux-x86_64.tar.gz" -C "$BUILDDIR"
-    fi
-    [[ -x "${dir}/bin/cmake" ]] || return 1
-    "${dir}/bin/cmake" --version > /dev/null 2>&1 || return 1
-    printf '%s' "${dir}/bin/cmake"
-}
-
-# --- recipes ----------------------------------------------------------------
-# One file per step under build/recipes, sourced here. The build order is the
-# list below; a step's fingerprint is its function's text, wherever it lives.
-for recipe in "$(dirname "${BASH_SOURCE[0]}")/../recipes/"*.sh; do
-    # shellcheck source=/dev/null
-    source "$recipe"
-done
+# --- recipes, and the flags and helpers they build with (shared with the image stage) ---
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/recipes.sh"
 
 # --- build order: by dependency, not alphabetical ----------------------------
 PACKAGES=(
@@ -261,6 +160,8 @@ PACKAGES=(
     "ca-bundle"   "s_ca_bundle"
     # --- device firmware (ADR-012): what build/config/firmware.list names.
     "linux-firmware" "s_firmware $(sha256_of "${KRYPTIK_ROOT}/build/config/firmware.list" 2>/dev/null || echo none)"
+    # --- sound: the library zone 0's mixer and a zone's programs use (docs/design/laptop.md).
+    "alsa-lib"    "s_alsa_lib"
     # --- the desktop: build tools, the Wayland stack, compositor, applications.
     "meson"       "s_meson"
     "ninja"       "s_ninja"
@@ -279,6 +180,10 @@ PACKAGES=(
     "hwdata"      "s_hwdata"
     "libdisplay-info" "meson_build libdisplay-info-${V_LIBDISPLAY_INFO}.tar.xz libdisplay-info-${V_LIBDISPLAY_INFO}"
     "wlroots"     "s_wlroots"
+    # Software images build against the base system up to here (IMAGES_BASE in 04-images.sh). What
+    # follows is zone 0's own, which no image links or runs while it builds, so changing it rebuilds
+    # no image. A library, header or pkg-config file goes above this line: one added below rebuilds
+    # every image all the same, as the images' inputs list those the sysroot has.
     # dwl's three inputs are digests, so editing any of them rebuilds it.
     "dwl"         "s_dwl $(sha256_of "${KRYPTIK_ROOT}/build/desktop/dwl-config.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/build/desktop/zone-colours.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/dwl-zone-borders.py" 2>/dev/null || echo none)"
     "havoc"       "s_havoc"
@@ -286,7 +191,9 @@ PACKAGES=(
     "lynx"        "s_lynx"
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"
     # The desktop's own pieces; the proxy's path and hash are arguments, as for kryptikd.
-    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-lock.c" 2>/dev/null || echo none) ${V_DWL}"
+    "desktop"     "s_desktop ${KRYPTIK_WLPROXY_BIN:-none} $([[ -f "${KRYPTIK_WLPROXY_BIN:-}" ]] && sha256_of "${KRYPTIK_WLPROXY_BIN}" || echo absent) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-launch.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-session" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-chrome" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/wlprobe.c" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-lock.c" 2>/dev/null || echo none) ${V_DWL} $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/kryptik-display.c" 2>/dev/null || echo none) ${V_WLROOTS}"
+    # Zone 0's mixer and a zone's plugin to it; the sources' digest rebuilds them.
+    "sound"       "s_sound $(tree_digest "${KRYPTIK_ROOT}"/tools/sound/*)"
 
     # From here the steps configure the system rather than build packages.
     "etc"         "s_etc"
@@ -295,11 +202,12 @@ PACKAGES=(
     # After init, whose stage 2 scripts look for the database; before the
     # updater and efiboot, whose checks source the devices.sh it installs. The
     # digest covers the files the recipe reads by path, which declare -f cannot.
-    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf "${KRYPTIK_ROOT}"/build/config/keyboard-layouts)"
+    "services" "s_services $(tree_digest "${KRYPTIK_ROOT}"/build/services/*/* "${KRYPTIK_ROOT}"/build/service-scripts/*.sh "${KRYPTIK_ROOT}"/build/config/sysctl.d/*.conf "${KRYPTIK_ROOT}"/build/config/udev/*.rules "${KRYPTIK_ROOT}"/build/config/keyboard-layouts)"
     # Before the updater, whose check runs kryptik-update, which needs efiboot.
     "efiboot"     "s_efiboot $(sha256_of "${KRYPTIK_ROOT}/tools/efi/kryptik-efiboot.c" 2>/dev/null || echo none)"
     "netzone"     "s_netzone $(sha256_of "${KRYPTIK_ROOT}/tools/net/netzone-init.sh" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/sntp-offset.py" 2>/dev/null || echo none)-$(sha256_of "${KRYPTIK_ROOT}/tools/net/update-fetch.py" 2>/dev/null || echo none)"
     "installer"   "s_installer $(sha256_of "${KRYPTIK_ROOT}/tools/install/kryptik-install.sh" 2>/dev/null || echo none)"
+    "stick"       "s_stick ${KRYPTIK_STICK_BIN:-none} $([[ -f "${KRYPTIK_STICK_BIN:-}" ]] && sha256_of "${KRYPTIK_STICK_BIN}" || echo absent)"
     # The binary's path and hash, and a digest of the zone files: kryptikd
     # validates them at install time, so the two must move together.
     "kryptikd"    "s_kryptikd ${KRYPTIK_KRYPTIKD_BIN:-none} $([[ -f "${KRYPTIK_KRYPTIKD_BIN:-}" ]] && sha256_of "${KRYPTIK_KRYPTIKD_BIN}" || echo absent) $(tree_digest "${KRYPTIK_ROOT}"/compartments/zones/*.toml "${KRYPTIK_ROOT}"/compartments/zones/policy/*) $(sha256_of "${KRYPTIK_ROOT}/tools/kryptik" 2>/dev/null || echo none)"

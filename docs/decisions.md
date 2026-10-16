@@ -191,10 +191,11 @@ firmware from the verified root, so replacing it means re-signing the kernel.
 
 **Left out:** NVIDIA (nouveau needs tens of megabytes of GSP firmware per
 generation, and the firmware framebuffer gives those machines a display);
-Bluetooth and sound, which no zone uses yet. What is not on the list is not
-shipped, and the other way round the acceptance checks that every file a
-shipped module names (`MODULE_FIRMWARE`) and linux-firmware has ships, or that
-`build/config/firmware-accepted.txt` says why it does not.
+Bluetooth, and the firmware of sound DSPs, which nothing here drives yet.
+What is not on the list is not shipped, and the other way round the
+acceptance checks that every file a shipped module names (`MODULE_FIRMWARE`)
+and linux-firmware has ships, or that `build/config/firmware-accepted.txt`
+says why it does not.
 
 **CPU microcode** is the same decision. The early loader runs before any
 filesystem and there is no initramfs, so Intel and AMD microcode is built into
@@ -218,9 +219,9 @@ verifies or mounts the root; gives a console and keyboard before the root is
 mounted; or cannot work as a module (netfilter for the `net` zone, microcode,
 the watchdog, a few platform drivers that misbehave when loaded late).
 Everything else, including every network card, GPU and pointing device, is a
-signed module that eudev loads at coldplug. What Kryptik never uses (sound,
-network filesystems, CardBus, AGP, software RAID, conntrack helpers) is not
-built. The rule heads `build/config/kernel/boot.fragment`, and stage 05 fails
+signed module that eudev loads at coldplug. What Kryptik never uses (network
+filesystems, CardBus, AGP, software RAID, conntrack helpers) is not built.
+The rule heads `build/config/kernel/boot.fragment`, and stage 05 fails
 a kernel larger than `build/config/kernel/size-budget`.
 
 **Why:** a built-in driver is on every machine whether or not its device is. A
@@ -259,7 +260,7 @@ firmware's boot entries and a judged trial, not a loader's menu.
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
 
-## ADR-015 (proposed): Applications ship as signed images beside the root
+## ADR-015: Applications ship as signed images beside the root
 
 The root keeps the base system: what zone 0 runs and what every zone needs.
 Applications (the browser and its toolkit, a mail client, a document viewer,
@@ -292,7 +293,7 @@ ephemeral zones); another distribution's userland in a zone (gives up
 ADR-001 where the applications run); everything on the root (does not fit
 the slots of machines already installed).
 
-## ADR-016 (proposed): Firefox in zones, rendering in software; the GPU and X11 by zone
+## ADR-016: Firefox in zones, rendering in software; the GPU and X11 by zone
 
 The browser is Firefox ESR, built by stage 04's GCC for Wayland alone, on
 GTK 3 without X11 or D-Bus, and run with its own seccomp sandbox inside the
@@ -439,56 +440,53 @@ and the clock with every other zone.
 and `CAP_NET_ADMIN` in a zone; any setting on the state partition that could
 give an anonymous zone a clearnet route.
 
-## ADR-021 (proposed): Sound is mixed in zone 0; Bluetooth carries audio from a zone of its own; input methods run per zone
+## ADR-021: Sound is mixed in zone 0, and a zone records only once granted the microphone
 
-Sound drivers are built as signed modules, and Intel's SOF firmware comes
-from the SOF project's releases, a second firmware source beside
-linux-firmware. A mixer in zone 0, `kryptik-sound`, runs as its own user
-and reads one fixed-format stream per zone (48 kHz, stereo, 16-bit) from a
-socket kryptikd binds into the zone. A zone records only after a gesture in
-the chrome grants it the microphone, one zone at a time, and the chrome
-shows it. Bluetooth, when it comes, runs in a zone of its own with its own
-bus, after a kernel patch lets one network namespace use `AF_BLUETOOTH`;
-it carries audio only, never keyboards. Input methods run inside each zone,
-and the compositor routes their keys and commits to that zone's surfaces
-alone; the virtual keyboard is never offered to a zone
-([the laptop](design/laptop.md)).
+Sound drivers are built as signed modules. A mixer in zone 0,
+`kryptik-sound`, runs as its own user in the `audio` group and reads one
+fixed-format stream per zone (48 kHz, stereo, 16-bit) from a socket kryptikd
+binds into the zone. A zone records only after a gesture in the chrome
+grants it the microphone, one zone at a time, until the zone stops or the
+user takes it back, and the chrome shows it
+([the laptop](design/laptop.md#sound)). ADR-027 decides Bluetooth, and
+ADR-028 input methods.
 
-This amends ADR-013, which lists sound among what is never built, and
-ADR-012, which leaves sound and Bluetooth firmware out.
+Intel's Sound Open Firmware stays a named gap. Laptops whose microphones or
+codecs sit behind Intel's audio DSP need its firmware and topology files,
+which the SOF project publishes apart from linux-firmware; shipping them is
+a second firmware source, and amends ADR-012 when it comes.
 
 **Why:** a fixed format leaves zone 0 nothing to parse, and the microphone's
 gate stays in trusted code; a sound zone would gate the microphone from the
-place an attacker controls. The kernel refuses Bluetooth sockets outside the
-initial network namespace, and bluetoothd faces a radio and could type into
-the chrome through uhid. An input method shared by all zones would learn
-from every zone and offer one zone's words in another.
+place an attacker controls.
 
-**Cost:** sound drivers, alsa-lib and a new daemon in zone 0; a firmware
-source that is not linux-firmware; a Kryptik kernel patch for Bluetooth,
-rebased with linux-hardened (ADR-009); no Bluetooth keyboards; compositor
-work to route input methods by zone.
+**Cost:** sound drivers, alsa-lib and a new daemon in zone 0; and until SOF
+ships, a laptop whose audio sits behind Intel's DSP has only what the HD
+Audio driver reaches without it, and USB audio.
 
-**Rejected:** PipeWire in zone 0 with a socket per zone; a sound zone;
-bluetoothd in zone 0; one input method for all zones.
+**Rejected:** PipeWire in zone 0 with a socket per zone; a sound zone.
 
-## ADR-022 (proposed): Suspend wipes the disk keys
+## ADR-022: Suspend wipes the disk keys
 
-Before the machine sleeps, the launch daemon locks the screen, freezes every
-zone, and suspends the state partition and every open zone volume with
-their keys wiped (`cryptsetup luksSuspend`). At resume the lock asks for the
-state partition's passphrase, never the TPM, and each zone stays frozen
-until its own passphrase is given. Everything on the resume path runs from
-the verified root and `/run`. Hibernation stays off. The threat model
-changes: a suspended machine holds no disk key, though memory still holds
-what the zones were using ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
+Before the machine sleeps, the screen locks, and the launch daemon freezes
+every zone, lets the clean page cache go, and suspends each open zone volume
+and then the state partition with its key wiped (`cryptsetup luksSuspend`).
+At resume the lock asks for the state partition's passphrase, never the TPM,
+and the zones without a volume thaw once it is given; a zone on a volume
+stays frozen until its own passphrase. Everything on the resume path runs
+from the verified root, `/run`, `/dev`, `/proc` and `/sys`. Hibernation
+stays off. The threat model changes: a suspended machine holds no disk key
+and no cached page of a zone volume's files, though memory still holds what
+the zones' processes held, the files they had mapped included ([the laptop](design/laptop.md#suspend-and-resume-with-the-keys-dropped)).
 
-**Why:** a laptop is suspended far more often than it is off, and today a
-suspended Kryptik keeps every key in RAM.
+**Why:** a laptop is suspended far more often than it is off, and with the
+key in RAM, whoever gets past the lock of a suspended machine, or into its
+memory, has the state partition.
 
-**Cost:** a passphrase at every resume, and one for each zone the user
-wants back; a lock client in zone 0; zone 0 programs that touch `/var`
-stall until resume.
+**Cost:** a passphrase at every resume, and one more for each zone on a
+volume when the user goes back to it; a lock client in zone 0 that talks
+to the launch daemon itself; zone 0 programs that touch `/var` stall until
+resume, and the launch daemon answers only the lock meanwhile.
 
 **Rejected:** resuming with the TPM, which would let whoever holds the
 machine resume it; keeping the state partition's key while dropping only
@@ -612,9 +610,9 @@ driver by alias, which hands every device's descriptors to it at plug-in.
 Kryptik 1.0 builds no Bluetooth. Calls use a USB or wired headset, or a
 Bluetooth headset whose USB dongle presents itself as a USB sound card,
 all through zone 0's mixer. After 1.0, Bluetooth runs in a zone of its
-own, as ADR-021 has it, with a Kryptik kernel patch that lets that zone's
-network namespace make Bluetooth sockets and has the Bluetooth capability
-checks ask that namespace's user namespace. It carries a headset's audio
+own, with a Kryptik kernel patch that lets that zone's network namespace
+make Bluetooth sockets and has the Bluetooth capability checks ask that
+namespace's user namespace. It carries a headset's audio
 alone, to and from the mixer as fixed-format streams, and its modules load
 only while the user has Bluetooth on in the chrome
 ([Bluetooth](design/bluetooth.md)). That is the direction, not yet the
@@ -651,9 +649,6 @@ any grab, so no input method sees or swallows them, and a candidate list
 is held inside its zone's window, as a zone's popups are
 ([input methods](design/input-methods.md)). That is the direction, not yet
 the code: dwl's relay is weighed again when the work starts.
-
-This amends ADR-021, whose input methods were never to be offered the
-virtual keyboard.
 
 **Why:** fcitx5 sends every key it lets pass back through the virtual
 keyboard and starts without one only to do nothing, and IBus does not speak

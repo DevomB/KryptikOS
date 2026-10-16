@@ -31,6 +31,7 @@ mode = "none"          # a namespace with only loopback, not a firewall rule
 [storage]
 mode   = "encrypted"   # opened when the zone starts, closed (key gone) when it stops
 volume = "/var/lib/kryptik/volumes/vault.luks"
+removable = false     # never given a USB stick; every other zone but the net zone may be
 
 [policy]
 seccomp  = "policy/vault.seccomp"
@@ -39,6 +40,12 @@ seccomp  = "policy/vault.seccomp"
 memory_max = "2G"
 pids_max   = 128
 cpu_max    = "200%"    # two CPUs' worth of time; io_max = "20M" bounds bytes per second on the volume
+
+[sound]
+play = false           # no socket to zone 0's mixer; every other zone but the net zone plays
+
+[camera]
+use = false            # never granted the camera; every other zone but the net zone may be
 
 [identity]
 uid_base = 393216      # fixed host uid range, never derived from zone order

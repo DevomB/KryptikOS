@@ -107,6 +107,22 @@ and `XKB_DEFAULT_VARIANT`; dwl's rule names are empty, so libxkbcommon takes
 them. Every zone's clients get the compositor's keymap through their proxy,
 and no zone has a say in it.
 
+**The desktop's own layouts.** A user may list up to four of the table's
+names for the desktop alone, `kryptik keyboard desktop us de` writing them
+to `~/.config/kryptik/keyboard`; `kryptik keyboard desktop machine` goes
+back to the machine's. The file is in the user's home, on the state
+partition, which is fine for it: a keymap is no privilege. At the next
+login `kryptik-session` exports the rows' layouts and variants as one
+keymap's groups, the first in force, and `grp:win_space_toggle`, so
+Super+Space switches. dwl's own keys are Alt's, and with Super held the
+space key gives `ISO_Next_Group`, which no window takes as a character. A
+list with a name the table lacks, or more than four, counts as none and the
+machine's layout stands. Zones get the keymap and the group in force as
+before. The screen lock names the layout in force under the marks, from
+`KRYPTIK_LAYOUTS`, as a password typed in the other one fails. The state
+passphrase at boot is asked under the machine's layout alone, before any
+home exists.
+
 **The serial console** is not touched: what arrives there was mapped by the
 far end's terminal.
 
@@ -116,7 +132,13 @@ far end's terminal.
   variable may hold (a name; other characters, 40 bytes, nothing, a file
   shorter than its attributes), what a load gives `loadkeys` and records,
   what the session exports, what a store writes byte for byte, and the
-  shipped table's form.
+  shipped table's form; and a desktop list: two layouts with their variants
+  and the switch, one, four, and a fifth name, an unknown name or an empty
+  list leaving the machine's layout.
+- `make gui-test` logs its user in with `us de`: dwl's environment carries
+  both, the screen lock names US and, after Super+Space, DE; the password
+  typed in de is refused, and typed again after Super+Space, back on us, it
+  opens the lock.
 - Stage 04 checks every row against the keymaps and xkb data it installed.
 - `tools/image/keyboard-test.sh`, in acceptance's install suite: an install
   with `--keyboard de`; the next boot names the layout and takes the
@@ -134,8 +156,7 @@ far end's terminal.
   keys; nothing checks that they agree on the AltGr level or on dead keys. A
   zone's volume passphrase is asked in the desktop, the state's on the
   console: one that uses those levels may type differently in the two.
-- No suite presses keys in the desktop under a layout other than `us`.
-- One layout at a time, Latin layouts only, and no input method.
+- Latin layouts only, and no input method.
 - The variable belongs to the machine: a disk moved to another one asks
   under `us` until `kryptik keyboard` is run there.
 

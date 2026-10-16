@@ -187,6 +187,16 @@ CONFIG_PINCTRL_METEORPOINT=m
 CONFIG_PINCTRL_INTEL_PLATFORM=m
 CONFIG_I2C_HID_ACPI=m
 CONFIG_HID_MULTITOUCH=m
+# Sleep on laptops that offer only s2idle, as most made since about 2020 do: the
+# platform's power controller takes the SoC to its deepest state (S0i3 on AMD,
+# S0ix on Intel), and without its driver a sleeping laptop never gets there and
+# drains its battery far sooner. Intel's needs the vendor-specific capability
+# bus and the telemetry under it. Not AMD's trace buffer, which is for debugging.
+CONFIG_AMD_PMC=m
+# CONFIG_AMD_MP2_STB is not set
+CONFIG_INTEL_VSEC=m
+CONFIG_INTEL_PMT_TELEMETRY=m
+CONFIG_INTEL_PMC_CORE=m
 # AQtion (5 and 10 GbE on desktop boards and Thunderbolt docks) and Mellanox
 # ConnectX-4 and later (servers); neither needs firmware.
 CONFIG_AQTION=m
@@ -256,12 +266,78 @@ CONFIG_BRCMFMAC_PCIE=y
 # CONFIG_BRCMFMAC_SDIO is not set
 CONFIG_RTL8XXXU=m
 CONFIG_MAC80211_HWSIM=m
+# A battery and a mains supply the power suite sets by hand, as hwsim is a radio; it
+# binds no device, so nothing loads it otherwise.
+CONFIG_TEST_POWER=m
 # Airplane-mode keys that come through the platform's ACPI device rather than
 # the keyboard: Intel's HID event filter, the AMD, HP and Xiaomi wireless
 # button, and ASUS's radio control. rfkill-input acts on the key.
 CONFIG_INTEL_HID_EVENT=m
 CONFIG_WIRELESS_HOTKEY=m
 CONFIG_ASUS_WIRELESS=m
+
+# --- sound: modules, for zone 0's mixer (docs/design/laptop.md) --------------
+# HD Audio with its HDMI and DisplayPort outputs, and USB audio. The kernel
+# loads no module by itself (STATIC_USERMODEHELPER), and an HDA codec binds
+# only to a codec driver loaded before the controller probes it, so modprobe
+# loads them all ahead of snd-hda-intel (build/config/modprobe.d/sound.conf);
+# the generic parser takes any other codec. Not the MIDI sequencer and its
+# timer, the obsolete API, or the codec's debug interface. Codecs that need
+# firmware (CA0132), DSP platforms (Sound Open Firmware) and the speaker
+# amplifiers behind ASoC are not covered.
+CONFIG_SOUND=m
+CONFIG_SND=m
+# CONFIG_SND_SUPPORT_OLD_API is not set
+# CONFIG_SND_HRTIMER is not set
+# CONFIG_SND_SEQUENCER is not set
+CONFIG_SND_HDA_INTEL=m
+# CONFIG_SND_HDA_HWDEP is not set
+# A codec powers down a second after the mixer closes the card.
+CONFIG_SND_HDA_POWER_SAVE_DEFAULT=1
+CONFIG_SND_HDA_GENERIC=m
+CONFIG_SND_HDA_CODEC_REALTEK=m
+# Of Realtek's families, those UEFI machines carry (ALC269, ALC662, ALC882);
+# the generic parser takes the older ones.
+# CONFIG_SND_HDA_CODEC_ALC260 is not set
+# CONFIG_SND_HDA_CODEC_ALC262 is not set
+# CONFIG_SND_HDA_CODEC_ALC268 is not set
+# CONFIG_SND_HDA_CODEC_ALC680 is not set
+# CONFIG_SND_HDA_CODEC_ALC861 is not set
+# CONFIG_SND_HDA_CODEC_ALC861VD is not set
+# CONFIG_SND_HDA_CODEC_ALC880 is not set
+CONFIG_SND_HDA_CODEC_CONEXANT=m
+CONFIG_SND_HDA_CODEC_SENARYTECH=m
+CONFIG_SND_HDA_CODEC_SIGMATEL=m
+CONFIG_SND_HDA_CODEC_CIRRUS=m
+CONFIG_SND_HDA_CODEC_CS8409=m
+CONFIG_SND_HDA_CODEC_HDMI=m
+# Tegra's is ARM's, and NVIDIA's MCP chipsets predate the machines this runs on.
+# CONFIG_SND_HDA_CODEC_HDMI_NVIDIA_MCP is not set
+# CONFIG_SND_HDA_CODEC_HDMI_TEGRA is not set
+CONFIG_SND_USB_AUDIO=m
+
+# --- the camera: modules, loaded only for a grant (docs/design/camera.md) ----
+# Video4Linux and the USB Video Class driver, which nearly every built-in and
+# USB camera speaks. modprobe.d/camera.conf keeps uvcvideo from loading by
+# alias: kryptikd loads it when the user grants the camera and unloads it
+# after. Cameras and test drivers alone, filtered as EXPERT otherwise would
+# not: no TV, radio, DVB or platform cameras. A camera's button makes no input
+# device. vivid stands in for a camera in the zones and desktop suites, which
+# alone load it, without its framebuffer, which would build framebuffer
+# helpers in.
+CONFIG_MEDIA_SUPPORT=m
+CONFIG_MEDIA_SUPPORT_FILTER=y
+CONFIG_MEDIA_CAMERA_SUPPORT=y
+CONFIG_MEDIA_TEST_SUPPORT=y
+CONFIG_MEDIA_USB_SUPPORT=y
+CONFIG_VIDEO_DEV=m
+CONFIG_USB_VIDEO_CLASS=m
+# CONFIG_USB_VIDEO_CLASS_INPUT_EVDEV is not set
+# CONFIG_USB_GSPCA is not set
+CONFIG_V4L_TEST_DRIVERS=y
+CONFIG_VIDEO_VIVID=m
+# CONFIG_VIDEO_VIVID_OSD is not set
+# CONFIG_VIDEO_VIVID_CEC is not set
 
 # --- built in by defconfig, needed only as modules --------------------------
 # As a module, cfg80211 reads the regulatory database from the verified root

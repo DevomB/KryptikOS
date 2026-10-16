@@ -1,0 +1,10 @@
+--- a/config/system-headers.mozbuild
++++ b/config/system-headers.mozbuild
+@@ -222,7 +222,6 @@ system_headers = [
+     "exe386.h",
+     "extras.h",
+     "fcntl.h",
+-    "features.h",
+     "fenv.h",
+     "ffi.h",
+     "fibdef.h",

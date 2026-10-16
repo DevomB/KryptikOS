@@ -18,8 +18,10 @@
 #   kryptik-chrome --menu          the launcher: zones, their state, apps,
 #                                  the network as the net zone reports it, a
 #                                  release that waits to be installed, a
-#                                  channel with nothing new for 30 days, and
-#                                  the net zone's Wi-Fi networks (w)
+#                                  channel with nothing new for 30 days, the
+#                                  net zone's Wi-Fi networks (w), the battery,
+#                                  and sound: the volume, and which zone may
+#                                  record
 #   kryptik-chrome --prompt ZONE [--no-display] -- CMD [ARG...]
 #                                  ask for the zone's passphrase in a trusted
 #                                  window, then launch (kryptik-launch hands
@@ -27,6 +29,17 @@
 #   kryptik-chrome --focus         print the focused zone, from the record
 #   kryptik-chrome --confirm ID    ask the broker's question ID in a trusted window: yes only
 #                                  for the code it shows, typed after it shows
+#   kryptik-chrome --microphone ZONE
+#                                  say, for as long as ZONE holds the microphone,
+#                                  that it does and whether it is recording
+#   kryptik-chrome --camera ZONE   say, for as long as ZONE holds the camera, that
+#                                  it does
+#   kryptik-chrome --battery       warn that the battery is low, until on mains
+#   kryptik-chrome --waiting       after a sleep, ask in turn for the passphrase of
+#                                  each zone whose volume lost its key with it
+#   kryptik-chrome --sticks        the USB sticks plugged in: which zone gets which,
+#                                  to read or to write too, and taking one back;
+#                                  a stick plugged in opens it
 #
 # Passphrases are read by kryptik-launch on the chrome's own terminal and go
 # to the daemon as a descriptor, never in argv or the environment.
@@ -34,6 +47,7 @@
 # The verified root's zone files, which dwl's colours match: the state partition can shadow /etc.
 ZONES=/usr/lib/kryptik/zones
 LAUNCH=/usr/bin/kryptik-launch
+SOUND=/usr/libexec/kryptik/kryptik-sound
 # havoc takes the program as plain arguments: it has no -e, and exits on an unknown option.
 TERMINAL=/usr/bin/havoc
 RT="${XDG_RUNTIME_DIR:-/tmp}"
@@ -41,6 +55,14 @@ FOCUS="$RT/kryptik/focus"
 # The last zone window, for the menu: once the menu has focus, the focus record names zone 0.
 FOCUS_ZONE="$RT/kryptik/focus.zone"
 CONSENT=/run/kryptik-consent
+# The power service's last look (power.sh): the source, the charge and its warning.
+POWER=/run/kryptik-power/state
+SYS_BLOCK=/sys/class/block
+# kryptikd's record of the camera's grant (camera.rs), and its note that the driver stayed loaded.
+CAMERA=/run/kryptik-camera/grant
+CAMERA_STAYED=/run/kryptik-camera/stayed
+# kryptikd's count of sleeps that failed after a zone volume's key went (suspend.rs).
+LEFT=/run/kryptik-launch/left-waiting
 
 die() { echo "kryptik-chrome: $*" >&2; exit 1; }
 
@@ -49,6 +71,8 @@ zone_field() { # zone key
     sed -n "s/^$2[[:space:]]*=[[:space:]]*\"\\(.*\\)\"[[:space:]]*$/\\1/p" "$ZONES/$1.toml" 2>/dev/null | head -1
 }
 zone_is_nic() { grep -q '^mode[[:space:]]*=[[:space:]]*"nic"' "$ZONES/$1.toml" 2>/dev/null; }
+# Whether the zone's file names the browser image among its images.
+zone_has_browser() { grep -Eq '^images[[:space:]]*=[[:space:]]*"([^"]* )?browser( [^"]*)?"' "$ZONES/$1.toml" 2>/dev/null; }
 
 # --- the status stream ---------------------------------------------------------
 
@@ -92,15 +116,45 @@ status_to_focus() {
     done
 }
 
+# Whether the device-mapper device NAME is suspended, from sysfs alone.
+dm_suspended() {
+    for d in /sys/block/dm-*; do
+        [ "$(cat "$d/dm/name" 2>/dev/null)" = "$1" ] || continue
+        [ "$(cat "$d/dm/suspended" 2>/dev/null)" = 1 ]
+        return
+    done
+    return 1
+}
+# The zones whose volume lost its key with a sleep and waits, frozen, for its passphrase.
+waiting_zones() {
+    for d in /sys/block/dm-*; do
+        [ "$(cat "$d/dm/suspended" 2>/dev/null)" = 1 ] || continue
+        n="$(cat "$d/dm/name" 2>/dev/null)"
+        case "$n" in kryptik-zone-*) printf '%s\n' "${n#kryptik-zone-}" ;; esac
+    done
+}
+
 run_status() {
     mkdir -p "$RT/kryptik" 2>/dev/null
+    # The monitors as the user chose them (`kryptik display`), or as they come: now, and again
+    # whenever a monitor is plugged in, for as long as the session lasts.
+    /usr/bin/kryptik-display --watch &
     # The menu window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
     # The screen locks after ten minutes without input, or the minutes the user's
     # lock-idle file holds; 0 never. expr reads 08 as eight, where $((...)) fails.
     idle="$(tr -cd 0-9 2>/dev/null < "${XDG_CONFIG_HOME:-$HOME/.config}/kryptik/lock-idle" | cut -c1-4)"
     idle="$(expr "${idle:-10}" \* 60)"
-    [ "$idle" -gt 0 ] && /usr/bin/kryptik-lock --idle "$idle" &
+    # The machine sleeps that many minutes after the lock only when the user's lock-sleep file
+    # says so: a sleep that does not wake would cost open work nobody chose to risk, and
+    # resume is not yet proven on physical hardware.
+    nap="$(tr -cd 0-9 2>/dev/null < "${XDG_CONFIG_HOME:-$HOME/.config}/kryptik/lock-sleep" | cut -c1-4)"
+    nap="$(expr "${nap:-0}" \* 60)"
+    if [ "$idle" -gt 0 ] && [ "$nap" -gt 0 ]; then
+        /usr/bin/kryptik-lock --idle "$idle" --sleep "$nap" &
+    elif [ "$idle" -gt 0 ]; then
+        /usr/bin/kryptik-lock --idle "$idle" &
+    fi
     # The consent watcher. Holding watcher.lock tells the broker someone is here
     # to ask: consent.rs refuses at once if it can take the lock shared. The
     # kernel drops it with this subshell, and a second session's watcher exits
@@ -128,7 +182,126 @@ run_status() {
             sleep 1
         done
     ) &
+    # While a zone holds the microphone, a window of the chrome's says so, and when it records;
+    # as the battery reaches 10% and again 5%, a window warns of the power-off at 3%; and once
+    # the state partition is back after a sleep, a window asks for each waiting zone's passphrase.
+    (
+        shown="" filming="" warned="" suspended="" blocks="" seen=""
+        left="$(cat "$LEFT" 2>/dev/null)"
+        while :; do
+            mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
+            if [ -n "$mic" ] && [ "$mic" != "$shown" ]; then
+                "$TERMINAL" /usr/bin/kryptik-chrome --microphone "$mic" &
+            fi
+            shown="$mic"
+            cam="$(camera_zone)"
+            if [ -n "$cam" ] && [ "$cam" != "$filming" ]; then
+                "$TERMINAL" /usr/bin/kryptik-chrome --camera "$cam" &
+            fi
+            filming="$cam"
+            w="$(power_field warning)"
+            if [ -n "$w" ] && [ "$w" != "$warned" ]; then
+                "$TERMINAL" /usr/bin/kryptik-chrome --battery &
+            fi
+            warned="$w"
+            # Opened when the state partition comes back from a suspension seen here: kryptikd
+            # suspends each zone's volume first, and a look in between would find a zone waiting
+            # with the state partition up and start a terminal that then stops on it. A sleep that
+            # failed after a volume's key went, the state partition never suspended, counts itself.
+            l="$(cat "$LEFT" 2>/dev/null)"
+            if dm_suspended kryptik-state; then
+                suspended=1
+            elif [ -n "$suspended" ] || [ "$l" != "$left" ]; then
+                suspended="" left="$l"
+                [ -z "$(waiting_zones)" ] || "$TERMINAL" /usr/bin/kryptik-chrome --waiting &
+            fi
+            # A stick plugged in opens the window that asks which zone gets it.
+            set -- "$SYS_BLOCK"/*
+            if [ "$*" != "$blocks" ]; then
+                blocks="$*"
+                if sticks_new; then "$TERMINAL" /usr/bin/kryptik-chrome --sticks & fi
+            fi
+            sleep 1
+        done
+    ) &
     status_to_focus
+}
+
+# The battery's warning: the charge, what comes at 3%, and the charge again as it falls; it
+# closes once the machine is on mains, or after ten minutes (Alt+Shift+c closes it sooner).
+run_battery() {
+    clear 2>/dev/null
+    echo "================ KRYPTIK - the battery (zone 0) ================"
+    echo "The battery is low. At 3% the zones stop, each closing its volume, and the"
+    echo "machine powers off. Plug it in, or save what you are working on now."
+    echo
+    said="" n=0
+    while [ "$(power_field source)" = battery ] && [ "$n" -lt 120 ]; do
+        chg="$(power_field charge)"
+        [ "$chg" = "$said" ] || { echo "at ${chg}%"; said="$chg"; }
+        n=$((n + 1))
+        sleep 5
+    done
+    [ "$(power_field source)" = battery ] || { echo "On mains now."; sleep 2; }
+}
+
+# After a sleep, each zone whose volume lost its key with it, its passphrase asked for in turn on
+# this zone 0 terminal; Enter alone leaves the zone waiting for the menu's p<N>.
+run_waiting() {
+    clear 2>/dev/null
+    echo "================ KRYPTIK - after the sleep (zone 0) ================"
+    echo "These zones lost their volume's key with the sleep and stay frozen until it is"
+    echo "given: their windows show, but do not answer. Enter alone leaves a zone waiting;"
+    echo "the menu (Alt+p) gives its passphrase later with p and its number, or stops it."
+    for z in $(waiting_zones); do
+        # Given meanwhile from the menu, it waits no more.
+        dm_suspended "kryptik-zone-$z" || continue
+        echo
+        printf 'Zone %s %s %s\n' "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)"
+        "$LAUNCH" --resume "$z" || sleep 2
+    done
+    sleep 1
+}
+
+# The zone that holds the camera, as kryptikd recorded it; nothing when none does.
+camera_zone() { sed -n 's/^zone //p' "$CAMERA" 2>/dev/null; }
+
+# The camera's window: open from the grant to its end.
+run_camera() {
+    z="$1"
+    clear 2>/dev/null
+    echo "================ KRYPTIK - the camera (zone 0) ================"
+    printf 'Zone %s %s %s holds the camera, %s,\n' "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)" \
+        "$(sed -n 's/^name //p' "$CAMERA" 2>/dev/null)"
+    echo "until it stops or the screen locks. Alt+p, then k and Enter, takes it back."
+    while [ "$(camera_zone)" = "$z" ]; do
+        sleep 1
+    done
+    echo "The camera is no longer zone $z's."
+    [ -e "$CAMERA_STAYED" ] && echo "Its driver stays loaded, still held by a program, until the next grant."
+    sleep 2
+}
+
+# The microphone's window: open from the grant to its end, with each change of state on a line.
+run_microphone() {
+    z="$1" said=""
+    clear 2>/dev/null
+    echo "================ KRYPTIK - the microphone (zone 0) ================"
+    printf 'Zone %s %s %s holds the microphone until it stops.\n' "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)"
+    echo "Alt+p, then c and Enter, or the keyboard's microphone key, takes it back."
+    echo
+    while :; do
+        line="$("$SOUND" --control status 2>/dev/null | grep "^zone $z ")"
+        case "$line" in
+            *" granted recording") now="RECORDING NOW" ;;
+            *" granted") now="not recording" ;;
+            *) break ;;
+        esac
+        [ "$now" = "$said" ] || { echo "$now"; said="$now"; }
+        sleep 1
+    done
+    echo "The microphone is no longer zone $z's."
+    sleep 2
 }
 
 # --- the launcher ---------------------------------------------------------------
@@ -144,9 +317,16 @@ menu_zones() {
         info="$("$LAUNCH" --info "$z" 2>/dev/null)"
         enc="$(printf '%s\n' "$info" | sed -n 's/^encrypted //p')"
         run="$(printf '%s\n' "$info" | sed -n 's/^running //p')"
+        waits="$(printf '%s\n' "$info" | sed -n 's/^waiting //p')"
+        stick="$(printf '%s\n' "$info" | sed -n 's/^stick //p')"
         state=""
         [ "$enc" = yes ] && state="encrypted "
         [ "$run" = yes ] && state="${state}RUNNING" || state="${state}stopped"
+        [ "$waits" = yes ] && state="${state}, WAITING for its passphrase (p$n)"
+        case "$stick" in
+            "ro "*) state="${state}, holds a USB stick to read (d)" ;;
+            "rw "*) state="${state}, holds a USB stick to write (d)" ;;
+        esac
         [ -z "$info" ] && state="(daemon not answering)"
         printf '  %d) %-10s %-3s %-10s %s\n' "$n" "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)" "$state"
     done
@@ -169,6 +349,20 @@ menu_network() {
     done
 }
 
+# The battery and whether the machine runs on it, as the power service last saw them, so the
+# menu says what the service acts on; nothing without a battery.
+power_field() { sed -n "s/^$1=//p" "$POWER" 2>/dev/null; }
+menu_power() {
+    chg="$(power_field charge)"
+    case "$chg" in ""|*[!0-9]*) return 0 ;; esac
+    echo
+    if [ "$(power_field source)" = battery ]; then
+        echo "Power: on battery, at ${chg}%; at 3% the zones stop and the machine powers off"
+    else
+        echo "Power: on mains, the battery at ${chg}%"
+    fi
+}
+
 # A release that has arrived whole waits for the user, so the launcher says so.
 # So does a channel gone quiet: statements are re-signed on a schedule, and a
 # net zone that withholds them leaves only their age to show it.
@@ -189,6 +383,29 @@ menu_update() {
     esac
     [ -z "$v" ] && return 0
     echo "Update: ${v} has arrived. u installs it, and the next boot tries it."
+}
+
+# Zone 0's mixer on one line: the volume, and the zone that may record and whether it does.
+menu_sound() {
+    st="$("$SOUND" --control status 2>/dev/null)" || return 0
+    vol="$(printf '%s\n' "$st" | sed -n 's/^master \([0-9]*\).*/\1/p')"
+    printf '%s\n' "$st" | grep -q '^master [0-9]* muted' && vol="$vol, muted"
+    mic="$(printf '%s\n' "$st" | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p')"
+    printf '%s\n' "$st" | grep -q ' recording$' && mic="$mic, RECORDING NOW"
+    echo
+    echo "Sound: volume ${vol}; the microphone: ${mic:-no zone}"
+}
+
+# The camera on one line: the zone that holds it, or that none does.
+menu_camera() {
+    z="$(camera_zone)"
+    if [ -n "$z" ]; then
+        echo "Camera: zone $z holds it ($(sed -n 's/^name //p' "$CAMERA" 2>/dev/null))"
+    elif [ -e "$CAMERA_STAYED" ]; then
+        echo "Camera: no zone; its driver stays loaded, still held by a program, until the next grant"
+    else
+        echo "Camera: no zone"
+    fi
 }
 
 # The update channel's verbs through the launch daemon, as `kryptik update` has
@@ -234,12 +451,20 @@ run_menu() {
         echo "Zones:"
         menu_zones
         menu_network
+        menu_power
         menu_update
+        menu_sound
+        menu_camera
         echo
-        echo "Apps:  t terminal   e editor (nano)   b browser (lynx, needs routed network)"
+        echo "Apps:  t terminal   e editor (nano)   b browser (Firefox where the zone has it, else lynx)"
         echo "Admin: u updates: what the channel names, fetch, forget, install"
         echo "Also:  s<N> stop zone N   m<N><M> move zone N's clipboard to zone M (one payload, once)"
         echo "       w Wi-Fi networks   f the last zone window's zone   r refresh   q close this window"
+        echo "       d USB sticks: give one to a zone, or take it back"
+        echo "       p<N> after a sleep, give zone N the passphrase its volume waits for"
+        echo "Sound: c<N> let zone N use the microphone until it stops (c alone takes it back)"
+        echo "       v<D> the volume, 0 to 9   v<N><D> zone N's own   x mute or unmute everything"
+        echo "Camera: k<N> let zone N use it until its stop or the screen lock (k alone takes it back)"
         echo
         printf 'choice (e.g. 1t): '
         if ! read -r choice; then break; fi
@@ -248,6 +473,7 @@ run_menu() {
             u) run_update; continue ;;
             r|"") continue ;;
             w) run_wifi; continue ;;
+            d) run_sticks; continue ;;
             f) if [ -r "$FOCUS_ZONE" ]; then
                    printf 'The last zone window you had: %s %s (zone %s)\n  %s\n' \
                        "$(sed -n 's/^glyph=//p' "$FOCUS_ZONE")" "$(sed -n 's/^label=//p' "$FOCUS_ZONE")" \
@@ -256,12 +482,38 @@ run_menu() {
                    echo "no zone window yet"
                fi
                sleep 3; continue ;;
+            k) "$LAUNCH" --camera-revoke > /dev/null && echo "no zone has the camera now"
+               sleep 1; continue ;;
+            k[1-9]) idx="${choice#k}"; eval "z=\"\${Z$idx:-}\""
+                    [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                    # The gesture is the grant: one zone at a time, until k, its stop or the lock.
+                    "$LAUNCH" --camera-grant "$z" > /dev/null && echo "zone $z may use the camera until it stops, the screen locks, or k"
+                    sleep 2; continue ;;
+            c) "$SOUND" --control revoke > /dev/null && echo "no zone may record now"
+               sleep 1; continue ;;
+            c[1-9]) idx="${choice#c}"; eval "z=\"\${Z$idx:-}\""
+                    [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                    # The gesture is the grant: one zone at a time, and the zone's stop ends it.
+                    if "$SOUND" --control "grant $z" > /dev/null; then
+                        echo "zone $z may use the microphone until it stops, or until c"
+                    else
+                        echo "the microphone was not granted (is the mixer running?)"
+                    fi
+                    sleep 1; continue ;;
+            v[0-9]) "$SOUND" --control "volume $(( ${choice#v} * 100 / 9 ))" > /dev/null; continue ;;
+            v[1-9][0-9]) a="${choice#v}"; d="${a#?}"; idx="${a%?}"; eval "z=\"\${Z$idx:-}\""
+                    [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                    "$SOUND" --control "volume $z $(( d * 100 / 9 ))" > /dev/null; continue ;;
+            x) "$SOUND" --control "mute toggle" > /dev/null; continue ;;
             m[1-9][1-9]) a="${choice#m}"; b="${a#?}"; a="${a%?}"
                       eval "za=\"\${Z$a:-}\""; eval "zb=\"\${Z$b:-}\""
                       [ -n "$za" ] && [ -n "$zb" ] || { echo "no such zones"; sleep 1; continue; }
                       echo "moving the clipboard of $za to $zb (this is the only way a payload crosses zones)"
                       "$LAUNCH" --clipboard-move "$za" "$zb" || sleep 2
                       sleep 1; continue ;;
+            p[1-9]) idx="${choice#p}"; eval "z=\"\${Z$idx:-}\""
+                      [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
+                      "$LAUNCH" --resume "$z" || sleep 2; sleep 1; continue ;;
             s[1-9]*) idx="${choice#s}"; eval "z=\"\${Z$idx:-}\""
                       [ -n "$z" ] || { echo "no zone $idx"; sleep 1; continue; }
                       "$LAUNCH" --stop "$z"; sleep 1; continue ;;
@@ -270,7 +522,8 @@ run_menu() {
                       case "$app" in
                           t) set -- "$TERMINAL" ;;
                           e) set -- "$TERMINAL" /usr/bin/nano ;;
-                          b) set -- "$TERMINAL" /usr/bin/lynx ;;
+                          # Firefox where the zone's file names the browser image, lynx elsewhere.
+                          b) if zone_has_browser "$z"; then set -- firefox; else set -- "$TERMINAL" /usr/bin/lynx; fi ;;
                       esac
                       echo "launching in zone $z: $*"
                       # --ask: a passphrase is read on this zone 0 terminal, never a zone's.
@@ -278,6 +531,99 @@ run_menu() {
                       ;;
             *) echo "?"; sleep 1 ;;
         esac
+    done
+}
+
+# --- USB sticks -----------------------------------------------------------------
+
+# Whether the launch daemon lists a stick not offered yet while it stayed in: what it lists
+# joins $seen, and what has left $SYS_BLOCK leaves it, so a stick given and taken back is not
+# offered again until it is pulled out and plugged back. Listing also ends the grant of a stick
+# pulled out.
+sticks_new() {
+    new=1 kept=""
+    for p in $("$LAUNCH" --sticks 2>/dev/null | cut -d' ' -f1); do
+        case " $seen " in *" $p "*) ;; *) new=0; seen="$seen $p" ;; esac
+    done
+    for p in $seen; do
+        [ -e "$SYS_BLOCK/$p" ] && kept="$kept $p"
+    done
+    seen="$kept"
+    return "$new"
+}
+
+# The zones a stick may go to: neither the net zone nor one whose file refuses sticks.
+stick_zones() {
+    for f in "$ZONES"/*.toml; do
+        [ -f "$f" ] || continue
+        z="$(basename "$f" .toml)"
+        zone_is_nic "$z" && continue
+        grep -q '^removable[[:space:]]*=[[:space:]]*false' "$f" && continue
+        printf '%s\n' "$z"
+    done
+}
+
+# The sticks held by no zone, lettered, and the zones that may take one, numbered: a letter and
+# a number give that stick to that zone. kryptikd names a stick from sysfs, never from what its
+# filesystem says.
+run_sticks() {
+    while :; do
+        clear 2>/dev/null
+        echo "================ KRYPTIK - USB sticks (zone 0) ================"
+        echo "This window is drawn by the compositor with the unzoned border. Zone 0 reads"
+        echo "nothing on a stick: the zone you give it to does, with kryptik-stick in its"
+        echo "terminal. Give a stick you do not know to untrusted."
+        echo
+        echo "Plugged in, held by no zone:"
+        n=0
+        for l in a b c d e f g h; do unset "S_$l"; done
+        while read -r name what; do
+            [ -n "$name" ] || continue
+            n=$((n + 1))
+            [ "$n" -le 8 ] || break
+            l="$(echo abcdefgh | cut -c"$n")"
+            eval "S_$l=\"\$name\""
+            printf '  %s) %s\n' "$l" "$what"
+        done <<EOF
+$("$LAUNCH" --sticks 2>/dev/null)
+EOF
+        [ "$n" -gt 0 ] || echo "  none"
+        echo
+        echo "Zones that may take one:"
+        k=0
+        for z in $(stick_zones); do
+            k=$((k + 1))
+            [ "$k" -le 9 ] || break
+            eval "T$k=\"\$z\""
+            held="$("$LAUNCH" --info "$z" 2>/dev/null | sed -n 's/^stick //p')"
+            case "$held" in
+                "ro "*) held="holds ${held#ro }, to read (e$k)" ;;
+                "rw "*) held="holds ${held#rw }, to read and write (e$k)" ;;
+                *) held="" ;;
+            esac
+            printf '  %d) %-10s %-3s %-10s %s\n' "$k" "$z" "$(zone_field "$z" glyph)" "$(zone_field "$z" label)" "$held"
+        done
+        echo
+        echo "a1 gives stick a to zone 1 to read; a1w lets it write too. e1 takes zone 1's back."
+        echo "Nothing is given until you choose, and nothing is kept once the stick is out."
+        printf 'choice (Enter closes): '
+        read -r c || return 0
+        case "$c" in
+            "") return 0 ;;
+            e[1-9]) eval "z=\"\${T${c#e}:-}\""
+                    [ -n "$z" ] || { echo "no zone ${c#e}"; sleep 1; continue; }
+                    "$LAUNCH" --stick-eject "$z" && echo "taken back: every read and write zone $z makes on it fails now" ;;
+            [a-h][1-9]|[a-h][1-9]w)
+                    l="${c%"${c#?}"}"; rest="${c#?}"; idx="${rest%w}"
+                    eval "p=\"\${S_$l:-}\""; eval "z=\"\${T$idx:-}\""
+                    [ -n "$p" ] && [ -n "$z" ] || { echo "no such stick or zone"; sleep 1; continue; }
+                    mode=ro
+                    [ "$rest" = "$idx" ] || mode=rw
+                    "$LAUNCH" --stick-grant "$z" "$p" "$mode" > /dev/null &&
+                        echo "zone $z has it until e$idx, its stop, or the stick coming out" ;;
+            *) echo "?" ;;
+        esac
+        sleep 2
     done
 }
 
@@ -458,7 +804,12 @@ case "${1:-}" in
     "") run_status ;;
     --confirm) [ -n "${2:-}" ] || die "--confirm needs an id"; run_confirm "$2" ;;
     --menu) run_menu ;;
+    --microphone) [ -n "${2:-}" ] || die "--microphone needs a zone"; run_microphone "$2" ;;
+    --camera) [ -n "${2:-}" ] || die "--camera needs a zone"; run_camera "$2" ;;
+    --battery) run_battery ;;
+    --waiting) run_waiting ;;
+    --sticks) run_sticks ;;
     --prompt) shift; run_prompt "$@" ;;
     --focus) cat "$FOCUS" 2>/dev/null || { echo "zone=-"; exit 1; } ;;
-    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus]" ;;
+    *) die "usage: kryptik-chrome [--menu | --prompt ZONE [--no-display] -- CMD... | --focus | --microphone ZONE | --camera ZONE | --battery | --waiting | --sticks]" ;;
 esac

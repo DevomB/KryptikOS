@@ -122,6 +122,12 @@ want "kryptikd checked the kernel"         'KRYPTIK_SMOKE: kryptikd_check_rc=0'
 want "processes run on hardened_malloc"    'KRYPTIK_SMOKE: allocator=hardened_malloc'
 want "with room for its guard mappings"    'KRYPTIK_SMOKE: sysctl vm.max_map_count=1048576'
 want "the installer was not armed"         'installer: no kryptik-testctl control disk|control disk names no install_target'
+if [[ "$KIND" == "usb" ]]; then
+    # Booted from a stick, zone 0 still reads none of its filesystems; boot found its partitions
+    # by the names the kernel read from the table.
+    want "eudev saw the medium's partitions on USB"  'KRYPTIK_SMOKE: usb_partition=[a-z0-9]+ bus=usb probed='
+    deny "eudev probed no filesystem on a USB disk"  'KRYPTIK_SMOKE: usb_partition=[a-z0-9]+ bus=[a-z]* probed=([^n]|n[^o]|no.)'
+fi
 
 echo
 echo "-- it shut down, rather than being killed"

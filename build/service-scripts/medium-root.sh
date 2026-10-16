@@ -10,6 +10,9 @@
 #                             V_HASH V_SALT
 #   kernel_names_root EFI     the kernel's command line carries V_HASH
 #   root_verifies DEV         DEV holds the root V_HASH names
+#   medium_images_ok DIR OUT  the image list in DIR is signed, for V_HASH, and
+#                             every image it names is in DIR at its size; the
+#                             list and signature as checked are put in OUT
 
 decimal_field() {   # decimal_field NAME VALUE: a bounded decimal, or die
     case "$2" in ''|*[!0-9]*) die "root.json: $1 is not a number" ;; esac
@@ -57,6 +60,16 @@ EOF
 # is no kernel at all, off a disk the tool would call bootable.
 kernel_names_root() {   # kernel_names_root EFI
     [ -f "$1" ] && grep -a -q -F "$V_HASH" "$1"
+}
+
+# The software images a medium carries, before anything is written: a list
+# signed as one, for the root the signed command line names, naming only images
+# DIR holds at the sizes it signs (kryptikd check-images). Each image's hash is
+# checked as it is copied (image-store.sh). The list kept is the one checked, from
+# OUT: a medium read a second time could answer with other bytes.
+medium_images_ok() {   # medium_images_ok DIR OUT
+    _said="$(kryptikd check-images "$1" "$V_HASH" "$2" 2>&1)" \
+        || die "the medium's software images are refused: ${_said#kryptikd: check-images: }"
 }
 
 # The record can lie about itself; the signed kernel's root hash cannot.

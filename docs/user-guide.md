@@ -180,7 +180,13 @@ On a keyboard that is not a US one, `kryptik keyboard` lists the layouts and
 `kryptik-install --keyboard NAME` installs with one: `ERASE` and the
 passphrase are then typed under it, here and at every boot, and the desktop
 uses it too. `kryptik keyboard NAME`, as root, changes it later
-([keyboard layout](design/keyboard-layout.md)).
+([keyboard layout](design/keyboard-layout.md)). For the desktop alone,
+`kryptik keyboard desktop us de`, as the user, gives it up to four layouts
+from the next login, the first in force and Super+Space to switch; the
+screen lock names the one in force, as a password typed in the other one
+fails. The state passphrase at boot is always asked under the machine's one
+layout. This release has no input method, so Chinese, Japanese and Korean
+cannot be typed yet.
 
 The installer refuses the disk the medium is on; anything with a mounted
 partition, active swap, or a partition held open (an unlocked LUKS volume,
@@ -203,7 +209,7 @@ It writes four GPT partitions: `kryptik-esp` (the medium's ESP, with the
 slot A kernel as the boot file), `kryptik-a` (the verified root image, read
 back and hashed against the medium's record), `kryptik-b` (empty until the
 first update), and `kryptik-state` (LUKS2 with ext4 inside: users, zone
-volumes, updates). Its plan names the disk's model and what each of its
+volumes, updates, and the medium's software images). Its plan names the disk's model and what each of its
 partitions holds (`holds  gpt: sda1 ntfs "Windows" 237G; ...`): read it, as
 nothing else tells a backup disk from the one you mean. Before its first
 write it asks you to type `ERASE` (`--yes` skips that), then twice for the
@@ -285,8 +291,11 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+p | the chrome menu: zones, their applications, stop a zone, move a clipboard between zones, the Wi-Fi networks with w, and with f the zone of the window you last had |
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
-| Alt+Shift+u | the browser (lynx) in the untrusted zone |
+| Alt+Shift+u | the browser (Firefox) in the untrusted zone |
 | Alt+Shift+l | lock the screen until the login password is typed |
+| Super+Space | the next of your desktop's layouts, when you have more than one |
+| volume keys, mute, microphone mute | the volume up or down a step, mute or unmute everything, and take the microphone back from whichever zone has it |
+| brightness keys | the screen's backlight up or down a step |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
 | Alt+j / Alt+k | focus next / previous |
@@ -298,6 +307,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 Alt+Shift+l locks the screen. Nothing shows but the word LOCKED and a mark
 for each character typed, and every key goes to the lock, so no window, zone
 0's or a zone's, sees the password; Ctrl+Alt+F2 does nothing while locked.
+The volume, mute, microphone and brightness keys still work under the lock.
 Type the login password and Enter. After a wrong one the lock shows WRONG,
 and the next try waits 2 seconds, doubling with each wrong one in a row up
 to a minute (the lock shows WAIT and the seconds); Escape clears what was
@@ -308,12 +318,42 @@ key, a click or the pointer moving; to change that, write the minutes to
 minute after it locks, the screens turn off; any key or movement turns them
 on again, and that key goes to the lock.
 
+`kryptik suspend`, from a terminal of zone 0's, locks the screen and puts
+the machine to sleep with the state partition's key wiped from memory. On
+waking the lock shows STATE PASSPHRASE: type the passphrase the machine asks
+for at boot, not the login password, and Enter. Until then everything kept on
+the state partition waits, the zones are frozen, and the lock takes nothing
+else; a wrong passphrase waits as a wrong password does. The zones carry on
+where they were once it is given, but an encrypted zone: its volume's key
+is wiped with the sleep too, and the zone stays frozen until its own
+passphrase is given again. Once the state passphrase is in, a window asks
+for each such zone's passphrase in turn; Enter alone leaves a zone waiting,
+and the menu (Alt+p) shows it WAITING and takes its passphrase later with
+`p` and its number, or a launch into it asks. Stopping such a zone closes
+its volume without the passphrase. The power key and
+closing the lid do the same as `kryptik suspend`, locked or not. In a virtual
+machine whose display is virtio-gpu the machine does not sleep: the screen
+locks, and `kryptik suspend` says why. The machine
+can also sleep by itself, as many minutes after the screen locks for being
+idle as `~/.config/kryptik/lock-sleep` holds, from the next login; it is
+off until resume is proven on physical hardware, and 20 is the value to
+write then. Testing on physical hardware is planned for October 2026.
+
 Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
-Enter. A zone with encrypted storage asks for its passphrase when it starts,
+Enter. The browser is Firefox in `untrusted`, `personal` and `work`, which
+carry its software image, and lynx in a terminal elsewhere; Firefox opens
+PDFs too. A zone runs one Firefox: asked for again while it is open there,
+it says that Firefox is already running, and a new window comes from the
+open one (Ctrl+N). A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
-never appears on a command line. Under the zones, a Network line says what
-the net zone reports: whether it is ready, the Wi-Fi network it joined (or
+never appears on a command line. On a machine with a battery, a Power
+line under the zones gives its charge and whether the machine runs on it;
+on battery at 3% the zones are stopped, each closing its volume, and the
+machine powers off, so save work before then: a window warns at 10% and
+again at 5%, and closes once the machine is plugged in. Under the zones, a
+Network line says what the net zone reports: whether it is ready, the
+Wi-Fi network it joined (or
 that Wi-Fi is switched off, by a switch or an airplane-mode key; switched on
 again, it rejoins by itself, or that a saved network refused its passphrase),
 its address on the uplink and whether there is DNS. The menu also names a
@@ -324,6 +364,32 @@ shows the ones in range with `s`, numbered, adds one by its name or that
 number, asking for its passphrase in the menu's own window, adds an open one
 with `o`, or forgets one, as `kryptik wifi` does at the administration login.
 A name with a character a terminal would not show plainly is typed instead.
+
+Every zone but `vault` and the net zone plays sound through zone 0's
+mixer, and none hears another. No zone may record until you let it: in the
+menu, `c` and the zone's number lets that zone use the microphone until it
+stops, one zone at a time, and `c` alone takes it back, as does the
+keyboard's microphone key. The menu's Sound line names the zone that may
+record and says when it is recording, and while a zone may record, a window
+of its own says so, and when it does; it closes when the zone stops or the
+microphone is taken back. `v` and a digit sets the volume, 0 to 9, `v`, a
+zone's number and a digit sets that zone's own, and `x` mutes or unmutes
+everything. A USB sound device that is plugged in takes the sound once
+nothing has played for a few seconds; pulled out, it gives the sound back to
+the built-in one at once. This release has no Bluetooth: for calls, use a
+USB or wired headset, or a Bluetooth headset that comes with a USB dongle,
+which works as a USB sound card.
+
+No zone sees the camera until you let it: `k` and the zone's number in the
+menu gives that zone the camera, one zone at a time, until it stops, the
+screen locks, or `k` alone takes it back, and while it has it a window of the
+chrome's says so. A program the zone left holding the camera loses it then
+as well. A window in full screen covers those windows, so the bar above it
+names the zone that may use the microphone (`MIC`) and the zone that has the
+camera (`CAM`), whichever zones they are. Built-in and USB cameras that speak the USB Video Class work, as
+most do; the cameras of recent Intel laptops that need Intel's image
+processing in userspace (MIPI cameras behind the IPU6) and infrared
+face-login cameras do not. `vault` and the net zone never get the camera.
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
@@ -373,6 +439,36 @@ the net zone. The network the machine itself is on, with its router, its
 printers and the page a hotel's or café's Wi-Fi asks you to log in on, is
 open to `untrusted` alone: open that page there (Alt+Shift+u).
 
+**Monitors.** `kryptik display`, in a terminal of zone 0's, lists the
+monitors by name with their scale, mode and place. `kryptik display NAME
+SCALE` draws everything on that monitor SCALE times as large, from 0.5 to 4,
+1.5 say on a laptop's high-resolution panel, and `kryptik display NAME SCALE
+X Y` also puts its top left corner at X,Y. The choice is kept for every
+login and made again whenever the monitor is plugged in; NAME `*` stands for
+every monitor no other line names, and `kryptik display NAME auto` gives the
+monitor back its own: 2 for a built-in panel of 192 dpi or more, 1 for the
+rest. Zones are told the scale rounded up to a whole number, and draw that
+much larger.
+
+**USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
+one in opens a window of the chrome that names each partition by what the
+stick and its partition table say (maker and model, size, the partition's
+number and name), never by what its files say. A letter and a zone's number
+give that partition to that zone to read (`a1`), or to read and write
+(`a1w`); nothing is given until you choose, and the menu's `d` opens the
+same window later. In that zone's terminal, `kryptik-stick` says what the
+zone was given, `kryptik-stick list [DIR]` lists a directory,
+`kryptik-stick get PATH [DEST]` copies a file or a directory off it, and
+`kryptik-stick put FILE [DIR]` copies a file onto it when the zone may
+write; wait for `put` to say it has copied before pulling the stick out.
+The stick goes back with `e` and the zone's number in that window, when the
+zone stops, or when the stick is pulled out, and the zone reads nothing of
+it after. FAT is read and written; exFAT, which SD cards over 32 GB come
+with, is read, and `put` refuses it. Give a stick you do not know to
+`untrusted`: whatever its filesystem
+does to the reader stays in that zone. `vault` and the net zone are never
+given one.
+
 **Degraded boot.** If the system cannot find exactly one `kryptik-state`
 partition on its own disk, or cannot unlock or mount it, it boots degraded: it says
 so on the console, creates no account, starts no desktop and refuses
@@ -417,9 +513,11 @@ the clock".
 
 A release brought by hand is a signed payload directory holding exactly
 `manifest`, `manifest.sig`, `kryptik-root.img.zst` (the root image,
-compressed), `kryptik-a.efi`, `kryptik-b.efi` and `root.json` (what `make media` writes as
+compressed), `kryptik-a.efi`, `kryptik-b.efi` and `root.json`, and the
+release's software images if it has any (`images.manifest`, its signature
+and `NAME.img.zst` files): what `make media` writes as
 `images/payload-VERSION`, and what a release on the repository's page
-carries). Bring it onto the state partition, for example under
+carries. Bring it onto the state partition, for example under
 `/var/lib/kryptik/updates/`, and as root (the administration login, then
 `su`):
 
@@ -515,8 +613,20 @@ shows each timer, its timeout and whether it is running.
   so its certificate is enrolled on its own and no other build's release
   updates it.
 - No independent security review has been made.
+- A Kryptik guest whose display is virtio-gpu, as QEMU's virtio-vga is, does
+  not sleep: the kernel's virtio-gpu driver has no suspend callbacks, so the
+  display would not come back. The power key and the lid lock it instead.
 - Tested under QEMU with OVMF firmware. Testing on physical hardware is
-  planned for October 2026.
+  planned for October 2026. QEMU has no lid, no microphone or brightness
+  keys, no backlight, no built-in panel and no camera of the USB Video
+  Class, so those parts wait for it.
+- Laptop sound goes through the HD Audio driver and USB audio. On many
+  recent laptops part of it does not work: built-in microphones on Intel's
+  or AMD's audio processor, all built-in sound on Intel laptops whose audio
+  chips sit on SoundWire, and speakers behind a smart amplifier. A USB
+  headset or sound card works on all of them
+  ([laptop sound](design/laptop-audio.md)). Nothing plays through a
+  monitor's speakers over HDMI or DisplayPort.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.

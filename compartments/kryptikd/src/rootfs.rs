@@ -134,6 +134,15 @@ fn bind_ro_dir(src: &str, target: &str) -> Result<(), RootfsError> {
     make_ro_recursive(target)
 }
 
+/// Bind `src` at `target` read-only, nosuid and noexec, but with device nodes: the camera's
+/// directory, where kryptikd makes the camera's node for a grant (camera.rs).
+fn bind_dev_dir(src: &str, target: &str) -> Result<(), RootfsError> {
+    fs::create_dir_all(target)
+        .map_err(|e| RootfsError::Setup(format!("{target}: {e}")))?;
+    mount_raw(src, target, None, libc::MS_BIND, None, "mount(bind camera directory)")?;
+    set_mount_attr(target, MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NOEXEC, false)
+}
+
 /// Bind-mount the regular file `src` at `target`, read-only.
 fn bind_ro_file(src: &str, target: &str) -> Result<(), RootfsError> {
     if let Some(parent) = Path::new(target).parent() {
@@ -174,8 +183,11 @@ pub const PROC_MASKED: &[&str] = &[
     "sys/fs/file-nr", "sys/fs/inode-nr", "sys/fs/dentry-state",
 ];
 
-/// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too.
-pub const PROC_EMPTIED: &[&str] = &["irq"];
+/// /proc directories hidden behind an empty tmpfs: irq/<n>/spurious counts keyboard interrupts too,
+/// and asound's PCM status shows when another zone plays or records (the card is open while one
+/// does) while its codec files name the machine's model. sysinit loads ALSA's core so asound is
+/// there to empty when a zone starts.
+pub const PROC_EMPTIED: &[&str] = &["irq", "asound"];
 
 /// What a zone sees of sysfs: its interfaces and the CPU layout (glibc counts CPUs there). The
 /// rest holds disk and monitor serials and which encrypted zones run.
@@ -306,8 +318,9 @@ pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> 
 }
 
 /// Pivot into a root holding only what the zone should see; returns the home. Runs as root in the
-/// new user namespace, before Landlock and seccomp; `ephemeral` is a tmpfs home's size, and
-/// `service` adds dhcpcd's user and `SERVICE_HOME`.
+/// new user namespace, before Landlock and seccomp; `ephemeral` is a tmpfs home's size, `usr` what
+/// the zone sees as /usr (zone 0's, or images stacked over it), and `service` adds dhcpcd's user
+/// and `SERVICE_HOME`.
 #[allow(clippy::too_many_arguments)]
 pub fn pivot_into(
     data_dir: &str,
@@ -317,6 +330,9 @@ pub fn pivot_into(
     broker: Option<&str>,
     wayland: Option<&str>,
     wifi_conf: Option<&str>,
+    sound: Option<&str>,
+    camera: Option<&str>,
+    usr: &str,
     service: bool,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
@@ -373,7 +389,8 @@ pub fn pivot_into(
     for p in SYSTEM_PATHS {
         // Skip paths the host lacks; is_dir follows a merged-usr /bin symlink.
         if Path::new(p).is_dir() {
-            bind_ro_dir(p, &format!("{root}{p}"))?;
+            let src = if *p == "/usr" { usr } else { *p };
+            bind_ro_dir(src, &format!("{root}{p}"))?;
         }
     }
 
@@ -426,7 +443,7 @@ pub fn pivot_into(
     }
     let _ = fs::remove_dir(&aside);
 
-    populate_dev(root)?;
+    populate_dev(root, camera.is_some())?;
 
     // Private /tmp, sized: an unsized tmpfs may take half the host's memory.
     let tmp_dir = mkdir("tmp")?;
@@ -483,6 +500,15 @@ pub fn pivot_into(
         let rk = mkdir("run/kryptik")?;
         let target = format!("{rk}/{}", WAYLAND_SOCKET_NAME);
         bind_ro_file(sock, &target)?;
+    }
+    // The zone's directory of zone 0's mixer: the directory, so the socket a restarted mixer
+    // makes in it is the one the zone reaches.
+    if let Some(dir) = sound {
+        bind_ro_dir(dir, &format!("{root}{}", crate::sound::IN_ZONE))?;
+    }
+    // The zone's camera directory, empty until a grant; /dev/video0 links into it.
+    if let Some(dir) = camera {
+        bind_dev_dir(dir, &format!("{root}{}", crate::camera::IN_ZONE))?;
     }
 
     /* The zone's data at /home/<zone>, bound through the descriptor that was checked. Not
@@ -681,8 +707,10 @@ fn keep_sysfs(aside: &str, sys_dir: &str, kept: &[String]) -> Result<(), RootfsE
     mount_raw("none", sys_dir, None, flags | libc::MS_REMOUNT | libc::MS_RDONLY, None, "mount(sys tmpfs, ro)")
 }
 
-/// A minimal /dev: `DEVICES` bound from the host (mknod needs CAP_MKNOD there), shm and devpts.
-fn populate_dev(root: &str) -> Result<(), RootfsError> {
+/// A minimal /dev: `DEVICES` bound from the host (mknod needs CAP_MKNOD there), shm and devpts,
+/// and with `camera` a link to where a grant puts the camera, which programs look for at
+/// /dev/video0.
+fn populate_dev(root: &str, camera: bool) -> Result<(), RootfsError> {
     let dev_dir = format!("{root}/dev");
     fs::create_dir_all(&dev_dir).map_err(|e| RootfsError::Setup(e.to_string()))?;
     mount_raw(
@@ -734,6 +762,9 @@ fn populate_dev(root: &str) -> Result<(), RootfsError> {
         Err(e) => eprintln!("kryptikd: note: no private devpts for the zone: {e}"),
     }
 
+    if camera {
+        let _ = std::os::unix::fs::symlink(format!("{}/{}", crate::camera::IN_ZONE, crate::camera::NODE), format!("{dev_dir}/video0"));
+    }
     for (link, target) in [
         ("fd", "/proc/self/fd"),
         ("stdin", "/proc/self/fd/0"),

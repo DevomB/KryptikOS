@@ -1,0 +1,4 @@
+#!/bin/sh
+# The power source's watcher (build/service-scripts/power.sh): the energy preference, and an
+# orderly power-off at a critical battery.
+exec /usr/libexec/kryptik/power.sh

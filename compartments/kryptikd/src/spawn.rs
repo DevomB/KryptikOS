@@ -714,6 +714,15 @@ pub fn run_in_zone(
         }
     }
 
+    /* The images the zone names, opened and stacked now in zone 0's namespace, where the list's
+     * signature and the zone's policy are checked first: the zone only binds the result. */
+    let usr = if zone.images.is_empty() {
+        "/usr".to_string()
+    } else {
+        crate::images::prepare(zone, zone_policy.as_ref())
+            .map_err(|e| SpawnError::Setup(format!("zone {:?}: {e}", zone.name)))?
+    };
+
     // One launcher per zone: two would share a data directory, a cgroup and a veth name.
     let entry = registry::claim(&zone.name).map_err(|e| SpawnError::Setup(e.to_string()))?;
 
@@ -809,6 +818,26 @@ pub fn run_in_zone(
         None
     };
 
+    // Zone 0's mixer's directory for this zone, made by its service; a root launch only.
+    let sound_dir: Option<String> = if id.privileged && zone.network != crate::zone::NetworkMode::Nic {
+        crate::sound::zone_dir(&zone.name).map(|p| p.display().to_string())
+    } else {
+        None
+    };
+    // The zone's camera directory, which a grant puts the camera's node in: a root launch of a
+    // zone with a fixed uid_base only, as the camera is granted to no other (camera.rs).
+    let camera_dir: Option<String> = if id.privileged && zone.camera && zone.uid_base.is_some() {
+        match crate::camera::zone_dir(&zone.name) {
+            Ok(p) => Some(p.display().to_string()),
+            Err(e) => {
+                eprintln!("kryptikd: zone {:?}: no camera directory, so no camera: {e}", zone.name);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let placed = SyncPipe::new()?;
     let ready = SyncPipe::new()?;
     let mapped = SyncPipe::new()?;
@@ -855,7 +884,7 @@ pub fn run_in_zone(
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
             zone_policy.as_ref(), &fs_rules, &broker_path_str, wayland_path_str.as_deref(), opts.wayland_inode,
-            wifi_conf.as_deref(),
+            wifi_conf.as_deref(), sound_dir.as_deref(), camera_dir.as_deref(), &usr,
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -1013,6 +1042,24 @@ pub fn run_in_zone(
     let status = serve_until_exit(pid, broker_fd, &served, zone_out)?;
     unsafe { libc::close(broker_fd) };
     let _ = std::fs::remove_file(&broker_path);
+    // A grant of the microphone lasts until the zone stops.
+    if sound_dir.is_some() {
+        crate::sound::revoke(&zone.name);
+    }
+    // So does a USB stick the user gave it.
+    match crate::stick::eject(&zone.name) {
+        Ok(true) => eprintln!("kryptikd: zone {:?}: its USB stick taken back", zone.name),
+        Ok(false) => {}
+        Err(e) => eprintln!("kryptikd[zone {}]: taking its USB stick back: {e}", zone.name),
+    }
+    // And the camera.
+    if crate::camera::holder().is_some_and(|g| g.zone == zone.name) {
+        match crate::camera::revoke() {
+            Ok(Some(e)) if e.stayed => eprintln!("kryptikd: zone {:?}: the camera taken back; its driver stays loaded", zone.name),
+            Ok(_) => eprintln!("kryptikd: zone {:?}: the camera taken back", zone.name),
+            Err(e) => eprintln!("kryptikd[zone {}]: taking the camera back: {e}", zone.name),
+        }
+    }
     // dm-crypt frees the volume key on close: that is all "keys wiped on stop" means.
     if let Some(o) = opened_volume.take() {
         match o.close() {
@@ -1068,6 +1115,9 @@ fn intermediate_main(
     wayland_path: Option<&str>,
     wayland_inode: Option<crate::serve::InodeId>,
     wifi_conf: Option<&str>,
+    sound_dir: Option<&str>,
+    camera_dir: Option<&str>,
+    usr: &str,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1201,6 +1251,21 @@ fn intermediate_main(
             Some(format!("/proc/self/fd/{raw}"))
         }
     };
+    /* The images' /usr too: its set is stacked under /run/kryptik (images.rs), which the zone's
+     * mapped root may not walk. Like the broker's, the descriptor dies in pid 1's sweep. */
+    let usr_in_zone = if usr == "/usr" {
+        usr.to_string()
+    } else {
+        let c = match std::ffi::CString::new(usr) {
+            Ok(c) => c,
+            Err(_) => bail!("the images' /usr path contains a NUL"),
+        };
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW) };
+        if fd < 0 {
+            bail!("the images' /usr at {}: {}", usr, io::Error::last_os_error());
+        }
+        format!("/proc/self/fd/{fd}")
+    };
 
     // Until the parent writes our id maps we are nobody (65534) and cannot become root.
     ready.signal();
@@ -1262,7 +1327,7 @@ fn intermediate_main(
     if inner == 0 {
         alive.close_write();
         let service = maps_service(id.privileged, zone_policy);
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, service, &alive);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, sound_dir, camera_dir, &usr_in_zone, service, &alive);
         unsafe { libc::_exit(rc) };
     }
     alive.close_read();
@@ -1300,6 +1365,9 @@ fn zone_init(
     broker_path: &str,
     wayland_path: Option<&str>,
     wifi_conf: Option<&str>,
+    sound_dir: Option<&str>,
+    camera_dir: Option<&str>,
+    usr: &str,
     service: bool,
     alive: &SyncPipe,
 ) -> i32 {
@@ -1334,7 +1402,7 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, _) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, service) {
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, sound_dir, camera_dir, usr, service) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
@@ -1347,7 +1415,7 @@ fn zone_init(
 
     /* Writes only where landlock::zone_rules allow, so read-only mounts are denied twice. The nic
      * condition must match pivot_into's, or a rule on a missing path would refuse the zone. */
-    if let Err(e) = landlock::confine_pivoted_zone(&home, resolver == rootfs::Resolver::Writable) {
+    if let Err(e) = landlock::confine_pivoted_zone(&home, resolver == rootfs::Resolver::Writable, camera_dir.is_some()) {
         bail!("landlock: {e}");
     }
     // The zone's policy file is a second layer; layers intersect, so it can only narrow.
@@ -1553,6 +1621,9 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         rules.push("-- and, once it holds the NIC, its own tmpfs for the network stack's state:".to_string());
         rules.extend(landlock::nic_zone_rules().iter().map(rule_line));
     }
+    if zone.camera {
+        rules.extend(landlock::camera_rules().iter().map(rule_line));
+    }
     if let Some(rel) = &zone.landlock {
         let path = policy::resolve(zones_dir, rel);
         match std::fs::read_to_string(&path)
@@ -1591,7 +1662,17 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         identity_line,
         data_line,
         storage,
-        rootfs::SYSTEM_PATHS.join(" "),
+        rootfs::SYSTEM_PATHS
+            .iter()
+            .map(|p| match (*p, zone.images.is_empty()) {
+                ("/usr", false) => format!(
+                    "/usr (with the images {} over it, signed for this root and opened with dm-verity)",
+                    zone.images.join(" ")
+                ),
+                _ => p.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
         rootfs::ETC_RO_FILES
             .iter()
             .chain(rootfs::ETC_RO_DIRS)

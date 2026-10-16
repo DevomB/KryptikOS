@@ -30,6 +30,18 @@ out="$(check)"; rc=$?
 rm -r "$I/usr/share/licenses/kryptik"
 out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"no licence files: kryptik"* ]] && ok "Kryptik's own licence is required too" || bad "no kryptik: rc=$rc: $out"
+# A software image: its own sources, and no Kryptik licence of its own.
+J="$T/toolkit"; mkdir -p "$J/usr/share/licenses/glib"; echo text > "$J/usr/share/licenses/glib/COPYING"
+printf '#!/usr/bin/env bash\n[[ "$1 ${2:-}" == "--list-image toolkit" ]] && echo "glib 2.90.1 https://x/glib-2.90.1.tar.xz stem.sha256sum rule"; true\n' > "$R/tools/fetch-sources.sh"
+icheck() { KRYPTIK_ROOT="$R" NO_COLOR=1 bash "$R/tools/check-image-licences.sh" --image "$1" "$2" 2>&1; }
+out="$(icheck toolkit "$J")"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"all 1 of image toolkit's sources"* ]] && ok "an image's sources covered, without Kryptik's own: it passes" || bad "image covered: rc=$rc: $out"
+rm -r "$J/usr/share/licenses/glib"
+out="$(icheck toolkit "$J")"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"no licence files: glib"* ]] && ok "an image missing a source's licence fails, by name" || bad "image missing: rc=$rc: $out"
+out="$(icheck probe "$T/nothing")"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"built from no listed source"* ]] && ok "an image built from no listed source passes" || bad "no sources: rc=$rc: $out"
+
 printf '#!/usr/bin/env bash\ntrue\n' > "$R/tools/fetch-sources.sh"
 out="$(check)"; rc=$?
 [[ "$rc" -ne 0 && "$out" == *"named no sources"* ]] && ok "an empty source list passes nothing" || bad "empty list: rc=$rc: $out"

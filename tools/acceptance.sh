@@ -338,9 +338,9 @@ it_compositor_sources() {
     return "$ok"
 }
 it_sources_lock() {
-    echo "-- every build input matches sources.lock (offline)"
-    ( cd "$KRYPTIK_SOURCES" && sha256sum --check --quiet --strict "${ROOT}/sources.lock" ) || return 1
-    echo "  ok: $(grep -c . "${ROOT}/sources.lock") entries verified"
+    echo "-- every build input matches sources.lock and the software images' lock (offline)"
+    ( cd "$KRYPTIK_SOURCES" && sha256sum --check --quiet --strict "${ROOT}/sources.lock" "${ROOT}/build/images/sources.lock" ) || return 1
+    echo "  ok: $(cat "${ROOT}/sources.lock" "${ROOT}/build/images/sources.lock" | grep -c .) entries verified"
 }
 # Check each medium's sidecar against the hash the run took at the start.
 it_media_hashes() {
@@ -413,6 +413,9 @@ it_keyboard()      { "${IMG}/keyboard-test.sh" --usb "$MEDIA_USB"; }
 it_integrity()     { "${IMG}/integrity-test.sh" --usb "$MEDIA_USB"; }
 it_zones()         { "${IMG}/zones-test.sh" --usb "$MEDIA_USB"; }
 it_gui()           { "${IMG}/gui-test.sh" --usb "$MEDIA_USB"; }
+it_suspend()       { "${IMG}/suspend-test.sh" --usb "$MEDIA_USB"; }
+it_sound()         { "${IMG}/sound-test.sh" --usb "$MEDIA_USB"; }
+it_power()         { "${IMG}/power-test.sh" --usb "$MEDIA_USB"; }
 # Each update suite must refuse the other flow's newest payload, signed by keys it does not trust.
 it_update() {
     local foreign=(); [[ -n "$PROD_B" ]] && foreign=(--foreign "$PROD_B")
@@ -481,7 +484,10 @@ item integrity media-smoke-secureboot     M vm   25 it_smoke_sb need_enrolled
 item integrity media-refused-foreign-keys M vm    5 it_refused need_ms
 item integrity integrity-test             M vm    8 it_integrity need_enrolled
 item zones     zones-test                 M vm   10 it_zones need_vm
+item zones     sound-test                 M vm   23 it_sound need_vm
+item zones     power-test                 M vm   12 it_power need_vm
 item desktop   gui-test                   M vm   25 it_gui need_vm
+item desktop   suspend-test               M vm   20 it_suspend need_vm
 item update    update-test                M vm   10 it_update need_update
 item update    delta-count                O host  0 it_delta need_payloads
 item production update-test-production    M vm   10 it_production need_production

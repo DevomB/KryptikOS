@@ -15,7 +15,7 @@ pub enum NetworkMode {
     None,
     /// veth into the bridge owned by the `nic` zone.
     Routed,
-    /// Holds the physical interface. Exactly one zone may have this.
+    /// Holds the physical interface. At most one zone has this, and one must where a zone is routed.
     Nic,
 }
 
@@ -97,6 +97,17 @@ pub struct Zone {
     /// `[transfer] max_bytes = N`: the largest file this zone sends or
     /// receives through the broker, at most its cap. None: the cap alone.
     pub transfer_max: Option<u64>,
+    /// `[software] images = "browser viewer"`: signed images stacked over this zone's /usr
+    /// (images.rs). Adding one takes a zone file on the verified root.
+    pub images: Vec<String>,
+    /// `[sound] play = false`: no socket to zone 0's mixer (sound.rs). The nic zone never has one.
+    pub sound: bool,
+    /// `[storage] removable = false`: no USB stick is ever given to this zone (stick.rs). The nic
+    /// zone never gets one.
+    pub removable: bool,
+    /// `[camera] use = false`: the camera is never granted to this zone, which gets no camera
+    /// directory or /dev/video0 (camera.rs). The nic zone never has one.
+    pub camera: bool,
 }
 
 /// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
@@ -130,11 +141,14 @@ impl fmt::Display for ZoneError {
 pub const KNOWN_KEYS: &[&str] = &[
     "zone.name", "zone.description",
     "network.mode", "network.nic", "network.local",
-    "storage.mode", "storage.volume", "storage.size",
+    "storage.mode", "storage.volume", "storage.size", "storage.removable",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max", "limits.cpu_max", "limits.io_max",
     "identity.uid_base",
     "transfer.to", "transfer.max_bytes",
+    "software.images",
+    "sound.play",
+    "camera.use",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
@@ -417,6 +431,36 @@ impl Zone {
             Some(v) => return Err(bad("network.local", v, "true or false")),
         };
 
+        let sound = match kv.get("sound.play").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone plays no sound")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("sound.play", v, "true or false")),
+        };
+
+        let removable = match kv.get("storage.removable").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone is given no USB stick")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("storage.removable", v, "true or false")),
+        };
+
+        let camera = match kv.get("camera.use").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone is given no camera")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("camera.use", v, "true or false")),
+        };
+
         let transfer_to: Vec<String> = match get("transfer.to") {
             None => Vec::new(),
             Some(v) => {
@@ -462,11 +506,37 @@ impl Zone {
             },
         };
 
+        let images: Vec<String> = match get("software.images") {
+            None => Vec::new(),
+            Some(v) => {
+                let mut out: Vec<String> = Vec::new();
+                for n in v.split_whitespace() {
+                    if !crate::images::valid_name(n) {
+                        return Err(bad("software.images", &v, "space-separated image names"));
+                    }
+                    if out.iter().any(|o| o == n) {
+                        return Err(ZoneError::Invalid(format!(
+                            "zone {name:?}: [software] images names {n:?} twice"
+                        )));
+                    }
+                    out.push(n.to_string());
+                }
+                if out.is_empty() {
+                    return Err(bad("software.images", &v, "at least one image name, or omit [software]"));
+                }
+                out
+            }
+        };
+
         let zone = Zone {
             nic,
             uid_base,
             transfer_to,
             transfer_max,
+            images,
+            sound,
+            removable,
+            camera,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),
             size: get("storage.size"),
@@ -637,15 +707,18 @@ pub fn check_invariants(zones: &[Zone]) -> Result<(), ZoneError> {
             }
         }
     }
-    // Exactly one zone holds the NIC: the single path to the network.
+    /* At most one zone holds the NIC, the single path to the network, and one must wherever a
+     * routed zone needs that path. A set of zones without network, as a test's, needs none. */
     let nic: Vec<&str> = zones
         .iter()
         .filter(|z| z.network == NetworkMode::Nic)
         .map(|z| z.name.as_str())
         .collect();
+    let routed = zones.iter().any(|z| z.network == NetworkMode::Routed);
 
     match nic.len() {
         1 => {}
+        0 if !routed => {}
         0 => {
             return Err(ZoneError::Invalid(
                 "no zone holds the physical NIC; routed zones would have no path out"

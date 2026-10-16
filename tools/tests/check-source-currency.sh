@@ -116,6 +116,12 @@ page "ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable" \
 page "openssl-library.org/source" \
     "openssl-3.3.1.tar.gz" "openssl-3.6.2.tar.gz" "openssl-4.0.0.tar.gz"
 
+# nasm: the index page's DOCTYPE names HTML 4.01, which is no release, and an rc directory is none either.
+mkdir -p "${SERVE}/www.nasm.us/pub/nasm/releasebuilds"
+printf '%s\n' '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">' \
+    '<a href="3.01/">3.01/</a> <a href="3.02rc13/">3.02rc13/</a> <a href="3.02/">3.02/</a>' \
+    > "${SERVE}/www.nasm.us/pub/nasm/releasebuilds/index.html"
+
 # glibc's release branch, read by git over HTTP from a plain info/refs, past the patch set's commit.
 refs() { mkdir -p "${SERVE}/sourceware.org/git/glibc.git/info"; printf '%s\trefs/heads/release/2.40/master\n' "$1" > "${SERVE}/sourceware.org/git/glibc.git/info/refs"; }
 refs 1111111111111111111111111111111111111111
@@ -187,6 +193,7 @@ openssh      10.5p1     https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/ope
 kernel-hardening-checker 0.6.17.1 https://github.com/a13xp0p0v/kernel-hardening-checker/archive/refs/tags/v0.6.17.1.tar.gz probe rule
 glibc-fhs-patch 2.40    https://www.linuxfromscratch.org/patches/lfs/12.2/glibc-2.40-fhs-1.patch none follows:glibc
 openssl      3.3.1      https://www.openssl.org/source/openssl-3.3.1.tar.gz probe rule
+nasm         3.02       https://www.nasm.us/pub/nasm/releasebuilds/3.02/nasm-3.02.tar.xz none rule
 oddity       1.0        https://example.invalid/oddity/oddity-1.0.tar.gz probe telepathy
 norule       1.0        https://example.invalid/norule/norule-1.0.tar.gz probe rule
 ROWS
@@ -253,6 +260,7 @@ expect_row kernel-hardening-checker 0.6.17.1 current   # tags only, no releases
 expect_row glibc-fhs-patch "" deferred                 # follows the glibc pin
 expect_row glibc-branch 111111111111 BEHIND            # the branch moved past the patch set's commit
 expect_row openssl 3.6.2 BEHIND      # the pinned major line, not 4.0.0
+expect_row nasm 3.02 current         # not the 4.01 of the page's DOCTYPE
 
 # A row the script cannot look up is UNKNOWN, never skipped.
 expect_row oddity "" UNKNOWN         # a way to look that the script does not know

@@ -231,10 +231,9 @@ CONFIG_LSM="landlock,lockdown,yama"
 # CONFIG_PROC_PAGE_MONITOR is not set
 
 # --- built in by defconfig, used by nothing here: off, not modules ----------
-# Each is reachable from a device, a packet or a mount: no audio stack, no
-# network filesystem, buses no UEFI x86-64 machine has (CardBus, AGP, Mac), no
-# RAID under the dm-verity slots, and msdos is vfat with shorter names.
-# CONFIG_SOUND is not set
+# Each is reachable from a device, a packet or a mount: no network filesystem,
+# buses no UEFI x86-64 machine has (CardBus, AGP, Mac), no RAID under the
+# dm-verity slots, and msdos is vfat with shorter names.
 # CONFIG_NETWORK_FILESYSTEMS is not set
 # CONFIG_NET_9P is not set
 # CONFIG_PCCARD is not set

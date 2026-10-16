@@ -91,6 +91,22 @@ fn decode_string(body: &[u8]) -> String {
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// The proxy as a test starts it, or, for the proxy-calls check (KRYPTIK_PROXY_TRACE names a
+/// directory), under a strace of its own writing one file for this start: the tests' own calls
+/// are never traced, so none can be read as the proxy's.
+fn proxy_command() -> Command {
+    let bin = env!("CARGO_BIN_EXE_kryptik-wlproxy");
+    let Some(dir) = std::env::var_os("KRYPTIK_PROXY_TRACE") else { return Command::new(bin) };
+    let n = TRACED.fetch_add(1, Ordering::SeqCst);
+    let mut cmd = Command::new("strace");
+    cmd.args(["-f", "-q", "-s", "256", "-o"])
+        .arg(Path::new(&dir).join(format!("proxy.{}.{n}", std::process::id())))
+        .arg("--")
+        .arg(bin);
+    cmd
+}
+static TRACED: AtomicUsize = AtomicUsize::new(0);
+
 struct Proxy {
     child: Child,
     dir: PathBuf,
@@ -113,7 +129,7 @@ impl Proxy {
         let listen = dir.join("wayland-0");
         let upstream = UnixListener::bind(&upstream_path).unwrap();
         upstream.set_nonblocking(true).unwrap();
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_kryptik-wlproxy"));
+        let mut cmd = proxy_command();
         if let Some((soft, hard)) = nofile {
             let rl = libc::rlimit { rlim_cur: soft, rlim_max: hard };
             unsafe {
@@ -165,7 +181,7 @@ impl Proxy {
         assert!(up >= 0, "{}: {}", upstream_path.display(), std::io::Error::last_os_error());
         let control = UnixListener::bind(dir.join("control")).unwrap();
         let keep = [listener.as_raw_fd(), up, control.as_raw_fd()];
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_kryptik-wlproxy"));
+        let mut cmd = proxy_command();
         unsafe {
             cmd.pre_exec(move || {
                 // All copied above 9 first, so placing one cannot overwrite another.
@@ -223,6 +239,18 @@ impl Proxy {
         (client, up)
     }
 
+    /// The proxy's own pid: the child's, or under the check's strace that child's one child.
+    fn proxy_pid(&self) -> u32 {
+        let pid = self.child.id();
+        if std::env::var_os("KRYPTIK_PROXY_TRACE").is_none() {
+            return pid;
+        }
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .ok()
+            .and_then(|s| s.split_whitespace().next()?.parse().ok())
+            .unwrap_or(pid)
+    }
+
     fn alive(&mut self) -> bool {
         self.child.try_wait().unwrap().is_none()
     }
@@ -236,6 +264,11 @@ impl Proxy {
 
 impl Drop for Proxy {
     fn drop(&mut self) {
+        // Under the check's strace the proxy is killed first, and strace ends with it.
+        let pid = self.proxy_pid();
+        if pid != self.child.id() {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -381,7 +414,7 @@ fn send_fds(s: &UnixStream, data: &[u8], fds: &[RawFd]) {
 fn clients_fit_descriptor_limit() {
     // (556 - 8 - 256) / 130: two sessions, past the copies of the zone's pools.
     let mut p = Proxy::start_with("work", &["--max-clients", "32"], Some((100, 556)));
-    let limits = std::fs::read_to_string(format!("/proc/{}/limits", p.child.id())).unwrap();
+    let limits = std::fs::read_to_string(format!("/proc/{}/limits", p.proxy_pid())).unwrap();
     let files = limits.lines().find(|l| l.starts_with("Max open files")).unwrap();
     assert_eq!(files.split_whitespace().nth(3), Some("556"), "the soft limit was not raised: {files}");
 

@@ -1,0 +1,15 @@
+# Findings of tools/check-artifact-hardening.sh the browser image keeps, in the form of
+# build/config/artifact-accepted.txt. Stage 06 audits the image against this list alone.
+
+# No CET note: the linker marks a library for IBT and SHSTK only when every object in it is marked.
+NO-CET  usr/lib/firefox/libxul.so          # its Rust code: stable rustc marks nothing for CET, nor does the std it links
+NO-CET  usr/lib/firefox/libnspr4.so        # NSPR's hand-written x86-64 assembly (os_Linux_x86_64.s) carries no CET note
+NO-CET  usr/lib/firefox/libfreeblpriv3.so  # freebl's hand-written x86-64 assembly (arcfour-amd64-gas.s, mpi_amd64_common.S) carries no CET note
+NO-CET  usr/lib/firefox/libgkcodecs.so     # libvpx's and libaom's NASM assembly, whose x86inc.asm writes no CET note
+
+# No canary anywhere in the object's code. -fstack-protector-strong (in Firefox's own hardening
+# flags and stage 04's CFLAGS) guards only functions with a local array or an address-taken
+# local; these have none.
+NO-SSP  usr/lib/firefox/libmozgtk.so       # one function, which only names GTK for the linker
+NO-SSP  usr/lib/firefox/libmozwayland.so   # stubs of libwayland-client's functions, each returning at once
+NO-SSP  usr/lib/firefox/libplc4.so         # NSPR's string, base64, option and error helpers

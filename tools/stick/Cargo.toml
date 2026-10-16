@@ -1,0 +1,21 @@
+[package]
+name = "kryptik-stick"
+version = "0.1.0"
+edition = "2021"
+description = "A USB stick's FAT filesystem, read and written in the zone the user gave it to"
+license = "GPL-2.0-or-later"
+
+# A filesystem anyone may have written is parsed here, by fatfs, in an unprivileged process of the
+# zone the user chose (ADR-025): never in zone 0, never by the kernel.
+[dependencies]
+fatfs = { version = "=0.3.6", default-features = false, features = ["std", "alloc"] }
+libc = "0.2"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+overflow-checks = true
+debug-assertions = false

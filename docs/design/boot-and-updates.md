@@ -33,7 +33,11 @@ The USB image holds `kryptik-esp` and `kryptik-media`; the ISO holds the ESP
 as its El Torito image and the root image at a sector offset (a `linear` dm
 target over `/dev/sr0`, verity on top). The root image is byte-identical on
 the medium, in slot A and in a payload, so the installer copies bytes and
-signs nothing.
+signs nothing. A release with
+[software images](software-delivery.md) also carries them: the USB image in
+a third partition, `kryptik-images`, a FAT32 like the ESP, and the ISO as
+files under `/images` in its own filesystem. Either holds the signed list,
+its signature and each image.
 
 ## The command line
 
@@ -130,14 +134,19 @@ entry left alone.
 ## Updates
 
 A payload directory holds exactly `kryptik-root.img.zst`, `kryptik-a.efi`,
-`kryptik-b.efi`, `root.json`, `manifest` and `manifest.sig`. The manifest
-lists each file's sha256 and size, the version and the role, and is signed by
-the release key (Ed25519, `ssh-keygen -Y`, namespace `kryptik-release`). The
-root image travels compressed, at about a quarter of its size; `root.json`,
-which the manifest lists, names the image's own sha256 and size. `apply`
-decompresses only a file whose hash matched the manifest, and checks what it
-decompresses to against `root.json` before it writes the inactive slot, then
-writes it decompressing again and reads the slot back.
+`kryptik-b.efi`, `root.json`, `manifest` and `manifest.sig`, and the
+release's software images if it has any: `images.manifest`, its signature
+and each image as `NAME.img.zst` ([how software reaches
+zones](software-delivery.md)). The manifest lists each file's sha256 and
+size, the version and the role, and is signed by the release key (Ed25519,
+`ssh-keygen -Y`, namespace `kryptik-release`). The root image travels
+compressed, at about a quarter of its size; `root.json`, which the manifest
+lists, names the image's own sha256 and size. `apply` decompresses only a
+file whose hash matched the manifest, and checks what it decompresses to
+against `root.json` before it writes the inactive slot, then writes it
+decompressing again and reads the slot back. Each software image is
+decompressed into the state partition's store, and checked there against
+its list, before the slot is written.
 Versions are ordered as `sort -V` orders them. A production release is
 numbered MAJOR.MINOR.PATCH, which that order reads as a person does
 ([release keys](../release-keys.md)). The trust anchor and required role are on the verified root in
