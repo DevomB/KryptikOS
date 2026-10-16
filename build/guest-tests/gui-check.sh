@@ -118,6 +118,17 @@ su -s /bin/sh "$USER_NAME" -c 'mkdir -p "$HOME/.config/kryptik" && printf "us de
 su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/dev/null 2>&1 &'
 if wait_for 30 test -S "$RT/wayland-0"; then pass "session-socket" "dwl listening at $RT/wayland-0"; else fail "session-socket" "$(cat "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"; fi
 pgrep -u "$USER_NAME" -x dwl >/dev/null && pass "compositor-running" || fail "compositor-running" "$(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+# The desktop's own cgroup bounds what a zone can make the compositor hold: a quarter of the
+# memory, 1 GiB at least (cgroup.rs's desktop_memory_max).
+dwl_pid="$(pgrep -u "$USER_NAME" -xo dwl)"
+want_max=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) * 1024 / 4 ))
+(( want_max < (1 << 30) )) && want_max=$(( 1 << 30 ))
+dcg=/sys/fs/cgroup/kryptik-desktop
+if [[ "$(cat "/proc/${dwl_pid:-0}/cgroup" 2>/dev/null)" == "0::/kryptik-desktop" && "$(cat "$dcg/memory.max" 2>/dev/null)" == "$want_max" ]]; then
+    pass "desktop-memory-bound" "dwl runs in $dcg under memory.max $want_max"
+else
+    fail "desktop-memory-bound" "dwl ${dwl_pid:-gone}: $(cat "/proc/${dwl_pid:-0}/cgroup" 2>&1); memory.max $(cat "$dcg/memory.max" 2>&1), want $want_max; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+fi
 dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
            | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"
 if [[ "$dwl_env" == "KRYPTIK_LAYOUTS=us de XKB_DEFAULT_LAYOUT=us,de XKB_DEFAULT_OPTIONS=grp:win_space_toggle XKB_DEFAULT_VARIANT=, " ]]; then
@@ -157,6 +168,25 @@ for g in zwlr_screencopy_manager_v1 zwlr_data_control_manager_v1 zwp_primary_sel
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
 done
 [[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, data-control, primary-selection, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
+# Where a zone's unwritten pool is charged (resource-limits design, Tests). dwl reads it first, so
+# its pages are the desktop's, inside the desktop's bound and outside the zone's. The probe then
+# drops the pool and keeps its descriptor, as a zone may: the pages stay the desktop's until the
+# proxy punches the range.
+desk_mem() { cat /sys/fs/cgroup/kryptik-desktop/memory.current 2>/dev/null || echo 0; }
+charge_said() { since_mark charge untrusted | grep -q "$1"; }
+mark charge untrusted
+before="$(desk_mem)"
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe charge keep" > "$LOG/launch-charge.out" 2>&1 &
+charge_job=$!
+if wait_for 30 charge_said 'sample memory.current now'; then
+    sleep 1
+    held="$(desk_mem)"; kept="$held"
+    wait_for 15 charge_said 'pool gone' && { sleep 1; kept="$(desk_mem)"; }
+    info "desktop-charge: a zone's unwritten 4 MiB pool raised the desktop's memory.current by $(( (held - before) / 1024 )) KiB while dwl showed it, and by $(( (kept - before) / 1024 )) KiB once the pool was gone and the zone kept its descriptor"
+else
+    info "desktop-charge: the probe drew nothing: $(since_mark charge untrusted | tail -3 | tr '\n' ' ')"
+fi
+wait "$charge_job" 2>/dev/null
 # No zone reaches dwl's sockets: of every socket untrusted's user can find, none
 # is dwl's own or one of its zones' sockets, and its own is the proxy's. Each file is
 # stat'ed, which sees through a socket bound in over a file. The launcher marks

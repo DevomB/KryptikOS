@@ -194,9 +194,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       pool's descriptor keeps that page after the pool is gone; the proxy's
       bounds hold it only while the pools live
       ([Wayland shared memory](design/resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
-      First the measurement (`wlprobe charge`), then the proxy punching each
-      pool's range once the pool and its buffers are gone, refusing a pool it
-      cannot punch, and a `memory.max` on the session's cgroup.
+      Built: the desktop's own cgroup, `kryptik-desktop`, under a
+      `memory.max` of a quarter of the memory, and the desktop suite's
+      measurement (`wlprobe charge keep`). Still to do: the proxy punching
+      each pool's range once the pool and its buffers are gone, refusing a pool
+      it cannot punch.
 
 ## Version 2
 
