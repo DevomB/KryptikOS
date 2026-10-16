@@ -5,6 +5,8 @@
  *   kryptik-launch --stop ZONE
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no, the USB stick it holds
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
+ *   kryptik-launch --desktop -- COMMAND [ARG...]   join the desktop's cgroup, whose memory.max
+ *                                      bounds what the compositor holds, then become COMMAND
  *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move what FROM's windows copied
  *                                      to TO's, or FROM's broker payload when they copied nothing
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
@@ -229,6 +231,7 @@ static void usage(void)
 	      "       kryptik-launch [--passphrase-fd N] --resume ZONE   (its volume's key, after a sleep)\n"
 	      "       kryptik-launch --info ZONE\n"
 	      "       kryptik-launch --runtime-dir\n"
+	      "       kryptik-launch --desktop -- COMMAND [ARG...]\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID [--hidden] | --wifi-add-open SSID [--hidden] | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
@@ -537,6 +540,57 @@ static int clipboard_move(const char *from, const char *to)
 	return 0;
 }
 
+/* One request whose answer is only reported: every failure is said in BUF, none ends the caller.
+ * 0 for an "ok" answer. */
+static int ask_quietly(const char *text, char *buf, size_t size)
+{
+	struct sockaddr_un sa;
+	size_t len = 0;
+	int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (s < 0) {
+		snprintf(buf, size, "socket: %s\n", strerror(errno));
+		return 1;
+	}
+	memset(&sa, 0, sizeof sa);
+	sa.sun_family = AF_UNIX;
+	strncpy(sa.sun_path, LAUNCH_SOCKET, sizeof sa.sun_path - 1);
+	if (connect(s, (struct sockaddr *)&sa, sizeof sa) < 0 || write(s, text, strlen(text)) != (ssize_t)strlen(text)) {
+		snprintf(buf, size, "%s: %s\n", LAUNCH_SOCKET, strerror(errno));
+		close(s);
+		return 1;
+	}
+	shutdown(s, SHUT_WR);
+	while (len + 1 < size) {
+		ssize_t n = read(s, buf + len, size - 1 - len);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		len += (size_t)n;
+	}
+	close(s);
+	buf[len] = 0;
+	if (len == 0)
+		snprintf(buf, size, "no answer from the launch daemon\n");
+	return strncmp(buf, "ok ", 3) != 0;
+}
+
+/* The session's last step: the daemon moves this process into the desktop's cgroup, then it
+ * becomes COMMAND (dwl), so all the desktop starts is under the bound. A refusal is said, and the
+ * desktop starts without it rather than not at all. */
+static int desktop_main(int argc, char **argv)
+{
+	char said[512];
+	if (argc < 4 || strcmp(argv[2], "--") != 0)
+		usage();
+	if (ask_quietly("desktop\n", said, sizeof said) == 0)
+		fprintf(stderr, "kryptik-launch: the desktop's cgroup: %s", said + 3);
+	else
+		fprintf(stderr, "kryptik-launch: the desktop runs without its memory bound: %s", said);
+	execv(argv[3], argv + 3);
+	die("cannot run %s: %s", argv[3], strerror(errno));
+}
+
 int main(int argc, char **argv)
 {
 	int ask = 0, no_display = 0, pass_fd = -1, sep = -1;
@@ -552,6 +606,8 @@ int main(int argc, char **argv)
 		return stick_main(argc, argv);
 	if (argc >= 2 && strncmp(argv[1], "--camera-", 9) == 0)
 		return camera_main(argc, argv);
+	if (argc >= 2 && strcmp(argv[1], "--desktop") == 0)
+		return desktop_main(argc, argv);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();

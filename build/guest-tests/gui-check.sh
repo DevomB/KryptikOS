@@ -113,6 +113,17 @@ su -s /bin/sh "$USER_NAME" -c 'mkdir -p "$HOME/.config/kryptik" && printf "us de
 su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/dev/null 2>&1 &'
 if wait_for 30 test -S "$RT/wayland-0"; then pass "session-socket" "dwl listening at $RT/wayland-0"; else fail "session-socket" "$(cat "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"; fi
 pgrep -u "$USER_NAME" -x dwl >/dev/null && pass "compositor-running" || fail "compositor-running" "$(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+# The desktop's own cgroup bounds what a zone can make the compositor hold: a quarter of the
+# memory, 1 GiB at least (cgroup.rs's desktop_memory_max).
+dwl_pid="$(pgrep -u "$USER_NAME" -xo dwl)"
+want_max=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) * 1024 / 4 ))
+(( want_max < (1 << 30) )) && want_max=$(( 1 << 30 ))
+dcg=/sys/fs/cgroup/kryptik-desktop
+if [[ "$(cat "/proc/${dwl_pid:-0}/cgroup" 2>/dev/null)" == "0::/kryptik-desktop" && "$(cat "$dcg/memory.max" 2>/dev/null)" == "$want_max" ]]; then
+    pass "desktop-memory-bound" "dwl runs in $dcg under memory.max $want_max"
+else
+    fail "desktop-memory-bound" "dwl ${dwl_pid:-gone}: $(cat "/proc/${dwl_pid:-0}/cgroup" 2>&1); memory.max $(cat "$dcg/memory.max" 2>&1), want $want_max; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+fi
 dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
            | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"
 if [[ "$dwl_env" == "KRYPTIK_LAYOUTS=us de XKB_DEFAULT_LAYOUT=us,de XKB_DEFAULT_OPTIONS=grp:win_space_toggle XKB_DEFAULT_VARIANT=, " ]]; then
