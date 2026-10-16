@@ -124,6 +124,10 @@ EOF
 EOF
 }
 
+# Firefox's top-level LICENSE only points to toolkit/content/license.html, the texts of everything it
+# carries (its about:license): that file is taken too, and must be there.
 s_browser_licences() {
-    echo "$(source_licences < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list-image browser)) licence files"
+    echo "$(source_licences '^[^/]+/toolkit/content/license\.html$' \
+        < <("${KRYPTIK_ROOT}/tools/fetch-sources.sh" --list-image browser)) licence files"
+    test -s /usr/share/licenses/firefox/toolkit/content/license.html
 }

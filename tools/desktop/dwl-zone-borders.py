@@ -551,11 +551,13 @@ focusorlaunch(const Arg *arg)
 }
 
 /* Kryptik: the chrome's menu asks for a zone's open browser in front with one
- * line naming the zone in $XDG_RUNTIME_DIR/kryptik/browser-front. It is taken
- * only from a regular file of the session user's that no one else may write,
- * in a directory of that user's that no one else may write, and removed before
- * it is acted on. It only brings a window forward: every launch stays the
- * chrome's, which asks a zone's passphrase on its own terminal. */
+ * line naming the zone in browser-front, in $XDG_RUNTIME_DIR/kryptik/front: a
+ * directory of its own, so what dwl reads and removes there is the request
+ * alone. It is taken only from a regular file of the session user's that no
+ * one else may write, in a directory of that user's that no one else may
+ * write, and removed before it is acted on. It only brings a window forward:
+ * every launch stays the chrome's, which asks a zone's passphrase on its own
+ * terminal. */
 static char frontdir[256], frontfile[288];
 static int frontfd = -1;
 static struct wl_event_source *fronttimer;
@@ -604,8 +606,8 @@ frontevent(int fd, uint32_t mask, void *data)
 \treturn 0;
 }
 
-/* Kryptik: a look each second besides the watch, which the directory, made by
- * the chrome after dwl starts, may not have yet. */
+/* Kryptik: a look each second besides the watch, which cannot be set while
+ * the directory is not there. */
 static int
 fronttick(void *data)
 {
@@ -619,7 +621,7 @@ frontwatch(void)
 {
 \tconst char *rt = getenv("XDG_RUNTIME_DIR");
 
-\tif (!rt || snprintf(frontdir, sizeof(frontdir), "%s/kryptik", rt) >= (int)sizeof(frontdir)
+\tif (!rt || snprintf(frontdir, sizeof(frontdir), "%s/kryptik/front", rt) >= (int)sizeof(frontdir)
 \t\t\t|| snprintf(frontfile, sizeof(frontfile), "%s/browser-front", frontdir) >= (int)sizeof(frontfile)) {
 \t\tfrontfile[0] = '\\0';
 \t\treturn;
