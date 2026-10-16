@@ -3,7 +3,8 @@
 # pinned wlroots' headers, so a C error in Kryptik's edits shows here and not hours into a Distro
 # build. A negative control proves the check can fail. Needs curl, gcc, python3, patch, b2sum,
 # pkg-config, wayland-scanner and the headers of libwayland, xkbcommon, libinput, pixman, libdrm and
-# libudev, which CI installs; without them it exits 77.
+# libudev, which CI installs; without them it exits 77. KRYPTIK_TEST_SOURCES names a directory that
+# keeps the fetched tarballs between runs (CI caches it); one there is used only with the lock's hash.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +28,11 @@ fetch() {
     url="$("$REPO/tools/fetch-sources.sh" --list-root 2>/dev/null | awk -v n="$name" '$1 == n { print $3; exit }')"
     want="$(awk -v f="$file" '$2 == f { print $1 }' "$REPO/sources.lock")"
     [[ -n "$url" && -n "$want" ]] || { echo "FAIL: no URL or no lock row for ${name} (${file})"; exit 1; }
+    local keep="${KRYPTIK_TEST_SOURCES:-}"
+    if [[ -n "$keep" && -f "$keep/$file" && "$(sha256sum "$keep/$file" | cut -c1-64)" == "$want" ]]; then
+        tar -xf "$keep/$file" -C "$W" || { echo "FAIL: cannot unpack ${file}"; exit 1; }
+        return 0
+    fi
     local -a urls=("$url")
     while read -r u; do urls+=("${u//"{VER}"/"$3"}"); done < <(awk -v n="$name" '$1 == n { print $2 }' "$REPO/tools/source-mirrors.tsv")
     urls+=("https://distfiles.gentoo.org/distfiles/$(printf '%s' "$file" | b2sum | cut -c1-2)/${file}")
@@ -34,6 +40,7 @@ fetch() {
         if curl -fsSL --retry 2 --max-time 120 -o "$W/$file" "$u" \
            && [[ "$(sha256sum "$W/$file" | cut -c1-64)" == "$want" ]]; then
             tar -xf "$W/$file" -C "$W" || { echo "FAIL: cannot unpack ${file}"; exit 1; }
+            [[ -z "$keep" ]] || { mkdir -p "$keep" && cp "$W/$file" "$keep/$file"; }
             return 0
         fi
         echo "note: ${file} not from ${u}"

@@ -272,15 +272,6 @@ jobs:
       - name: Compositor tests
         run: tools/tests/compositor.sh
 
-      # Kryptik's patches and edits to dwl, compiled against the pinned wlroots' headers: a C
-      # error in them shows here, not hours into a Distro build.
-      - name: dwl compiles with Kryptik's edits
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libwayland-dev libwayland-bin libxkbcommon-dev libinput-dev \
-              libpixman-1-dev libdrm-dev libudev-dev pkg-config
-          tools/tests/dwl-compile.sh
-
       # The static proxy under strace: every call it makes is on its seccomp list.
       - name: The proxy's calls are on its filter's list
         run: |
@@ -380,6 +371,35 @@ jobs:
           # Exits with the number of failures; root-only checks say NOT RUN and run in zones-test.
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/kryptikd/probes/boundary-checks.sh
+
+  # A job of its own, as it fetches pinned sources: a host that does not answer holds up no
+  # Distro dispatch, which waits on the compartment layer alone.
+  compositor:
+    name: Compositor build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: The compositor's sources, keyed by their sources.lock lines
+        id: sources
+        run: |
+          echo "key=$(grep -E '  (wlroots-|wayland-protocols-|wayland-[0-9]|dwl-v)' sources.lock | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/kryptik-compositor-sources
+          key: compositor-sources-${{ steps.sources.outputs.key }}
+
+      - name: The host's headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwayland-dev libwayland-bin libxkbcommon-dev libinput-dev \
+              libpixman-1-dev libdrm-dev libudev-dev pkg-config
+
+      # Kryptik's patches and edits to dwl, compiled against the pinned wlroots' headers: a C
+      # error in them shows here, not hours into a Distro build.
+      - name: dwl compiles with Kryptik's edits
+        run: KRYPTIK_TEST_SOURCES="$HOME/.cache/kryptik-compositor-sources" tools/tests/dwl-compile.sh
 
   kernel:
     name: Kernel currency
