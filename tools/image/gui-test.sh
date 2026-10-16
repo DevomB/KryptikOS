@@ -125,6 +125,8 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-FOCUS-HOLD" "key:alt+j" \
+    "expect:GT LOCK-TYPE-HOLD" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-SUSPEND" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT KEY-VOLUME-DOWN" "key:volumedown" \
     "expect:GT KEY-LOCK-LAYOUT" "key:alt+shift+l" \
@@ -174,12 +176,13 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
+            zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             second-head-scale-chosen zone-sees-heads-unnamed \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
-            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name zone-fractional-scale compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
             zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key marks-fullscreen zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do

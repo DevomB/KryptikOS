@@ -29,6 +29,8 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT KEY-FOCUS-HOLD                               press Alt+j
+#   GT LOCK-TYPE-HOLD                               type the user's password and Enter
 #   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
 #   GT KEY-VOLUME-DOWN                              press the volume-down key
 #   GT KEY-LOCK-LAYOUT                              press Alt+Shift+l
@@ -208,7 +210,7 @@ proxy_up="$(readlink "/proc/${ppid0:-none}/fd/4" 2>/dev/null)"
 as_user "WAYLAND_DISPLAY=$zsock /usr/libexec/kryptik/wlprobe list" > "$LOG/probe-zone-socket.out" 2>&1
 offered="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" | sort -u | tr '\n' ' ')"
 beyond="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" \
-    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter|wp_cursor_shape_manager_v1' | tr '\n' ' ')"
+    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter|wp_cursor_shape_manager_v1|wp_fractional_scale_manager_v1' | tr '\n' ' ')"
 if grep -qxF "connected $zsock" "$LOG/probe-zone-socket.out" && [[ -z "$beyond" && "$offered" == *xdg_wm_base* && "$offered" == *wl_seat* ]]; then
     pass "zone-socket-allowlist" "dwl tells untrusted's socket of ${offered% } alone"
 else
@@ -1084,6 +1086,19 @@ if since_mark cursor untrusted | grep -q 'asked for the text cursor by name' && 
 else
     fail "zone-cursor-by-name" "$(since_mark cursor untrusted | tail -4 | tr '\n' ' ')"
 fi
+# --- a zone's window hears the scale it is shown at ------------------------------------------
+# wp_fractional_scale_v1 through the proxy: the compositor tells each window its output's scale,
+# in 120ths, so a browser draws text sharp at 1.5 instead of being scaled down from 2. This
+# machine's output is at 1, which wlroots sends as 120 once the window is shown.
+stop_zone untrusted
+mark scale untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe scale 10" > "$LOG/launch-scale.out" 2>&1
+scale_heard() { since_mark scale untrusted | grep -q 'preferred scale '; }
+if wait_for 20 scale_heard && ! since_mark scale untrusted | grep -qE 'refused|connection closed'; then
+    pass "zone-fractional-scale" "the zone's window heard its $(since_mark scale untrusted | grep -m1 'preferred scale ') through its proxy"
+else
+    fail "zone-fractional-scale" "$(since_mark scale untrusted | tail -4 | tr '\n' ' '); $(zone_why untrusted)"
+fi
 # --- a zone's window animates on a clock of its own ----------------------------------------
 # A zone's monotonic clock starts at a random point (isolate::set_time_origin), so the
 # compositor's frame times, read from zone 0's clock, share no base with the zone's.
@@ -1290,6 +1305,72 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+
+# --- holding the screen awake ------------------------------------------------------------------
+# A window of a zone whose file says hold_awake keeps the session's idle timers off while it is
+# shown and has the keyboard (docs/design/laptop.md). zone 0's probe of them counts inhibitors as
+# the lock's timers do: it hears nothing while personal's window holds, and hears the session is
+# idle within its 2 s once a zone 0 window takes the keyboard, and again once the lock comes.
+# dwl offers the inhibitor only on the sockets of zones whose file allows it, and untrusted's
+# file never does.
+offers_hold() { as_user "WAYLAND_DISPLAY=/run/kryptik-compositor/$UID_/$1 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -c ' zwp_idle_inhibit_manager_v1 '; }
+if [[ "$(offers_hold personal)" -eq 1 && "$(offers_hold untrusted)" -eq 0 ]]; then
+    pass "zone-hold-socket" "dwl offers the idle inhibitor on personal's socket, whose file says hold_awake, and not on untrusted's"
+else
+    fail "zone-hold-socket" "offered on personal's socket: $(offers_hold personal); on untrusted's: $(offers_hold untrusted)"
+fi
+mark holdhid untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe inhibit 5" > "$LOG/launch-hold-hidden.out" 2>&1
+hold_hidden() { since_mark holdhid untrusted | grep -q 'no zwp_idle_inhibit_manager_v1 offered'; }
+if wait_for 20 hold_hidden; then
+    pass "zone-hold-refused" "untrusted's window is offered no idle inhibitor"
+else
+    fail "zone-hold-refused" "$(since_mark holdhid untrusted | tail -3 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-hold-hidden.out")"
+fi
+stop_zone untrusted
+mark hold personal
+launch personal "/usr/libexec/kryptik/wlprobe inhibit 120" > "$LOG/launch-hold.out" 2>&1
+hold_keys() { [[ "$(since_mark hold personal | grep -c 'keyboard entered the window')" -ge "$1" ]]; }
+hold_asked() { since_mark hold personal | grep -q 'asked to keep the screen awake'; }
+hold_drawn() { since_mark hold personal | grep -q 'committed '; }
+# Mapped behind zone 0's window, it has the keyboard once the user's key takes it there.
+wait_for 30 hold_drawn
+echo "GT KEY-FOCUS-HOLD"
+wait_for 15 hold_keys 1 && hold_asked; held=$?
+sleep 1
+as_user "/usr/libexec/kryptik/wlprobe idle 2000 6" > "$LOG/hold-idle.out" 2>&1
+if [[ "$held" -eq 0 ]] && grep -q '^watching for 2000 ms' "$LOG/hold-idle.out" && ! grep -qx 'idled' "$LOG/hold-idle.out"; then
+    pass "zone-holds-screen-awake" "personal's window, shown with the keyboard, kept zone 0's 2 s idle timer from running out in 6 s"
+else
+    fail "zone-holds-screen-awake" "personal's probe: $(since_mark hold personal | tail -3 | tr '\n' ' '); zone 0's idle probe: $(tr '\n' ' ' < "$LOG/hold-idle.out"); $(zone_why personal)"
+fi
+# A zone 0 window maps in front and takes the keyboard: the hold ends at once.
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 30 hold-0" > "$LOG/hold-zone0.out" 2>&1 &
+hold0_pid=$!
+hold_left() { since_mark hold personal | grep -q 'keyboard left the window'; }
+wait_for 15 grep -q 'keyboard entered the window' "$LOG/hold-zone0.out" && wait_for 5 hold_left; moved=$?
+as_user "/usr/libexec/kryptik/wlprobe idle 2000 6" > "$LOG/hold-idle-away.out" 2>&1
+if [[ "$moved" -eq 0 ]] && grep -qx 'idled' "$LOG/hold-idle-away.out"; then
+    pass "hold-ends-off-keyboard" "a zone 0 window took the keyboard from personal's, and zone 0's 2 s idle timer ran out"
+else
+    fail "hold-ends-off-keyboard" "zone 0's window: $(tr '\n' ' ' < "$LOG/hold-zone0.out" | cut -c1-200); personal's probe: $(since_mark hold personal | tail -3 | tr '\n' ' '); idle probe: $(tr '\n' ' ' < "$LOG/hold-idle-away.out")"
+fi
+# Closed, it gives personal's window the keyboard back; the lock takes it, and the hold ends.
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 30 hold-0' 2>/dev/null; wait "$hold0_pid" 2>/dev/null
+wait_for 10 hold_keys 2; back=$?
+as_user "/usr/bin/kryptik-lock" > "$LOG/hold-lock.out" 2>&1 &
+holdlock_pid=$!
+wait_for 20 grep -q '^kryptik-lock: locked' "$LOG/hold-lock.out"; locked_now=$?
+as_user "/usr/libexec/kryptik/wlprobe idle 2000 6" > "$LOG/hold-idle-locked.out" 2>&1
+if [[ "$back" -eq 0 && "$locked_now" -eq 0 ]] && grep -qx 'idled' "$LOG/hold-idle-locked.out"; then
+    pass "hold-ends-at-lock" "personal's window had the keyboard back; the lock took it, and zone 0's 2 s idle timer ran out"
+else
+    fail "hold-ends-at-lock" "keyboard back: $([[ "$back" -eq 0 ]] && echo yes || echo no); lock: $(tr '\n' ' ' < "$LOG/hold-lock.out"); idle probe: $(tr '\n' ' ' < "$LOG/hold-idle-locked.out")"
+fi
+echo "GT LOCK-TYPE-HOLD"
+wait_for 30 grep -q '^kryptik-lock: unlocked' "$LOG/hold-lock.out" || fail "hold-lock-unlocks" "$(tr '\n' ' ' < "$LOG/hold-lock.out")"
+wait "$holdlock_pid" 2>/dev/null
+stop_zone personal
 
 # --- no sleep where the display would not come back --------------------------------------------
 # This VM shows through virtio-gpu, whose driver a sleep would leave waiting for good, so the

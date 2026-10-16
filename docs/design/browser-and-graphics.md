@@ -14,12 +14,15 @@ root. The decision is ADR-016 in [decisions](../decisions.md).
   with no GPU renderer and no Xwayland (`-Drenderers=[] -Dxwayland=disabled`
   in `build/recipes/wlroots.sh`); its DRM backend scans out dumb buffers, and
   `kryptik-session` sets `WLR_RENDERER=pixman`.
-- **The proxy offers ten globals.** `kryptik-wlproxy` advertises
+- **The proxy offers eleven globals.** `kryptik-wlproxy` advertises
   `wl_compositor`, `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`,
-  `xdg_wm_base`, `zxdg_decoration_manager_v1`, `wp_viewporter` and
-  `wp_cursor_shape_manager_v1`, and `wl_data_device_manager` as a global of
+  `xdg_wm_base`, `zxdg_decoration_manager_v1`, `wp_viewporter`,
+  `wp_cursor_shape_manager_v1` and `wp_fractional_scale_manager_v1`, and
+  `wl_data_device_manager` as a global of
   its own, which it serves itself while the compositor's stays hidden
-  (below). A cursor named through `wp_cursor_shape_manager_v1` is drawn by
+  (below), and `zwp_idle_inhibit_manager_v1` to a zone whose file lets it
+  hold the screen awake (below). A cursor named through
+  `wp_cursor_shape_manager_v1` is drawn by
   the compositor from its own theme, while an image a zone draws is never
   taken. It disconnects a client
   that binds anything else, and bounds shared-memory pools at 128 MiB each
@@ -422,7 +425,7 @@ yet; ADR-004's cost text says so.
 
 ## What the proxy must offer for a usable browser
 
-Four things are needed, each with its own review. The first two are built.
+Four things are needed, each with its own review. The first three are built.
 
 - **Popups.** Every GTK menu, dropdown and tooltip is one, a surface with
   no border of its own, so a zone's is held to its window. The proxy lets
@@ -452,12 +455,23 @@ Four things are needed, each with its own review. The first two are built.
   window nor zone 0's is offered it. Between zones the zone 0 move gesture
   carries it: one zone's proxy hands what its windows copied to another's
   ([broker](broker.md#clipboard)).
-- **`wp_fractional_scale_v1`**, for sharp text on high-density screens.
-- **`zwp_idle_inhibit_manager_v1`**, so video keeps the screen awake; the
-  chrome shows which zone holds it. It comes with the browser image, under
-  the conditions the [laptop design](laptop.md#power-management-without-logind)
-  sets for holding the screen awake; until then nothing a zone does holds
-  off the lock or the blanking.
+- **Fractional scale.** The proxy lets `wp_fractional_scale_manager_v1`
+  through: the compositor tells each of a zone's windows the scale of the
+  output it is shown on, in 120ths, and Firefox draws at that scale through
+  `wp_viewporter`, so text is sharp at 1.5 instead of drawn at 2 and scaled
+  down. It tells a zone only its output's scale, which `wl_output` gives it
+  already, rounded up to a whole number. `make gui-test` has a zone's window
+  hear its scale through its proxy.
+- **Holding the screen awake.** For a zone whose file says `[desktop]
+  hold_awake = true`, `personal` and `work`, the proxy lets
+  `zwp_idle_inhibit_manager_v1` through, and dwl offers it on that zone's
+  socket alone: kryptikd reads the file for the proxy's `--hold-awake`, and
+  dwl through `zone-colours.h`. dwl counts a hold under the conditions the
+  [laptop design](laptop.md#power-management-without-logind) sets, and its
+  status names the zone holding the screen awake, for the chrome to show.
+  `make gui-test` has personal's window keep zone 0's idle timer from
+  running out while it has the keyboard, and lose its hold to a zone 0
+  window and to the lock; `untrusted` is offered no inhibitor.
 
 `xdg_activation_v1` stays hidden: it lets a client take focus, and a zone
 must not raise a window over another zone's. Input methods are in the

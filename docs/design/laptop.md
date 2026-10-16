@@ -465,18 +465,28 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   Suspending when idle is off unless the user asks for it (above).
 - **Holding the screen awake.** A zone playing a video may hold off both the
   lock and the blanking, through the proxy's idle inhibition (the browser
-  design), under these conditions. They come with the browser image, the
-  first thing that needs them; until then no zone can, and both count input
-  alone.
+  design), under these conditions. dwl counts a hold under them and tells its
+  idle notifier so; the lock and the blanking heed that once `kryptik-lock`
+  waits on the notification that counts inhibitors, and until then both
+  count input alone.
   - The zone's file on the verified root opts in (`[desktop] hold_awake =
-    true`). It is off by default, and never set for `untrusted`, where
-    unknown links open.
-  - A hold counts only while the inhibiting surface is mapped and visible on
-    a lit output and its zone's window has the keyboard; losing either ends
-    it.
-  - It is capped at four hours, after which the lock comes as usual, and any
-    zone 0 action, a lid close or a suspend ends it. The chrome shows which
-    zone holds the screen awake for as long as it does.
+    true`): `personal` and `work`, where the browser plays video. It is off
+    by default, and set false for `untrusted`, where unknown links open.
+    kryptikd starts the zone's proxy with `--hold-awake` from that file, and
+    dwl reads the same file through `zone-colours.h`, for the sockets it
+    offers the inhibitor on and the holds it counts.
+  - A hold counts only while the inhibiting window is mapped and visible on
+    a lit output, a window of its zone has the keyboard and the session is
+    unlocked; losing any of these ends it. A zone 0 window taking the
+    keyboard ends it, and so do a lid close and a suspend, each of which
+    locks first. A hold that ended begins again, with the four hours anew,
+    once its window is back with the keyboard: after an unlock, the user is
+    there.
+  - It lasts four hours from when it began or a key or button was last
+    pressed, whatever window took the press (`holdawakesecs` in dwl's
+    configuration); then the lock comes as usual. dwl's status names the
+    zone holding the screen awake (`<output> holdawake <zone>`), for the
+    chrome to show for as long as it does.
   - The moment no hold qualifies, the lock and the blanking count input
     alone again.
 - The chrome's menu has a Power line, from the power service's state: on

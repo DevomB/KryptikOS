@@ -41,6 +41,8 @@ fn a_passed_listener_is_taken_in_place_of_a_path() {
     assert!(o.listen.as_os_str().is_empty());
     let o = parse(&args(&["--zone", "work", "--listen", "/tmp/w", "--upstream", "/u"]));
     assert_eq!(o.listen_fd, None);
+    assert!(!o.hold_awake, "a zone holds the screen awake only when its file says so");
+    assert!(parse(&args(&["--zone", "personal", "--listen-fd", "3", "--upstream", "/u", "--hold-awake"])).hold_awake);
     let path = std::env::temp_dir().join(format!("wlproxy-listening-{}", std::process::id()));
     let sock = std::os::unix::net::UnixListener::bind(&path).unwrap();
     assert!(listening(sock.as_raw_fd()));
