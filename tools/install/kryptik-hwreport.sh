@@ -247,6 +247,16 @@ display() {
     for f in "$SYS"/class/graphics/fb[0-9]*; do
         [ -e "$f" ] && printf '%s %s %s\n' "${f##*/}" "$(one "$f/name")" "$(one "$f/virtual_size")"
     done
+    # Each graphics controller's power state. One nothing drives, as NVIDIA's beside the built-in
+    # one, stays in D0 and draws power unless runtime PM is allowed it (control auto) and the port
+    # above it then sleeps.
+    for d in "$SYS"/bus/pci/devices/*; do
+        case "$(one "$d/class")" in 0x03*) ;; *) continue ;; esac
+        drv="$(target "$d/driver")"; ps="$(one "$d/power_state")"
+        rs="$(one "$d/power/runtime_status")"; pc="$(one "$d/power/control")"
+        printf 'gpu %s %s:%s driver %s power %s runtime %s control %s\n' "${d##*/}" "$(hex "$d/vendor")" \
+            "$(hex "$d/device")" "${drv:--}" "${ps:--}" "${rs:--}" "${pc:--}"
+    done
 }
 
 network() {

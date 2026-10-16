@@ -83,6 +83,17 @@ pci 0000:00:14.0 0x0c0330 8086 a0ed xhci_hcd
 pci 0000:00:14.3 0x028000 8086 a0f0
 pci 0000:00:17.0 0x010601 8086 a0d3 ahci
 pci 0000:00:1f.6 0x020000 8086 15fb e1000e
+# Two GPUs: Intel's built-in one, driven and let sleep, and NVIDIA's beside it, which nothing
+# drives and which stays in D0.
+driver pci i915 module
+pci 0000:00:02.0 0x030000 8086 9a49 i915
+pci 0000:01:00.0 0x030200 10de 25a2
+put sys/devices/pci0000:00/0000:00:02.0/power_state D0
+put sys/devices/pci0000:00/0000:00:02.0/power/runtime_status active
+put sys/devices/pci0000:00/0000:00:02.0/power/control auto
+put sys/devices/pci0000:00/0000:01:00.0/power_state D0
+put sys/devices/pci0000:00/0000:01:00.0/power/runtime_status active
+put sys/devices/pci0000:00/0000:01:00.0/power/control on
 disk sda sys/devices/pci0000:00/0000:00:17.0/ata1 1000215216 0 'Samsung SSD 860   '
 
 stick=sys/devices/pci0000:00/0000:00:14.0/usb1/1-2
@@ -167,6 +178,8 @@ c1="$(LC_ALL=C grep -c $'\302[\200-\237]' "$OUT")"
 [[ "$ctl" -eq 0 && "$c1" -eq 0 ]] && green "no control character from a device's strings" \
     || red "control characters in the report: ${ctl} C0 or DEL, ${c1} line(s) with a C1"
 want "the panel by its connector, state and mode" 'card0-eDP-1 connected 2256x1504'
+want "a GPU, its driver and its power"      '^gpu 0000:00:02\.0 8086:9a49 driver i915 power D0 runtime active control auto$'
+want "a GPU nothing drives, left in D0"     '^gpu 0000:01:00\.0 10de:25a2 driver - power D0 runtime active control on$'
 want "the log line kept, the number gone"   'usb 1-2: SerialNumber: <removed>$'
 deny "no UUID"                              '0a1b2c3d-1111|4c4c4544-0042'
 want "the filesystem line kept"             'mounted filesystem <uuid> ro'
