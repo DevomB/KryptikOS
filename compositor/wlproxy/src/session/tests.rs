@@ -1186,6 +1186,56 @@ fn cursor_shapes_pass_by_name() {
     assert_eq!(got[got.len() - 3..], [(2, WL_REGISTRY_BIND), (5, 1), (6, 1)], "the bind, the device and the shape reach the compositor: {got:?}");
 }
 
+/// A window asks the scale it is shown at, and hears it: 180 is 1.5, in 120ths.
+#[test]
+fn fractional_scale_passes() {
+    let (mut s, mut c, mut sv) = make();
+    c.write_all(&get_registry(2)).unwrap();
+    sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
+    sv.write_all(&global(2, 2, "wp_fractional_scale_manager_v1", 1)).unwrap();
+    pump_all(&mut s).unwrap();
+    assert!(String::from_utf8_lossy(&read_all(&mut c)).contains("wp_fractional_scale_manager_v1"));
+    c.write_all(&bind(2, 1, "wl_compositor", 6, 3)).unwrap();
+    c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap(); // create_surface
+    c.write_all(&bind(2, 2, "wp_fractional_scale_manager_v1", 1, 5)).unwrap();
+    c.write_all(&MessageWriter::new(5, 1).u32(6).u32(4).finish().unwrap()).unwrap(); // get_fractional_scale
+    pump_all(&mut s).unwrap();
+    let got = names(&split_messages(&read_all(&mut sv)));
+    assert_eq!(got[got.len() - 2..], [(2, WL_REGISTRY_BIND), (5, 1)], "the bind and the request reach the compositor: {got:?}");
+    sv.write_all(&MessageWriter::new(6, 0).u32(180).finish().unwrap()).unwrap(); // preferred_scale
+    pump_all(&mut s).unwrap();
+    let back = split_messages(&read_all(&mut c));
+    assert!(back.iter().any(|((o, op), body)| (*o, *op) == (6, 0) && *body == 180u32.to_ne_bytes()), "the scale reaches the window: {:?}", names(&back));
+}
+
+/// The idle inhibitor reaches a zone's client only through a proxy started with --hold-awake;
+/// otherwise it is neither advertised nor bound by its number.
+#[test]
+fn idle_inhibitor_only_with_hold_awake() {
+    for hold in [false, true] {
+        let (mut s, mut c, mut sv) = make();
+        s.hold_awake = hold;
+        c.write_all(&get_registry(2)).unwrap();
+        sv.write_all(&global(2, 1, "wl_compositor", 6)).unwrap();
+        sv.write_all(&global(2, 2, "zwp_idle_inhibit_manager_v1", 1)).unwrap();
+        pump_all(&mut s).unwrap();
+        let told = String::from_utf8_lossy(&read_all(&mut c)).contains("zwp_idle_inhibit_manager_v1");
+        assert_eq!(told, hold, "advertised with --hold-awake alone");
+        c.write_all(&bind(2, 1, "wl_compositor", 6, 3)).unwrap();
+        c.write_all(&MessageWriter::new(3, 0).u32(4).finish().unwrap()).unwrap(); // create_surface
+        c.write_all(&bind(2, 2, "zwp_idle_inhibit_manager_v1", 1, 5)).unwrap();
+        c.write_all(&MessageWriter::new(5, 1).u32(6).u32(4).finish().unwrap()).unwrap(); // create_inhibitor
+        let r = pump_all(&mut s);
+        if hold {
+            r.unwrap();
+            let got = names(&split_messages(&read_all(&mut sv)));
+            assert_eq!(got[got.len() - 2..], [(2, WL_REGISTRY_BIND), (5, 1)], "the bind and the inhibitor reach the compositor: {got:?}");
+        } else {
+            assert!(matches!(r, Err(SessionError::HiddenInterface(_))), "{r:?}");
+        }
+    }
+}
+
 /// Drag and drop is not served: the drag's source is cancelled at once, and nothing else moves.
 #[test]
 fn a_drag_is_cancelled() {

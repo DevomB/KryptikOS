@@ -411,6 +411,8 @@ struct Surface {
 /// The proxied connection.
 pub struct Session {
     pub zone: String,
+    /// The zone's file lets it hold the screen awake: the idle inhibitor is let through (policy.rs).
+    pub hold_awake: bool,
     /// The main loop's number for this connection, by which the clipboard names it.
     pub id: u64,
     pub client: Endpoint,
@@ -465,6 +467,7 @@ impl Session {
     pub fn new(zone: &str, client_fd: RawFd, server_fd: RawFd) -> Session {
         Session {
             zone: zone.to_string(),
+            hold_awake: false,
             id: 0,
             client: Endpoint::new(client_fd),
             server: Endpoint::new(server_fd),
@@ -846,7 +849,7 @@ impl Session {
                             (Some((_, n)), Some(v)) => (n, v),
                             _ => return Err(SessionError::Wire(WireError::ArgOverrun)),
                         };
-                        let max = policy::allowed_version(name)
+                        let max = policy::allowed_version(name, self.hold_awake)
                             .or_else(|| policy::own_version(name))
                             .ok_or_else(|| SessionError::HiddenInterface(name.to_string()))?;
                         // The global's number pins one advertised interface and version cap.
@@ -1000,7 +1003,7 @@ impl Session {
                         let gname = r.u32()?;
                         let iname = r.string()?.unwrap_or("");
                         let version = r.u32()?;
-                        if let Some(allowed) = policy::allowed_version(iname) {
+                        if let Some(allowed) = policy::allowed_version(iname, self.hold_awake) {
                             let cap = allowed.min(version);
                             // advertise at most the version the proxy parses
                             if cap != version {

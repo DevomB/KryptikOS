@@ -77,7 +77,7 @@ impl Log {
 const HIGH_WATER: usize = policy::MAX_PENDING_BYTES / 2;
 
 fn usage() -> ! {
-    eprintln!("usage: kryptik-wlproxy --zone NAME (--listen PATH | --listen-fd N) --upstream PATH [--max-clients N] [--once] [--control PATH | --control-fd N] [--control-uid UID]");
+    eprintln!("usage: kryptik-wlproxy --zone NAME (--listen PATH | --listen-fd N) --upstream PATH [--max-clients N] [--once] [--control PATH | --control-fd N] [--control-uid UID] [--hold-awake]");
     std::process::exit(2)
 }
 
@@ -91,10 +91,12 @@ struct Opts {
     control: Option<PathBuf>,
     control_fd: Option<RawFd>,
     control_uid: Option<u32>,
+    /// The zone's file lets it hold the screen awake (`[desktop] hold_awake`).
+    hold_awake: bool,
 }
 
 fn parse(args: &[String]) -> Opts {
-    let mut o = Opts { zone: String::new(), listen: PathBuf::new(), listen_fd: None, upstream: PathBuf::new(), max_clients: 16, once: false, control: None, control_fd: None, control_uid: None };
+    let mut o = Opts { zone: String::new(), listen: PathBuf::new(), listen_fd: None, upstream: PathBuf::new(), max_clients: 16, once: false, control: None, control_fd: None, control_uid: None, hold_awake: false };
     let mut i = 0;
     while i < args.len() {
         let take = |i: &mut usize| -> String {
@@ -111,6 +113,7 @@ fn parse(args: &[String]) -> Opts {
             "--control" => o.control = Some(PathBuf::from(take(&mut i))),
             "--control-fd" => o.control_fd = Some(take(&mut i).parse().ok().filter(|&fd: &RawFd| fd > 2).unwrap_or_else(|| usage())),
             "--control-uid" => o.control_uid = Some(take(&mut i).parse().unwrap_or_else(|_| usage())),
+            "--hold-awake" => o.hold_awake = true,
             _ => usage(),
         }
         i += 1;
@@ -464,6 +467,7 @@ fn main() {
                         log.line(format_args!("client #{next_id} connected"));
                         let mut s = Session::new(&o.zone, cfd, sfd);
                         s.id = next_id;
+                        s.hold_awake = o.hold_awake;
                         sessions.push(Live { s, id: next_id });
                         next_id += 1;
                     }
