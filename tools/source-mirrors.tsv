@@ -21,3 +21,4 @@ pixman             https://deb.debian.org/debian/pool/main/p/pixman/pixman_{VER}
 hicolor-icon-theme https://deb.debian.org/debian/pool/main/h/hicolor-icon-theme/hicolor-icon-theme_{VER}.orig.tar.xz  .asc
 hicolor-icon-theme https://distfiles.alpinelinux.org/distfiles/v3.22/hicolor-icon-theme-{VER}.tar.xz                  -
 cairo              https://ftp2.osuosl.org/pub/blfs/conglomeration/cairo/cairo-{VER}.tar.xz                           -
+libglvnd           https://sources.voidlinux.org/libglvnd-{VER}/libglvnd-v{VER}.tar.gz                                -
