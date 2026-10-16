@@ -56,6 +56,28 @@ microphones sit on Intel's DSP or AMD's coprocessor, codecs on SoundWire or
 amplifiers in front of the speakers, each with what drives it. No level asks
 for any of it.
 
+## Trying a laptop
+
+A listing's levels speak for installing, booting with Secure Boot, the display
+and the network. Much of what a laptop adds, the virtual machines that test
+each release cannot show ([status](status.md) says which parts wait for
+physical hardware). On a laptop, try these too, on the installed system, and
+let the row's note name what did not work:
+
+| try | what should happen |
+| --- | --- |
+| close the lid, then open it | the screen locks and the machine sleeps; it wakes to the lock asking for the state passphrase, and the zones carry on once it is typed |
+| the power key, and `kryptik suspend` | the same; the listing's `sleep` line says whether that sleep is deep or s2idle |
+| the brightness keys | the backlight steps up and down and never goes dark; of several, the kind the kernel prefers (firmware, then platform, then raw) |
+| the volume, mute and microphone keys | the volume steps, mutes, and the microphone is taken back, under the lock too |
+| a zone playing sound | the built-in speakers play it where the listing's `audio` line names an HD Audio codec and nothing beyond it |
+| unplug the mains, then plug it in | the menu's Power line follows, with the battery's charge |
+| `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
+
+A laptop that wakes from the lid and from `kryptik suspend` is the proof that
+the idle sleep, `~/.config/kryptik/lock-sleep`, waits for ([the user
+guide](user-guide.md)).
+
 ## Who may vouch
 
 Whoever ran it on a machine in front of them. A row names them and the day,
