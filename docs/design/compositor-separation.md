@@ -182,6 +182,51 @@ not this document's.
   asks the launch daemon to start dwl as its user; the filter has to follow
   wlroots' calls at every update.
 
+#### What is left, and in what order
+
+With the spawner, the no-exec filter and Landlock built, a compromised dwl
+can no longer exec, read the user's files or write any file. What it still
+reaches comes from the groups it runs with. In group `kryptik` it can
+connect to the launch daemon's socket and start programs in zones as the
+user. Landlock does not stop it, as connecting to a socket is not one of
+Landlock's accesses. It also runs as the login user, so it can signal the
+user's other processes.
+
+The next part takes the group away first, and the uid after:
+
+1. **dwl without group `kryptik`.** The session starts the spawner itself,
+   as the login user with every group, and starts the chrome on the read
+   end of a pipe. It then asks the launch daemon for the desktop: the verb
+   that today moves the asker into `kryptik-desktop` instead starts
+   `/usr/bin/dwl` there. It runs as the same uid with the user's groups less
+   `kryptik`, with no-new-privileges, and gets the spawner's socket and the
+   pipe's write end as descriptors. The daemon holds the request as one of
+   its jobs, as it does a launch, so it serves other requests meanwhile,
+   and answers when dwl exits, so the login still ends with it. dwl gains
+   an option to take its spawner's socket instead of forking one, and keeps
+   the rest of its confinement. The microphone's holder moves too: dwl
+   reads it through the group today, as `/run/kryptik-sound/control` is
+   the group's alone. The mixer writes the record in
+   `/run/kryptik-sound/marks` instead, readable by anyone on the host, as
+   the camera's grant already is, and `control` keeps only the socket. The
+   record names only the zone that holds the microphone, which the screen
+   shows anyway, and no zone sees `/run/kryptik-sound`. dwl still takes it
+   only as the mixer's own. A check reads dwl's `Groups:` and finds no
+   `kryptik`, and the microphone's mark still shows.
+2. **Signals.** Landlock's signal scope (ABI 6) keeps dwl from signalling
+   any process outside its own domain: the lock, the chrome, the user's
+   zones' launchers. It waits for the first part. dwl's one signal ends
+   its startup command's process group when it exits, and the chrome,
+   forked before dwl confines itself, is outside that domain, so with the
+   scope the chrome would outlive dwl. Once the session starts the chrome,
+   dwl sends no signal at all. A kernel without ABI 6 keeps the rest of the
+   ruleset.
+3. **A user of its own,** the end state above. Its sockets and directory
+   then need an owner other than the session (dwl's socket reached through
+   a group, the zones' socket directory made for that user), and seatd's
+   group moves to it. This is the largest of the three, and it gains less
+   once the first two are built, so it comes last.
+
 ### Only pixels and input cross
 
 The last step changes what crosses. Each zone runs its own small Wayland
