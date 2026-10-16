@@ -150,8 +150,8 @@ fi
 granted="$(ctl grant untrusted 2>&1)"
 # The mixer's record of who may record, which dwl's bar over a fullscreen window shows: the
 # mixer's own file, which no one else may write, naming the zone.
-holder="$(stat -c '%u %a %F' /run/kryptik-sound/control/microphone 2>&1) $(cat /run/kryptik-sound/control/microphone 2>&1)"
-if [[ "$holder" == "87 640 regular file untrusted" ]]; then
+holder="$(stat -c '%u %a %F' /run/kryptik-sound/marks/microphone 2>&1) $(cat /run/kryptik-sound/marks/microphone 2>&1)"
+if [[ "$holder" == "87 644 regular file untrusted" ]]; then
     pass "holder-recorded" "the mixer records the grant for the compositor's bar: ${holder}"
 else
     fail "holder-recorded" "${holder}"
@@ -176,10 +176,10 @@ ungranted() { ! ctl status | grep -q ' granted'; }
 zrun untrusted 30 -- "$PROBE" record 1
 if wait_for 5 ungranted && [[ "$ZRC" -eq 1 && "$ZOUT" == *"not granted to this zone"* ]]; then
     pass "grant-ends-with-zone" "the grant went with the zone that held it"
-    if [[ -f /run/kryptik-sound/control/microphone && ! -s /run/kryptik-sound/control/microphone ]]; then
+    if [[ -f /run/kryptik-sound/marks/microphone && ! -s /run/kryptik-sound/marks/microphone ]]; then
         pass "holder-cleared" "the record names no zone once the grant is gone"
     else
-        fail "holder-cleared" "$(stat -c '%u %a %s' /run/kryptik-sound/control/microphone 2>&1): $(cat /run/kryptik-sound/control/microphone 2>&1)"
+        fail "holder-cleared" "$(stat -c '%u %a %s' /run/kryptik-sound/marks/microphone 2>&1): $(cat /run/kryptik-sound/marks/microphone 2>&1)"
     fi
 else
     fail "grant-ends-with-zone" "status: $(ctl status | tr '\n' ' ') record: rc ${ZRC}: ${ZOUT}"
@@ -294,10 +294,10 @@ fi
 ctl grant work > /dev/null
 moved() { st "zone work" | grep -q ' granted$' && ! st "zone untrusted" | grep -q ' granted'; }
 ended() { ! kill -0 "$rp" 2>/dev/null; }
-if wait_for 5 moved && wait_for 15 ended && [[ "$(cat /run/kryptik-sound/control/microphone 2>&1)" == work ]]; then
+if wait_for 5 moved && wait_for 15 ended && [[ "$(cat /run/kryptik-sound/marks/microphone 2>&1)" == work ]]; then
     pass "microphone-moves" "a grant to work took the microphone from untrusted, whose record ended: $(tr '\n' ' ' < "$LOG/untrusted.out")"
 else
-    fail "microphone-moves" "status: $(ctl status | tr '\n' ' '); holder: $(cat /run/kryptik-sound/control/microphone 2>&1); untrusted: $(tr '\n' ' ' < "$LOG/untrusted.out")"
+    fail "microphone-moves" "status: $(ctl status | tr '\n' ' '); holder: $(cat /run/kryptik-sound/marks/microphone 2>&1); untrusted: $(tr '\n' ' ' < "$LOG/untrusted.out")"
 fi
 # A record that did not end keeps untrusted up, which the rounds below start again.
 kill "$rp" 2>/dev/null; "$KD" stop untrusted > /dev/null 2>&1; wait "$rp" 2>/dev/null

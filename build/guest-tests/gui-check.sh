@@ -79,7 +79,7 @@ wait_for() {   # wait_for SECONDS CMD...
 zone_log() { cat "/var/log/kryptik/zone-$1.log" 2>/dev/null; }
 # A filter kill below the zone's pid 1 shows only in the kernel's audit line (type=1326).
 zone_why() {   # zone_why ZONE: the registry, both logs, what runs and the filter's last kills
-    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "/run/kryptik-proxy/$UID_/$1.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | tail -3 | tr '\n' ' ')"
+    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "/run/kryptik-proxy/$UID_/$1.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | grep -av 'comm="dwl"' | tail -3 | tr '\n' ' ')"
 }
 mark() { echo "--- $1 ---" >> "/var/log/kryptik/zone-$2.log" 2>/dev/null; }
 since_mark() {   # since_mark MARK ZONE: the zone's log after the marker line
@@ -128,6 +128,27 @@ if [[ "$(cat "/proc/${dwl_pid:-0}/cgroup" 2>/dev/null)" == "0::/kryptik-desktop"
     pass "desktop-memory-bound" "dwl runs in $dcg under memory.max $want_max"
 else
     fail "desktop-memory-bound" "dwl ${dwl_pid:-gone}: $(cat "/proc/${dwl_pid:-0}/cgroup" 2>&1); memory.max $(cat "$dcg/memory.max" 2>&1), want $want_max; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+fi
+# dwl runs without group kryptik, which reaches the launch daemon and the mixer's control socket;
+# the session's spawner keeps it for the keys' commands (compositor-separation design).
+kgid="$(awk -F: '$1 == "kryptik" { print $3 }' /etc/group)"
+spawner_pid="$(pgrep -u "$USER_NAME" -xo dwl-spawner)"
+dgroups="$(sed -n 's/^Groups:[[:space:]]*//p' "/proc/${dwl_pid:-0}/status" 2>/dev/null)"
+sgroups="$(sed -n 's/^Groups:[[:space:]]*//p' "/proc/${spawner_pid:-0}/status" 2>/dev/null)"
+if [[ -n "$kgid" && -r "/proc/${dwl_pid:-0}/status" ]] && ! grep -qw "$kgid" <<<"$dgroups" && grep -qw "$kgid" <<<"$sgroups"; then
+    pass "dwl-without-group" "dwl ${dwl_pid} runs with groups ${dgroups:-none}, without kryptik (${kgid}); its spawner ${spawner_pid} keeps it"
+else
+    fail "dwl-without-group" "dwl ${dwl_pid:-gone}: groups ${dgroups:-none}; spawner ${spawner_pid:-none}: groups ${sgroups:-none}; kryptik is ${kgid:-missing}; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+fi
+# The seat is dwl's alone: seatd answers group seat, which the launch daemon gives dwl and the
+# login lacks, so nothing else of the session can switch the console or take the screens and keys.
+seatgid="$(awk -F: '$1 == "seat" { print $3 }' /etc/group)"
+lgroups="$(id -G "$USER_NAME" 2>/dev/null)"
+if [[ -n "$seatgid" ]] && grep -qw "$seatgid" <<<"$dgroups" && ! grep -qw "$seatgid" <<<"$sgroups" \
+   && ! grep -qw "$seatgid" <<<"$lgroups"; then
+    pass "seat-is-dwls" "dwl ${dwl_pid} holds seat (${seatgid}); its spawner ${spawner_pid} and ${USER_NAME} do not"
+else
+    fail "seat-is-dwls" "seat is ${seatgid:-missing}; dwl: ${dgroups:-none}; spawner: ${sgroups:-none}; ${USER_NAME}: ${lgroups:-none}"
 fi
 dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
            | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"
@@ -609,12 +630,12 @@ sleep 6
 # opening on the grant, ends the fullscreen as any zone 0 window does; closed, Alt+e puts it back.
 # The mixer's directory is first made anew, as a restart that made it again would: the compositor's
 # watch stays with the old one, and the mark must come all the same.
-micdir=/run/kryptik-sound/control
+micdir=/run/kryptik-sound/marks
 micrec="$micdir/microphone"
 mic_record() {   # mic_record OWNER ZONE: a record of who may record, as OWNER writes it
-    printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0640 "$micrec.t" && mv -f "$micrec.t" "$micrec"
+    printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0644 "$micrec.t" && mv -f "$micrec.t" "$micrec"
 }
-mv "$micdir" "$micdir.before" && install -d -m 2750 -o 87 -g kryptik "$micdir"
+mv "$micdir" "$micdir.before" && install -d -m 0755 -o 87 "$micdir"
 mic_record 87 untrusted
 modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid-marks.err"
 marks_cam="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
@@ -899,6 +920,25 @@ for d in /proc/[0-9]*; do
     esac
 done
 [[ "${#foreign[@]}" -eq 0 ]] && pass "zone0-own-programs-only" "every process outside the zones' cgroups is one of zone 0's own" || fail "zone0-own-programs-only" "$(printf '%s; ' "${foreign[@]}")"
+# dwl starts no program itself: the session's spawner runs the keys' commands from a fixed table,
+# and dwl's own filter refuses exec (compositor-separation design).
+dwl_pid="$(pgrep -u "$USER_NAME" -xo dwl)"
+spawner="$(pgrep -u "$USER_NAME" -xo dwl-spawner)"
+# Every thread carries the filter, not the leader alone.
+unfiltered="$(for s in /proc/"${dwl_pid:-0}"/task/*/status; do grep -qE '^Seccomp:[[:space:]]+2$' "$s" 2>/dev/null || echo "${s%/status}"; done)"
+if [[ -z "$unfiltered" ]] && grep -qE '^Seccomp:[[:space:]]+2$' "/proc/${dwl_pid:-0}/status" 2>/dev/null \
+   && grep -qE '^NoNewPrivs:[[:space:]]+1$' "/proc/${dwl_pid:-0}/status" 2>/dev/null && [[ -n "$spawner" ]]; then
+    pass "dwl-execs-nothing" "dwl ${dwl_pid} runs under its no-exec filter, and its spawner is ${spawner}"
+else
+    fail "dwl-execs-nothing" "dwl ${dwl_pid:-gone}: $(grep -E '^(Seccomp|NoNewPrivs):' "/proc/${dwl_pid:-0}/status" 2>&1 | tr '\n' ' '); threads without the filter: ${unfiltered:-none}; spawner: ${spawner:-none}; $(pgrep -u "$USER_NAME" -a dwl | tr '\n' ';')"
+fi
+# And it reads only below its own list and writes no file (Landlock), as its session log says:
+# every path of the list there, one thread to bind, and no signal outside its domain (ABI 6).
+if grep -qE '^dwl: confined: reads only below ([0-9]+) of its \1 paths, .*, signals nothing outside it \(1 thread, ' "$RT/kryptik/session.log" 2>/dev/null; then
+    pass "dwl-confined-to-its-files" "$(grep -m1 '^dwl: confined: ' "$RT/kryptik/session.log")"
+else
+    fail "dwl-confined-to-its-files" "session.log: $(grep -a '^dwl: \(confined\|not confined\|Landlock\)' "$RT/kryptik/session.log" 2>/dev/null | head -3 | tr '\n' ' ')"
+fi
 [[ -n "$zoned" ]] && pass "zone-app-in-cgroup" "the zone's terminal runs in its cgroup:$zoned" || fail "zone-app-in-cgroup" "no havoc in a /kryptik cgroup; processes in one: $(grep -ls kryptik /proc/[0-9]*/cgroup 2>/dev/null | wc -l)"
 
 stop_zone personal
@@ -1677,14 +1717,14 @@ if wait_for 120 ff_page; then
         pass "browser-stays-up" "Firefox's window is still untrusted's 90 s after its page showed"
     else
         ff_broke="browser-stays-up"
-        fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | tail -2 | tr '\n' ' ')"
+        fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | grep -av 'comm="dwl"' | tail -2 | tr '\n' ' ')"
     fi
 else
     # A start that shows nothing prints nothing in the zone either. The host prints FAIL lines
     # alone, so this one carries what the proxy refused, what the zone's filter killed, and
     # whether Firefox still runs and where it waits.
     ff_broke="browser-window"
-    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); zone: $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); proxy: $(tail -4 "$plog" 2>/dev/null | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp|segfault|traps:' | tail -4 | tr '\n' ' '); firefox: $(ps -eo pid=,stat=,wchan:24=,etime=,args= 2>/dev/null | grep '[f]irefox' | head -8 | cut -c1-120 | tr '\n' ';'); launch: $(tail -3 "$LOG/launch-firefox.out" 2>/dev/null | tr '\n' ' ')"
+    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); zone: $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); proxy: $(tail -4 "$plog" 2>/dev/null | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp|segfault|traps:' | grep -av 'comm="dwl"' | tail -4 | tr '\n' ' '); firefox: $(ps -eo pid=,stat=,wchan:24=,etime=,args= 2>/dev/null | grep '[f]irefox' | head -8 | cut -c1-120 | tr '\n' ';'); launch: $(tail -3 "$LOG/launch-firefox.out" 2>/dev/null | tr '\n' ' ')"
 fi
 # --- a second launch puts the open browser in front ----------------------------------------
 # Alt+1 shows another tag; the browser key then views Firefox's tag, 3, on its monitor and
@@ -1790,6 +1830,12 @@ if [[ -n "$ff_broke" ]]; then
     fi
     fail "browser-window-trace" "${ff_broke} failed; untrusted's filter, notifying instead of killing, refused Firefox in zone 0 over ${ffset:-no browser /usr set}:${ff_calls:- nothing}"
 fi
+
+# What dwl called outside its filter's list over the whole suite, which the filter logs (audit
+# type 1326) and lets through, by number and how often: the list's next entries, until none.
+dwl_unlisted="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -a 'comm="dwl"' | grep -ao ' syscall=[0-9]*' \
+    | sort | uniq -c | awk '{ printf "%s%s x%s", s, substr($2, 9), $1; s = ", " }')"
+info "dwl's calls outside its list: ${dwl_unlisted:-none}"
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the

@@ -72,7 +72,7 @@ static const unsigned char zonefont[128][7] = {
  * over a fullscreen window names: that window covers the chrome's own windows
  * that say so. Each comes from a file only its writer can leave, the mixer's
  * for the microphone and kryptikd's for the camera. */
-#define MICMARK "/run/kryptik-sound/control/microphone"
+#define MICMARK "/run/kryptik-sound/marks/microphone"
 #define CAMMARK "/run/kryptik-camera/grant"
 #define MARKEVENTS (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE)
 #define SOUNDUID 87 /* the mixer's, build/services/kryptik-sound/run */
@@ -173,7 +173,7 @@ marksupdate(void)
 \tClient *c;
 
 \tif (markfd >= 0) {
-\t\tinotify_add_watch(markfd, "/run/kryptik-sound/control", MARKEVENTS);
+\t\tinotify_add_watch(markfd, "/run/kryptik-sound/marks", MARKEVENTS);
 \t\tinotify_add_watch(markfd, "/run/kryptik-camera", MARKEVENTS);
 \t}
 \treadmark(MICMARK, SOUNDUID, "", mic, sizeof(mic));
@@ -1434,6 +1434,499 @@ keyboardfocuschange(struct wl_listener *listener, void *data)
 """,
      """\t\t\tprintf("%s holdawake %s\\n", m->wlr_output->name, holdzone ? holdzone->zone : "");
 \t\t\tprintf("%s browsers", m->wlr_output->name);
+"""),
+    # The spawner (docs/design/compositor-separation.md): dwl forks it before it confines itself,
+    # and from then on starts no program: a key's command goes to the spawner as its index in
+    # dwl-config.h's spawncmds, and dwl's filter refuses exec.
+    ("""#include <sys/wait.h>
+""",
+     """#include <sys/wait.h>
+#include <stddef.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+"""),
+    ("""static void spawn(const Arg *arg);
+""",
+     """static void spawn(const Arg *arg);
+static void startspawner(void);
+static void confineexec(void);
+"""),
+    ("""static pid_t child_pid = -1;
+""",
+     """static pid_t child_pid = -1;
+static int spawnfd = -1;
+static pid_t spawnerpid = -1;
+"""),
+    # dwl's SIGCHLD loop ends the login when it reaps the spawner.
+    ("""\tif (signo == SIGCHLD)
+\t\twhile (waitpid(-1, NULL, WNOHANG) > 0);
+""",
+     """\tif (signo == SIGCHLD) {
+\t\tpid_t pid;
+\t\t/* Kryptik: with the spawner gone no key or lid could start the lock: end the login. */
+\t\twhile ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
+\t\t\tif (pid == spawnerpid)
+\t\t\t\tquit(NULL);
+\t}
+"""),
+    ("""void
+spawn(const Arg *arg)
+{
+\tif (fork() == 0) {
+\t\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\t\tsetsid();
+\t\texecvp(((char **)arg->v)[0], (char **)arg->v);
+\t\tdie("dwl: execvp %s failed:", ((char **)arg->v)[0]);
+\t}
+}
+""",
+     """void
+spawn(const Arg *arg)
+{
+\tunsigned char i;
+\tfor (i = 0; i < LENGTH(spawncmds); i++)
+\t\tif ((const void *)spawncmds[i] == arg->v)
+\t\t\tbreak;
+\tif (i == LENGTH(spawncmds))
+\t\tfprintf(stderr, "dwl: %s is not in the spawner's table\\n", ((char **)arg->v)[0]);
+\telse if (send(spawnfd, &i, 1, MSG_NOSIGNAL) != 1) {
+\t\tint e = errno;
+\t\tfprintf(stderr, "dwl: the spawner did not take %s: %s\\n", ((char **)arg->v)[0], strerror(e));
+\t\t/* A desktop whose keys and lid no longer lock is worse than a new login. */
+\t\tif (e == EPIPE || e == ECONNRESET || e == ENOTCONN)
+\t\t\tquit(NULL);
+\t}
+}
+
+/* Kryptik: the spawner, forked before dwl confines itself, or the session's, handed over (-S). It
+ * runs only the table's commands, each as dwl's spawn did, holds nothing of dwl's but its end of
+ * the socket, and ends with dwl; dwl ends with it. */
+static void
+startspawner(void)
+{
+\tint sv[2];
+\tlong fd, max = sysconf(_SC_OPEN_MAX);
+\tunsigned char i;
+\tssize_t n;
+\tpid_t pid;
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+\t\tdie("startup: the spawner's socket:");
+\tswitch ((pid = fork())) {
+\tcase -1:
+\t\tdie("startup: the spawner's fork:");
+\tcase 0:
+\t\tbreak;
+\tdefault:
+\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
+\t\treturn;
+\t}
+\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (fd = 3; fd < max; fd++)
+\t\tif (fd != sv[1])
+\t\t\tclose((int)fd);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(sv[1], &i, 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (i >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tclose(sv[1]);
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[i][0], (char *const *)spawncmds[i]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[i][0]);
+\t}
+\t_exit(0);
+}
+
+/* Kryptik: the calls dwl makes once it runs: what the headless suite traces it making
+ * (dwl-headless.sh), and what screens, input devices, the seat, cursors, keymaps and the keys'
+ * commands add (send() to the spawner is sendto). The hottest come first, as the filter tries
+ * them in turn. */
+static const int dwlcalls[] = {
+\tSYS_epoll_wait, SYS_epoll_pwait, SYS_epoll_pwait2, SYS_recvmsg, SYS_sendmsg, SYS_ioctl, SYS_read,
+\tSYS_write, SYS_clock_gettime, SYS_timerfd_settime, SYS_close, SYS_fcntl, SYS_mmap, SYS_munmap,
+\tSYS_futex, SYS_accept4, SYS_epoll_ctl, SYS_getsockopt, SYS_sendto, SYS_openat, SYS_fstat,
+\tSYS_newfstatat,
+\tSYS_statx, SYS_stat, SYS_lstat, SYS_lseek, SYS_pread64, SYS_getdents64, SYS_readlinkat,
+\tSYS_readlink, SYS_access, SYS_faccessat, SYS_faccessat2, SYS_inotify_add_watch,
+\tSYS_inotify_rm_watch, SYS_brk, SYS_mremap, SYS_madvise, SYS_mprotect, SYS_memfd_create,
+\tSYS_ftruncate, SYS_timerfd_create, SYS_timerfd_gettime, SYS_eventfd2, SYS_dup, SYS_dup3,
+\tSYS_poll, SYS_ppoll, SYS_getrandom, SYS_clock_getres, SYS_gettimeofday, SYS_clock_nanosleep,
+\tSYS_nanosleep, SYS_sched_yield, SYS_getpid, SYS_gettid, SYS_getuid, SYS_geteuid, SYS_getgid,
+\tSYS_getegid, SYS_uname, SYS_rt_sigaction, SYS_rt_sigprocmask, SYS_rt_sigreturn,
+\tSYS_restart_syscall, SYS_kill, SYS_tgkill, SYS_wait4, SYS_waitid, SYS_mkdir, SYS_unlink,
+\tSYS_landlock_create_ruleset, SYS_landlock_add_rule, SYS_landlock_restrict_self, SYS_exit,
+\tSYS_exit_group,
+};
+
+/* Kryptik: dwl execs nothing once the spawner runs, and reaches into no other process; calls of
+ * another ABI are refused too, on every thread dwl has (TSYNC). A call outside dwlcalls is let
+ * through but logged (audit type 1326, which the desktop suite reads back) until the suite runs
+ * with none. syscall() is glibc's, which _POSIX_C_SOURCE hides. */
+long syscall(long number, ...);
+static void
+confineexec(void)
+{
+\tstruct sock_filter f[12 + LENGTH(dwlcalls)] = {
+\t\tBPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+\t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+\t\tBPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+\t\tBPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0x40000000, 4, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execve, 3, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execveat, 2, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ptrace, 1, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_process_vm_writev, 0, 1),
+\t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+\t};
+\tstruct sock_fprog prog = { .len = (unsigned short)LENGTH(f), .filter = f };
+\tsize_t i, n = LENGTH(dwlcalls);
+
+\t/* Each listed call jumps to the last instruction, ALLOW; past the list comes LOG. */
+\tfor (i = 0; i < n; i++)
+\t\tf[10 + i] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)dwlcalls[i],
+\t\t\t(unsigned char)(n - i), 0);
+\tf[10 + n] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_LOG);
+\tf[11 + n] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0
+\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
+\t\tdie("startup: the no-exec filter:");
+}
+"""),
+    ("""\t/* Mark stdout as non-blocking to avoid the startup script
+""",
+     """\t/* Kryptik: from here dwl starts no program itself. */
+\tstartspawner();
+\tconfineexec();
+
+\t/* Mark stdout as non-blocking to avoid the startup script
+"""),
+    # Landlock: dwl reads only what it needs once it runs, and writes no file.
+    ("""#include <linux/seccomp.h>
+""",
+     """#include <linux/seccomp.h>
+#include <linux/landlock.h>
+/* Kryptik: Landlock's scopes as Linux 6.12 numbers them, for headers older than the kernel. */
+#ifndef LANDLOCK_SCOPE_SIGNAL
+#define LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET (1ULL << 0)
+#define LANDLOCK_SCOPE_SIGNAL (1ULL << 1)
+#endif
+"""),
+    ("""static void confineexec(void);
+""",
+     """static void confineexec(void);
+static void confinefs(void);
+"""),
+    ("""\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
+\t\tdie("startup: the no-exec filter:");
+}
+""",
+     """\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
+\t\tdie("startup: the no-exec filter:");
+}
+
+/* Kryptik: a Landlock rule for PATH with ACCESS: 1 added, 0 for a path that is not there (said),
+ * -1 refused. */
+static int
+landlockpath(int set, const char *path, __u64 access)
+{
+\tstruct landlock_path_beneath_attr beneath = { .allowed_access = access };
+\tint r;
+
+\tif ((beneath.parent_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+\t\tfprintf(stderr, "dwl: Landlock: %s is not readable: %s\\n", path, strerror(errno));
+\t\treturn 0;
+\t}
+\tr = syscall(SYS_landlock_add_rule, set, LANDLOCK_RULE_PATH_BENEATH, &beneath, 0) < 0 ? -1 : 1;
+\tif (r < 0)
+\t\tfprintf(stderr, "dwl: not confined to its files: Landlock refused %s: %s\\n", path, strerror(errno));
+\tclose(beneath.parent_fd);
+\treturn r;
+}
+
+/* Kryptik: landlock_ruleset_attr with the scopes' field, which older headers lack. A kernel
+ * without scopes takes the longer form while that field is zero. */
+struct rulesetattr {
+\t__u64 handled_access_fs, handled_access_net, scoped;
+};
+
+/* Kryptik: from here dwl writes no file and reads only what it needs while it runs: keymaps and
+ * cursors under /usr, hotplug under /sys and udev's, the microphone's and the camera's marks, and
+ * the chrome's request for a browser in front, which it may also remove. No TCP, and, where the
+ * kernel has Landlock's scopes, no abstract socket and no signal outside its domain: the session's
+ * spawner starts the chrome, so dwl signals nothing. A rule holds a directory as it was at login:
+ * one made again later is not covered. Landlock binds the calling thread alone, so dwl
+ * confines itself only while it has one. Any failure leaves dwl as it was, and says so: the
+ * desktop still starts. */
+static void
+confinefs(void)
+{
+\tstatic const char *const readable[] = {
+\t\t"/usr", "/sys", "/run/udev", "/etc/udev", "/run/kryptik-sound", "/run/kryptik-camera",
+\t};
+\tstruct rulesetattr attr = {
+\t\t.handled_access_fs = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE
+\t\t\t| LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
+\t\t\t| LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_SYM | LANDLOCK_ACCESS_FS_REFER
+\t\t\t| LANDLOCK_ACCESS_FS_TRUNCATE,
+\t\t.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP,
+\t};
+\tconst char *rt = getenv("XDG_RUNTIME_DIR"), *signals = "";
+\tchar line[64], front[256];
+\tsize_t i, added = 0, paths = LENGTH(readable) + 1;
+\tlong abi, threads = -1;
+\tFILE *f;
+\tint set, r = 0;
+
+\tif ((f = fopen("/proc/self/status", "r"))) {
+\t\twhile (fgets(line, sizeof(line), f))
+\t\t\tif (sscanf(line, "Threads: %ld", &threads) == 1)
+\t\t\t\tbreak;
+\t\tfclose(f);
+\t}
+\tif (threads != 1) {
+\t\tfprintf(stderr, "dwl: not confined to its files: %ld threads, and Landlock binds the calling one alone\\n", threads);
+\t\treturn;
+\t}
+\tabi = syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+\tif (abi < 4) {
+\t\tfprintf(stderr, "dwl: not confined to its files: no Landlock ABI 4 in this kernel (%ld)\\n", abi);
+\t\treturn;
+\t}
+\t/* No signal either, unless dwl started a command itself (-s), which its cleanup ends. */
+\tif (abi >= 6) {
+\t\tattr.scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | (child_pid > 0 ? 0 : LANDLOCK_SCOPE_SIGNAL);
+\t\tsignals = child_pid > 0 ? "" : ", signals nothing outside it";
+\t}
+\tif ((set = (int)syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0)) < 0) {
+\t\tfprintf(stderr, "dwl: not confined to its files: a Landlock ruleset: %s\\n", strerror(errno));
+\t\treturn;
+\t}
+\tfor (i = 0; i < LENGTH(readable) && r >= 0; i++)
+\t\tif ((r = landlockpath(set, readable[i], LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)) > 0)
+\t\t\tadded++;
+\t/* The chrome's request for a browser in front: made here while dwl may still make it, 0700. */
+\tif (r >= 0 && rt && snprintf(front, sizeof(front), "%s/kryptik/front", rt) < (int)sizeof(front)) {
+\t\tmkdir(front, 0700);
+\t\tif ((r = landlockpath(set, front, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
+\t\t\t\t| LANDLOCK_ACCESS_FS_REMOVE_FILE)) > 0)
+\t\t\tadded++;
+\t}
+\tif (r >= 0 && syscall(SYS_landlock_restrict_self, set, 0) < 0)
+\t\tfprintf(stderr, "dwl: not confined to its files: landlock_restrict_self: %s\\n", strerror(errno));
+\telse if (r >= 0)
+\t\tfprintf(stderr, "dwl: confined: reads only below %zu of its %zu paths, writes no file and has no TCP%s"
+\t\t\t" (1 thread, Landlock ABI %ld)\\n", added, paths, signals, abi);
+\tclose(set);
+}
+"""),
+    ("""\tstartspawner();
+\tconfineexec();
+""",
+     """\tstartspawner();
+\tconfineexec();
+\tconfinefs();
+"""),
+    # dwl without group kryptik: the launch daemon starts it (-S), and the session's spawner (-X,
+    # dwl's binary) keeps the group and starts the chrome once dwl names its display.
+    ("""static void confinefs(void);
+""",
+     """static void confinefs(void);
+static int fdarg(const char *s);
+static void spawnerloop(int fd, char **cmd);
+static int spawnergone(int fd, uint32_t mask, void *data);
+"""),
+    ("""\twhile ((c = getopt(argc, argv, "s:hdv")) != -1) {
+\t\tif (c == 's')
+\t\t\tstartup_cmd = optarg;
+""",
+     """\twhile ((c = getopt(argc, argv, "s:hdvS:X:")) != -1) {
+\t\tif (c == 's')
+\t\t\tstartup_cmd = optarg;
+\t\t/* Kryptik: the spawner runs already, at this socket: dwl forks none. */
+\t\telse if (c == 'S')
+\t\t\tspawnfd = fdarg(optarg);
+\t\t/* Kryptik: be the session's spawner on this socket, and nothing else. */
+\t\telse if (c == 'X')
+\t\t\tspawnerloop(fdarg(optarg), argv + optind);
+"""),
+    ("""\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (fd = 3; fd < max; fd++)
+\t\tif (fd != sv[1])
+\t\t\tclose((int)fd);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(sv[1], &i, 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (i >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tclose(sv[1]);
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[i][0], (char *const *)spawncmds[i]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[i][0]);
+\t}
+\t_exit(0);
+}
+""",
+     """\tspawnerloop(sv[1], NULL);
+}
+
+/* Kryptik: a descriptor dwl was handed, by number. */
+static int
+fdarg(const char *s)
+{
+\tchar *end;
+\tlong fd = strtol(s, &end, 10);
+
+\tif (*s == '\\0' || *end != '\\0' || fd < 3 || fd > 1023)
+\t\tdie("dwl: %s is not a descriptor", s);
+\treturn (int)fd;
+}
+
+/* Kryptik: the spawner's loop on FD, its end of dwl's socket. A byte is an index in the table,
+ * whose command runs as dwl's spawn ran it. The session's spawner (-X) has CMD too: a longer
+ * message is the display dwl made, and CMD (the chrome) starts there with descriptor 4, dwl's
+ * status, as its stdin; when dwl is gone, CMD's process group goes too, as dwl's cleanup did. */
+static void
+spawnerloop(int fd, char **cmd)
+{
+\tlong i, max = sysconf(_SC_OPEN_MAX);
+\tpid_t chrome = -1;
+\tchar msg[64];
+\tssize_t n;
+
+\tif (cmd && *cmd && strcmp(*cmd, "--") == 0)
+\t\tcmd++;
+\tif (cmd && !*cmd)
+\t\tcmd = NULL;
+\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (i = 3; i < max; i++)
+\t\tif (i != fd && !(cmd && i == 4))
+\t\t\tclose((int)i);
+\t/* Only the chrome gets dwl's status, and nothing the spawner starts gets dwl's socket. */
+\tfcntl(fd, F_SETFD, FD_CLOEXEC);
+\tif (cmd)
+\t\tfcntl(4, F_SETFD, FD_CLOEXEC);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(fd, msg, sizeof(msg) - 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (n > 1) {
+\t\t\tif (!cmd || chrome > 0)
+\t\t\t\tcontinue;
+\t\t\tmsg[n] = '\\0';
+\t\t\t/* A name in the runtime directory, as dwl's own socket is: no path elsewhere. */
+\t\t\tif (strspn(msg, "abcdefghijklmnopqrstuvwxyz0123456789-") != (size_t)n) {
+\t\t\t\tfprintf(stderr, "dwl-spawner: dwl named no display of its own\\n");
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tsetenv("WAYLAND_DISPLAY", msg, 1);
+\t\t\tif ((chrome = fork()) == 0) {
+\t\t\t\tdup2(4, STDIN_FILENO);
+\t\t\t\tsetsid();
+\t\t\t\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\t\t\t\tsignal(SIGCHLD, SIG_DFL);
+\t\t\t\texecvp(cmd[0], cmd);
+\t\t\t\tdie("dwl: execvp %s failed:", cmd[0]);
+\t\t\t}
+\t\t\tcontinue;
+\t\t}
+\t\tif ((unsigned char)msg[0] >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[(unsigned char)msg[0]][0], (char *const *)spawncmds[(unsigned char)msg[0]]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[(unsigned char)msg[0]][0]);
+\t}
+\tif (chrome > 0) {
+\t\tkill(-chrome, SIGTERM);
+\t\twaitpid(chrome, NULL, 0);
+\t}
+\t_exit(0);
+}
+
+/* Kryptik: a desktop whose keys and lid no longer lock is worse than a new login. */
+static int
+spawnergone(int fd, uint32_t mask, void *data)
+{
+\tfprintf(stderr, "dwl: the spawner is gone: the login ends\\n");
+\tquit(NULL);
+\treturn 0;
+}
+"""),
+    # The forked spawner's variables, which the loop above no longer uses.
+    ("""\tint sv[2];
+\tlong fd, max = sysconf(_SC_OPEN_MAX);
+\tunsigned char i;
+\tssize_t n;
+\tpid_t pid;
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+""",
+     """\tint sv[2];
+\tpid_t pid;
+
+\t/* The session's spawner, handed over: told dwl's display, it starts the chrome there. */
+\tif (spawnfd >= 0) {
+\t\tconst char *display = getenv("WAYLAND_DISPLAY");
+\t\tfcntl(spawnfd, F_SETFD, FD_CLOEXEC);
+\t\tif (!display || send(spawnfd, display, strlen(display), MSG_NOSIGNAL) < 0)
+\t\t\tdie("startup: the spawner did not take the display:");
+\t\twl_event_loop_add_fd(event_loop, spawnfd, 0, spawnergone, NULL);
+\t\treturn;
+\t}
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+"""),
+    ("""\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
+\t\treturn;
+""",
+     """\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
+\t\twl_event_loop_add_fd(event_loop, spawnfd, 0, spawnergone, NULL);
+\t\treturn;
 """),
 ]
 

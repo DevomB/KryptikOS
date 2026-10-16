@@ -12,10 +12,11 @@ the first two, which are built; the third and fourth are later.
 
 ## What a compromise reaches today
 
-- **dwl and the chrome run as the login user.** `kryptik-session` execs dwl
-  as that user, who is in groups `seat` and `kryptik`; the chrome is dwl's
-  status reader, the same user again. The proxies do not: the launch daemon
-  starts each zone's as a user of its own (below).
+- **dwl and the chrome run as the login user.** The launch daemon starts
+  dwl as that user, with group `seat` and without `kryptik`; the chrome,
+  dwl's status reader, is the same user again, with the login's groups. The
+  proxies do not: the launch daemon starts each zone's as a user of its own
+  (below).
 - **dwl's own socket offers everything.** dwl 0.8 creates screencopy,
   export-dmabuf, data-control, primary selection, the virtual keyboard and
   pointer, layer-shell, session lock and the rest, and its own socket in the
@@ -30,9 +31,10 @@ the first two, which are built; the third and fourth are later.
   with the same globals and the same zone as before, and nothing else:
   not dwl's own socket, the consent directory, the launch daemon, the
   user's home or another zone's socket.
-- **A dwl bug gives the desktop:** screencopy, the virtual keyboard, the
-  consent directory, the launch daemon, the user's home, and every pixel
-  and every key.
+- **A dwl bug gives the desktop:** screencopy, the virtual keyboard, and
+  every pixel and every key, so what the chrome approves. What the third
+  step below has built keeps it from the consent directory, the launch
+  daemon and the user's home.
 
 The proxy parses every message a zone sends, so its parser is the first
 thing a zone attacks. It is Rust, bounded, and fuzzed with a corpus
@@ -137,12 +139,49 @@ user and reach dwl's own socket through its group. After start-up, dwl
 confines itself as a zone is confined:
 
 - a seccomp filter from the calls `kryptikd seccomp-trace` finds it making
-  under the desktop suite;
+  under the desktop suite. Built in part: dwl's filter lists 76 calls, what
+  the headless suite traces dwl making once confined (`dwl-headless.sh`
+  under strace) and what screens, input devices, the seat, cursors,
+  keymaps and the keys' commands add. A call outside the list is let
+  through but logged (audit type 1326), and the desktop suite says which.
+  Once it has run with none, the filter refuses them;
 - Landlock with read-only `/usr` (keymaps compile from
-  `/usr/share/X11/xkb`) and nothing else;
+  `/usr/share/X11/xkb`) and nothing else. Built: once the spawner runs, dwl
+  may read below `/usr` (keymaps, cursors), `/sys`, `/run/udev` and
+  `/etc/udev` (wlroots and libinput read these when a screen or an input
+  device is plugged in), and the microphone's and the camera's marks
+  (`/run/kryptik-sound`, `/run/kryptik-camera`). It may also read and
+  remove the chrome's request for a browser in front, in
+  `$XDG_RUNTIME_DIR/kryptik/front`, which it makes first. It writes no file,
+  opens no TCP, and, where the kernel has Landlock ABI 6, reaches no
+  abstract socket and signals no process outside its own domain: the lock,
+  the chrome, the user's zones' launchers. dwl started with a command of its
+  own (`-s`, as in a test) keeps its signals to end that command when it
+  exits. The zones' sockets and its own are made before then, and its own
+  socket and lock stay behind when it exits, until the next login's dwl
+  takes them over. A rule holds a directory as it was at login: one that is
+  made again while dwl runs is not covered.
+  Landlock binds the calling thread alone, so dwl confines itself only while
+  it has one thread, and says how many it had. A kernel without Landlock
+  leaves dwl as it was, and the session log says so;
 - no exec. dwl's `spawn` keys and its status command move to a small
   spawner, started before the sandbox, that runs only a fixed table of
-  commands.
+  commands. Built: the session starts the spawner, dwl's own binary with
+  `-X`, before it asks for dwl, and dwl takes its end of the socket (`-S`).
+  dwl names its display to the spawner, which then starts the chrome there
+  on dwl's status, as dwl's startup command was. dwl started on its own, as
+  in a test, forks the spawner once the status command runs instead. Either
+  way the spawner holds nothing of dwl's but one end of a socket, and dwl
+  sends it a key's command as its index in `spawncmds`
+  (`build/desktop/dwl-config.h`). Then dwl sets no-new-privileges and a
+  filter, on every thread, that refuses exec, ptrace and
+  `process_vm_writev`, and kills calls of another architecture.
+  `kernel.yama.ptrace_scope = 3` already refuses dwl `/proc/PID/mem`,
+  `pidfd_getfd` and `process_vm_readv` into the chrome and the lock, so the
+  filter is a second wall there. The spawner is not dumpable and ends with
+  dwl, taking the chrome's process group with it, as dwl's cleanup did. If
+  it goes, dwl ends the login rather than run on with keys and a lid that no
+  longer lock.
 
 seatd passes it its devices, including hotplugged ones, as descriptors, so
 dwl never opens `/dev`. Running it under `kryptikd run` as a zone of its own
@@ -158,6 +197,54 @@ not this document's.
 - **Cost:** a change to dwl for the sandbox and the spawner; the session
   asks the launch daemon to start dwl as its user; the filter has to follow
   wlroots' calls at every update.
+
+#### dwl without group `kryptik`
+
+With the spawner, the no-exec filter and Landlock, a compromised dwl can no
+longer exec, read the user's files or write any file. What it still reached
+came from its groups: in group `kryptik` it could connect to the launch
+daemon's socket and to the mixer's control socket, and Landlock does not
+stop that, as connecting to a socket is not one of its accesses. Built: the
+session keeps the group, and dwl runs without it.
+
+- `kryptik-launch --desktop`, the session's last step, starts the spawner
+  with every group of the login, holding dwl's status for the chrome. It
+  then asks the launch daemon for the desktop, handing over three
+  descriptors: the spawner's socket, the status pipe's write end, and the
+  session's log.
+- The daemon starts `/usr/bin/dwl -S 3` as one of its jobs, as it does a
+  launch, so it serves other requests meanwhile. dwl moves itself into
+  `kryptik-desktop` while still root, then takes the login's uid and gid,
+  the asker's groups less `kryptik`, and `seat`, sets no-new-privileges and
+  a parent-death signal, and runs with an environment the daemon makes,
+  plus the session's keymap. The daemon answers `started <pid>` at once and
+  again when dwl ends, which ends the login. dwl also ends with the daemon,
+  so a daemon that ends, as one s6 starts again after a crash, ends the
+  login too.
+- Everything that asks the daemon for anything keeps the group: the chrome,
+  which the spawner starts once dwl names its display, the lock, and the
+  keys' commands.
+- The mixer records who holds the microphone in `/run/kryptik-sound/marks`,
+  which it alone writes and anyone on the host reads, as the camera's grant
+  already is; `control` keeps only the socket. The record names only the
+  zone that holds the microphone, which the screen shows anyway, and no zone
+  sees `/run/kryptik-sound`. dwl still takes it only as the mixer's own.
+- The seat is dwl's alone. seatd answers group `seat`, which the daemon
+  gives dwl and the login is no longer made in, so nothing else of the
+  session can open the screens or the input devices through seatd, or take
+  the seat while dwl has the console. A login made before keeps the group
+  until `gpasswd -d USER seat`; nothing of the session needs it.
+- If the daemon does not start dwl, there is no desktop, as the login has
+  no seat to start one on: the session log says why, and the login ends.
+
+With the chrome the spawner's, dwl sends no signal, so Landlock's signal
+scope (ABI 6) costs nothing, and it is built too. What is left is **a user
+of its own,** the end state above, whose group `seat` is dwl's already. Its
+sockets and directory then need an owner other than the session (dwl's
+socket reached through a group, the zones' socket directory made for that
+user), and the chrome's request for a browser in front a directory both
+reach. It is the largest part, and it gains least once the rest is built,
+so it comes last.
 
 ### Only pixels and input cross
 
@@ -195,7 +282,13 @@ favour of moving the protocol into the zones, which does shrink it.
    Built.
 2. **Proxies as their own users, confined.** Together with the first step, a
    proxy bug gives the zone nothing it did not have. Built.
-3. **The compositor as its own user, confined,** with the spawner.
+3. **The compositor as its own user, confined,** with the spawner. Built
+   so far: the spawner; a filter that refuses dwl exec, ptrace and
+   `process_vm_writev`; Landlock, with its signal scope; dwl without group
+   `kryptik`, and with group `seat`, which the login no longer has; and a
+   list of the calls it is traced making, outside which it logs. Still to
+   do: its own user, and refusing what is outside the list once the desktop
+   suite logs nothing.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.
 
@@ -221,6 +314,24 @@ Wayland parsing out of zone 0.
   That uid lists neither the user's home (0700) nor the consent
   directory, and connects to neither the launch daemon's socket nor dwl's
   own; `personal`'s proxy uid is turned away from `untrusted`'s socket.
+
+Of the third, it checks what is built:
+
+- every thread of dwl has `Seccomp: 2` and `NoNewPrivs: 1`, and the spawner
+  that runs the keys' commands is the session's (`dwl-execs-nothing`);
+- dwl's session log says it reads only below every path of its list, writes
+  no file, has no TCP and signals nothing outside its domain, with one
+  thread to bind (`dwl-confined-to-its-files`);
+- dwl's `Groups:` holds no `kryptik` while the spawner's does
+  (`dwl-without-group`), and holds `seat` while neither the spawner's nor
+  the login's does (`seat-is-dwls`), and dwl runs in `kryptik-desktop`
+  under its bound (`desktop-memory-bound`);
+- the calls dwl made outside its filter's list, read back from the audit,
+  are said, until the filter refuses them and the list is a check.
+
+The Compositor build job in CI also builds dwl over the pinned libraries and
+runs it headless, alone and split as the session splits it, under what of
+its confinement the runner's kernel allows (`tools/tests/dwl-headless.sh`).
 
 The next steps add:
 

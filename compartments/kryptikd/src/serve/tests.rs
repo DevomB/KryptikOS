@@ -107,6 +107,9 @@ fn request_complete_at_terminator() {
     assert!(request_complete(b"wifi-add\nssid x\npsk y\nend\n"));
     assert!(!request_complete(b"wifi-forget\nssid x\n"));
     assert!(request_complete(b"wifi-forget\nssid x\nend\n"));
+    assert!(!request_complete(b"desktop\n"));
+    assert!(!request_complete(b"desktop\nenv XKB_DEFAULT_LAYOUT=us\n"));
+    assert!(request_complete(b"desktop\nenv XKB_DEFAULT_LAYOUT=us\nend\n"));
 }
 
 #[test]

@@ -620,6 +620,15 @@ static int handle_one(void)
 		/* wl_surface.enter(output) */
 		printf("%s entered an output\n", object == SURFACE ? "the window" : "the cursor image");
 		fflush(stdout);
+	} else if (seat_id && object == seat_id && opcode == 0) {
+		/* wl_seat.capabilities: the keyboard once there is one, as asking a seat
+		 * that never had one is a protocol error (a headless compositor's). */
+		if ((get32(body) & 2) && !keyboard_id) {
+			unsigned char b[4];
+			keyboard_id = next_id++;
+			put32(b, keyboard_id);
+			send_msg(seat_id, 1, b, 4);    /* wl_seat.get_keyboard */
+		}
 	} else if (keyboard_id && object == keyboard_id && opcode == 0) {
 		int fd = take_fd();                     /* wl_keyboard.keymap: not needed */
 		if (fd >= 0) close(fd);
@@ -754,14 +763,12 @@ static int hold_oversize(int more, int seconds, const char *title)
 		}
 	}
 	/* Where the keyboard is, as the compositor tells it: the record the chrome
-	 * writes names the window it believes on top, not always the same one. */
+	 * writes names the window it believes on top, not always the same one. The
+	 * seat's capabilities ask for the keyboard (handle_one). */
 	if (!seat_id) {
 		seat_id = next_id++;
 		if (bind_global("wl_seat", seat_id)) return 1;
 	}
-	keyboard_id = next_id++;
-	put32(b, keyboard_id);
-	send_msg(seat_id, 1, b, 4);                /* wl_seat.get_keyboard */
 	if (scale) {
 		uint32_t mgr = next_id++;
 		if (bind_global("wp_fractional_scale_manager_v1", mgr)) return 1;

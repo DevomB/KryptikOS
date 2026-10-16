@@ -22,6 +22,10 @@
 //!              stick-grant <zone> <partition> ro|rw | stick-eject <zone>
 //!              camera-grant <zone>, answered `ok <camera>` | camera-revoke, answered
 //!                `ok <zone>`, `ok <zone> stayed` (its driver still loaded) or `ok none`
+//!              desktop, `env NAME=VALUE` lines for dwl's keymap, `end`, with three descriptors
+//!                (the spawner's socket, dwl's status, the log): dwl started as the login's user
+//!                in group seat and without group kryptik, answered `started <pid>`, then again
+//!                when dwl ends
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
@@ -188,22 +192,25 @@ pub fn peer_cred(fd: RawFd) -> std::io::Result<libc::ucred> {
 
 // --- the request -------------------------------------------------------------
 
-/// `run`, `wifi-add` and `wifi-forget` end at an `end` line, other verbs at a newline.
+/// `run`, `wifi-add`, `wifi-forget` and `desktop` end at an `end` line, other verbs at a newline.
 fn request_complete(text: &[u8]) -> bool {
     if !text.ends_with(b"\n") {
         return false;
     }
-    if text.starts_with(b"run ") || text.starts_with(b"wifi-add\n") || text.starts_with(b"wifi-forget\n") {
+    if text.starts_with(b"run ") || text.starts_with(b"wifi-add\n") || text.starts_with(b"wifi-forget\n") || text.starts_with(b"desktop\n") {
         text.ends_with(b"\nend\n")
     } else {
         true
     }
 }
 
-/// Read the request, and at most one descriptor (with its first bytes), within `deadline`.
-fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<OwnedFd>), String> {
+/// The descriptors a request may carry: one, or the desktop's three.
+const MAX_CARRIED: usize = 3;
+
+/// Read the request, and the descriptors that come with its first bytes, within `deadline`.
+fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>), String> {
     let mut text = Vec::new();
-    let mut carried: Option<OwnedFd> = None;
+    let mut carried: Vec<OwnedFd> = Vec::new();
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -223,20 +230,20 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<OwnedFd
         }
         let mut buf = [0u8; 4096];
         // The descriptors are owned, so any refusal below closes them.
-        let (n, mut got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
+        let (n, got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
             Ok(x) => x,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(e.to_string()),
             Err(e) => return Err(format!("recvmsg: {e}")),
         };
         if !got.is_empty() {
-            if !text.is_empty() {
+            if !text.is_empty() || !carried.is_empty() {
                 return Err("a descriptor must accompany the first bytes of a request".into());
             }
-            if got.len() > 1 || carried.is_some() {
-                return Err(format!("at most one descriptor per request, got {}", got.len() + usize::from(carried.is_some())));
+            if got.len() > MAX_CARRIED {
+                return Err(format!("at most {MAX_CARRIED} descriptors per request, got {}", got.len()));
             }
-            carried = got.pop();
+            carried = got;
         }
         if n == 0 {
             break;
@@ -728,6 +735,8 @@ enum JobKind {
     /// The machine's sleep, whose write returns once it has woken: the daemon answers the
     /// screen lock meanwhile.
     Sleep,
+    /// A login's compositor, dwl, for as long as the login lasts.
+    Desktop { uid: u32 },
 }
 
 fn memfile(name: &str) -> Result<std::fs::File, String> {
@@ -795,6 +804,53 @@ fn start_sleep(conn: UnixStream, jobs: &mut Vec<Job>) {
     }
 }
 
+/// The desktop's compositor for `uid`'s login, which `asker` asked for with `text` and the three
+/// descriptors in `handed` (desktop.rs): dwl, started as the user with the login's groups less
+/// this daemon's, in the desktop's bounded cgroup. Answered `started <pid>` at once, and again
+/// when dwl ends, which ends the login.
+fn start_desktop(cfg: &ServeConfig, conn: UnixStream, uid: u32, asker: i32, text: &str, handed: Vec<OwnedFd>, jobs: &mut Vec<Job>) {
+    if cfg.developer {
+        reply(&conn, "error: a developer instance starts no desktop\n");
+        return;
+    }
+    if jobs.iter().any(|j| j.what == (JobKind::Desktop { uid })) {
+        reply(&conn, &format!("error: uid {uid}'s desktop runs already\n"));
+        return;
+    }
+    let started = (|| -> Result<(libc::pid_t, std::fs::File, std::fs::File, String), String> {
+        let keymap = crate::desktop::parse(text)?;
+        let h = crate::desktop::handed(handed)?;
+        let runtime = runtime_dir(cfg, uid)?;
+        let (group, max) = crate::cgroup::prepare_desktop(uid, asker).map_err(|e| e.to_string())?;
+        // The groups the login was given, read once from the asker, which is still uid's.
+        let status = std::fs::read_to_string(format!("/proc/{asker}/status")).map_err(|e| format!("pid {asker}: {e}"))?;
+        let (real, gid, groups) = crate::desktop::ids_of(&status).ok_or(format!("pid {asker}'s ids are unreadable"))?;
+        let ours = gid_of_group(&cfg.group).ok_or(format!("no group {}", cfg.group))?;
+        if real != uid || gid == ours {
+            return Err(format!("pid {asker} is not a login of uid {uid}'s"));
+        }
+        // seatd answers group seat, which dwl alone of the session holds.
+        let seat = gid_of_group("seat").ok_or("no group seat")?;
+        let groups = crate::desktop::groups_for_dwl(&groups, ours, seat);
+        let env = crate::desktop::environment(&runtime, &keymap);
+        let out = memfile("kryptikd-desktop-out")?;
+        let err = memfile("kryptikd-desktop-err")?;
+        let pid = crate::desktop::start(uid, gid, &groups, &group.join("cgroup.procs"), &env, h, err.as_raw_fd())?;
+        Ok((pid, out, err, format!("{} under memory.max {max}", group.display())))
+    })();
+    match started {
+        Ok((pid, out, err, at)) => {
+            eprintln!("kryptikd serve: uid {uid}'s desktop: dwl {pid} in {at}, in group seat and without {}", cfg.group);
+            reply(&conn, &format!("started {pid}\n"));
+            jobs.push(Job { conn, pid, what: JobKind::Desktop { uid }, out, err, exited: None });
+        }
+        Err(e) => {
+            eprintln!("kryptikd serve: uid {uid}'s desktop: {e}");
+            reply(&conn, &format!("error: {e}\n"));
+        }
+    }
+}
+
 fn read_back(f: &mut std::fs::File) -> String {
     use std::io::{Read, Seek};
     let mut s = String::new();
@@ -853,6 +909,17 @@ fn finish_job(j: &mut Job, st: i32) {
             let why = why(j, "no reason given");
             eprintln!("kryptikd serve: the machine did not sleep: {why}");
             reply(&j.conn, &format!("error: the machine did not sleep: {why}; the state partition waits for its passphrase\n"));
+        }
+        // Only a child that could not become dwl writes to the job's stderr: dwl writes the log.
+        JobKind::Desktop { uid } => {
+            let failed = read_back(&mut j.err);
+            if failed.trim().is_empty() {
+                eprintln!("kryptikd serve: uid {uid}'s desktop ended: dwl {}", exit_text(st));
+                reply(&j.conn, &format!("ok dwl {}\n", exit_text(st)));
+            } else {
+                eprintln!("kryptikd serve: uid {uid}'s desktop did not start: {}", failed.trim());
+                reply(&j.conn, &format!("error: dwl did not start: {}\n", failed.trim()));
+            }
         }
     }
 }
@@ -1215,7 +1282,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
     // hang; meanwhile the socket's 0660 root:kryptik is the gate.
     if crate::suspend::state_suspended() {
         let said = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
-            Ok((mut raw, carried)) => {
+            Ok((mut raw, mut carried)) => {
                 let first = String::from_utf8_lossy(raw.split(|&b| b == b'\n').next().unwrap_or_default()).into_owned();
                 // The rest may hold a password: wiped, never read.
                 raw.fill(0);
@@ -1230,8 +1297,10 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                         start_sleep(conn, jobs);
                         return None;
                     }
+                } else if carried.len() > 1 {
+                    "error: at most one descriptor while the state partition is suspended\n".into()
                 } else {
-                    while_suspended(uid, &first, carried, &mut pauses.state)
+                    while_suspended(uid, &first, carried.pop(), &mut pauses.state)
                 }
             }
             Err(e) => format!("error: {e}\n"),
@@ -1244,7 +1313,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
         eprintln!("kryptikd serve: refused uid {uid} (pid {})", peer.pid);
         return None;
     }
-    let (mut raw, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
+    let (mut raw, mut handed) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("kryptikd serve: uid {uid}: {e}");
@@ -1265,6 +1334,12 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
     }
     let first = text.lines().next().unwrap_or("");
     let verb = first.split_whitespace().next().unwrap_or("");
+    // The desktop alone takes more than one descriptor.
+    if verb != "desktop" && handed.len() > 1 {
+        reply(&conn, &format!("error: at most one descriptor per request but desktop's, got {}\n", handed.len()));
+        return None;
+    }
+    let carried = if verb == "desktop" { None } else { handed.pop() };
     match verb {
         "status" => {
             let mut out = String::new();
@@ -1307,15 +1382,11 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
             Ok(d) => reply(&conn, &format!("ok {}\n", d.display())),
             Err(e) => reply(&conn, &format!("error: {e}\n")),
         },
-        // The session's last step before it becomes dwl: the asker alone is moved, so all the
-        // desktop starts is under the bound.
-        "desktop" => match crate::cgroup::join_desktop(uid, peer.pid) {
-            Ok((at, max)) => {
-                eprintln!("kryptikd serve: uid {uid}'s desktop (pid {}) runs in {} under memory.max {max}", peer.pid, at.display());
-                reply(&conn, &format!("ok {} memory.max {max}\n", at.display()));
-            }
-            Err(e) => reply(&conn, &format!("error: {e}\n")),
-        },
+        // The session's last step: dwl, started here as a job of the login's.
+        "desktop" => {
+            start_desktop(cfg, conn, uid, peer.pid, &text, handed, jobs);
+            return None;
+        }
         "clipboard-move" => {
             let mut w = first.split_whitespace().skip(1);
             let (from, to) = (w.next().unwrap_or(""), w.next().unwrap_or(""));

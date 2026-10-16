@@ -116,6 +116,13 @@ static const char *micbackcmd[]   = { "/usr/libexec/kryptik/kryptik-sound", "--c
 static const char *brightupcmd[]  = { "/usr/libexec/kryptik/brightness.sh", "up", NULL };
 static const char *brightdowncmd[] = { "/usr/libexec/kryptik/brightness.sh", "down", NULL };
 
+/* What dwl's spawner runs (dwl-zone-borders.py): once it runs, dwl execs nothing, and a key bound
+ * to a command missing here does nothing but say so in the session log. */
+static const char **const spawncmds[] = {
+	termcmd, personalcmd, untrustedcmd, menucmd, lockcmd, suspendcmd,
+	volupcmd, voldowncmd, mutecmd, micbackcmd, brightupcmd, brightdowncmd,
+};
+
 static const Key keys[] = {
 	/* modifier                  key                  function          argument */
 	{ MODKEY,                    XKB_KEY_p,           spawn,            {.v = menucmd} },
