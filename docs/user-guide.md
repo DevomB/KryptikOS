@@ -627,6 +627,11 @@ shows each timer, its timeout and whether it is running.
   headset or sound card works on all of them
   ([laptop sound](design/laptop-audio.md)). Nothing plays through a
   monitor's speakers over HDMI or DisplayPort.
+- The laptop makers' own drivers (for ThinkPads, IdeaPads and ASUS, Dell
+  and HP laptops) are not built. Some laptops, ThinkPads among them, send
+  the microphone key only through one, so there that key does nothing;
+  take the microphone back from the menu (`c`) instead. A mute light, or
+  a key for the keyboard's backlight, may do nothing there too.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
