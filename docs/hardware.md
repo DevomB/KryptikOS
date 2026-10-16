@@ -15,7 +15,8 @@ This page is about what was seen to work.
 for it: the maker and model, the firmware's Secure Boot state, the watchdogs
 and whether one reset the boot before, the processor and its microcode, every
 PCI and USB device with the driver that took it, the
-disks and the drivers under them, the display, the sound hardware, a laptop's
+disks and the drivers under them, the display and each graphics controller's
+power state, the sound hardware, a laptop's
 backlights, batteries, sleep states and camera parts, network and input
 devices, the loaded modules and the kernel log. Its `missing` section is
 the part to act on: the firmware the kernel asked for and did not find, each a
@@ -69,6 +70,12 @@ from Tiger Lake and AMD's from Zen 3. The virtual machines that test each
 release have none, so only such a machine shows how a program built for
 them fares with a library built without. No level asks for it.
 
+Its `gpu` lines give each graphics controller's power state. Nothing here
+drives NVIDIA's graphics, and the kernel lets a device nothing drives sleep
+only once runtime PM is allowed it (`control auto`), so beside Intel's or
+AMD's on a laptop an NVIDIA chip stays powered, in D0. Only such a laptop
+shows what that costs its battery. No level asks for it.
+
 ## Trying a laptop
 
 A listing's levels speak for installing, booting with Secure Boot, the display
@@ -91,7 +98,9 @@ let the row's note name what did not work:
 | an SD card in the laptop's own reader | the window that asks which zone gets a stick opens, as for a USB stick |
 | a USB headset, and `c` and a zone's number in the menu | it plays what the zone plays, and records there once granted |
 | an external monitor on a laptop with two GPUs, an AMD one beside the built-in | it shows the desktop, whose frames wlroots copies to the second GPU's ports; dark, the row's note names both, as the listing's `display` line does |
+| a laptop with NVIDIA's graphics beside Intel's or AMD's | the desktop shows on the built-in screen; a monitor on a port the NVIDIA chip drives stays dark, as 1.0 drives none, and the listing's `gpu` line says whether that chip stayed powered |
 | a USB-C or Thunderbolt dock: its monitor, its USB ports and its Ethernet | the monitor shows where the laptop drives USB-C itself; a Thunderbolt or USB4 dock's own USB ports and Ethernet stay dark, as 1.0 builds no Thunderbolt driver, and the row's note says which worked |
+| closed on its dock, then the dock unplugged | it sleeps within seconds, as a lid closed undocked does |
 | the state passphrase at boot, typed on the built-in keyboard | it unlocks; a built-in keyboard that types nothing there is one on I2C, and a USB keyboard is the way through |
 | `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
 | Firefox in `untrusted`: Alt+p, its number and `b` | a window opens; where the listing's `shstk` line says yes, this is the only test of Firefox starting with shadow stacks on, and a failure names SHSTK in what it prints |
