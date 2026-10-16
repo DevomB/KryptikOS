@@ -460,6 +460,191 @@ run(char *startup_cmd)
      """\t\t\tprintf("%s appid \\n", m->wlr_output->name);
 \t\t\tprintf("%s zone \\n", m->wlr_output->name);
 """),
+    # The browser key and the menu's b put a zone's open browser in front
+    # (docs/design/browser-and-graphics.md). The window is found by the zone of
+    # its client's socket and the app_id its proxy stamps, kryptik.<zone>.<claimed>,
+    # so a client that claims another zone's browser is never taken.
+    ("""} ZoneColor;
+""",
+     """} ZoneColor;
+
+typedef struct {
+\tconst char *zone;     /* whose window is sought, by its socket */
+\tconst char *claimed;  /* the app_id its client claims, before the proxy's kryptik.<zone>. */
+\tconst char **cmd;     /* started when the zone has no such window */
+} FocusOrLaunch;
+"""),
+    ("""static void focusmon(const Arg *arg);
+""",
+     """static void focusmon(const Arg *arg);
+static void focusorlaunch(const Arg *arg);
+"""),
+    ("""void
+focusmon(const Arg *arg)
+{
+""",
+     """#include <sys/inotify.h>
+
+/* Kryptik: ZONE's window whose app_id is kryptik.ZONE.CLAIMED, the one used
+ * last, or NULL. The zone is its socket's, never the client's word. */
+static Client *
+zonewindow(const char *zone, const char *claimed)
+{
+\tconst ZoneColor *z;
+\tchar want[160];
+\tClient *c;
+
+\tif (snprintf(want, sizeof(want), "kryptik.%s.%s", zone, claimed) >= (int)sizeof(want))
+\t\treturn NULL;
+\twl_list_for_each(c, &fstack, flink) {
+\t\tz = clientzone(c);
+\t\tif (c->mon && z && strcmp(z->zone, zone) == 0 && strcmp(client_get_appid(c), want) == 0)
+\t\t\treturn c;
+\t}
+\treturn NULL;
+}
+
+/* Kryptik: C put in front where it is, never moved to another tag: its first
+ * tag viewed on its own monitor when it is not shown there, then the keyboard,
+ * as Alt and the tag's number and a pick would. */
+static void
+bringforward(Client *c)
+{
+\tArg a;
+
+\tif (locked || !c->mon)
+\t\treturn;
+\tselmon = c->mon;
+\tif (!VISIBLEON(c, c->mon)) {
+\t\ta.ui = c->tags & -c->tags;
+\t\tview(&a);
+\t}
+\tfocusclient(c, 1);
+}
+
+/* Kryptik: the zone's open window of that app_id in front, or its command
+ * started when it has none: the browser key. */
+void
+focusorlaunch(const Arg *arg)
+{
+\tconst FocusOrLaunch *f = arg->v;
+\tClient *c = zonewindow(f->zone, f->claimed);
+\tArg a = {.v = f->cmd};
+
+\tif (c)
+\t\tbringforward(c);
+\telse
+\t\tspawn(&a);
+}
+
+/* Kryptik: the chrome's menu asks for a zone's open browser in front with one
+ * line naming the zone in browser-front, in $XDG_RUNTIME_DIR/kryptik/front: a
+ * directory of its own, so what dwl reads and removes there is the request
+ * alone. It is taken only from a regular file of the session user's that no
+ * one else may write, in a directory of that user's that no one else may
+ * write, and removed before it is acted on. It only brings a window forward:
+ * every launch stays the chrome's, which asks a zone's passphrase on its own
+ * terminal. */
+static char frontdir[256], frontfile[288];
+static int frontfd = -1;
+static struct wl_event_source *fronttimer;
+
+static void
+frontread(void)
+{
+\tchar buf[64];
+\tconst ZoneColor *z;
+\tstruct stat st, dir;
+\tssize_t n = 0;
+\tClient *c;
+\tint fd;
+
+\tif (!frontfile[0])
+\t\treturn;
+\tif (frontfd >= 0)
+\t\tinotify_add_watch(frontfd, frontdir, IN_CLOSE_WRITE | IN_MOVED_TO);
+\tif ((fd = open(frontfile, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)) < 0) {
+\t\tif (errno != ENOENT)
+\t\t\tunlink(frontfile);
+\t\treturn;
+\t}
+\tif (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == getuid() && !(st.st_mode & 022)
+\t\t\t&& stat(frontdir, &dir) == 0 && dir.st_uid == getuid() && !(dir.st_mode & 022))
+\t\tn = read(fd, buf, sizeof(buf) - 1);
+\tclose(fd);
+\tunlink(frontfile);
+\tif (n <= 0)
+\t\treturn;
+\tbuf[n] = '\\0';
+\tbuf[strcspn(buf, "\\n")] = '\\0';
+\tfor (z = zonecolors_table; z < END(zonecolors_table); z++)
+\t\tif (strcmp(z->zone, buf) == 0 && (c = zonewindow(z->zone, browserappid)))
+\t\t\tbringforward(c);
+}
+
+static int
+frontevent(int fd, uint32_t mask, void *data)
+{
+\tchar events[4096];
+
+\twhile (read(fd, events, sizeof(events)) > 0)
+\t\t;
+\tfrontread();
+\treturn 0;
+}
+
+/* Kryptik: a look each second besides the watch, which cannot be set while
+ * the directory is not there. */
+static int
+fronttick(void *data)
+{
+\tfrontread();
+\twl_event_source_timer_update(fronttimer, 1000);
+\treturn 0;
+}
+
+static void
+frontwatch(void)
+{
+\tconst char *rt = getenv("XDG_RUNTIME_DIR");
+
+\tif (!rt || snprintf(frontdir, sizeof(frontdir), "%s/kryptik/front", rt) >= (int)sizeof(frontdir)
+\t\t\t|| snprintf(frontfile, sizeof(frontfile), "%s/browser-front", frontdir) >= (int)sizeof(frontfile)) {
+\t\tfrontfile[0] = '\\0';
+\t\treturn;
+\t}
+\tif ((frontfd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC)) >= 0)
+\t\twl_event_loop_add_fd(event_loop, frontfd, WL_EVENT_READABLE, frontevent, NULL);
+\tif ((fronttimer = wl_event_loop_add_timer(event_loop, fronttick, NULL)))
+\t\tfronttick(NULL);
+}
+
+void
+focusmon(const Arg *arg)
+{
+"""),
+    # printstatus: the zones whose browser is open, for the menu's b, among the
+    # selected output's lines, before the layout line that ends them.
+    ("""\t\tprintf("%s layout %s\\n", m->wlr_output->name, m->ltsymbol);
+""",
+     """\t\tif (m == selmon) {
+\t\t\tconst ZoneColor *z;
+
+\t\t\tprintf("%s browsers", m->wlr_output->name);
+\t\t\tfor (z = zonecolors_table; z < END(zonecolors_table); z++)
+\t\t\t\tif (zonewindow(z->zone, browserappid))
+\t\t\t\t\tprintf(" %s", z->zone);
+\t\t\tprintf("\\n");
+\t\t}
+\t\tprintf("%s layout %s\\n", m->wlr_output->name, m->ltsymbol);
+"""),
+    # run: the menu's requests watched once the event loop runs.
+    ("""\tzonesockets();
+""",
+     """\tzonesockets();
+\t/* Kryptik: the menu's requests to put a zone's open browser in front. */
+\tfrontwatch();
+"""),
     # mapnotify: zone-coloured borders, then the band over them as four
     # strips. The surface stays below both, or a buffer larger than its
     # configure would paint over the right and bottom borders. A new window

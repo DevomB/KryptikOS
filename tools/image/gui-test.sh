@@ -147,7 +147,9 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT KEY-MENU-OPEN" "key:alt+p" \
     "type-from:GT OPEN-TYPE 1 ([a-z0-9]+)" "type-from:GT OPEN-TYPE 2 ([a-z0-9]+)" \
     "type-from:GT OPEN-TYPE 3 ([a-z0-9]+)" \
-    "expect:GT KEY-VIEW-BROWSER" "key:alt+3" "expect:GT KEY-BROWSER-BACK" "key:alt+1" \
+    "expect:GT KEY-VIEW-BROWSER" "key:alt+3" "expect:GT KEY-BROWSER-AWAY" "key:alt+1" \
+    "expect:GT KEY-BROWSER-AGAIN" "key:alt+shift+u" "expect:GT KEY-BROWSER-ASIDE" "key:alt+1" \
+    "expect:GT KEY-BROWSER-LAUNCH" "key:alt+shift+u" "expect:GT KEY-BROWSER-BACK" "key:alt+1" \
     "expect:GT KEY-VT-ADMIN" "key:ctrl+alt+f2" "expect:GT KEY-VT-DESKTOP" "key:ctrl+alt+f1" \
     "expect:GT KEY-MENU-AFTER-VT" "key:alt+p" \
     "expect:GT END" "expect:GCHECK-DONE" \
@@ -168,7 +170,7 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             map-keeps-zone0-focus close-keeps-zone0-focus alone-keeps-no-keyboard alone-reached-by-key focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone menu-names-stale-statement menu-names-install-age menu-update-auto menu-names-failed-trial menu-names-armed-trial zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved zone-copy-pastes-in-zone zone-copy-stays-in-zone zone-copy-not-in-zone0 \
             move-door-unreached move-crosses-zones move-leaves-nothing-behind move-in-no-log move-door-refuses-others \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
-            second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up \
+            second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up browser-key-brings-forward browser-front-only-the-users browser-front-request browser-key-launches \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \

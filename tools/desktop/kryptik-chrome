@@ -13,8 +13,9 @@
 #                                  dwl's status stream on stdin, records the
 #                                  focused zone in $XDG_RUNTIME_DIR/kryptik/
 #                                  focus as text (and the last zone window's
-#                                  in focus.zone), opens the launcher and
-#                                  starts the idle lock
+#                                  in focus.zone, and the zones whose browser
+#                                  is open in browsers), opens the launcher
+#                                  and starts the idle lock
 #   kryptik-chrome --menu          the launcher: zones, their state, apps,
 #                                  the network as the net zone reports it, a
 #                                  release that waits to be installed, a
@@ -54,6 +55,11 @@ RT="${XDG_RUNTIME_DIR:-/tmp}"
 FOCUS="$RT/kryptik/focus"
 # The last zone window, for the menu: once the menu has focus, the focus record names zone 0.
 FOCUS_ZONE="$RT/kryptik/focus.zone"
+# The zones whose Firefox has a window, from dwl's status, and the request that has dwl put one in
+# front (dwl-zone-borders.py: frontread), for the menu's b. The request has a directory of its own:
+# dwl may read and remove there and nowhere else here.
+BROWSERS="$RT/kryptik/browsers"
+FRONT="$RT/kryptik/front/browser-front"
 CONSENT=/run/kryptik-consent
 # The power service's last look (power.sh): the source, the charge and its warning.
 POWER=/run/kryptik-power/state
@@ -81,18 +87,28 @@ zone_has_browser() { grep -Eq '^images[[:space:]]*=[[:space:]]*"([^"]* )?browser
 # after another, each output's lines ending with layout. The zone is the one
 # whose socket the window's client came through, 0 for dwl's own socket, and
 # empty with no window; an app_id, like a title, is the client's own word.
+# The selected output's lines also name the zones whose browser has a window,
+# `<output> browsers <zone>...`, matched by dwl on the socket's zone.
 #
 # The record is the selected output's window. Only that output's layout line
 # publishes: with two monitors, the one dwl writes last need not be the one
 # in use.
 status_to_focus() {
-    zone=""; title=""; fs=""; selected=0
+    zone=""; title=""; fs=""; selected=0; appid=""; tagset=""; browsers="-"
     while IFS= read -r line; do
         out="${line%% *}"; rest="${line#* }"; key="${rest%% *}"; val="${rest#* }"
         [ "$key" = "$rest" ] && val=""
         case "$key" in
-            title) title="$val"; zone=""; fs=""; selected=0; continue ;;
+            title) title="$val"; zone=""; fs=""; selected=0; appid=""; tagset=""; continue ;;
+            appid) appid="$val"; continue ;;
             zone) zone="$val"; continue ;;
+            # occupied, viewed, the window's, urgent: the tags viewed on this output.
+            tags) set -- $val; tagset="${2:-}"; continue ;;
+            browsers) if [ "$val" != "$browsers" ]; then
+                          browsers="$val"
+                          for zb in $val; do echo "$zb"; done > "$BROWSERS.tmp.$$" && mv -f "$BROWSERS.tmp.$$" "$BROWSERS"
+                      fi
+                      continue ;;
             fullscreen) fs="$val"; continue ;;
             selmon) selected="$val"; continue ;;
             layout) [ "$selected" = 1 ] || continue ;;
@@ -105,8 +121,8 @@ status_to_focus() {
         [ "$zone" = "-" ] && label="(no window)"
         [ -n "$label" ] || label="UNKNOWN ZONE $zone"
         tmp="$FOCUS.tmp.$$"
-        printf 'output=%s\nzone=%s\nlabel=%s\nglyph=%s\ntitle=%s\nfullscreen=%s\n' \
-            "$out" "$zone" "$label" "$glyph" "$title" "$fs" > "$tmp" && mv -f "$tmp" "$FOCUS"
+        printf 'output=%s\nzone=%s\nlabel=%s\nglyph=%s\ntitle=%s\nfullscreen=%s\nappid=%s\ntagset=%s\n' \
+            "$out" "$zone" "$label" "$glyph" "$title" "$fs" "$appid" "$tagset" > "$tmp" && mv -f "$tmp" "$FOCUS"
         # The zone is dwl's, from the socket; a title is the zone's own words.
         case "$zone" in
             0|-) ;;
@@ -135,7 +151,8 @@ waiting_zones() {
 }
 
 run_status() {
-    mkdir -p "$RT/kryptik" 2>/dev/null
+    # The user's alone: dwl takes a request from it only while no one else may write there.
+    mkdir -p "$RT/kryptik/front" 2>/dev/null && chmod 0700 "$RT/kryptik" "$RT/kryptik/front"
     # The monitors as the user chose them (`kryptik display`), or as they come: now, and again
     # whenever a monitor is plugged in, for as long as the session lasts.
     /usr/bin/kryptik-display --watch &
@@ -522,8 +539,15 @@ run_menu() {
                       case "$app" in
                           t) set -- "$TERMINAL" ;;
                           e) set -- "$TERMINAL" /usr/bin/nano ;;
-                          # Firefox where the zone's file names the browser image, lynx elsewhere.
-                          b) if zone_has_browser "$z"; then set -- firefox; else set -- "$TERMINAL" /usr/bin/lynx; fi ;;
+                          # Firefox where the zone's file names the browser image, lynx elsewhere. A
+                          # zone whose Firefox is open has dwl put that window in front instead: a
+                          # second Firefox would only say that the first is running.
+                          b) if zone_has_browser "$z" && grep -qx "$z" "$BROWSERS" 2>/dev/null; then
+                                 ( umask 077 && printf '%s\n' "$z" > "$FRONT.tmp.$$" ) && mv -f "$FRONT.tmp.$$" "$FRONT"
+                                 echo "zone $z's browser is open: put in front"
+                                 sleep 1; continue
+                             fi
+                             if zone_has_browser "$z"; then set -- firefox; else set -- "$TERMINAL" /usr/bin/lynx; fi ;;
                       esac
                       echo "launching in zone $z: $*"
                       # --ask: a passphrase is read on this zone 0 terminal, never a zone's.
