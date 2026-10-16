@@ -201,9 +201,11 @@ whose large disk is not the one it boots from.
   is the degraded state, or at a clone, which the state suite already
   covers.
 - **Two Kryptik disks in one machine** stay a known limit. The kernel takes
-  the first `kryptik-a` it finds, and dm-verity refuses the wrong one, so
-  the boot fails safe but fails. The installer keeps refusing a disk that
-  carries `kryptik-` labels unless asked by name.
+  the first `kryptik-a` it finds. dm-verity refuses another release's root,
+  so that boot fails safe but fails; the same release's passes, and the boot
+  then uses that disk's state. The installer keeps refusing a disk that
+  carries `kryptik-` labels unless asked by name, and warns when another
+  disk in the machine carries one.
 - **Slots on two disks** are rejected: two disks to fail and nothing gained.
 
 ## Recommendation
