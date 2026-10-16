@@ -57,9 +57,9 @@ strict, but a machine whose firmware hides it boots all the same, with every
 device able to reach all of memory.
 
 A listing also names the machine's sound: its HD Audio codecs, and whether
-microphones sit on Intel's DSP or AMD's coprocessor, codecs on SoundWire or
-amplifiers in front of the speakers, each with what drives it. No level asks
-for any of it.
+microphones sit on Intel's DSP or AMD's coprocessor, codecs on SoundWire
+(under HD Audio or behind AMD's coprocessor) or amplifiers in front of the
+speakers, each with what drives it. No level asks for any of it.
 
 Its `shstk` line says whether a program built for shadow stacks runs with
 one there: the kernel turns them on where the processor has them, Intel's

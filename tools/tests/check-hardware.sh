@@ -151,6 +151,9 @@ grep -qF "  audio      HD Audio codec 10ec0287; digital microphones on Intel's D
 vary sof 's/driver snd_hda_intel$/driver sof-audio-pci-intel-tgl/'; see "$W/sof.txt"
 grep -qF "digital microphones on Intel's DSP, driven by sof-audio-pci-intel-tgl" <<<"$OUT" \
     && green "and what drives it, once a driver does" || red "audio line with SOF: $(grep audio <<<"$OUT")"
+vary amdsdw 's/^controller 0000:00:1f\.3 .*$/acp 0000:04:00.5 class 048000 1022:15e2 rev 70 driver -\nsoundwire 0000:04:00.5 link 0 part 025d:0722/; /^codec /d; /^nhlt: /d'; see "$W/amdsdw.txt"
+grep -qF "  audio      AMD's coprocessor (rev 70) with no microphones its ACPI names; SoundWire 025d:0722 behind AMD's coprocessor, not driven" <<<"$OUT" \
+    && green "SoundWire behind AMD's coprocessor, the coprocessor's to drive" || red "audio line, AMD SoundWire: $(grep audio <<<"$OUT")"
 vary noaudio '/^== audio ==$/,/^$/d'; see "$W/noaudio.txt"
 grep -qF '  audio      not in this report' <<<"$OUT" && grep -q '^  carries    certified$' <<<"$OUT" \
     && green "a report from before the section: said so, and no level asks for it" || red "a report with no audio section: $(grep -E 'audio|carries' <<<"$OUT")"

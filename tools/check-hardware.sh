@@ -23,7 +23,7 @@ took() { if [[ -n "$1" ]]; then echo "driven by $1"; else echo "not driven"; fi;
 # audio_of REPORT: the machine's sound in one line, by the kinds of
 # docs/design/laptop-audio.md, each with what drives it. No level asks for any.
 audio_of() {
-    local a sof codecs sdw acp names amps drv parts=()
+    local a sof codecs sdw asdw acpdev acp names amps drv parts=()
     a="$(section audio "$1")"
     [[ -n "$a" ]] || { echo "not in this report"; return; }
     # SOF in place of snd-hda-intel drives what sits behind Intel's DSP.
@@ -37,7 +37,9 @@ audio_of() {
     if awk '$1 == "nhlt:" && $5 + 0 > 0 { found = 1 } END { exit !found }' <<<"$a"; then
         parts+=("digital microphones on Intel's DSP, $(took "$sof")")
     fi
-    sdw="$(awk '$1 == "soundwire" && $5 == "part" { print $6 }' <<<"$a" | paste -sd' ' -)"
+    # SoundWire under HD Audio is SOF's to drive; under AMD's coprocessor, the coprocessor's driver's.
+    acpdev="$(awk '$1 == "acp" { print $2; exit }' <<<"$a")"
+    sdw="$(awk -v acp="$acpdev" '$1 == "soundwire" && $5 == "part" && $2 != acp { print $6 }' <<<"$a" | paste -sd' ' -)"
     [[ -z "$sdw" ]] || parts+=("SoundWire ${sdw}, $(took "$sof")")
     acp="$(awk '$1 == "acp" { print $7, ($9 == "-" ? "" : $9); exit }' <<<"$a")"
     if [[ -n "$acp" ]]; then
@@ -45,6 +47,8 @@ audio_of() {
         drv="${acp#* }"
         if [[ -n "$names" ]]; then parts+=("microphones on AMD's coprocessor (rev ${acp%% *}, ${names// /, }), $(took "$drv")")
         else parts+=("AMD's coprocessor (rev ${acp%% *}) with no microphones its ACPI names"); fi
+        asdw="$(awk -v acp="$acpdev" '$1 == "soundwire" && $5 == "part" && $2 == acp { print $6 }' <<<"$a" | paste -sd' ' -)"
+        [[ -z "$asdw" ]] || parts+=("SoundWire ${asdw} behind AMD's coprocessor, $(took "$drv")")
     fi
     amps="$(awk '$1 == "amplifier" { sub(/:.*/, "", $2); print $2 }' <<<"$a" | sort -u | paste -sd' ' -)"
     if [[ -n "$amps" ]]; then
