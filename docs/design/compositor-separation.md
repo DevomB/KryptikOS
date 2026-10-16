@@ -143,9 +143,17 @@ confines itself as a zone is confined:
   may read below `/usr` (keymaps, cursors), `/sys`, `/run/udev` and
   `/etc/udev` (wlroots and libinput read these when a screen or an input
   device is plugged in), and the microphone's and the camera's marks
-  (`/run/kryptik-sound`, `/run/kryptik-camera`). It writes no file and
-  opens no TCP. The zones' sockets and its own are made before then. A
-  kernel without Landlock leaves dwl as it was, and the session log says so;
+  (`/run/kryptik-sound`, `/run/kryptik-camera`). It may also read and
+  remove the chrome's request for a browser in front, in
+  `$XDG_RUNTIME_DIR/kryptik/front`, which it makes first. It writes no file,
+  opens no TCP, and, where the kernel has Landlock ABI 6, reaches no
+  abstract socket outside its own domain. The zones' sockets and its own are
+  made before then, and its own socket and lock stay behind when it exits,
+  until the next login's dwl takes them over. A rule holds a directory as it
+  was at login: one that is made again while dwl runs is not covered.
+  Landlock binds the calling thread alone, so dwl confines itself only while
+  it has one thread, and says how many it had. A kernel without Landlock
+  leaves dwl as it was, and the session log says so;
 - no exec. dwl's `spawn` keys and its status command move to a small
   spawner, started before the sandbox, that runs only a fixed table of
   commands. Built: dwl forks the spawner once the status command runs,

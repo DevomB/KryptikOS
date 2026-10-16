@@ -1241,9 +1241,32 @@ static void confinefs(void);
 \t\tdie("startup: the no-exec filter:");
 }
 
+/* Kryptik: a Landlock rule for PATH with ACCESS: 1 added, 0 for a path that is not there (said),
+ * -1 refused. */
+static int
+landlockpath(int set, const char *path, __u64 access)
+{
+\tstruct landlock_path_beneath_attr beneath = { .allowed_access = access };
+\tint r;
+
+\tif ((beneath.parent_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+\t\tfprintf(stderr, "dwl: Landlock: %s is not readable: %s\\n", path, strerror(errno));
+\t\treturn 0;
+\t}
+\tr = syscall(SYS_landlock_add_rule, set, LANDLOCK_RULE_PATH_BENEATH, &beneath, 0) < 0 ? -1 : 1;
+\tif (r < 0)
+\t\tfprintf(stderr, "dwl: not confined to its files: Landlock refused %s: %s\\n", path, strerror(errno));
+\tclose(beneath.parent_fd);
+\treturn r;
+}
+
 /* Kryptik: from here dwl writes no file and reads only what it needs while it runs: keymaps and
- * cursors under /usr, hotplug under /sys and udev's, and the microphone's and the camera's marks.
- * No TCP either. Any failure leaves dwl as it was, and says so: the desktop still starts. */
+ * cursors under /usr, hotplug under /sys and udev's, the microphone's and the camera's marks, and
+ * the chrome's request for a browser in front, which it may also remove. No TCP, and no abstract
+ * socket outside its domain where the kernel has that scope. A rule holds a directory as it was at
+ * login: one made again later is not covered. Landlock binds the calling thread alone, so dwl
+ * confines itself only while it has one. Any failure leaves dwl as it was, and says so: the
+ * desktop still starts. */
 static void
 confinefs(void)
 {
@@ -1261,40 +1284,51 @@ confinefs(void)
 \t\t\t| LANDLOCK_ACCESS_FS_TRUNCATE,
 \t\t.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP,
 \t};
-\tstruct landlock_path_beneath_attr beneath = {
-\t\t.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
-\t};
-\tsize_t i;
-\tlong abi;
-\tint set;
+\tconst char *rt = getenv("XDG_RUNTIME_DIR");
+\tchar line[64], front[256];
+\tsize_t i, added = 0, paths = LENGTH(readable) + 1;
+\tlong abi, threads = -1;
+\tFILE *f;
+\tint set, r = 0;
 
+\tif ((f = fopen("/proc/self/status", "r"))) {
+\t\twhile (fgets(line, sizeof(line), f))
+\t\t\tif (sscanf(line, "Threads: %ld", &threads) == 1)
+\t\t\t\tbreak;
+\t\tfclose(f);
+\t}
+\tif (threads != 1) {
+\t\tfprintf(stderr, "dwl: not confined to its files: %ld threads, and Landlock binds the calling one alone\\n", threads);
+\t\treturn;
+\t}
 \tabi = syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
 \tif (abi < 4) {
 \t\tfprintf(stderr, "dwl: not confined to its files: no Landlock ABI 4 in this kernel (%ld)\\n", abi);
 \t\treturn;
 \t}
+#ifdef LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET
+\tif (abi >= 6)
+\t\tattr.scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET;
+#endif
 \tif ((set = (int)syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0)) < 0) {
 \t\tfprintf(stderr, "dwl: not confined to its files: a Landlock ruleset: %s\\n", strerror(errno));
 \t\treturn;
 \t}
-\tfor (i = 0; i < LENGTH(readable); i++) {
-\t\tif ((beneath.parent_fd = open(readable[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
-\t\t\tfprintf(stderr, "dwl: Landlock: %s is not readable: %s\\n", readable[i], strerror(errno));
-\t\t\tcontinue;
-\t\t}
-\t\tif (syscall(SYS_landlock_add_rule, set, LANDLOCK_RULE_PATH_BENEATH, &beneath, 0) < 0) {
-\t\t\tfprintf(stderr, "dwl: not confined to its files: Landlock refused %s: %s\\n", readable[i], strerror(errno));
-\t\t\tclose(beneath.parent_fd);
-\t\t\tclose(set);
-\t\t\treturn;
-\t\t}
-\t\tclose(beneath.parent_fd);
+\tfor (i = 0; i < LENGTH(readable) && r >= 0; i++)
+\t\tif ((r = landlockpath(set, readable[i], LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)) > 0)
+\t\t\tadded++;
+\t/* The chrome's request for a browser in front: made here while dwl may still make it, 0700. */
+\tif (r >= 0 && rt && snprintf(front, sizeof(front), "%s/kryptik/front", rt) < (int)sizeof(front)) {
+\t\tmkdir(front, 0700);
+\t\tif ((r = landlockpath(set, front, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
+\t\t\t\t| LANDLOCK_ACCESS_FS_REMOVE_FILE)) > 0)
+\t\t\tadded++;
 \t}
-\tif (syscall(SYS_landlock_restrict_self, set, 0) < 0)
+\tif (r >= 0 && syscall(SYS_landlock_restrict_self, set, 0) < 0)
 \t\tfprintf(stderr, "dwl: not confined to its files: landlock_restrict_self: %s\\n", strerror(errno));
-\telse
-\t\tfprintf(stderr, "dwl: confined: reads only below its %zu paths, writes no file and has no TCP (Landlock ABI %ld)\\n",
-\t\t\tLENGTH(readable), abi);
+\telse if (r >= 0)
+\t\tfprintf(stderr, "dwl: confined: reads only below %zu of its %zu paths, writes no file and has no TCP"
+\t\t\t" (1 thread, Landlock ABI %ld)\\n", added, paths, abi);
 \tclose(set);
 }
 """),
