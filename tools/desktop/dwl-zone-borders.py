@@ -124,7 +124,7 @@ zonebar(Client *c)
 \tconst ZoneColor *z = clientzone(c);
 \tconst float *ink;
 \tstruct wlr_box box = c->mon->m;
-\tchar name[64] = "zone 0";
+\tchar name[80] = "zone 0"; /* a zone and three marks, each name at most 12 bytes */
 \tint s = (int)barscale, pad = ((int)barpx - 7 * s) / 2, x, row, col, n;
 \tsize_t i;
 
