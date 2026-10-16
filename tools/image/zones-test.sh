@@ -151,7 +151,7 @@ for name in stick-seen stick-untouched stick-listed stick-refused-vault stick-re
             stick-other-zone-refused stick-eject-frees stick-eject-kept-descriptor stick-mapping-gone stick-written \
             stick-holding stick-pulled-reads-fail stick-pulled-grant-ended stick-pulled-mapping-gone stick-no-oops \
             medium-esp-offered medium-not-the-system medium-esp-read medium-root-refused \
-            card-exfat-lists card-exfat-copies card-exfat-not-written card-ends-with-zone; do
+            card-exfat-lists card-exfat-copies card-exfat-not-written card-ends-with-zone card-reader-drivers; do
     grep -q "ST PASS ${name}" <<<"$T2B" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 grep 'ST FAIL' <<<"$T2B" | sed 's/^/        /'

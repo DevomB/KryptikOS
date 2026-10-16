@@ -158,6 +158,13 @@ CONFIG_MMC_SDHCI_ACPI=y
 CONFIG_USB_UAS=y
 CONFIG_SCSI_HPSA=y
 CONFIG_SCSI_SMARTPQI=y
+# The SD card readers many laptops build in, Realtek's on PCIe and on USB, which SDHCI does not
+# drive: modules eudev loads by the reader's id, and the SD interface's by the cell the reader's
+# driver makes. A card in one is an SD card as one under SDHCI is. No firmware; no Memory Stick.
+CONFIG_MISC_RTSX_PCI=m
+CONFIG_MMC_REALTEK_PCI=m
+CONFIG_MISC_RTSX_USB=m
+CONFIG_MMC_REALTEK_USB=m
 # USB 1.1 companions: without xHCI, EHCI hands a USB keyboard or mouse to them.
 CONFIG_USB_UHCI_HCD=y
 CONFIG_USB_OHCI_HCD=y
