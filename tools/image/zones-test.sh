@@ -59,6 +59,11 @@ step "step 2: the guest-side zone, network and storage checks (as root)"
 # images-VERSION, on a disk of their own: the guest's image checks keep them from there.
 MVER="$(basename "$USB")"; MVER="${MVER#kryptik-}"; MVER="${MVER%-usb.img}"
 IMAGES="$(dirname "$USB")/images-${MVER}"
+# A production key signs real lists alone, so only a development medium carries the two controls
+# the guest refuses, as with the update suite's controls.
+MROLE="$(awk -F': ' '$1 == "role" { print $2; exit }' "$(dirname "$USB")/payload-${MVER}/manifest" 2>/dev/null)"
+CONTROLS=(image-list-namespace image-list-other-base)
+[[ "$MROLE" != production ]] || CONTROLS=()
 IMGDISK="${VMDIR}/zones-images.img"
 # The label the guest finds the disk by: ext4 keeps 16 bytes of one, and cuts a longer one short.
 IMGLABEL=kryptik-zt-img
@@ -105,7 +110,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
             setuid-only-allowed no-file-capabilities sysctls-applied host-activity-hidden fetch-and-sntp-no-caps \
             microcode-notice \
-            image-store image-runs image-needs-refused image-hidden image-explained image-list-namespace image-list-other-base image-corrupt image-toolkit image-browser; do
+            image-store image-runs image-needs-refused image-hidden image-explained "${CONTROLS[@]}" image-corrupt image-toolkit image-browser; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
