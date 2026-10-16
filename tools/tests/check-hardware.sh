@@ -203,6 +203,8 @@ fi
 has as-is "  dma        on: dmar0 dmar1; groups: 17 DMA; thunderbolt domain0: security user, iommu protection 1" "what confines a device's DMA, and Thunderbolt's level"
 vary nodma 's/^iommu: .*/iommu: none/; /^thunderbolt /d'
 has nodma "  dma        none: nothing confines a device's DMA" "a machine whose IOMMU is off, said so"
+vary passthrough 's/^iommu: .*/iommu: dmar0; groups: 12 identity/; /^thunderbolt /d'
+has passthrough "  dma        on, but in passthrough: no group translates a device's DMA (dmar0; groups: 12 identity)" "an IOMMU whose every group is identity, said so"
 vary olddma '/^iommu: /d; /^thunderbolt /d'
 has olddma "  dma        not in this report" "a report from before the line"
 
