@@ -19,16 +19,18 @@ platform's SOF driver is built, so with none built it finds no row and
 `snd-hda-intel` takes every controller, as it takes AMD's.
 
 - **An HD Audio codec alone,** as on desktops and many laptops: the
-  speakers, the headphone jack, a headset's microphone, HDMI and
-  DisplayPort all work.
+  speakers, the headphone jack and a headset's microphone work. The driver
+  takes the HDMI and DisplayPort codecs too, but the mixer plays only to a
+  card's device 0, the codec's own, so a monitor's speakers stay silent.
 - **An HD Audio codec with digital microphones on Intel's DSP,** common on
   Intel laptops: the same, except the built-in microphones, which are wired
   to the DSP.
 - **Codecs on SoundWire,** on many recent Intel laptops: the HD Audio link
   carries only the graphics' HDMI codec, so the speakers, the jack and the
-  microphones are all silent. HDMI and DisplayPort should still play.
-- **AMD laptops:** the codec is on HD Audio, so the speakers, the jack and
-  HDMI work. The built-in microphones are on the audio coprocessor (ACP)
+  microphones are all silent, and as that card has no device 0 the mixer
+  plays to none of it, a monitor's speakers included.
+- **AMD laptops:** the codec is on HD Audio, so the speakers and the jack
+  work. The built-in microphones are on the audio coprocessor (ACP)
   and do not.
 - **Smart amplifiers** in front of the speakers (Cirrus's CS35L41, CS35L54,
   CS35L56 and CS35L57, TI's TAS2781), on Intel and AMD laptops alike:

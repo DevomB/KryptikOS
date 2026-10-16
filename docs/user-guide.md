@@ -619,7 +619,8 @@ shows each timer, its timeout and whether it is running.
   or AMD's audio processor, all built-in sound on Intel laptops whose audio
   chips sit on SoundWire, and speakers behind a smart amplifier. A USB
   headset or sound card works on all of them
-  ([laptop sound](design/laptop-audio.md)).
+  ([laptop sound](design/laptop-audio.md)). Nothing plays through a
+  monitor's speakers over HDMI or DisplayPort.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
