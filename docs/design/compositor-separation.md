@@ -307,6 +307,23 @@ Wayland parsing out of zone 0.
   directory, and connects to neither the launch daemon's socket nor dwl's
   own; `personal`'s proxy uid is turned away from `untrusted`'s socket.
 
+Of the third, it checks what is built:
+
+- every thread of dwl has `Seccomp: 2` and `NoNewPrivs: 1`, and the spawner
+  that runs the keys' commands is the session's (`dwl-execs-nothing`);
+- dwl's session log says it reads only below every path of its list, writes
+  no file, has no TCP and signals nothing outside its domain, with one
+  thread to bind (`dwl-confined-to-its-files`);
+- dwl's `Groups:` holds no `kryptik` while the spawner's does
+  (`dwl-without-group`), and dwl runs in `kryptik-desktop` under its bound
+  (`desktop-memory-bound`);
+- the calls dwl made outside its filter's list, read back from the audit,
+  are said, until the filter refuses them and the list is a check.
+
+The Compositor build job in CI also builds dwl over the pinned libraries and
+runs it headless, alone and split as the session splits it, under what of
+its confinement the runner's kernel allows (`tools/tests/dwl-headless.sh`).
+
 The next steps add:
 
 - once the compositor runs as its own user, the same is true of dwl's uid,
