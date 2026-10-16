@@ -5,8 +5,10 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly: a pinned kernel's support status changes even when the pin does not (ADR-009).
+    # Weekly: a pinned kernel's support status changes even when the pin does not (ADR-009), and
+    # a host can stop serving a pinned file the same way.
     - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -421,3 +423,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev" flex bison
           make check-kernel-hardening
+
+  reachability:
+    name: Source reachability
+    # Weekly, or by hand: no push of ours moves a host, and a pull request should not fail for one.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # Fails on a source no place serves, which a build from an empty cache, as a release tag's
+      # is, would stop at; a source one place alone serves is a warning, a mirror row's cue.
+      - name: Every place each source is kept, asked for its file
+        run: ./tools/fetch-sources.sh --probe

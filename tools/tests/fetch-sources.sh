@@ -145,6 +145,32 @@ build_root alpha-1.0:good
 MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors" run
 expect_fail "a mirror's other bytes are refused by the lock" "CHECKSUM MISMATCH for alpha-1.0.tar.gz"
 
+# --- the probe: every place asked, nothing downloaded -------------------------
+
+# Each source at two places: its own and a mirror row's.
+SECOND="${W}/second"
+mkdir -p "$SECOND" && cp "${UPSTREAM}"/*.tar.gz "$SECOND/"
+for n in alpha beta gamma; do printf '%s  file://%s/%s-{VER}.tar.gz  -\n' "$n" "$SECOND" "$n"; done > "${W}/mirrors-all"
+build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-all" run --probe
+expect_pass "--probe finds every source served at both its places" "3 source(s), each served somewhere; 0 by one place alone"
+if [[ -z "$(ls -A "${FAKE}/sources")" ]]; then
+    green "--probe downloads nothing"
+else
+    red "--probe left files in sources/: $(ls -A "${FAKE}/sources" | tr '\n' ' ')"
+fi
+
+# Its own host refuses and its row's mirror has the file: served, by one place alone.
+cp "${UPSTREAM}/alpha-1.0.tar.gz" "${ROWM}/alpha_1.0.orig.tar.gz"
+MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors" run --probe
+expect_pass "--probe counts a source that only its row's mirror serves" "1 source(s), each served somewhere; 1 by one place alone"
+grep -qF "alpha 1.0: only file://${ROWM}/alpha_1.0.orig.tar.gz serves it; not https://127.0.0.1:9/alpha-1.0.tar.gz" "$OUT" \
+    && green "--probe names the place that serves it and the one that does not" || { red "--probe did not name both places"; show; }
+
+# No place has it: the probe fails, naming the source and every place it asked.
+MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" run --probe
+expect_fail "--probe fails on a source no place serves" "alpha 1.0: no place serves it (asked https://127.0.0.1:9/alpha-1.0.tar.gz)"
+
 # --- checksum refusal -------------------------------------------------------
 
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
