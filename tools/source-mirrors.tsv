@@ -71,14 +71,10 @@ shadow             https://distfiles.alpinelinux.org/distfiles/v3.21/shadow-{VER
 hwdata             https://distfiles.alpinelinux.org/distfiles/edge/hwdata-{VER}.tar.gz                               -
 harfbuzz           https://ftp2.osuosl.org/pub/blfs/conglomeration/harfbuzz/harfbuzz-{VER}.tar.xz                     -
 fribidi            https://ftp2.osuosl.org/pub/blfs/conglomeration/fribidi/fribidi-{VER}.tar.xz                       -
-# USTC and SJTU copy static.rust-lang.org's dist whole, each release kept with its .asc.
-rustc              https://mirrors.ustc.edu.cn/rust-static/dist/rustc-{VER}-x86_64-unknown-linux-gnu.tar.xz           .asc
+# SJTU copies static.rust-lang.org's dist whole, each release kept with its .asc.
 rustc              https://mirror.sjtu.edu.cn/rust-static/dist/rustc-{VER}-x86_64-unknown-linux-gnu.tar.xz            .asc
-cargo              https://mirrors.ustc.edu.cn/rust-static/dist/cargo-{VER}-x86_64-unknown-linux-gnu.tar.xz           .asc
 cargo              https://mirror.sjtu.edu.cn/rust-static/dist/cargo-{VER}-x86_64-unknown-linux-gnu.tar.xz            .asc
-rust-std           https://mirrors.ustc.edu.cn/rust-static/dist/rust-std-{VER}-x86_64-unknown-linux-gnu.tar.xz        .asc
 rust-std           https://mirror.sjtu.edu.cn/rust-static/dist/rust-std-{VER}-x86_64-unknown-linux-gnu.tar.xz         .asc
 # Node signs SHASUMS256.txt, not the tarball, so these rows carry no signature of their own.
 node               https://cdn.npmmirror.com/binaries/node/v{VER}/node-v{VER}-linux-x64.tar.xz                       -
-node               https://mirrors.ustc.edu.cn/node/v{VER}/node-v{VER}-linux-x64.tar.xz                              -
 cbindgen           https://rsproxy.cn/api/v1/crates/cbindgen/{VER}/download                                          -
