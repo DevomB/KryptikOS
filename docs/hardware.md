@@ -105,6 +105,7 @@ let the row's note name what did not work:
 | closed on its dock, then the dock unplugged | it sleeps within seconds, as a lid closed undocked does |
 | the state passphrase at boot, typed on the built-in keyboard | it unlocks; a built-in keyboard that types nothing there is one on I2C, and a USB keyboard is the way through |
 | `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
+| a USB camera given to a zone with `k` and its number, then pulled out | the grant ends at once, and the menu's Camera line says no zone has it; plugged back in, it waits for `k` again |
 | Firefox in `untrusted`: Alt+p, its number and `b` | a window opens; where the listing's `shstk` line says yes, this is the only test of Firefox starting with shadow stacks on, and a failure names SHSTK in what it prints |
 
 A laptop that wakes from the lid and from `kryptik suspend` is the proof that
