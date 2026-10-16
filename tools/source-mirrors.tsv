@@ -75,6 +75,6 @@ fribidi            https://ftp2.osuosl.org/pub/blfs/conglomeration/fribidi/fribi
 rustc              https://mirror.sjtu.edu.cn/rust-static/dist/rustc-{VER}-x86_64-unknown-linux-gnu.tar.xz            .asc
 cargo              https://mirror.sjtu.edu.cn/rust-static/dist/cargo-{VER}-x86_64-unknown-linux-gnu.tar.xz            .asc
 rust-std           https://mirror.sjtu.edu.cn/rust-static/dist/rust-std-{VER}-x86_64-unknown-linux-gnu.tar.xz         .asc
-# Node signs SHASUMS256.txt, not the tarball, so these rows carry no signature of their own.
+# Node signs SHASUMS256.txt, not the tarball, so its row carries no signature of its own.
 node               https://cdn.npmmirror.com/binaries/node/v{VER}/node-v{VER}-linux-x64.tar.xz                       -
 cbindgen           https://rsproxy.cn/api/v1/crates/cbindgen/{VER}/download                                          -
