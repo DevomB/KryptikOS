@@ -73,6 +73,14 @@ fn a_stick_with_no_partition_table_is_given_whole() {
 }
 
 #[test]
+fn a_mapping_is_two_targets_so_no_ioctl_reaches_the_stick() {
+    let p = Partition { name: "sdc".into(), sectors: 2_097_152, what: String::new() };
+    assert_eq!(table(&p).unwrap(), "0 2097024 linear /dev/sdc 0\n2097024 128 linear /dev/sdc 2097024");
+    let tiny = Partition { name: "sdd".into(), sectors: 128, what: String::new() };
+    assert!(table(&tiny).unwrap_err().contains("too small"));
+}
+
+#[test]
 fn an_sd_card_may_be_given_and_an_internal_disk_never() {
     let s = sys("sd");
     let card = disk(&s, "platform/rtsx_pci_sdmmc.0/mmc_host/mmc0/mmc0:aaaa", "mmcblk0", 61_067_264, &[("type", "SD"), ("name", "SD32G")]);

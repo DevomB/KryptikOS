@@ -14,7 +14,8 @@
 #           06 signed for this root, stacked over a zone's /usr
 #   step 2b guest-tests/stick-check.sh: a USB stick plugged in while the guest
 #           runs, given to a zone through the launch daemon, read, written,
-#           taken back and pulled out; then the install medium plugged in
+#           taken back and pulled out; then the install medium, an exFAT card
+#           and a stick with no partition table plugged in
 #   step 2c guest-tests/camera-check.sh: the camera granted to one zone at a
 #           time and taken back, with vivid standing in for a camera
 #   step 3  the compartment suites' [vm] rows on the target kernel (not with
@@ -136,13 +137,21 @@ fsck.exfat -n "$CPART" > "${VMDIR}/card-fsck.out" 2>&1 && green "the card the ho
 dd if="$CPART" of="$CARD" bs=512 seek=2048 conv=notrunc status=none
 rm -f "$CPART"
 CSHA="$(sha256sum "${VMDIR}/photo.bin" | cut -d' ' -f1)"
+# A stick with no partition table, FAT across the whole of it.
+WHOLE="${VMDIR}/whole.img"
+rm -f "$WHOLE"
+truncate -s 64M "$WHOLE"
+mkfs.vfat -n KWHOLE "$WHOLE" > /dev/null
+printf 'the whole disk\n' > "${VMDIR}/whole.txt"
+mcopy -i "$WHOLE" "${VMDIR}/whole.txt" ::/whole.txt
 SC() { ROOTSH "bash /usr/lib/kryptik/guest-tests/stick-check.sh $* 2>&1; echo STCHECK-DONE"; }
 DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
     "plug:stick1:${STICK}" "$(SC plugged "$TUSER" "$SHA")" "expect:STCHECK-DONE" \
     "$(SC hold "$TUSER")" "expect:ST HOLDING" "expect:STCHECK-DONE" \
     "unplug:stick1" "$(SC pulled "$TUSER")" "expect:STCHECK-DONE" \
     "plug:medium:${USB}:ro" "$(SC medium "$TUSER")" "expect:STCHECK-DONE" "unplug:medium" \
-    "plug:card1:${CARD}" "$(SC card "$TUSER" "$CSHA")" "expect:STCHECK-DONE" "unplug:card1"
+    "plug:card1:${CARD}" "$(SC card "$TUSER" "$CSHA")" "expect:STCHECK-DONE" "unplug:card1" \
+    "plug:whole1:${WHOLE}" "$(SC whole "$TUSER")" "expect:STCHECK-DONE" "unplug:whole1"
 rc=$?
 T2B="$(txt)"
 [[ "$rc" -eq 0 ]] && green "the stick rounds ran to their end" || red "the stick rounds did not run to their end"
@@ -151,7 +160,8 @@ for name in stick-seen stick-untouched stick-listed stick-refused-vault stick-re
             stick-other-zone-refused stick-eject-frees stick-eject-kept-descriptor stick-mapping-gone stick-written \
             stick-holding stick-pulled-reads-fail stick-pulled-grant-ended stick-pulled-mapping-gone stick-no-oops \
             medium-esp-offered medium-not-the-system medium-esp-read medium-root-refused \
-            card-exfat-lists card-exfat-copies card-exfat-not-written card-ends-with-zone card-reader-drivers; do
+            card-exfat-lists card-exfat-copies card-exfat-not-written card-ends-with-zone card-reader-drivers \
+            card-reader-polled whole-given whole-lists whole-no-scsi whole-ends-with-zone; do
     grep -q "ST PASS ${name}" <<<"$T2B" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 grep 'ST FAIL' <<<"$T2B" | sed 's/^/        /'

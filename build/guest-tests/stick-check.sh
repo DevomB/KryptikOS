@@ -11,6 +11,8 @@
 #   stick-check.sh medium USER       the install medium plugged in
 #   stick-check.sh card USER SHA     an exFAT card plugged in: partition 1 named CARD, the photo
 #                                    DCIM/100CANON/IMG_0001.JPG on it with the sha256 SHA
+#   stick-check.sh whole USER        a stick with no partition table plugged in, FAT across all
+#                                    of it and whole.txt on it
 #
 # USER is the session's user, who gives sticks through the launch daemon as the chrome does.
 # Output: "ST PASS|FAIL name - detail"; a check that cannot run fails.
@@ -49,6 +51,37 @@ usb_part() {
     done
     return 1
 }
+# The USB disk with no partition table, waited for: the host plugs it in alone just before.
+usb_whole() {
+    local d parts
+    for _ in $(seq 1 30); do
+        for d in /sys/class/block/sd*; do
+            [[ -e "$d" && ! -e "$d/partition" ]] || continue
+            parts=("$d/${d##*/}"[0-9]*)
+            [[ -e "${parts[0]}" ]] && continue
+            [[ "$(cat "$d/size" 2>/dev/null)" -gt 0 ]] && { basename "$d"; return 0; }
+        done
+        sleep 1
+    done
+    return 1
+}
+# A program in untrusted trying ioctls a disk's driver answers on the stick's descriptor: SG_IO
+# with a header the SCSI layer refuses unread (ENOSYS), and two that only ask. ENOTTY for all three
+# is device-mapper answering, the stick never asked.
+IOCTLS='import array, errno, fcntl, os, socket
+s = socket.socket(socket.AF_UNIX)
+s.connect("/run/kryptik/broker")
+s.sendall(b"stick\n")
+s.shutdown(socket.SHUT_WR)
+msg, anc, _, _ = s.recvmsg(512, socket.CMSG_SPACE(4))
+fd = [array.array("i", d[:4])[0] for l, k, d in anc if l == socket.SOL_SOCKET and k == socket.SCM_RIGHTS][0]
+print("READ", len(os.pread(fd, 512, 0)), flush=True)
+for name, cmd in (("SG_IO", 0x2285), ("SG_GET_VERSION_NUM", 0x2282), ("SCSI_IOCTL_GET_BUS_NUMBER", 0x5386)):
+    try:
+        fcntl.ioctl(fd, cmd, bytes(88))
+        print("IOCTL", name, "answered", flush=True)
+    except OSError as e:
+        print("IOCTL", name, errno.errorcode.get(e.errno, e.errno), flush=True)'
 # A program in untrusted holding the stick's descriptor from its broker, reading its first block
 # every half second until a read fails.
 HOLDER='import array, os, socket, sys, time
@@ -214,8 +247,35 @@ card)
     else
         fail "card-reader-drivers" "no module for:${unresolved}"
     fi
+    # A card put in a reader that sends no event is seen only as the kernel polls (60-block.rules).
+    poll="$(cat /sys/module/block/parameters/events_dfl_poll_msecs 2>&1)"
+    if [[ "$poll" == 2000 ]]; then pass "card-reader-polled" "the kernel looks for new media every 2 s"; else fail "card-reader-polled" "events_dfl_poll_msecs: ${poll}"; fi
+    ;;
+whole)
+    # Given whole, the mapping would pass a disk's ioctls on to it as one target: it is two.
+    P="$(usb_whole)" || { fail "whole-given" "no USB disk without a partition table after 30 s: $(ls /sys/class/block | oneline)"; exit 0; }
+    said="$(as_user "kryptik-launch --stick-grant untrusted $P ro" 2>&1)"; rc=$?
+    dm="$(held_by "$P" | awk '{ print $1 }')"
+    targets="$(dmsetup table kryptik-stick-untrusted 2>/dev/null | wc -l)"
+    if [[ "$rc" -eq 0 && "$dm" == dm-* && "$targets" -eq 2 ]]; then
+        pass "whole-given" "${said}; ${P} held by ${dm}, mapped in two targets"
+    else
+        fail "whole-given" "rc ${rc}: ${said}; holders ${dm:-none}; table: $(dmsetup table kryptik-stick-untrusted 2>&1 | oneline)"
+    fi
+    zrun untrusted -- sh -c 'kryptik-stick; kryptik-stick list /; python3 -c "$1"' sh "$IOCTLS"
+    if grep -q 'read-only' <<<"$ZOUT" && grep -qE ' whole\.txt$' <<<"$ZOUT"; then pass "whole-lists" "$(grep -m1 'FAT' <<<"$ZOUT")"; else fail "whole-lists" "rc ${ZRC}: $(oneline <<<"$ZOUT")"; fi
+    if grep -qx 'READ 512' <<<"$ZOUT" && [[ "$(grep -c '^IOCTL [A-Z_]* ENOTTY$' <<<"$ZOUT")" -eq 3 ]]; then
+        pass "whole-no-scsi" "untrusted reads the stick, and no ioctl on its descriptor reaches it: $(grep '^IOCTL' <<<"$ZOUT" | oneline)"
+    else
+        fail "whole-no-scsi" "$(grep -E '^(READ|IOCTL)|Error' <<<"$ZOUT" | oneline)"
+    fi
+    if [[ "$(stick_of untrusted)" == none && -z "$(held_by "$P")" ]] && unmapped untrusted; then
+        pass "whole-ends-with-zone" "untrusted stopped, so its grant ended and the mapping went"
+    else
+        fail "whole-ends-with-zone" "info stick $(stick_of untrusted); holders $(held_by "$P"); mapping $(mapped untrusted && echo kept || echo gone)"
+    fi
     ;;
 *)
-    fail "phase" "usage: stick-check.sh plugged|hold|pulled|medium|card USER [SHA]"
+    fail "phase" "usage: stick-check.sh plugged|hold|pulled|medium|card|whole USER [SHA]"
     ;;
 esac
