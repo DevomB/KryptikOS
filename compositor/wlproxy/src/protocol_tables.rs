@@ -5,6 +5,7 @@
 //   xdg-decoration-unstable-v1.xml  sha256 68753c4a85a28659e3aa1fe0f138329a8bf3dff0b4789f4663a2c7fedbfecf2f
 //   viewporter.xml  sha256 dcb12279a03746301fe490aaed4b38a403485a925abfce2ccfceb644e104fe71
 //   cursor-shape-v1.xml  sha256 bb57d91e53a79dadab7c612dab87c233393cee73673feefa7442cfbfdd9aed2f
+//   fractional-scale-v1.xml  sha256 5941de5d28f427ecdadddc8623a6f6af0a30b0ab4726847236ba7a7652b81316
 //
 // Each message's arguments in wire order, and how many are descriptors. A
 // new_id with no interface is wl_registry.bind's, which the client names.
@@ -477,6 +478,26 @@ pub static INTERFACES: &[Interface] = &[
             Message { name: "set_shape", args: &[Arg::Uint, Arg::Uint], fds: 0, since: 1 },
         ],
         events: &[
+        ],
+    },
+    Interface {
+        name: "wp_fractional_scale_manager_v1",
+        version: 1,
+        requests: &[
+            Message { name: "destroy", args: &[], fds: 0, since: 1 },
+            Message { name: "get_fractional_scale", args: &[Arg::NewId { iface: Some("wp_fractional_scale_v1") }, Arg::Object { nullable: false }], fds: 0, since: 1 },
+        ],
+        events: &[
+        ],
+    },
+    Interface {
+        name: "wp_fractional_scale_v1",
+        version: 1,
+        requests: &[
+            Message { name: "destroy", args: &[], fds: 0, since: 1 },
+        ],
+        events: &[
+            Message { name: "preferred_scale", args: &[Arg::Uint], fds: 0, since: 1 },
         ],
     },
 ];

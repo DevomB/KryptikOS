@@ -57,6 +57,9 @@
  *                             "output ID geometry WxH mm make \"MAKE\" model
  *                             \"MODEL\"", "mode WxH [current]", "scale N",
  *                             "name \"NAME\"", "description \"TEXT\"", "done"
+ *   wlprobe scale SECONDS     as oversize 0, and ask for the scale the window
+ *                             is shown at (wp_fractional_scale_v1); says each
+ *                             one the compositor sends, in 120ths
  *
  * Exit: 0 listed, bind accepted or window held; 3 refused (wl_display.error,
  * or closed); 1 any other failure. The socket is $WAYLAND_DISPLAY, absolute
@@ -342,6 +345,9 @@ static int cursor;
 /* cursor shape: the pointer's device for cursors by name. */
 static int cursor_shape;
 static uint32_t shape_dev;
+/* scale: the window's wp_fractional_scale_v1. */
+static int scale;
+static uint32_t fscale_id;
 
 /* On every entry, as a client does; the image is made on the first. */
 static void set_cursor(uint32_t serial)
@@ -631,6 +637,10 @@ static int handle_one(void)
 			printf("output %u %s \"%s\"\n", object, opcode == 4 ? "name" : "description", a);
 		}
 		fflush(stdout);
+	} else if (scale && object == fscale_id && opcode == 0) {
+		/* wp_fractional_scale_v1.preferred_scale(scale), in 120ths */
+		printf("preferred scale %u/120\n", get32(body));
+		fflush(stdout);
 	} else if (!oversize) {
 		printf("event object=%u opcode=%u size=%u\n", object, opcode, size);
 	}
@@ -712,6 +722,14 @@ static int hold_oversize(int more, int seconds, const char *title)
 	keyboard_id = next_id++;
 	put32(b, keyboard_id);
 	send_msg(seat_id, 1, b, 4);                /* wl_seat.get_keyboard */
+	if (scale) {
+		uint32_t mgr = next_id++;
+		if (bind_global("wp_fractional_scale_manager_v1", mgr)) return 1;
+		fscale_id = next_id++;
+		put32(b, fscale_id);
+		put32(b + 4, SURFACE);
+		send_msg(mgr, 1, b, 8);                /* wp_fractional_scale_manager_v1.get_fractional_scale */
+	}
 	if (copy || paste) {
 		ddm_id = next_id++;
 		if (bind_global("wl_data_device_manager", ddm_id)) return 1;
@@ -748,7 +766,8 @@ int main(int argc, char **argv)
 	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize")
 	                 && strcmp(argv[1], "fullscreen") && strcmp(argv[1], "child") && strcmp(argv[1], "charge")
 	                 && strcmp(argv[1], "cursor") && strcmp(argv[1], "animate") && strcmp(argv[1], "popup")
-	                 && strcmp(argv[1], "copy") && strcmp(argv[1], "paste") && strcmp(argv[1], "outputs"))
+	                 && strcmp(argv[1], "copy") && strcmp(argv[1], "paste") && strcmp(argv[1], "outputs")
+	                 && strcmp(argv[1], "scale"))
 	    || (!strcmp(argv[1], "bind") && (argc < 3 || argc > 4)) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
 	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
@@ -758,8 +777,9 @@ int main(int argc, char **argv)
 	    || (!strcmp(argv[1], "animate") && argc != 3)
 	    || (!strcmp(argv[1], "popup") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "grab"))))
 	    || (!strcmp(argv[1], "copy") && (argc != 4 || strlen(argv[3]) > 200))
-	    || (!strcmp(argv[1], "paste") && argc != 3) || (!strcmp(argv[1], "outputs") && argc != 2)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE [NAME] | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS | outputs\n");
+	    || (!strcmp(argv[1], "paste") && argc != 3) || (!strcmp(argv[1], "outputs") && argc != 2)
+	    || (!strcmp(argv[1], "scale") && argc != 3)) {
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE [NAME] | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS | outputs | scale SECONDS\n");
 		return 2;
 	}
 	const char *own_id = getenv("WLPROBE_APP_ID");
@@ -828,6 +848,7 @@ int main(int argc, char **argv)
 		return hold_oversize(0, atoi(argv[2]), "copy");
 	}
 	if (!strcmp(argv[1], "paste")) { paste = 1; return hold_oversize(0, atoi(argv[2]), "paste"); }
+	if (!strcmp(argv[1], "scale")) { scale = 1; return hold_oversize(0, atoi(argv[2]), "scale"); }
 	if (!strcmp(argv[1], "animate")) {
 		animate = 1;
 		int held = hold_oversize(0, atoi(argv[2]), "animate");

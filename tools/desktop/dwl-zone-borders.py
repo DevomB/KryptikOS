@@ -326,7 +326,7 @@ run(char *startup_cmd)
 static const char *const zoneglobals[] = {
 \t"wl_compositor", "wl_subcompositor", "wl_shm", "wl_seat", "wl_output",
 \t"xdg_wm_base", "zxdg_decoration_manager_v1", "wp_viewporter",
-\t"wp_cursor_shape_manager_v1",
+\t"wp_cursor_shape_manager_v1", "wp_fractional_scale_manager_v1",
 };
 
 /* Kryptik: a client of a zone's socket is told only of zoneglobals, and
