@@ -11,7 +11,8 @@
 #   signature  the suffix of upstream's own signature kept beside it there, or - for none
 #
 # Each row was checked when added: the mirror's file has the lock's hash, and its signature was
-# made by the key upstream's own is made by.
+# made by the key upstream's own is made by. CI holds every row's file to the lock again each week
+# (fetch-sources.sh --check-mirrors), and a dispatch of CI checks a new row on its branch.
 file               https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/file-{VER}.tar.gz                                 -
 attr               https://mirror.csclub.uwaterloo.ca/nongnu/attr/attr-{VER}.tar.gz                                   -
 attr               https://sources.voidlinux.org/attr-{VER}/attr-{VER}.tar.gz                                         -
@@ -28,7 +29,6 @@ man-db             https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/man-db-{VER}
 elfutils           https://mirrors.kernel.org/sourceware/elfutils/{VER}/elfutils-{VER}.tar.bz2                        -
 elfutils           https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/elfutils-{VER}.tar.bz2                            -
 perl               https://cpan.metacpan.org/src/5.0/perl-{VER}.tar.xz                                                -
-perl               https://ftp.osuosl.org/pub/CPAN/src/5.0/perl-{VER}.tar.xz                                          -
 skalibs            https://distfiles.alpinelinux.org/distfiles/edge/skalibs-{VER}.tar.gz                              -
 execline           https://distfiles.alpinelinux.org/distfiles/edge/execline-{VER}.tar.gz                             -
 s6                 https://distfiles.alpinelinux.org/distfiles/edge/s6-{VER}.tar.gz                                   -
@@ -62,3 +62,12 @@ libglvnd           https://sources.voidlinux.org/libglvnd-{VER}/libglvnd-v{VER}.
 libdrm             https://ftp2.osuosl.org/pub/blfs/conglomeration/libdrm/libdrm-{VER}.tar.xz                         -
 # Void names its package after the series, so the row moves with a series change.
 wlroots            https://sources.voidlinux.org/wlroots0.19-{VER}/wlroots-{VER}.tar.gz                              -
+# kernel.org keeps each series in a directory of its own, so the row moves with a series change.
+linux              https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/linux-{VER}.tar.xz                           -
+xz                 https://deb.debian.org/debian/pool/main/x/xz-utils/xz-utils_{VER}.orig.tar.xz                      -
+zstd               https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/zstd-{VER}.tar.gz                                 -
+shadow             https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/shadow-{VER}.tar.xz                               -
+shadow             https://distfiles.alpinelinux.org/distfiles/v3.21/shadow-{VER}.tar.xz                              -
+hwdata             https://distfiles.alpinelinux.org/distfiles/edge/hwdata-{VER}.tar.gz                               -
+harfbuzz           https://ftp2.osuosl.org/pub/blfs/conglomeration/harfbuzz/harfbuzz-{VER}.tar.xz                     -
+fribidi            https://ftp2.osuosl.org/pub/blfs/conglomeration/fribidi/fribidi-{VER}.tar.xz                       -

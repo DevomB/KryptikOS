@@ -5,6 +5,10 @@
  *   kryptik-launch --stop ZONE
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no, the USB stick it holds
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
+ *   kryptik-launch --desktop -- COMMAND [ARG...]   the desktop: dwl as the daemon starts it,
+ *                                      with the seat, without group kryptik and under the
+ *                                      desktop's memory bound, and COMMAND (the chrome) on
+ *                                      dwl's status
  *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move what FROM's windows copied
  *                                      to TO's, or FROM's broker payload when they copied nothing
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
@@ -52,6 +56,7 @@
 
 #define LAUNCH_SOCKET "/run/kryptik-launch/launch.sock"
 #define CHROME_BIN "/usr/bin/kryptik-chrome"
+#define DWL_BIN "/usr/bin/dwl"
 
 static void die(const char *fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
 static void die(const char *fmt, ...)
@@ -229,6 +234,7 @@ static void usage(void)
 	      "       kryptik-launch [--passphrase-fd N] --resume ZONE   (its volume's key, after a sleep)\n"
 	      "       kryptik-launch --info ZONE\n"
 	      "       kryptik-launch --runtime-dir\n"
+	      "       kryptik-launch --desktop -- COMMAND [ARG...]\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID [--hidden] | --wifi-add-open SSID [--hidden] | --wifi-forget SSID\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
@@ -537,6 +543,147 @@ static int clipboard_move(const char *from, const char *to)
 	return 0;
 }
 
+/* What the session hands dwl of its environment: the keymap kb_export_desktop set. The daemon
+ * gives dwl the rest. */
+static const char *const desktop_env[] = {
+	"XKB_DEFAULT_RULES", "XKB_DEFAULT_MODEL", "XKB_DEFAULT_LAYOUT", "XKB_DEFAULT_VARIANT",
+	"XKB_DEFAULT_OPTIONS", "KRYPTIK_LAYOUTS",
+};
+
+/* Ask the daemon for dwl, handing it FDS: the spawner's socket, dwl's status and the log. BUF gets
+ * the whole answer, `started PID` at once and the last line when dwl has ended. 1 when dwl
+ * started, 0 when it did not, and BUF then says why; every failure is said there, none ends this
+ * process. */
+static int ask_desktop(const char *req, const int fds[3], char *buf, size_t size)
+{
+	union { char buf[CMSG_SPACE(3 * sizeof(int))]; struct cmsghdr align; } u;
+	struct iovec iov = { .iov_base = (void *)req, .iov_len = strlen(req) };
+	struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = u.buf, .msg_controllen = sizeof u.buf };
+	struct sockaddr_un sa;
+	struct cmsghdr *c;
+	size_t len = 0;
+	int started = 0, s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+
+	if (s < 0) {
+		snprintf(buf, size, "socket: %s\n", strerror(errno));
+		return 0;
+	}
+	memset(&sa, 0, sizeof sa);
+	sa.sun_family = AF_UNIX;
+	strncpy(sa.sun_path, LAUNCH_SOCKET, sizeof sa.sun_path - 1);
+	memset(&u, 0, sizeof u);
+	c = CMSG_FIRSTHDR(&msg);
+	c->cmsg_level = SOL_SOCKET;
+	c->cmsg_type = SCM_RIGHTS;
+	c->cmsg_len = CMSG_LEN(3 * sizeof(int));
+	memcpy(CMSG_DATA(c), fds, 3 * sizeof(int));
+	if (connect(s, (struct sockaddr *)&sa, sizeof sa) < 0 || sendmsg(s, &msg, 0) != (ssize_t)strlen(req)) {
+		snprintf(buf, size, "%s: %s\n", LAUNCH_SOCKET, strerror(errno));
+		close(s);
+		return 0;
+	}
+	shutdown(s, SHUT_WR);
+	while (len + 1 < size) {
+		ssize_t n = read(s, buf + len, size - 1 - len);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		len += (size_t)n;
+		buf[len] = 0;
+		if (!started && strncmp(buf, "started ", 8) == 0 && strchr(buf, '\n')) {
+			started = 1;
+			fprintf(stderr, "kryptik-launch: the daemon starts dwl as pid %.*s, without group kryptik\n",
+				(int)(strchr(buf, '\n') - buf - 8), buf + 8);
+		}
+	}
+	close(s);
+	buf[len] = 0;
+	if (len == 0)
+		snprintf(buf, size, "no answer from the launch daemon\n");
+	/* A child that could not become dwl is a start that did not happen. */
+	return started && !strstr(buf, "error: dwl did not start");
+}
+
+/* The session's last step (compositor separation): dwl runs as the launch daemon starts it, in the
+ * desktop's cgroup with this login's groups less kryptik, so it reaches neither the daemon nor the
+ * mixer's control socket, and with group seat, which the login lacks. What needs group kryptik
+ * stays with the session: the spawner, dwl's own binary serving the keys' commands from dwl's
+ * table (-X), which starts COMMAND, the chrome, on dwl's status once dwl names its display. If the
+ * daemon does not start dwl there is no desktop, as the login has no seat to start one on: this
+ * says why. The login ends with dwl. */
+static int desktop_main(int argc, char **argv)
+{
+	int sv[2], st[2], i, k = 0;
+	char req[4096], said[1024], **sargv, *last, *p;
+	size_t len = 0;
+	pid_t spawner;
+
+	if (argc < 4 || strcmp(argv[2], "--") != 0)
+		usage();
+	if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0 || pipe2(st, O_CLOEXEC) < 0)
+		die("the desktop's socket and pipe: %s", strerror(errno));
+	if (!(sargv = calloc((size_t)argc + 4, sizeof *sargv)))
+		die("out of memory");
+	sargv[k++] = DWL_BIN;
+	sargv[k++] = "-X";
+	sargv[k++] = "3";
+	sargv[k++] = "--";
+	for (i = 3; i < argc; i++)
+		sargv[k++] = argv[i];
+	if ((spawner = fork()) < 0)
+		die("fork: %s", strerror(errno));
+	if (spawner == 0) {
+		/* 3: the spawner's end of dwl's socket; 4: dwl's status, for COMMAND. Copied above 9
+		 * first, so placing one cannot overwrite the other. */
+		int a = fcntl(sv[0], F_DUPFD_CLOEXEC, 10), b = fcntl(st[0], F_DUPFD_CLOEXEC, 10);
+		if (a < 0 || b < 0 || dup2(a, 3) < 0 || dup2(b, 4) < 0)
+			_exit(127);
+		execv(DWL_BIN, sargv);
+		fprintf(stderr, "kryptik-launch: cannot run %s: %s\n", DWL_BIN, strerror(errno));
+		_exit(127);
+	}
+	close(sv[0]);
+	close(st[0]);
+
+	#define PUT(...) do { \
+		int n_ = snprintf(req + len, sizeof req - len, __VA_ARGS__); \
+		if (n_ < 0 || (size_t)n_ >= sizeof req - len) \
+			die("the desktop's request is too long"); \
+		len += (size_t)n_; \
+	} while (0)
+	PUT("desktop\n");
+	for (i = 0; i < (int)(sizeof desktop_env / sizeof *desktop_env); i++) {
+		const char *v = getenv(desktop_env[i]);
+		if (v && !strchr(v, '\n'))
+			PUT("env %s=%s\n", desktop_env[i], v);
+	}
+	PUT("end\n");
+	#undef PUT
+
+	int fds[3] = { sv[1], st[1], STDERR_FILENO };
+	int ran = ask_desktop(req, fds, said, sizeof said);
+	for (last = p = said; *p; p++)
+		if (*p == '\n' && p[1])
+			last = p + 1;
+	const char *why = ran && strncmp(last, "started ", 8) == 0 ? "the launch daemon is gone\n" : last;
+	const char *nl = *why && why[strlen(why) - 1] == '\n' ? "" : "\n";
+	fprintf(stderr, "kryptik-launch: %s: %s%s", ran ? "the desktop ended" : "no desktop", why, nl);
+	/* The spawner, told by its socket, ends the chrome if it started one, then itself. */
+	close(sv[1]);
+	close(st[1]);
+	while (waitpid(spawner, NULL, 0) < 0 && errno == EINTR)
+		;
+	/* Said on the terminal too, which the login prompt clears once the login ends: a desktop that
+	 * did not start, or a dwl that ended any way but a logout. */
+	if ((!ran || strcmp(why, "ok dwl exited 0\n") != 0) && isatty(STDOUT_FILENO)) {
+		printf("%s: %s%s", ran ? "The desktop ended" : "No desktop", why, nl);
+		fflush(stdout);
+		sleep(5);
+	}
+	return ran ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
 	int ask = 0, no_display = 0, pass_fd = -1, sep = -1;
@@ -552,6 +699,8 @@ int main(int argc, char **argv)
 		return stick_main(argc, argv);
 	if (argc >= 2 && strncmp(argv[1], "--camera-", 9) == 0)
 		return camera_main(argc, argv);
+	if (argc >= 2 && strcmp(argv[1], "--desktop") == 0)
+		return desktop_main(argc, argv);
 	if (argc == 4 && strcmp(argv[1], "--clipboard-move") == 0) {
 		if (!ident_ok(argv[2]) || !ident_ok(argv[3]))
 			usage();

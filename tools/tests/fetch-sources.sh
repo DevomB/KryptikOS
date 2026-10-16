@@ -171,6 +171,23 @@ grep -qF "alpha 1.0: only file://${ROWM}/alpha_1.0.orig.tar.gz serves it; not ht
 MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" run --probe
 expect_fail "--probe fails on a source no place serves" "alpha 1.0: no place serves it (asked https://127.0.0.1:9/alpha-1.0.tar.gz)"
 
+# A host that gives no answer at all is asked once a pass: its other places count as not serving,
+# and what no place served gets a last look, every host asked afresh. Two passes, so said twice.
+{ printf 'alpha|1.0|https://127.0.0.1:9/alpha-1.0.tar.gz|probe|listing\n'
+  printf 'beta|2.0|https://127.0.0.1:9/beta-2.0.tar.gz|probe|listing\n'; } > "${W}/manifest-silent"
+MANIFEST="${W}/manifest-silent" MIRROR_DISTFILES="" run --probe
+expect_fail "--probe counts a silent host's later places as not serving" "beta 2.0: no place serves it"
+if [[ "$(grep -c '127.0.0.1:9 gave no answer' "$OUT")" -eq 2 ]]; then
+    green "and asks a silent host once in each pass, the last look's included, saying so"
+else
+    red "a silent host was not asked once a pass, or not said so: $(grep -c '127.0.0.1:9 gave no answer' "$OUT")"; show
+fi
+if [[ "$(grep -c 'no place serves it' "$OUT")" -eq 2 ]]; then
+    green "and names each source no place served once, after the last look"
+else
+    red "the sources no place served were not named once each: $(grep -c 'no place serves it' "$OUT")"; show
+fi
+
 # A host that refuses HEAD, as an object store refuses a URL presigned for GET: the probe asks for
 # one byte, and the last answer's status decides. Python's server ignores the range, so a file it
 # has comes whole (alpha) or is stopped at the cap (big), a redirect's body comes first (moved),
@@ -215,6 +232,31 @@ grep -qF "alpha 1.0: only http://127.0.0.1:${port}/moved/alpha-1.0.tar.gz serves
 grep -qF "big 1.0: only http://127.0.0.1:${port}/big-1.0.tar.gz serves it" "$OUT" \
     && green "there, a whole file stopped at the cap counts" || { red "--probe misread the file sent whole"; show; }
 kill "$NOHEAD" 2>/dev/null; wait "$NOHEAD" 2>/dev/null
+
+# --- mirror rows held to the lock ---------------------------------------------
+
+# Every row's file downloaded and compared, nothing kept.
+build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-all" run --check-mirrors
+expect_pass "--check-mirrors holds every row to the lock" "3 mirror row(s): 3 with the lock's bytes, 0 no longer serving the pin"
+if [[ -z "$(ls -A "${FAKE}/sources")" ]]; then
+    green "--check-mirrors keeps nothing in sources/"
+else
+    red "--check-mirrors left files in sources/: $(ls -A "${FAKE}/sources" | tr '\n' ' ')"
+fi
+
+# A row serving other bytes fails; one that no longer serves the pin is a warning.
+printf 'other bytes\n' > "${SECOND}/beta-2.0.tar.gz"
+rm -f "${SECOND}/gamma-3.0.tar.gz"
+MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-all" run --check-mirrors
+expect_fail "--check-mirrors fails a row that serves other bytes" "beta 2.0: file://${SECOND}/beta-2.0.tar.gz serves other bytes than the lock's"
+grep -qF "gamma 3.0: file://${SECOND}/gamma-3.0.tar.gz does not serve it" "$OUT" \
+    && green "and warns of a row that no longer serves the pin" || { red "--check-mirrors did not name the lapsed row"; show; }
+
+# A row for no source here never applies: refused.
+printf 'nosuch  file://%s/nosuch-{VER}.tar.gz  -\n' "$SECOND" > "${W}/mirrors-typo"
+MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-typo" run --check-mirrors
+expect_fail "--check-mirrors refuses a row for no source" "a row for nosuch, which is no source here"
 
 # --- checksum refusal -------------------------------------------------------
 

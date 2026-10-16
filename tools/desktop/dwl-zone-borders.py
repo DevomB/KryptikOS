@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers, popups, the lid
-and the keys heeded under the screen lock.
+"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers, popups, the lid,
+the keys heeded under the screen lock and a zone's hold on the screen.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -16,7 +16,8 @@ import sys
 # Its border is that
 # zone's colour; focus is shown by width (a band of the root colour when
 # unfocused), and fullscreen keeps the border under a bar that names the
-# zone, and the zones that hold the microphone and the camera. A zone's
+# zone, the zones that hold the microphone and the camera, and the zone
+# holding the screen awake. A zone's
 # popups are drawn inside its window's frame and last while the window has
 # the keyboard.
 
@@ -71,11 +72,13 @@ static const unsigned char zonefont[128][7] = {
  * over a fullscreen window names: that window covers the chrome's own windows
  * that say so. Each comes from a file only its writer can leave, the mixer's
  * for the microphone and kryptikd's for the camera. */
-#define MICMARK "/run/kryptik-sound/control/microphone"
+#define MICMARK "/run/kryptik-sound/marks/microphone"
 #define CAMMARK "/run/kryptik-camera/grant"
 #define MARKEVENTS (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE)
 #define SOUNDUID 87 /* the mixer's, build/services/kryptik-sound/run */
 static char miczone[16], camzone[16];
+/* The zone holding the screen awake as the bars last named it (checkidleinhibitor). */
+static const ZoneColor *barhold;
 static int markfd = -1;
 static struct wl_event_source *marktimer;
 
@@ -112,7 +115,8 @@ readmark(const char *file, uid_t owner, const char *prefix, char *out, size_t si
 /* Kryptik: a fullscreen window leaves the top barpx rows of its output to a
  * bar in its zone's colour that names the zone, outside the window's frame:
  * its surfaces and its popups are clipped to the frame. After the name, the
- * zones that hold the microphone and the camera, whichever zones they are. */
+ * zones that hold the microphone and the camera, whichever zones they are,
+ * and the zone holding the screen awake: a video in front covers the chrome. */
 static void
 zonebar(Client *c)
 {
@@ -120,7 +124,7 @@ zonebar(Client *c)
 \tconst ZoneColor *z = clientzone(c);
 \tconst float *ink;
 \tstruct wlr_box box = c->mon->m;
-\tchar name[64] = "zone 0";
+\tchar name[80] = "zone 0"; /* a zone and three marks, each name at most 12 bytes */
 \tint s = (int)barscale, pad = ((int)barpx - 7 * s) / 2, x, row, col, n;
 \tsize_t i;
 
@@ -131,6 +135,8 @@ zonebar(Client *c)
 \t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   mic %s", miczone);
 \tif (camzone[0])
 \t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   cam %s", camzone);
+\tif (barhold)
+\t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   awake %s", barhold->zone);
 \tink = 0.299f * c->zoneborder[0] + 0.587f * c->zoneborder[1]
 \t\t\t+ 0.114f * c->zoneborder[2] > 0.5f ? black : white;
 
@@ -157,8 +163,9 @@ zonebar(Client *c)
 }
 
 /* Kryptik: both files read again, and every fullscreen window's bar drawn again
- * if either holder changed. Both watches are set again too: a directory made
- * anew, or mounted over, drops its watch, which would hide every later grant. */
+ * if either holder, or the zone holding the screen awake, changed. Both watches
+ * are set again too: a directory made anew, or mounted over, drops its watch,
+ * which would hide every later grant. */
 static void
 marksupdate(void)
 {
@@ -166,15 +173,16 @@ marksupdate(void)
 \tClient *c;
 
 \tif (markfd >= 0) {
-\t\tinotify_add_watch(markfd, "/run/kryptik-sound/control", MARKEVENTS);
+\t\tinotify_add_watch(markfd, "/run/kryptik-sound/marks", MARKEVENTS);
 \t\tinotify_add_watch(markfd, "/run/kryptik-camera", MARKEVENTS);
 \t}
 \treadmark(MICMARK, SOUNDUID, "", mic, sizeof(mic));
 \treadmark(CAMMARK, 0, "zone ", cam, sizeof(cam));
-\tif (strcmp(mic, miczone) == 0 && strcmp(cam, camzone) == 0)
+\tif (strcmp(mic, miczone) == 0 && strcmp(cam, camzone) == 0 && holdzone == barhold)
 \t\treturn;
 \tsnprintf(miczone, sizeof(miczone), "%s", mic);
 \tsnprintf(camzone, sizeof(camzone), "%s", cam);
+\tbarhold = holdzone;
 \twl_list_for_each(c, &clients, link)
 \t\tif (c->isfullscreen && c->mon)
 \t\t\tzonebar(c);
@@ -236,6 +244,7 @@ typedef struct {
 	const char *zone;     /* its socket's name under /run/kryptik-compositor/<uid> */
 	const float border[4];
 	unsigned int proxy;   /* its proxy's uid: with the session's, the one peer its socket takes */
+	int hold;             /* its file lets its windows hold the screen awake (checkidleinhibitor) */
 } ZoneColor;
 """),
     # A client's zone and its colour, placed before applyrules.
@@ -326,20 +335,24 @@ run(char *startup_cmd)
 static const char *const zoneglobals[] = {
 \t"wl_compositor", "wl_subcompositor", "wl_shm", "wl_seat", "wl_output",
 \t"xdg_wm_base", "zxdg_decoration_manager_v1", "wp_viewporter",
-\t"wp_cursor_shape_manager_v1",
+\t"wp_cursor_shape_manager_v1", "wp_fractional_scale_manager_v1",
 };
 
-/* Kryptik: a client of a zone's socket is told only of zoneglobals, and
- * binding another global by its number ends its connection; a client of
- * dwl's own socket sees them all. */
+/* Kryptik: a client of a zone's socket is told only of zoneglobals, and of
+ * the idle inhibitor if its zone may hold the screen awake; binding another
+ * global by its number ends its connection. A client of dwl's own socket
+ * sees them all. */
 static bool
 zoneglobal(const struct wl_client *client, const struct wl_global *global, void *data)
 {
+\tconst ZoneColor *z = wl_client_get_user_data((struct wl_client *)client);
 \tconst char *name = wl_global_get_interface(global)->name;
 \tsize_t i;
 
-\tif (!wl_client_get_user_data((struct wl_client *)client))
+\tif (!z)
 \t\treturn true;
+\tif (strcmp(name, "zwp_idle_inhibit_manager_v1") == 0)
+\t\treturn z->hold;
 \tfor (i = 0; i < LENGTH(zoneglobals); i++)
 \t\tif (strcmp(zoneglobals[i], name) == 0)
 \t\t\treturn true;
@@ -459,6 +472,191 @@ run(char *startup_cmd)
 """,
      """\t\t\tprintf("%s appid \\n", m->wlr_output->name);
 \t\t\tprintf("%s zone \\n", m->wlr_output->name);
+"""),
+    # The browser key and the menu's b put a zone's open browser in front
+    # (docs/design/browser-and-graphics.md). The window is found by the zone of
+    # its client's socket and the app_id its proxy stamps, kryptik.<zone>.<claimed>,
+    # so a client that claims another zone's browser is never taken.
+    ("""} ZoneColor;
+""",
+     """} ZoneColor;
+
+typedef struct {
+\tconst char *zone;     /* whose window is sought, by its socket */
+\tconst char *claimed;  /* the app_id its client claims, before the proxy's kryptik.<zone>. */
+\tconst char **cmd;     /* started when the zone has no such window */
+} FocusOrLaunch;
+"""),
+    ("""static void focusmon(const Arg *arg);
+""",
+     """static void focusmon(const Arg *arg);
+static void focusorlaunch(const Arg *arg);
+"""),
+    ("""void
+focusmon(const Arg *arg)
+{
+""",
+     """#include <sys/inotify.h>
+
+/* Kryptik: ZONE's window whose app_id is kryptik.ZONE.CLAIMED, the one used
+ * last, or NULL. The zone is its socket's, never the client's word. */
+static Client *
+zonewindow(const char *zone, const char *claimed)
+{
+\tconst ZoneColor *z;
+\tchar want[160];
+\tClient *c;
+
+\tif (snprintf(want, sizeof(want), "kryptik.%s.%s", zone, claimed) >= (int)sizeof(want))
+\t\treturn NULL;
+\twl_list_for_each(c, &fstack, flink) {
+\t\tz = clientzone(c);
+\t\tif (c->mon && z && strcmp(z->zone, zone) == 0 && strcmp(client_get_appid(c), want) == 0)
+\t\t\treturn c;
+\t}
+\treturn NULL;
+}
+
+/* Kryptik: C put in front where it is, never moved to another tag: its first
+ * tag viewed on its own monitor when it is not shown there, then the keyboard,
+ * as Alt and the tag's number and a pick would. */
+static void
+bringforward(Client *c)
+{
+\tArg a;
+
+\tif (locked || !c->mon)
+\t\treturn;
+\tselmon = c->mon;
+\tif (!VISIBLEON(c, c->mon)) {
+\t\ta.ui = c->tags & -c->tags;
+\t\tview(&a);
+\t}
+\tfocusclient(c, 1);
+}
+
+/* Kryptik: the zone's open window of that app_id in front, or its command
+ * started when it has none: the browser key. */
+void
+focusorlaunch(const Arg *arg)
+{
+\tconst FocusOrLaunch *f = arg->v;
+\tClient *c = zonewindow(f->zone, f->claimed);
+\tArg a = {.v = f->cmd};
+
+\tif (c)
+\t\tbringforward(c);
+\telse
+\t\tspawn(&a);
+}
+
+/* Kryptik: the chrome's menu asks for a zone's open browser in front with one
+ * line naming the zone in browser-front, in $XDG_RUNTIME_DIR/kryptik/front: a
+ * directory of its own, so what dwl reads and removes there is the request
+ * alone. It is taken only from a regular file of the session user's that no
+ * one else may write, in a directory of that user's that no one else may
+ * write, and removed before it is acted on. It only brings a window forward:
+ * every launch stays the chrome's, which asks a zone's passphrase on its own
+ * terminal. */
+static char frontdir[256], frontfile[288];
+static int frontfd = -1;
+static struct wl_event_source *fronttimer;
+
+static void
+frontread(void)
+{
+\tchar buf[64];
+\tconst ZoneColor *z;
+\tstruct stat st, dir;
+\tssize_t n = 0;
+\tClient *c;
+\tint fd;
+
+\tif (!frontfile[0])
+\t\treturn;
+\tif (frontfd >= 0)
+\t\tinotify_add_watch(frontfd, frontdir, IN_CLOSE_WRITE | IN_MOVED_TO);
+\tif ((fd = open(frontfile, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)) < 0) {
+\t\tif (errno != ENOENT)
+\t\t\tunlink(frontfile);
+\t\treturn;
+\t}
+\tif (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == getuid() && !(st.st_mode & 022)
+\t\t\t&& stat(frontdir, &dir) == 0 && dir.st_uid == getuid() && !(dir.st_mode & 022))
+\t\tn = read(fd, buf, sizeof(buf) - 1);
+\tclose(fd);
+\tunlink(frontfile);
+\tif (n <= 0)
+\t\treturn;
+\tbuf[n] = '\\0';
+\tbuf[strcspn(buf, "\\n")] = '\\0';
+\tfor (z = zonecolors_table; z < END(zonecolors_table); z++)
+\t\tif (strcmp(z->zone, buf) == 0 && (c = zonewindow(z->zone, browserappid)))
+\t\t\tbringforward(c);
+}
+
+static int
+frontevent(int fd, uint32_t mask, void *data)
+{
+\tchar events[4096];
+
+\twhile (read(fd, events, sizeof(events)) > 0)
+\t\t;
+\tfrontread();
+\treturn 0;
+}
+
+/* Kryptik: a look each second besides the watch, which cannot be set while
+ * the directory is not there. */
+static int
+fronttick(void *data)
+{
+\tfrontread();
+\twl_event_source_timer_update(fronttimer, 1000);
+\treturn 0;
+}
+
+static void
+frontwatch(void)
+{
+\tconst char *rt = getenv("XDG_RUNTIME_DIR");
+
+\tif (!rt || snprintf(frontdir, sizeof(frontdir), "%s/kryptik/front", rt) >= (int)sizeof(frontdir)
+\t\t\t|| snprintf(frontfile, sizeof(frontfile), "%s/browser-front", frontdir) >= (int)sizeof(frontfile)) {
+\t\tfrontfile[0] = '\\0';
+\t\treturn;
+\t}
+\tif ((frontfd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC)) >= 0)
+\t\twl_event_loop_add_fd(event_loop, frontfd, WL_EVENT_READABLE, frontevent, NULL);
+\tif ((fronttimer = wl_event_loop_add_timer(event_loop, fronttick, NULL)))
+\t\tfronttick(NULL);
+}
+
+void
+focusmon(const Arg *arg)
+{
+"""),
+    # printstatus: the zones whose browser is open, for the menu's b, among the
+    # selected output's lines, before the layout line that ends them.
+    ("""\t\tprintf("%s layout %s\\n", m->wlr_output->name, m->ltsymbol);
+""",
+     """\t\tif (m == selmon) {
+\t\t\tconst ZoneColor *z;
+
+\t\t\tprintf("%s browsers", m->wlr_output->name);
+\t\t\tfor (z = zonecolors_table; z < END(zonecolors_table); z++)
+\t\t\t\tif (zonewindow(z->zone, browserappid))
+\t\t\t\t\tprintf(" %s", z->zone);
+\t\t\tprintf("\\n");
+\t\t}
+\t\tprintf("%s layout %s\\n", m->wlr_output->name, m->ltsymbol);
+"""),
+    # run: the menu's requests watched once the event loop runs.
+    ("""\tzonesockets();
+""",
+     """\tzonesockets();
+\t/* Kryptik: the menu's requests to put a zone's open browser in front. */
+\tfrontwatch();
 """),
     # mapnotify: zone-coloured borders, then the band over them as four
     # strips. The surface stays below both, or a buffer larger than its
@@ -961,6 +1159,10 @@ static void endpopups(void);
 """,
      """static void createpointer(struct wlr_pointer *pointer);
 static void createswitch(struct wlr_switch *sw);
+/* Kryptik: the lid as its switch last told it, and the look that follows a screen gone while
+ * it is shut (undockcheck). */
+static int lidshut;
+static struct wl_event_source *undocktimer;
 """),
     ("""\tcase WLR_INPUT_DEVICE_POINTER:
 \t\tcreatepointer(wlr_pointer_from_input_device(device));
@@ -999,13 +1201,30 @@ docked(void)
 \treturn 0;
 }
 
+/* Kryptik: a lid shut with no screen left but the panel sleeps, as one closed undocked does: a
+ * dock unplugged while the lid is shut. Looked at a while after a screen goes, as a dock takes
+ * its screens away and back again around a sleep, and never at the end of the login, when the
+ * event loop has stopped. */
+static int
+undockcheck(void *data)
+{
+\tif (lidshut && !docked())
+\t\tspawn(&(Arg){.v = suspendcmd});
+\treturn 0;
+}
+
 static void
 switchtoggle(struct wl_listener *listener, void *data)
 {
 \tSwitch *s = wl_container_of(listener, s, toggle);
 \tstruct wlr_switch_toggle_event *event = data;
 \tstruct timespec now;
-\tif (event->switch_type != WLR_SWITCH_TYPE_LID || event->switch_state != WLR_SWITCH_STATE_ON)
+\tif (event->switch_type != WLR_SWITCH_TYPE_LID)
+\t\treturn;
+\t/* Both edges, before anything below returns: a lid shut at the start, or while docked, is
+\t * known when the last other screen goes. */
+\tlidshut = event->switch_state == WLR_SWITCH_STATE_ON;
+\tif (!lidshut)
 \t\treturn;
 \t/* libinput tells a lid closed already when the device comes, for a switch it trusts:
 \t * a session started with the lid shut must not sleep for it. */
@@ -1031,11 +1250,27 @@ createswitch(struct wlr_switch *sw)
 \tclock_gettime(CLOCK_MONOTONIC, &s->added);
 \tLISTEN(&sw->events.toggle, &s->toggle, switchtoggle);
 \tLISTEN(&sw->base.events.destroy, &s->destroy, switchdestroy);
+\tif (!undocktimer)
+\t\tundocktimer = wl_event_loop_add_timer(event_loop, undockcheck, NULL);
 }
 
 void
 inputdevice(struct wl_listener *listener, void *data)
 {
+"""),
+    # A screen gone with the lid shut may be an undock: undockcheck looks once the outputs settle.
+    ("""\tclosemon(m);
+\twlr_scene_node_destroy(&m->fullscreen_bg->node);
+\tfree(m);
+}
+""",
+     """\tclosemon(m);
+\twlr_scene_node_destroy(&m->fullscreen_bg->node);
+\tfree(m);
+\t/* Kryptik: a screen gone with the lid shut may be an undock, which undockcheck decides. */
+\tif (lidshut && undocktimer)
+\t\twl_event_source_timer_update(undocktimer, 5000);
+}
 """),
     # Locked, dwl heeds no key at all, so a laptop that starts to play aloud under the lock
     # is silenced only by unlocking. It heeds config.h's lockedkeys instead: the volume and
@@ -1069,6 +1304,673 @@ inputdevice(struct wl_listener *listener, void *data)
      """\t/* On _press_ attempt to process a compositor keybinding, which while
 \t * the session is locked is one of lockedkeys. */
 \tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+"""),
+    # Holding the screen awake (docs/design/laptop.md): an idle inhibitor counts only from a
+    # zone whose file allows it, on a window of it shown on a lit output while a window of that
+    # zone has the keyboard, for holdawakesecs from when that began or a key or button was last
+    # pressed. A zone 0 client's inhibitor holds nothing, and the status names the holder.
+    ("""static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
+""",
+     """static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
+/* Kryptik: the zone holding the screen awake, if any; the monotonic milliseconds its hold
+ * counts from, 0 while none qualifies; and the timer that ends it. */
+static const ZoneColor *holdzone;
+static int64_t holdsince;
+static struct wl_event_source *holdtimer;
+"""),
+    ("""static void checkidleinhibitor(struct wlr_surface *exclude);
+""",
+     """static void checkidleinhibitor(struct wlr_surface *exclude);
+static void holdpress(void);
+static void keyboardfocuschange(struct wl_listener *listener, void *data);
+"""),
+    ("""static struct wl_listener new_idle_inhibitor = {.notify = createidleinhibitor};
+""",
+     """static struct wl_listener new_idle_inhibitor = {.notify = createidleinhibitor};
+static struct wl_listener keyboard_focus_change = {.notify = keyboardfocuschange};
+"""),
+    ("""void
+checkidleinhibitor(struct wlr_surface *exclude)
+{
+\tint inhibited = 0, unused_lx, unused_ly;
+\tstruct wlr_idle_inhibitor_v1 *inhibitor;
+\twl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link) {
+\t\tstruct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
+\t\tstruct wlr_scene_tree *tree = surface->data;
+\t\tif (exclude != surface && (bypass_surface_visibility || (!tree
+\t\t\t\t|| wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly)))) {
+\t\t\tinhibited = 1;
+\t\t\tbreak;
+\t\t}
+\t}
+
+\twlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
+}
+""",
+     """static int64_t
+monotonicms(void)
+{
+\tstruct timespec ts;
+
+\tclock_gettime(CLOCK_MONOTONIC, &ts);
+\treturn (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+void
+checkidleinhibitor(struct wlr_surface *exclude)
+{
+\tstruct wlr_surface *focused = seat->keyboard_state.focused_surface;
+\tconst ZoneColor *keyzone = focused
+\t\t\t? wl_client_get_user_data(wl_resource_get_client(focused->resource)) : NULL;
+\tconst ZoneColor *found = NULL;
+\tstruct wlr_idle_inhibitor_v1 *inhibitor;
+\tint64_t left = 0;
+\tint unused_lx, unused_ly;
+
+\twl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link) {
+\t\tstruct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
+\t\tconst ZoneColor *z = wl_client_get_user_data(wl_resource_get_client(surface->resource));
+\t\t/* A mapped window's scene tree, which unmapnotify clears (patch 0003). A zone
+\t\t * has no layer surface, so the tree's data is its Client. */
+\t\tstruct wlr_scene_tree *tree = surface->data;
+\t\tClient *c;
+
+\t\tif (surface == exclude || locked || !z || !z->hold || z != keyzone || !tree
+\t\t\t\t|| !(c = tree->node.data) || !c->mon || c->mon->asleep
+\t\t\t\t|| !c->mon->wlr_output->enabled || !VISIBLEON(c, c->mon)
+\t\t\t\t|| !wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly))
+\t\t\tcontinue;
+\t\tfound = z;
+\t\tbreak;
+\t}
+\tif (!found) {
+\t\tholdsince = 0;
+\t} else {
+\t\tif (!holdsince)
+\t\t\tholdsince = monotonicms();
+\t\t/* Run out: the lock comes as usual until a key or button starts the cap again. */
+\t\tif ((left = holdsince + holdawakesecs * 1000LL - monotonicms()) <= 0)
+\t\t\tfound = NULL;
+\t}
+\tif (holdtimer)
+\t\twl_event_source_timer_update(holdtimer, found ? (int)left : 0);
+\twlr_idle_notifier_v1_set_inhibited(idle_notifier, found != NULL);
+\tif (found != holdzone) {
+\t\tholdzone = found;
+\t\tprintstatus();
+\t}
+}
+
+static int
+holdtick(void *data)
+{
+\tcheckidleinhibitor(NULL);
+\treturn 0;
+}
+
+/* Kryptik: a key or button pressed, whatever it reaches: the user is there, so a
+ * hold's cap starts again. */
+void
+holdpress(void)
+{
+\tif (holdsince) {
+\t\tholdsince = monotonicms();
+\t\tcheckidleinhibitor(NULL);
+\t}
+}
+
+void
+keyboardfocuschange(struct wl_listener *listener, void *data)
+{
+\tcheckidleinhibitor(NULL);
+}
+"""),
+    ("""\twlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+
+\t/* On _press_ attempt to process a compositor keybinding, which while
+""",
+     """\twlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+\tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED)
+\t\tholdpress();
+
+\t/* On _press_ attempt to process a compositor keybinding, which while
+"""),
+    ("""\tcase WL_POINTER_BUTTON_STATE_PRESSED:
+\t\tcursor_mode = CurPressed;
+""",
+     """\tcase WL_POINTER_BUTTON_STATE_PRESSED:
+\t\tcursor_mode = CurPressed;
+\t\tholdpress();
+"""),
+    ("""\tm->asleep = !event->mode;
+\tupdatemons(NULL, NULL);
+""",
+     """\tm->asleep = !event->mode;
+\tupdatemons(NULL, NULL);
+\t/* Kryptik: a hold counts only on a lit output. */
+\tcheckidleinhibitor(NULL);
+"""),
+    ("""\twl_signal_add(&seat->events.start_drag, &start_drag);
+""",
+     """\twl_signal_add(&seat->events.start_drag, &start_drag);
+\t/* Kryptik: a hold ends when its zone's window loses the keyboard. */
+\twl_signal_add(&seat->keyboard_state.events.focus_change, &keyboard_focus_change);
+"""),
+    ("""\twl_list_remove(&new_idle_inhibitor.link);
+""",
+     """\twl_list_remove(&new_idle_inhibitor.link);
+\twl_list_remove(&keyboard_focus_change.link);
+"""),
+    ("""\tfrontwatch();
+""",
+     """\tfrontwatch();
+\t/* Kryptik: a hold's cap, checked again when it runs out. */
+\tholdtimer = wl_event_loop_add_timer(event_loop, holdtick, NULL);
+"""),
+    ("""\t\t\tprintf("%s browsers", m->wlr_output->name);
+""",
+     """\t\t\tprintf("%s holdawake %s\\n", m->wlr_output->name, holdzone ? holdzone->zone : "");
+\t\t\tprintf("%s browsers", m->wlr_output->name);
+"""),
+    # The spawner (docs/design/compositor-separation.md): dwl forks it before it confines itself,
+    # and from then on starts no program: a key's command goes to the spawner as its index in
+    # dwl-config.h's spawncmds, and dwl's filter refuses exec.
+    ("""#include <sys/wait.h>
+""",
+     """#include <sys/wait.h>
+#include <stddef.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+"""),
+    ("""static void spawn(const Arg *arg);
+""",
+     """static void spawn(const Arg *arg);
+static void startspawner(void);
+static void confineexec(void);
+"""),
+    ("""static pid_t child_pid = -1;
+""",
+     """static pid_t child_pid = -1;
+static int spawnfd = -1;
+static pid_t spawnerpid = -1;
+"""),
+    # dwl's SIGCHLD loop ends the login when it reaps the spawner.
+    ("""\tif (signo == SIGCHLD)
+\t\twhile (waitpid(-1, NULL, WNOHANG) > 0);
+""",
+     """\tif (signo == SIGCHLD) {
+\t\tpid_t pid;
+\t\t/* Kryptik: with the spawner gone no key or lid could start the lock: end the login. */
+\t\twhile ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
+\t\t\tif (pid == spawnerpid)
+\t\t\t\tquit(NULL);
+\t}
+"""),
+    ("""void
+spawn(const Arg *arg)
+{
+\tif (fork() == 0) {
+\t\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\t\tsetsid();
+\t\texecvp(((char **)arg->v)[0], (char **)arg->v);
+\t\tdie("dwl: execvp %s failed:", ((char **)arg->v)[0]);
+\t}
+}
+""",
+     """void
+spawn(const Arg *arg)
+{
+\tunsigned char i;
+\tfor (i = 0; i < LENGTH(spawncmds); i++)
+\t\tif ((const void *)spawncmds[i] == arg->v)
+\t\t\tbreak;
+\tif (i == LENGTH(spawncmds))
+\t\tfprintf(stderr, "dwl: %s is not in the spawner's table\\n", ((char **)arg->v)[0]);
+\telse if (send(spawnfd, &i, 1, MSG_NOSIGNAL) != 1) {
+\t\tint e = errno;
+\t\tfprintf(stderr, "dwl: the spawner did not take %s: %s\\n", ((char **)arg->v)[0], strerror(e));
+\t\t/* A desktop whose keys and lid no longer lock is worse than a new login. */
+\t\tif (e == EPIPE || e == ECONNRESET || e == ENOTCONN)
+\t\t\tquit(NULL);
+\t}
+}
+
+/* Kryptik: the spawner, forked before dwl confines itself, or the session's, handed over (-S). It
+ * runs only the table's commands, each as dwl's spawn did, holds nothing of dwl's but its end of
+ * the socket, and ends with dwl; dwl ends with it. */
+static void
+startspawner(void)
+{
+\tint sv[2];
+\tlong fd, max = sysconf(_SC_OPEN_MAX);
+\tunsigned char i;
+\tssize_t n;
+\tpid_t pid;
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+\t\tdie("startup: the spawner's socket:");
+\tswitch ((pid = fork())) {
+\tcase -1:
+\t\tdie("startup: the spawner's fork:");
+\tcase 0:
+\t\tbreak;
+\tdefault:
+\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
+\t\treturn;
+\t}
+\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (fd = 3; fd < max; fd++)
+\t\tif (fd != sv[1])
+\t\t\tclose((int)fd);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(sv[1], &i, 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (i >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tclose(sv[1]);
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[i][0], (char *const *)spawncmds[i]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[i][0]);
+\t}
+\t_exit(0);
+}
+
+/* Kryptik: the calls dwl makes once it runs: what the headless suite traces it making
+ * (dwl-headless.sh), and what screens, input devices, the seat, cursors, keymaps and the keys'
+ * commands add (send() to the spawner is sendto). The hottest come first, as the filter tries
+ * them in turn. */
+static const int dwlcalls[] = {
+\tSYS_epoll_wait, SYS_epoll_pwait, SYS_epoll_pwait2, SYS_recvmsg, SYS_sendmsg, SYS_ioctl, SYS_read,
+\tSYS_write, SYS_clock_gettime, SYS_timerfd_settime, SYS_close, SYS_fcntl, SYS_mmap, SYS_munmap,
+\tSYS_futex, SYS_accept4, SYS_epoll_ctl, SYS_getsockopt, SYS_sendto, SYS_openat, SYS_fstat,
+\tSYS_newfstatat,
+\tSYS_statx, SYS_stat, SYS_lstat, SYS_lseek, SYS_pread64, SYS_getdents64, SYS_readlinkat,
+\tSYS_readlink, SYS_access, SYS_faccessat, SYS_faccessat2, SYS_inotify_add_watch,
+\tSYS_inotify_rm_watch, SYS_brk, SYS_mremap, SYS_madvise, SYS_mprotect, SYS_memfd_create,
+\tSYS_ftruncate, SYS_timerfd_create, SYS_timerfd_gettime, SYS_eventfd2, SYS_dup, SYS_dup3,
+\tSYS_poll, SYS_ppoll, SYS_getrandom, SYS_clock_getres, SYS_gettimeofday, SYS_clock_nanosleep,
+\tSYS_nanosleep, SYS_sched_yield, SYS_getpid, SYS_gettid, SYS_getuid, SYS_geteuid, SYS_getgid,
+\tSYS_getegid, SYS_uname, SYS_rt_sigaction, SYS_rt_sigprocmask, SYS_rt_sigreturn,
+\tSYS_restart_syscall, SYS_kill, SYS_tgkill, SYS_wait4, SYS_waitid, SYS_mkdir, SYS_unlink,
+\tSYS_landlock_create_ruleset, SYS_landlock_add_rule, SYS_landlock_restrict_self, SYS_exit,
+\tSYS_exit_group,
+};
+
+/* Kryptik: dwl execs nothing once the spawner runs, and reaches into no other process; calls of
+ * another ABI are refused too, on every thread dwl has (TSYNC). A call outside dwlcalls is let
+ * through but logged (audit type 1326, which the desktop suite reads back) until the suite runs
+ * with none. syscall() is glibc's, which _POSIX_C_SOURCE hides. */
+long syscall(long number, ...);
+static void
+confineexec(void)
+{
+\tstruct sock_filter f[12 + LENGTH(dwlcalls)] = {
+\t\tBPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+\t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+\t\tBPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+\t\tBPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0x40000000, 4, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execve, 3, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execveat, 2, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ptrace, 1, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_process_vm_writev, 0, 1),
+\t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+\t};
+\tstruct sock_fprog prog = { .len = (unsigned short)LENGTH(f), .filter = f };
+\tsize_t i, n = LENGTH(dwlcalls);
+
+\t/* Each listed call jumps to the last instruction, ALLOW; past the list comes LOG. */
+\tfor (i = 0; i < n; i++)
+\t\tf[10 + i] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)dwlcalls[i],
+\t\t\t(unsigned char)(n - i), 0);
+\tf[10 + n] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_LOG);
+\tf[11 + n] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0
+\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
+\t\tdie("startup: the no-exec filter:");
+}
+"""),
+    ("""\t/* Mark stdout as non-blocking to avoid the startup script
+""",
+     """\t/* Kryptik: from here dwl starts no program itself. */
+\tstartspawner();
+\tconfineexec();
+
+\t/* Mark stdout as non-blocking to avoid the startup script
+"""),
+    # Landlock: dwl reads only what it needs once it runs, and writes no file but its keymaps.
+    ("""#include <linux/seccomp.h>
+""",
+     """#include <linux/seccomp.h>
+#include <linux/landlock.h>
+/* Kryptik: Landlock's scopes as Linux 6.12 numbers them, for headers older than the kernel. */
+#ifndef LANDLOCK_SCOPE_SIGNAL
+#define LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET (1ULL << 0)
+#define LANDLOCK_SCOPE_SIGNAL (1ULL << 1)
+#endif
+"""),
+    ("""static void confineexec(void);
+""",
+     """static void confineexec(void);
+static void confinefs(void);
+"""),
+    ("""\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
+\t\tdie("startup: the no-exec filter:");
+}
+""",
+     """\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
+\t\tdie("startup: the no-exec filter:");
+}
+
+/* Kryptik: a Landlock rule for PATH with ACCESS: 1 added, 0 for a path that is not there (said),
+ * -1 refused. */
+static int
+landlockpath(int set, const char *path, __u64 access)
+{
+\tstruct landlock_path_beneath_attr beneath = { .allowed_access = access };
+\tint r;
+
+\tif ((beneath.parent_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+\t\tfprintf(stderr, "dwl: Landlock: %s is not readable: %s\\n", path, strerror(errno));
+\t\treturn 0;
+\t}
+\tr = syscall(SYS_landlock_add_rule, set, LANDLOCK_RULE_PATH_BENEATH, &beneath, 0) < 0 ? -1 : 1;
+\tif (r < 0)
+\t\tfprintf(stderr, "dwl: not confined to its files: Landlock refused %s: %s\\n", path, strerror(errno));
+\tclose(beneath.parent_fd);
+\treturn r;
+}
+
+/* Kryptik: landlock_ruleset_attr with the scopes' field, which older headers lack. A kernel
+ * without scopes takes the longer form while that field is zero. */
+struct rulesetattr {
+\t__u64 handled_access_fs, handled_access_net, scoped;
+};
+
+/* Kryptik: from here dwl reads only what it needs while it runs: keymaps and cursors under /usr,
+ * hotplug under /sys and udev's, the microphone's and the camera's marks, and the chrome's request
+ * for a browser in front, which it may also remove. It writes no file but the keymaps wlroots
+ * makes under /dev/shm. No TCP, and, where the kernel has Landlock's scopes, no abstract socket
+ * and no signal outside its domain: the session's spawner starts the chrome, so dwl signals
+ * nothing. A rule holds a directory as it was at login: one made again later is not covered.
+ * Landlock binds the calling thread alone, so dwl confines itself only while it has one. Any
+ * failure leaves dwl as it was, and says so: the desktop still starts. */
+static void
+confinefs(void)
+{
+\tstatic const char *const readable[] = {
+\t\t"/usr", "/sys", "/run/udev", "/etc/udev", "/run/kryptik-sound", "/run/kryptik-camera",
+\t};
+\tstruct rulesetattr attr = {
+\t\t.handled_access_fs = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE
+\t\t\t| LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
+\t\t\t| LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_SYM | LANDLOCK_ACCESS_FS_REFER
+\t\t\t| LANDLOCK_ACCESS_FS_TRUNCATE,
+\t\t.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP,
+\t};
+\tconst char *rt = getenv("XDG_RUNTIME_DIR"), *signals = "";
+\tchar line[64], front[256];
+\tsize_t i, added = 0, paths = LENGTH(readable) + 2;
+\tlong abi, threads = -1;
+\tFILE *f;
+\tint set, r = 0;
+
+\tif ((f = fopen("/proc/self/status", "r"))) {
+\t\twhile (fgets(line, sizeof(line), f))
+\t\t\tif (sscanf(line, "Threads: %ld", &threads) == 1)
+\t\t\t\tbreak;
+\t\tfclose(f);
+\t}
+\tif (threads != 1) {
+\t\tfprintf(stderr, "dwl: not confined to its files: %ld threads, and Landlock binds the calling one alone\\n", threads);
+\t\treturn;
+\t}
+\tabi = syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+\tif (abi < 4) {
+\t\tfprintf(stderr, "dwl: not confined to its files: no Landlock ABI 4 in this kernel (%ld)\\n", abi);
+\t\treturn;
+\t}
+\t/* No signal either, unless dwl started a command itself (-s), which its cleanup ends. */
+\tif (abi >= 6) {
+\t\tattr.scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | (child_pid > 0 ? 0 : LANDLOCK_SCOPE_SIGNAL);
+\t\tsignals = child_pid > 0 ? "" : ", signals nothing outside it";
+\t}
+\tif ((set = (int)syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0)) < 0) {
+\t\tfprintf(stderr, "dwl: not confined to its files: a Landlock ruleset: %s\\n", strerror(errno));
+\t\treturn;
+\t}
+\tfor (i = 0; i < LENGTH(readable) && r >= 0; i++)
+\t\tif ((r = landlockpath(set, readable[i], LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)) > 0)
+\t\t\tadded++;
+\t/* wlroots gives each keyboard its keymap in a file it makes under /dev/shm and unlinks at once.
+\t * A keyboard added later (back from another console, plugged in) without one is left out of
+\t * dwl's keyboard group, and its keys reach nothing. */
+\tif (r >= 0 && (r = landlockpath(set, "/dev/shm", LANDLOCK_ACCESS_FS_READ_FILE
+\t\t\t| LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_MAKE_REG
+\t\t\t| LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_TRUNCATE)) > 0)
+\t\tadded++;
+\t/* The chrome's request for a browser in front: made here while dwl may still make it, 0700. */
+\tif (r >= 0 && rt && snprintf(front, sizeof(front), "%s/kryptik/front", rt) < (int)sizeof(front)) {
+\t\tmkdir(front, 0700);
+\t\tif ((r = landlockpath(set, front, LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
+\t\t\t\t| LANDLOCK_ACCESS_FS_REMOVE_FILE)) > 0)
+\t\t\tadded++;
+\t}
+\tif (r >= 0 && syscall(SYS_landlock_restrict_self, set, 0) < 0)
+\t\tfprintf(stderr, "dwl: not confined to its files: landlock_restrict_self: %s\\n", strerror(errno));
+\telse if (r >= 0)
+\t\tfprintf(stderr, "dwl: confined: reads only below %zu of its %zu paths, writes no file but keymaps under /dev/shm and has no TCP%s"
+\t\t\t" (1 thread, Landlock ABI %ld)\\n", added, paths, signals, abi);
+\tclose(set);
+}
+"""),
+    ("""\tstartspawner();
+\tconfineexec();
+""",
+     """\tstartspawner();
+\tconfineexec();
+\tconfinefs();
+"""),
+    # dwl without group kryptik: the launch daemon starts it (-S), and the session's spawner (-X,
+    # dwl's binary) keeps the group and starts the chrome once dwl names its display.
+    ("""static void confinefs(void);
+""",
+     """static void confinefs(void);
+static int fdarg(const char *s);
+static void spawnerloop(int fd, char **cmd);
+static int spawnergone(int fd, uint32_t mask, void *data);
+"""),
+    ("""\twhile ((c = getopt(argc, argv, "s:hdv")) != -1) {
+\t\tif (c == 's')
+\t\t\tstartup_cmd = optarg;
+""",
+     """\twhile ((c = getopt(argc, argv, "s:hdvS:X:")) != -1) {
+\t\tif (c == 's')
+\t\t\tstartup_cmd = optarg;
+\t\t/* Kryptik: the spawner runs already, at this socket: dwl forks none. */
+\t\telse if (c == 'S')
+\t\t\tspawnfd = fdarg(optarg);
+\t\t/* Kryptik: be the session's spawner on this socket, and nothing else. */
+\t\telse if (c == 'X')
+\t\t\tspawnerloop(fdarg(optarg), argv + optind);
+"""),
+    ("""\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (fd = 3; fd < max; fd++)
+\t\tif (fd != sv[1])
+\t\t\tclose((int)fd);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(sv[1], &i, 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (i >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tclose(sv[1]);
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[i][0], (char *const *)spawncmds[i]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[i][0]);
+\t}
+\t_exit(0);
+}
+""",
+     """\tspawnerloop(sv[1], NULL);
+}
+
+/* Kryptik: a descriptor dwl was handed, by number. */
+static int
+fdarg(const char *s)
+{
+\tchar *end;
+\tlong fd = strtol(s, &end, 10);
+
+\tif (*s == '\\0' || *end != '\\0' || fd < 3 || fd > 1023)
+\t\tdie("dwl: %s is not a descriptor", s);
+\treturn (int)fd;
+}
+
+/* Kryptik: the spawner's loop on FD, its end of dwl's socket. A byte is an index in the table,
+ * whose command runs as dwl's spawn ran it. The session's spawner (-X) has CMD too: a longer
+ * message is the display dwl made, and CMD (the chrome) starts there with descriptor 4, dwl's
+ * status, as its stdin; when dwl is gone, CMD's process group goes too, as dwl's cleanup did. */
+static void
+spawnerloop(int fd, char **cmd)
+{
+\tlong i, max = sysconf(_SC_OPEN_MAX);
+\tpid_t chrome = -1;
+\tchar msg[64];
+\tssize_t n;
+
+\tif (cmd && *cmd && strcmp(*cmd, "--") == 0)
+\t\tcmd++;
+\tif (cmd && !*cmd)
+\t\tcmd = NULL;
+\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (i = 3; i < max; i++)
+\t\tif (i != fd && !(cmd && i == 4))
+\t\t\tclose((int)i);
+\t/* Only the chrome gets dwl's status, and nothing the spawner starts gets dwl's socket. */
+\tfcntl(fd, F_SETFD, FD_CLOEXEC);
+\tif (cmd)
+\t\tfcntl(4, F_SETFD, FD_CLOEXEC);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(fd, msg, sizeof(msg) - 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (n > 1) {
+\t\t\tif (!cmd || chrome > 0)
+\t\t\t\tcontinue;
+\t\t\tmsg[n] = '\\0';
+\t\t\t/* A name in the runtime directory, as dwl's own socket is: no path elsewhere. */
+\t\t\tif (strspn(msg, "abcdefghijklmnopqrstuvwxyz0123456789-") != (size_t)n) {
+\t\t\t\tfprintf(stderr, "dwl-spawner: dwl named no display of its own\\n");
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tsetenv("WAYLAND_DISPLAY", msg, 1);
+\t\t\tif ((chrome = fork()) == 0) {
+\t\t\t\tdup2(4, STDIN_FILENO);
+\t\t\t\tsetsid();
+\t\t\t\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\t\t\t\tsignal(SIGCHLD, SIG_DFL);
+\t\t\t\texecvp(cmd[0], cmd);
+\t\t\t\tdie("dwl: execvp %s failed:", cmd[0]);
+\t\t\t}
+\t\t\tcontinue;
+\t\t}
+\t\tif ((unsigned char)msg[0] >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[(unsigned char)msg[0]][0], (char *const *)spawncmds[(unsigned char)msg[0]]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[(unsigned char)msg[0]][0]);
+\t}
+\tif (chrome > 0) {
+\t\tkill(-chrome, SIGTERM);
+\t\twaitpid(chrome, NULL, 0);
+\t}
+\t_exit(0);
+}
+
+/* Kryptik: a desktop whose keys and lid no longer lock is worse than a new login. */
+static int
+spawnergone(int fd, uint32_t mask, void *data)
+{
+\tfprintf(stderr, "dwl: the spawner is gone: the login ends\\n");
+\tquit(NULL);
+\treturn 0;
+}
+"""),
+    # The forked spawner's variables, which the loop above no longer uses.
+    ("""\tint sv[2];
+\tlong fd, max = sysconf(_SC_OPEN_MAX);
+\tunsigned char i;
+\tssize_t n;
+\tpid_t pid;
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+""",
+     """\tint sv[2];
+\tpid_t pid;
+
+\t/* The session's spawner, handed over: told dwl's display, it starts the chrome there. */
+\tif (spawnfd >= 0) {
+\t\tconst char *display = getenv("WAYLAND_DISPLAY");
+\t\tfcntl(spawnfd, F_SETFD, FD_CLOEXEC);
+\t\tif (!display || send(spawnfd, display, strlen(display), MSG_NOSIGNAL) < 0)
+\t\t\tdie("startup: the spawner did not take the display:");
+\t\twl_event_loop_add_fd(event_loop, spawnfd, 0, spawnergone, NULL);
+\t\treturn;
+\t}
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+"""),
+    ("""\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
+\t\treturn;
+""",
+     """\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
+\t\twl_event_loop_add_fd(event_loop, spawnfd, 0, spawnergone, NULL);
+\t\treturn;
 """),
 ]
 

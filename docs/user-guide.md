@@ -291,7 +291,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+p | the chrome menu: zones, their applications, stop a zone, move a clipboard between zones, the Wi-Fi networks with w, and with f the zone of the window you last had |
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
-| Alt+Shift+u | the browser (Firefox) in the untrusted zone |
+| Alt+Shift+u | the browser (Firefox) in the untrusted zone, or its open window in front, on the tag it is on |
 | Alt+Shift+l | lock the screen until the login password is typed |
 | Super+Space | the next of your desktop's layouts, when you have more than one |
 | volume keys, mute, microphone mute | the volume up or down a step, mute or unmute everything, and take the microphone back from whichever zone has it |
@@ -331,7 +331,8 @@ for each such zone's passphrase in turn; Enter alone leaves a zone waiting,
 and the menu (Alt+p) shows it WAITING and takes its passphrase later with
 `p` and its number, or a launch into it asks. Stopping such a zone closes
 its volume without the passphrase. The power key and
-closing the lid do the same as `kryptik suspend`, locked or not. In a virtual
+closing the lid do the same as `kryptik suspend`, locked or not, and so
+does unplugging the screen a laptop was closed and docked on. In a virtual
 machine whose display is virtio-gpu the machine does not sleep: the screen
 locks, and `kryptik suspend` says why. The machine
 can also sleep by itself, as many minutes after the screen locks for being
@@ -344,14 +345,16 @@ terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
 Enter. The browser is Firefox in `untrusted`, `personal` and `work`, which
 carry its software image, and lynx in a terminal elsewhere; Firefox opens
 PDFs too. A zone runs one Firefox: asked for again while it is open there,
-it says that Firefox is already running, and a new window comes from the
-open one (Ctrl+N). A zone with encrypted storage asks for its passphrase when it starts,
+by `b` or by Alt+Shift+u, its window comes to the front, on the tag it is
+on, and a new window comes from the open one (Ctrl+N). A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. On a machine with a battery, a Power
 line under the zones gives its charge and whether the machine runs on it;
 on battery at 3% the zones are stopped, each closing its volume, and the
 machine powers off, so save work before then: a window warns at 10% and
-again at 5%, and closes once the machine is plugged in. Under the zones, a
+again at 5%, and closes once the machine is plugged in. Plugged in to a
+charger that gives less than the machine uses, it runs on its battery all
+the same, and the line and the window say so. Under the zones, a
 Network line says what the net zone reports: whether it is ready, the
 Wi-Fi network it joined (or
 that Wi-Fi is switched off, by a switch or an airplane-mode key; switched on

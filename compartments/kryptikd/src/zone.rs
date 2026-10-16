@@ -108,6 +108,10 @@ pub struct Zone {
     /// `[camera] use = false`: the camera is never granted to this zone, which gets no camera
     /// directory or /dev/video0 (camera.rs). The nic zone never has one.
     pub camera: bool,
+    /// `[desktop] hold_awake = true`: a window of the zone may hold the screen awake, as dwl allows
+    /// (docs/design/laptop.md), so its proxy lets the idle inhibitor through. Off unless the file
+    /// says so; never the nic zone's, which draws no window.
+    pub hold_awake: bool,
 }
 
 /// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
@@ -149,6 +153,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "software.images",
     "sound.play",
     "camera.use",
+    "desktop.hold_awake",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
@@ -461,6 +466,15 @@ impl Zone {
             Some(v) => return Err(bad("camera.use", v, "true or false")),
         };
 
+        let hold_awake = match kv.get("desktop.hold_awake").map(String::as_str) {
+            None | Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone draws no window to hold the screen awake")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("desktop.hold_awake", v, "true or false")),
+        };
+
         let transfer_to: Vec<String> = match get("transfer.to") {
             None => Vec::new(),
             Some(v) => {
@@ -537,6 +551,7 @@ impl Zone {
             sound,
             removable,
             camera,
+            hold_awake,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),
             size: get("storage.size"),
