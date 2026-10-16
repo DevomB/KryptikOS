@@ -108,8 +108,9 @@ laptop does without it, and the order they come in after 1.0.
   came up muted plays. The volumes and mutes outlast the mixer: it keeps a
   record of them in `/run`, where a restart starts from it, and its
   service's finish script carries it to the state partition
-  (`/var/lib/kryptik-sound/levels`), keeping only the lines such a record
-  holds, for the run script to put back after a boot. The microphone's
+  (`/var/lib/kryptik-sound/levels`), reading it with the mixer's rights and
+  keeping only the lines such a record holds, for the run script to put
+  back after a boot. The microphone's
   grant is never kept, and neither script looks at the state partition
   while a sleep seals it.
 - **The card** is a USB device when one is plugged in, as it is plugged in

@@ -340,6 +340,15 @@ if restart_mixer && [[ "$(cat "$KEPT" 2>&1)" == "master 20" && "$(st master)" ==
 else
     fail "levels-kept-filtered" "kept: $(tr '\n' ' ' < "$KEPT" 2>&1); status: $(ctl status 2>&1 | tr '\n' ' ')"
 fi
+# And it is read with the mixer's rights: a record linked to a file only root may read keeps nothing.
+( umask 077; echo 'master 7' > /run/sound-check-root-only )
+ln -sfn /run/sound-check-root-only "$REC"
+if restart_mixer && [[ "$(cat "$KEPT" 2>&1)" == "master 20" && "$(st master)" == "master 20" && ! -L "$REC" ]]; then
+    pass "levels-kept-unread" "of a record linked to a file only root may read, nothing was kept or started from"
+else
+    fail "levels-kept-unread" "kept: $(tr '\n' ' ' < "$KEPT" 2>&1); record: $(ls -l "$REC" 2>&1); status: $(ctl status 2>&1 | tr '\n' ' ')"
+fi
+rm -f /run/sound-check-root-only
 ctl mute off > /dev/null; ctl volume 100 > /dev/null; ctl mute work off > /dev/null; ctl volume work 100 > /dev/null
 
 # --- a USB sound card ----------------------------------------------------------------------
