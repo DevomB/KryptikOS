@@ -818,11 +818,18 @@ fn only_nic_zone_reports_time() {
         .unwrap()
     };
     for mode in ["none", "routed"] {
-        let out = time_offset_in(&zone_of(mode, ""), &claim, &mut crate::time::SystemClock, &dir, Some(0), &crate::consent::keep);
+        // Refused before the floor is looked for, which can check the release under its lock.
+        let looked = std::cell::Cell::new(false);
+        let floor = || {
+            looked.set(true);
+            Some(0)
+        };
+        let out = time_offset_in(&zone_of(mode, ""), &claim, &mut crate::time::SystemClock, &dir, &floor, &crate::consent::keep);
         assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("does not hold the network")), "{mode}: {out:?}");
+        assert!(!looked.get(), "{mode}: the floor was looked for before the refusal");
     }
     let nic = zone_of("nic", "");
-    let out = time_offset_in(&nic, &claim, &mut crate::time::SystemClock, &dir, None, &crate::consent::keep);
+    let out = time_offset_in(&nic, &claim, &mut crate::time::SystemClock, &dir, &|| None, &crate::consent::keep);
     assert!(matches!(&out, crate::time::Outcome::Refused(w) if w.contains("no floor is known")), "{out:?}");
     assert!(!dir.join("state").exists(), "a refused claim left state behind");
     let _ = std::fs::remove_dir_all(&dir);
