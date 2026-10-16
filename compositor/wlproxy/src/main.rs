@@ -20,7 +20,7 @@ mod session;
 mod wire;
 
 use std::io::Write;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -135,8 +135,11 @@ fn zone_ok(zone: &str) -> bool {
 
 /// Descriptors one session can hold: its two sockets and a full queue each way.
 const FDS_PER_SESSION: usize = 2 + 2 * policy::MAX_PENDING_FDS;
-/// stdio, the listener and room to spare.
-const FDS_RESERVED: usize = 8;
+/// stdio, the listener and room to spare, and the copy of each pool the zone may hold.
+const FDS_RESERVED: usize = 8 + policy::MAX_SHM_POOLS_PER_ZONE;
+/// How long the pools of a connection that ended wait to be punched: dwl drops them once it reads
+/// the hang-up, and a frame it was drawing would read a punched page in again.
+const POOL_GRACE: Duration = Duration::from_secs(1);
 
 /// How many clients' descriptors fit under `limit`; at least one.
 fn clients_within(limit: u64, wanted: usize) -> usize {
@@ -245,6 +248,8 @@ fn main() {
     // A failed accept leaves the connection pending, so the listener rests or poll would spin.
     let mut accept_after = Instant::now();
     let mut fds: Vec<libc::pollfd> = Vec::new();
+    // The pools of connections that ended, each with the time it is punched.
+    let mut gone: Vec<(OwnedFd, usize, Instant)> = Vec::new();
     loop {
         // fds: the listener, then session i at 1+2i and 2+2i; valid until `sessions` changes.
         let polled = sessions.len();
@@ -287,6 +292,10 @@ fn main() {
         if moving.is_some() || !writers.is_empty() {
             timeout = if timeout < 0 { 250 } else { timeout.min(250) };
         }
+        if let Some(at) = gone.iter().map(|g| g.2).min() {
+            let ms = at.saturating_duration_since(Instant::now()).as_millis() as libc::c_int + 1;
+            timeout = if timeout < 0 { ms } else { timeout.min(ms) };
+        }
         let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
@@ -295,8 +304,9 @@ fn main() {
             std::process::exit(1);
         }
         let mut closed: Vec<usize> = Vec::new();
-        let mut zone_pool_bytes: usize = sessions.iter().map(|l| l.s.shm_pool_bytes).sum();
-        let mut zone_pool_count: usize = sessions.iter().map(|l| l.s.shm_pool_count).sum();
+        // Pools waiting for their punch still count: dwl may hold them yet.
+        let mut zone_pool_bytes: usize = sessions.iter().map(|l| l.s.shm_pool_bytes).sum::<usize>() + gone.iter().map(|g| g.1).sum::<usize>();
+        let mut zone_pool_count: usize = sessions.iter().map(|l| l.s.shm_pool_count).sum::<usize>() + gone.len();
         let mut zone_toplevels: usize = sessions.iter().map(|l| l.s.toplevels).sum();
         for (idx, l) in sessions.iter_mut().enumerate().take(polled) {
             let ce = fds[1 + idx * 2].revents;
@@ -333,7 +343,11 @@ fn main() {
                 s.client.flush().map_err(|e| format!("client write: {e}"))?;
                 Ok(())
             };
-            if let Err(why) = step(&mut l.s, ce, se) {
+            let stepped = step(&mut l.s, ce, se);
+            if let Some(e) = l.s.unpunched.take() {
+                log.line(format_args!("client #{}: a gone pool's pages were not freed: {e}", l.id));
+            }
+            if let Err(why) = stepped {
                 log.line(format_args!(
                     "client #{} ended: {why} (forwarded {} requests, {} events; hid {} globals; rewrote {} identities)",
                     l.id, l.s.forwarded_c2s, l.s.forwarded_s2c, l.s.hidden_count, l.s.rewritten
@@ -407,9 +421,18 @@ fn main() {
             closed.sort_unstable();
             closed.dedup();
             for idx in closed.drain(..).rev() {
-                clip.session_gone(sessions.remove(idx).id);
+                let mut l = sessions.remove(idx);
+                let at = Instant::now() + POOL_GRACE;
+                gone.extend(l.s.take_pools().into_iter().map(|(fd, size)| (fd, size, at)));
+                clip.session_gone(l.id);
                 served += 1;
                 if o.once {
+                    // No later turn punches them.
+                    for (fd, size, _) in gone.drain(..) {
+                        if let Err(e) = session::punch(&fd, size) {
+                            log.line(format_args!("a gone pool's pages were not freed: {e}"));
+                        }
+                    }
                     eprintln!("kryptik-wlproxy[{}]: --once: served {served}, exiting", o.zone);
                     if o.listen_fd.is_none() {
                         let _ = std::fs::remove_file(&o.listen);
@@ -420,6 +443,15 @@ fn main() {
         }
         let now = Instant::now();
         writers.retain_mut(|w| !w.step(now));
+        gone.retain(|(fd, size, at)| {
+            let due = *at <= now;
+            if due {
+                if let Err(e) = session::punch(fd, *size) {
+                    log.line(format_args!("a gone pool's pages were not freed: {e}"));
+                }
+            }
+            !due
+        });
         // Accept last, once nothing indexes `fds` by session.
         if fds[0].revents & libc::POLLIN != 0 {
             match listener.accept() {

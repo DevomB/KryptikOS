@@ -52,8 +52,11 @@ fn a_passed_listener_is_taken_in_place_of_a_path() {
 #[test]
 fn clients_fit_limit() {
     assert_eq!(FDS_PER_SESSION, 130);
-    assert_eq!(clients_within(1024, 32), 7);
-    assert_eq!(clients_within(4096, 32), 31);
+    assert_eq!(FDS_RESERVED, 8 + 256, "and a copy of each pool the zone may hold");
+    // kryptikd's limit for its proxies (proxy.rs NOFILE) fits its 32 clients.
+    assert_eq!(clients_within(32 * 130 + 40 + 256, 32), 32);
+    assert_eq!(clients_within(1024, 32), 5);
+    assert_eq!(clients_within(4096, 32), 29);
     assert_eq!(clients_within(1 << 20, 32), 32);
     assert_eq!(clients_within(64, 32), 1);
     assert_eq!(clients_within(u64::MAX, 16), 16);

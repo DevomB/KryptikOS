@@ -99,7 +99,8 @@ pub const MAX_SHM_POOLS_PER_SESSION: usize = 128;
 pub const MAX_SHM_POOLS_PER_ZONE: usize = 256;
 pub const MAX_SHM_POOL_BYTES: usize = 128 << 20; // room for a 6K RGBA frame and stride padding
 /// What dwl maps for a zone at one time. A page dwl reads before the zone wrote it is charged to
-/// dwl, not to the zone's memory_max; these bound that while the pools live, not after.
+/// dwl, not to the zone's memory_max; these bound that while the pools live, and the punch once
+/// they are gone frees it (session.rs).
 pub const MAX_SHM_BYTES_PER_SESSION: usize = 1 << 30;
 pub const MAX_SHM_BYTES_PER_ZONE: usize = 1 << 30;
 /// A pool a surface may still show stays charged, so these bound what one session can hold.

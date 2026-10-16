@@ -767,14 +767,17 @@ pub const PROXY_ALLOWLIST: &[libc::c_long] = &[
     libc::SYS_read, libc::SYS_write, libc::SYS_pipe2, libc::SYS_fcntl, libc::SYS_ioctl, libc::SYS_close,
     // A HashMap's keys, the clock where the vDSO gives none, its own uid for a gesture's peer.
     libc::SYS_getrandom, libc::SYS_clock_gettime, libc::SYS_geteuid,
+    // A wl_shm pool's kind and file, and its pages freed once it is gone (session.rs: pool_fd, punch).
+    libc::SYS_fstatfs, libc::SYS_fstat, libc::SYS_fallocate,
 ];
 
 const FIONBIO: u32 = 0x5421;
 const PROT_EXEC: u32 = 0x4;
 
 /* The proxy's filter: its calls alone, sockets only AF_UNIX, sendto only to the connected peer
- * (no address: send), ioctl only FIONBIO (Rust's set_nonblocking), and no memory mapped or made
- * executable. Anything else kills it, as a zone is killed. */
+ * (no address: send), ioctl only FIONBIO (Rust's set_nonblocking), fallocate only a punch that
+ * keeps the size, and no memory mapped or made executable. Anything else kills it, as a zone is
+ * killed. */
 fn proxy_program() -> Vec<SockFilter> {
     let (allow, kill) = (SECCOMP_RET_ALLOW, SECCOMP_RET_KILL_PROCESS);
     let mut p = vec![
@@ -810,6 +813,13 @@ fn proxy_program() -> Vec<SockFilter> {
         (libc::SYS_sendto, [
             stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(5)),
             jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 1),
+            stmt(BPF_RET | BPF_K, allow),
+            stmt(BPF_RET | BPF_K, kill),
+        ]),
+        // A gone pool's pages freed, never a zone's file allocated into or grown.
+        (libc::SYS_fallocate, [
+            stmt(BPF_LD | BPF_W | BPF_ABS, arg_lo(1)),
+            jump(BPF_JMP | BPF_JEQ | BPF_K, (libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE) as u32, 0, 1),
             stmt(BPF_RET | BPF_K, allow),
             stmt(BPF_RET | BPF_K, kill),
         ]),
