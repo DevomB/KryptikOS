@@ -4,9 +4,9 @@
 # patches and edits over them. dwl starts on a headless output, a client lists its globals and maps
 # a window, and dwl stops on SIGTERM: a change that crashes or hangs dwl shows here, not in a Distro
 # run. Needs ninja, bison, gcc, pkg-config, curl, b2sum, python3, patch and sudo, and the headers of
-# libffi, expat, libinput, libudev and libseat, which CI installs; without them it exits 77. Meson is the pinned one,
-# run from its tree. KRYPTIK_TEST_SOURCES keeps the fetched tarballs between runs
-# (tools/tests/lib/pinned.sh).
+# libffi, expat, libinput, libudev and libseat, which CI installs; without them it exits 77. Meson
+# is the pinned one, run from its tree. KRYPTIK_TEST_SOURCES keeps the fetched tarballs between
+# runs (tools/tests/lib/pinned.sh).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
