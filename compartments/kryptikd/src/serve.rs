@@ -229,7 +229,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>),
         }
         let mut buf = [0u8; 4096];
         // The descriptors are owned, so any refusal below closes them.
-        let (n, mut got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
+        let (n, got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
             Ok(x) => x,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(e.to_string()),
@@ -237,7 +237,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>),
         };
         if !got.is_empty() {
             if !text.is_empty() || !carried.is_empty() {
-                return Err("descriptors must accompany the first bytes of a request".into());
+                return Err("a descriptor must accompany the first bytes of a request".into());
             }
             if got.len() > MAX_CARRIED {
                 return Err(format!("at most {MAX_CARRIED} descriptors per request, got {}", got.len()));
@@ -1333,7 +1333,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
     let verb = first.split_whitespace().next().unwrap_or("");
     // The desktop alone takes more than one descriptor.
     if verb != "desktop" && handed.len() > 1 {
-        reply(&conn, &format!("error: {verb}: at most one descriptor\n"));
+        reply(&conn, &format!("error: at most one descriptor per request but desktop's, got {}\n", handed.len()));
         return None;
     }
     let carried = if verb == "desktop" { None } else { handed.pop() };
