@@ -101,16 +101,16 @@ and then, four seconds after it is drawn, drops the buffer and its pool while
 keeping the pool's descriptor. Its `desktop-charge` line gives the desktop's
 `memory.current` rise while dwl shows the buffer and once the pool is gone. By
 hand: record `memory.current` and `memory.stat` for the zone's and dwl's
-cgroups, then run `wlprobe charge` through `kryptik-launch` in that zone, which
-commits one unwritten 4 MiB buffer for ten seconds. Confirm the window was rendered and
-compare both cgroups while the buffer is held; if dwl's cgroup is an ancestor
-of the zone's, subtract the zone's change. A rise outside the zone with no
-matching charge to the zone would mean a zone can make dwl hold memory
-outside the zone's limit. The proxy's pool limits apply either way, and a
-pool stays charged while the compositor may still hold it: until it and its
-buffers are deleted and no surface shows one of them, counting each buffer a
-synchronized subsurface committed until wlroots applies that subsurface's
-cache.
+cgroups, then run `wlprobe charge` through `kryptik-launch` in that zone,
+which commits one unwritten 4 MiB buffer for ten seconds. Confirm the window
+was rendered and compare both cgroups while the buffer is held; if dwl's
+cgroup is an ancestor of the zone's, subtract the zone's change. A rise
+outside the zone with no matching charge to the zone would mean a zone can
+make dwl hold memory outside the zone's limit. The proxy's pool limits apply
+either way, and a pool stays charged while the compositor may still hold it:
+until it and its buffers are deleted and no surface shows one of them,
+counting each buffer a synchronized subsurface committed until wlroots applies
+that subsurface's cache.
 
 ## Wayland shared memory
 
