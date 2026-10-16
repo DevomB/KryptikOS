@@ -289,6 +289,20 @@ audio_now
 aud "the amplifiers, and that nothing drives them" '^amplifier CSC3551:00 driver -$'
 noaud "not those the firmware calls absent" '^amplifier CSC3551:01'
 
+echo "-- the watchdogs"
+put sys/class/watchdog/watchdog0/identity 'SP5100 TCO timer'
+put sys/class/watchdog/watchdog0/timeout 60
+put sys/class/watchdog/watchdog0/state inactive
+put sys/class/watchdog/watchdog0/bootstatus 32
+put sys/class/watchdog/watchdog1/identity 'Software Watchdog'
+put sys/class/watchdog/watchdog1/timeout 60
+put sys/class/watchdog/watchdog1/state active
+put sys/class/watchdog/watchdog1/bootstatus 0
+KRYPTIK_HWREPORT_ROOT="$W" sh "$TOOL" > "$W/report-wd.txt" 2>&1
+wd() { if grep -qxF -- "$2" "$W/report-wd.txt"; then green "$1"; else red "$1: $(grep '^watchdog' "$W/report-wd.txt" | paste -sd'|')"; fi; }
+wd "a watchdog nothing feeds, and that it reset the last boot" 'watchdog watchdog0: SP5100 TCO timer, timeout 60 s, inactive, reset the last boot'
+wd "and one that is fed"                       'watchdog watchdog1: Software Watchdog, timeout 60 s, active'
+
 echo "-- what confines a device's DMA"
 put sys/class/iommu/dmar0/uevent ''
 put sys/class/iommu/dmar1/uevent ''
