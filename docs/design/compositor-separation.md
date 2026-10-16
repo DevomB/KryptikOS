@@ -147,10 +147,13 @@ confines itself as a zone is confined:
   remove the chrome's request for a browser in front, in
   `$XDG_RUNTIME_DIR/kryptik/front`, which it makes first. It writes no file,
   opens no TCP, and, where the kernel has Landlock ABI 6, reaches no
-  abstract socket outside its own domain. The zones' sockets and its own are
-  made before then, and its own socket and lock stay behind when it exits,
-  until the next login's dwl takes them over. A rule holds a directory as it
-  was at login: one that is made again while dwl runs is not covered.
+  abstract socket and signals no process outside its own domain: the lock,
+  the chrome, the user's zones' launchers. dwl started with a command of its
+  own (`-s`, as in a test) keeps its signals to end that command when it
+  exits. The zones' sockets and its own are made before then, and its own
+  socket and lock stay behind when it exits, until the next login's dwl
+  takes them over. A rule holds a directory as it was at login: one that is
+  made again while dwl runs is not covered.
   Landlock binds the calling thread alone, so dwl confines itself only while
   it has one thread, and says how many it had. A kernel without Landlock
   leaves dwl as it was, and the session log says so;
@@ -221,18 +224,13 @@ session keeps the group, and dwl runs without it.
   the group and without the desktop's bound, and the session log says so.
   The desktop suite's `dwl-without-group` fails then.
 
-What is left, in order:
-
-1. **Signals.** Landlock's signal scope (ABI 6) keeps dwl from signalling
-   any process outside its own domain: the lock, the chrome, the user's
-   zones' launchers. dwl's one signal ended its startup command's process
-   group; with the chrome the spawner's, dwl sends none, so the scope costs
-   nothing now. A kernel without ABI 6 keeps the rest of the ruleset.
-2. **A user of its own,** the end state above. Its sockets and directory
-   then need an owner other than the session (dwl's socket reached through
-   a group, the zones' socket directory made for that user), and seatd's
-   group moves to it. This is the larger of the two, and it gains less once
-   the rest is built, so it comes last.
+With the chrome the spawner's, dwl sends no signal, so Landlock's signal
+scope (ABI 6) costs nothing, and it is built too. What is left is **a user
+of its own,** the end state above. Its sockets and directory then need an
+owner other than the session (dwl's socket reached through a group, the
+zones' socket directory made for that user), and seatd's group moves to it.
+It is the largest part, and it gains least once the rest is built, so it
+comes last.
 
 ### Only pixels and input cross
 
@@ -272,8 +270,8 @@ favour of moving the protocol into the zones, which does shrink it.
    proxy bug gives the zone nothing it did not have. Built.
 3. **The compositor as its own user, confined,** with the spawner. Built
    so far: the spawner; a filter that refuses dwl exec, ptrace and
-   `process_vm_writev`; Landlock; and dwl without group `kryptik`. Still to
-   do: Landlock's signal scope, its own user, and a filter of the calls it
+   `process_vm_writev`; Landlock, with its signal scope; and dwl without
+   group `kryptik`. Still to do: its own user, and a filter of the calls it
    is traced making.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.

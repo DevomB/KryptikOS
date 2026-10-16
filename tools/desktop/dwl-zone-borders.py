@@ -1263,9 +1263,10 @@ landlockpath(int set, const char *path, __u64 access)
 
 /* Kryptik: from here dwl writes no file and reads only what it needs while it runs: keymaps and
  * cursors under /usr, hotplug under /sys and udev's, the microphone's and the camera's marks, and
- * the chrome's request for a browser in front, which it may also remove. No TCP, and no abstract
- * socket outside its domain where the kernel has that scope. A rule holds a directory as it was at
- * login: one made again later is not covered. Landlock binds the calling thread alone, so dwl
+ * the chrome's request for a browser in front, which it may also remove. No TCP, and, where the
+ * kernel has Landlock's scopes, no abstract socket and no signal outside its domain: the session's
+ * spawner starts the chrome, so dwl signals nothing. A rule holds a directory as it was at login:
+ * one made again later is not covered. Landlock binds the calling thread alone, so dwl
  * confines itself only while it has one. Any failure leaves dwl as it was, and says so: the
  * desktop still starts. */
 static void
@@ -1285,7 +1286,7 @@ confinefs(void)
 \t\t\t| LANDLOCK_ACCESS_FS_TRUNCATE,
 \t\t.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP,
 \t};
-\tconst char *rt = getenv("XDG_RUNTIME_DIR");
+\tconst char *rt = getenv("XDG_RUNTIME_DIR"), *signals = "";
 \tchar line[64], front[256];
 \tsize_t i, added = 0, paths = LENGTH(readable) + 1;
 \tlong abi, threads = -1;
@@ -1308,8 +1309,11 @@ confinefs(void)
 \t\treturn;
 \t}
 #ifdef LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET
-\tif (abi >= 6)
-\t\tattr.scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET;
+\t/* No signal either, unless dwl started a command itself (-s), which its cleanup ends. */
+\tif (abi >= 6) {
+\t\tattr.scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | (child_pid > 0 ? 0 : LANDLOCK_SCOPE_SIGNAL);
+\t\tsignals = child_pid > 0 ? "" : ", signals nothing outside it";
+\t}
 #endif
 \tif ((set = (int)syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0)) < 0) {
 \t\tfprintf(stderr, "dwl: not confined to its files: a Landlock ruleset: %s\\n", strerror(errno));
@@ -1328,8 +1332,8 @@ confinefs(void)
 \tif (r >= 0 && syscall(SYS_landlock_restrict_self, set, 0) < 0)
 \t\tfprintf(stderr, "dwl: not confined to its files: landlock_restrict_self: %s\\n", strerror(errno));
 \telse if (r >= 0)
-\t\tfprintf(stderr, "dwl: confined: reads only below %zu of its %zu paths, writes no file and has no TCP"
-\t\t\t" (1 thread, Landlock ABI %ld)\\n", added, paths, abi);
+\t\tfprintf(stderr, "dwl: confined: reads only below %zu of its %zu paths, writes no file and has no TCP%s"
+\t\t\t" (1 thread, Landlock ABI %ld)\\n", added, paths, signals, abi);
 \tclose(set);
 }
 """),

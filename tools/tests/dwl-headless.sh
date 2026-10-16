@@ -154,6 +154,7 @@ ended = waited(lambda: spawner.poll() is not None, 10)
 print("PASS" if dwl_rc == 0 and ended else "FAIL", f": dwl stopped ({dwl_rc}), and its spawner with it ({spawner.poll()})")
 EOF
     sed 's/^\(PASS\|FAIL\) :/\1:/' "$W/split.out"
+    grep -h '^dwl: \(confined\|not confined\)' "$W/split-dwl.log" 2>/dev/null | sed 's/^/INFO: the split: /'
     grep -q '^FAIL' "$W/split.out" && { fail=1; tail -5 "$W/split-dwl.log" 2>/dev/null; }
     grep -q '^PASS' "$W/split.out" || { echo "FAIL: the split did not run: $(tail -3 "$W/split.out" | tr '\n' ' ')"; fail=1; }
 fi
