@@ -353,13 +353,19 @@ ctl mute off > /dev/null; ctl volume 100 > /dev/null; ctl mute work off > /dev/n
 
 # --- a USB sound card ----------------------------------------------------------------------
 # A USB card plugged in takes the sound: the mixer picks a card each time it opens one, a USB
-# device first, and closes it after 5 s with nothing to play. Pulled out mid-tone, the card is
-# closed and the rest of the tone goes to the built-in one, where the host hears it (550 Hz).
+# device first, and looks again each second while a stream runs, so a tone already playing
+# moves to it (770 Hz, which the host does not listen for). The card closes after 5 s with
+# nothing to play. Pulled out mid-tone, the card is closed and the rest of the tone goes to the
+# built-in one, where the host hears it (550 Hz).
 ctl volume untrusted 100 > /dev/null
 pcm_running() { grep -q '^state: RUNNING' "/proc/asound/card$1/pcm0p/sub0/status" 2>/dev/null; }
 usb_card() { sed -n 's/^ *\([0-9][0-9]*\) \[[^]]*\]: USB-Audio - .*/\1/p' /proc/asound/cards | head -1; }
 usb_in() { [[ -n "$(usb_card)" ]]; }
 usb_out() { [[ -z "$(usb_card)" ]]; }
+( zrun untrusted 60 -- "$PROBE" tone 770 15 ) &
+tp=$!
+before=no
+wait_for 15 pcm_running 0 && before=yes
 echo "GT USB-SOUND-PLUG"
 if wait_for 30 usb_in; then
     pass "usb-sound-card" "$(grep 'USB-Audio' /proc/asound/cards | tr -s ' ')"
@@ -367,6 +373,12 @@ else
     fail "usb-sound-card" "cards: $(tr '\n' ' ' < /proc/asound/cards) kernel: $(klog)"
 fi
 c="$(usb_card)"
+if [[ "$before" == yes && -n "$c" ]] && wait_for 15 pcm_running "$c" && ! pcm_running 0; then
+    pass "plug-moves-sound" "plugged in mid-tone, card ${c}, the USB one, took the tone from the built-in card, which closed"
+else
+    fail "plug-moves-sound" "built-in playing before the plug: ${before}; USB card ${c:-none}: $(head -1 "/proc/asound/card${c:-9}/pcm0p/sub0/status" 2>&1); card 0: $(head -1 /proc/asound/card0/pcm0p/sub0/status 2>&1)"
+fi
+wait "$tp"
 mpid="$(pgrep -xo kryptik-sound)"; stopped="$(mixer_said 'the card stopped')"
 sleep 6
 ( zrun untrusted 60 -- "$PROBE" tone 550 12 ) &

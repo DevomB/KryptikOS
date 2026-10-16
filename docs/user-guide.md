@@ -380,8 +380,8 @@ record and says when it is recording, and while a zone may record, a window
 of its own says so, and when it does; it closes when the zone stops or the
 microphone is taken back. `v` and a digit sets the volume, 0 to 9, `v`, a
 zone's number and a digit sets that zone's own, and `x` mutes or unmutes
-everything. A USB sound device that is plugged in takes the sound once
-nothing has played for a few seconds; pulled out, it gives the sound back to
+everything. A USB sound device that is plugged in takes the sound within a
+second, in the middle of a call too; pulled out, it gives the sound back to
 the built-in one at once. This release has no Bluetooth: for calls, use a
 USB or wired headset, or a Bluetooth headset that comes with a USB dongle,
 which works as a USB sound card.
