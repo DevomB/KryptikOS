@@ -347,8 +347,9 @@ laptop() {
         t="$(one "$p/type")"
         if [ "$t" = Battery ]; then
             s="$(one "$p/scope")"; c="$(one "$p/capacity")"; k="$(one "$p/technology")"; st="$(one "$p/status")"
-            printf 'power_supply %s type Battery scope %s status %s capacity %s technology %s\n' "${p##*/}" \
-                "${s:-System}" "${st:--}" "${c:--}" "${k:--}"
+            # The status last, as it may be two words ("Not charging").
+            printf 'power_supply %s type Battery scope %s capacity %s technology %s status %s\n' "${p##*/}" \
+                "${s:-System}" "${c:--}" "${k:--}" "${st:--}"
         else
             o="$(one "$p/online")"
             printf 'power_supply %s type %s online %s\n' "${p##*/}" "${t:--}" "${o:--}"
