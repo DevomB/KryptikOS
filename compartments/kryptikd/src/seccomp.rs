@@ -172,14 +172,23 @@ macro_rules! by_name {
     };
 }
 
-/// A syscall list for the filter, and the same calls by name for policy files.
+/// A syscall list for the filter, and the same calls by name for policy files; after `+`, calls
+/// the libc crate does not name yet, each with its name and number.
 macro_rules! syscalls {
     ($(#[$doc:meta])* $list:ident, $names:ident = [$(libc::$sys:ident),* $(,)?]) => {
         $(#[$doc])*
         pub const $list: &[libc::c_long] = &[$(libc::$sys),*];
         const $names: &[(&str, libc::c_long)] = by_name![$($sys),*];
     };
+    ($(#[$doc:meta])* $list:ident, $names:ident = [$(libc::$sys:ident),* $(,)?] + [$(($name:literal, $nr:expr)),* $(,)?]) => {
+        $(#[$doc])*
+        pub const $list: &[libc::c_long] = &[$(libc::$sys,)* $($nr),*];
+        const $names: &[(&str, libc::c_long)] = &[$((unprefixed(stringify!($sys)), libc::$sys),)* $(($name, $nr)),*];
+    };
 }
+
+/// map_shadow_stack(2), which the libc crate does not name for x86-64 yet.
+const SYS_MAP_SHADOW_STACK: libc::c_long = 453;
 
 /// `syscalls!` for calls listed with the reason they are denied.
 macro_rules! denied {
@@ -300,6 +309,10 @@ syscalls! {
     // --- misc ---
     libc::SYS_uname, libc::SYS_sysinfo, libc::SYS_getrandom, libc::SYS_prctl,
     libc::SYS_rseq, libc::SYS_statfs, libc::SYS_fstatfs,
+    ] + [
+    // A shadow stack for a context of the caller's own: glibc's makecontext, where the CPU and
+    // the program have shadow stacks (spawn.rs's zone_environment leaves them on for marked ones).
+    ("map_shadow_stack", SYS_MAP_SHADOW_STACK),
     ]
 }
 
