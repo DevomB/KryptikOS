@@ -457,7 +457,11 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   dwl's brightness keys run `brightness.sh up|down`, a twentieth of the
   range a step and never down to dark, on the backlight the kernel's
   documentation prefers when a panel has several (firmware, then platform,
-  then raw).
+  then raw). The level a step leaves is kept in the user's configuration
+  (`~/.config/kryptik/brightness`: the panel, the level and its range), and
+  the session sets it again as the next login starts, as a share of the
+  panel's range. A step taken under the lock that follows a sleep is not
+  kept, as the home directory waits with the state partition.
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
   zone 0 tool to blank the screen, then lock, then suspend. All three are
   built (`kryptik-lock --idle`, above), lock first: a screen turned off
