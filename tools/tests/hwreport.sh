@@ -145,6 +145,7 @@ want "the processor"                        '^vendor, family/model/stepping: Gen
 want "its microcode, and what loaded it"    '^microcode: 0xa4$'
 want "the loader's own line"            '^microcode: Current revision: 0x000000a4$'
 want "the features that matter here"        '^of note: nx smep smap umip ibt rdrand aes$'
+want "no shadow stacks, as its kernel shows none" '^shadow stacks: no$'
 want "a mitigation as the kernel states it" '^meltdown: Not affected$'
 want "the memory"                           '^memory: 15902 MiB$'
 
@@ -328,6 +329,15 @@ KRYPTIK_HWREPORT_ROOT="$W" sh "$TOOL" > "$W/report-dma.txt" 2>&1
 dma() { if grep -qE -- "$2" "$W/report-dma.txt"; then green "$1"; else red "$1: $(grep -E '^(iommu|thunderbolt)' "$W/report-dma.txt" | paste -sd'|')"; fi; }
 dma "the IOMMUs in use, and their groups by how they translate" '^iommu: dmar0 dmar1; groups: 2 DMA, 1 identity$'
 dma "and what Thunderbolt lets a plugged device do"            '^thunderbolt domain0: security user, iommu protection 1$'
+
+echo "-- shadow stacks"
+sed -i 's/^flags\t\t: .*/& user_shstk/' "$W/proc/cpuinfo"
+KRYPTIK_HWREPORT_ROOT="$W" sh "$TOOL" > "$W/report-shstk.txt" 2>&1
+if grep -qx 'shadow stacks: yes' "$W/report-shstk.txt" && grep -qx 'of note: nx smep smap umip ibt user_shstk rdrand aes' "$W/report-shstk.txt"; then
+    green "a CPU whose kernel shows user_shstk has them"
+else
+    red "with user_shstk: $(grep -E '^(of note|shadow stacks)' "$W/report-shstk.txt" | paste -sd'|')"
+fi
 
 echo "-- what a laptop has that the others lack"
 want "the laptop has its place"             '^== laptop ==$'

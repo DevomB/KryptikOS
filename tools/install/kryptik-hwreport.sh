@@ -110,6 +110,8 @@ firmware() {
     done
 }
 
+# Shadow stacks: the kernel shows user_shstk where the CPU has them and it turns them on, and only
+# there does glibc run a program built for them with one, refusing it a library built without.
 cpu() {
     awk -F': *' '
         /^model name/ { name = $2 }
@@ -131,6 +133,7 @@ cpu() {
             for (i in have) has[have[i]] = 1
             for (i = 1; i in want; i++) if (want[i] in has) printf " %s", want[i]
             printf "\n"
+            printf "shadow stacks: %s\n", ("user_shstk" in has) ? "yes" : "no"
         }' "$R/proc/cpuinfo" 2>/dev/null
     printf 'present: %s, online: %s, smt: %s\n' "$(one "$SYS/devices/system/cpu/present")" \
         "$(one "$SYS/devices/system/cpu/online")" "$(one "$SYS/devices/system/cpu/smt/control")"
