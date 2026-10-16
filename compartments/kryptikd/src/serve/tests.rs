@@ -335,3 +335,111 @@ fn a_suspended_state_answers_the_lock_alone() {
     let (r, _w) = pipe().unwrap();
     assert_eq!(while_suspended(1000, "resume-state", Some(r), &mut pause), "error: wait 2 s\n");
 }
+
+fn send_with_fds(sock: RawFd, data: &[u8], fds: &[RawFd]) {
+    let mut iov = libc::iovec { iov_base: data.as_ptr() as *mut libc::c_void, iov_len: data.len() };
+    let space = unsafe { libc::CMSG_SPACE(std::mem::size_of_val(fds) as u32) } as usize;
+    let mut cbuf = vec![0u8; space];
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cbuf.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = space as _;
+    unsafe {
+        let c = libc::CMSG_FIRSTHDR(&msg);
+        (*c).cmsg_level = libc::SOL_SOCKET;
+        (*c).cmsg_type = libc::SCM_RIGHTS;
+        (*c).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(fds) as u32) as _;
+        std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(c) as *mut RawFd, fds.len());
+    }
+    assert!(unsafe { libc::sendmsg(sock, &msg, libc::MSG_NOSIGNAL) } >= 0, "sendmsg: {}", std::io::Error::last_os_error());
+}
+
+/// A loopback TCP socket whose send queue its peer never reads, with SO_LINGER asking its last
+/// close to wait 30 s for that queue: what a hostile zone hands over to hold its launcher.
+fn lingering_socket() -> (std::net::TcpStream, std::net::TcpStream) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let sock = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (peer, _) = listener.accept().unwrap();
+    sock.set_nonblocking(true).unwrap();
+    let chunk = [0u8; 65536];
+    loop {
+        match std::io::Write::write(&mut &sock, &chunk) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => panic!("filling the send queue: {e}"),
+        }
+    }
+    let wait = libc::linger { l_onoff: 1, l_linger: 30 };
+    let size = std::mem::size_of::<libc::linger>() as libc::socklen_t;
+    // SAFETY: a socket option set on a socket this test owns.
+    let r = unsafe { libc::setsockopt(sock.as_raw_fd(), libc::SOL_SOCKET, libc::SO_LINGER, (&wait as *const libc::linger).cast(), size) };
+    assert_eq!(r, 0, "SO_LINGER: {}", std::io::Error::last_os_error());
+    (sock, peer)
+}
+
+/// Released, a lingering socket closes at once rather than wait out its 30 s.
+#[test]
+fn a_lingering_socket_is_released_at_once() {
+    let (sock, _peer) = lingering_socket();
+    let t = Instant::now();
+    release(OwnedFd::from(sock));
+    assert!(t.elapsed() < Duration::from_secs(5), "released in {:?}", t.elapsed());
+}
+
+/// One queued on a connection goes with it at once too, taken from the queue and released.
+#[test]
+fn a_socket_queued_on_a_connection_is_released_with_it() {
+    let (sock, _peer) = lingering_socket();
+    let (a, b) = UnixStream::pair().unwrap();
+    send_with_fds(a.as_raw_fd(), b"x", &[sock.as_raw_fd()]);
+    // Not the last reference: the queued one is.
+    drop(sock);
+    let t = Instant::now();
+    release(OwnedFd::from(b));
+    assert!(t.elapsed() < Duration::from_secs(5), "released in {:?}", t.elapsed());
+    // The connection read to its end: what its peer queued is released, and the peer can send
+    // nothing more.
+    let (c, d) = UnixStream::pair().unwrap();
+    let (sock, _peer) = lingering_socket();
+    send_with_fds(c.as_raw_fd(), b"y", &[sock.as_raw_fd()]);
+    drop(sock);
+    let t = Instant::now();
+    release_queued(d.as_raw_fd());
+    assert!(t.elapsed() < Duration::from_secs(5), "released in {:?}", t.elapsed());
+    let r = unsafe { libc::send(c.as_raw_fd(), b"z".as_ptr().cast(), 1, libc::MSG_NOSIGNAL) };
+    assert_eq!(r, -1, "a shut connection took more");
+    drop(d);
+}
+
+/// Room for every descriptor a message can carry, so the kernel closes none here, and more than
+/// a request may carry refused, all of them released.
+#[test]
+fn every_descriptor_is_taken_and_past_twelve_refused() {
+    let room = unsafe { libc::CMSG_SPACE((253 * std::mem::size_of::<RawFd>()) as u32) } as usize;
+    assert_eq!(room, CONTROL_LEN);
+    let (a, b) = UnixStream::pair().unwrap();
+    let nulls: Vec<std::fs::File> = (0..13).map(|_| std::fs::File::open("/dev/null").unwrap()).collect();
+    let raw: Vec<RawFd> = nulls.iter().map(|f| f.as_raw_fd()).collect();
+    send_with_fds(a.as_raw_fd(), b"x", &raw);
+    let mut buf = [0u8; 16];
+    let e = recv_with_fds(b.as_raw_fd(), &mut buf, 0).err().expect("thirteen descriptors refused");
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    send_with_fds(a.as_raw_fd(), b"y", &raw[..2]);
+    let (n, got) = recv_with_fds(b.as_raw_fd(), &mut buf, 0).unwrap();
+    assert_eq!((n, got.len()), (1, 2));
+}
+
+/// A datagram queue is taken past its empty datagrams, as its empty queue answers EAGAIN: one
+/// ahead of a lingering socket does not leave that socket for the kernel to close here.
+#[test]
+fn a_datagram_queue_is_taken_past_its_empty_datagrams() {
+    let (sock, _peer) = lingering_socket();
+    let (a, b) = std::os::unix::net::UnixDatagram::pair().unwrap();
+    a.send(b"").unwrap();
+    send_with_fds(a.as_raw_fd(), b"x", &[sock.as_raw_fd()]);
+    drop(sock);
+    let t = Instant::now();
+    release(OwnedFd::from(b));
+    assert!(t.elapsed() < Duration::from_secs(5), "released in {:?}", t.elapsed());
+}
