@@ -125,12 +125,13 @@ dwl, w = sys.argv[1], sys.argv[2]
 env = dict(os.environ, WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1")
 a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
 r, wr = os.pipe()
-# Above 9 first, so placing one at 3 or 4 cannot overwrite the other.
+# Above 9 first, so placing one at 3 or 4 cannot overwrite the other; bash, as dash takes no
+# descriptor above 9 in a redirection.
 hi = [fcntl.fcntl(fd, fcntl.F_DUPFD, 10) for fd in (a.fileno(), r, b.fileno())]
 cmd = ["/bin/sh", "-c", f'echo "$WAYLAND_DISPLAY" > {w}/split-display; exec cat > {w}/split-status']
-spawner = subprocess.Popen(["/bin/sh", "-c", 'exec "$@" 3<&"$A" 4<&"$R"', "sh", dwl, "-X", "3", "--"] + cmd,
+spawner = subprocess.Popen(["/bin/bash", "-c", 'exec "$@" 3<&"$A" 4<&"$R"', "bash", dwl, "-X", "3", "--"] + cmd,
                            pass_fds=hi[:2], env=dict(env, A=str(hi[0]), R=str(hi[1])), stdout=subprocess.DEVNULL)
-comp = subprocess.Popen(["/bin/sh", "-c", 'exec "$@" 3<&"$B"', "sh", dwl, "-S", "3"],
+comp = subprocess.Popen(["/bin/bash", "-c", 'exec "$@" 3<&"$B"', "bash", dwl, "-S", "3"],
                         pass_fds=hi[2:], env=dict(env, B=str(hi[2])), stdout=wr, stderr=open(f"{w}/split-dwl.log", "w"))
 a.close()
 b.close()
