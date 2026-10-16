@@ -142,7 +142,12 @@ confines itself as a zone is confined:
   `/usr/share/X11/xkb`) and nothing else;
 - no exec. dwl's `spawn` keys and its status command move to a small
   spawner, started before the sandbox, that runs only a fixed table of
-  commands.
+  commands. Built: dwl forks the spawner once the status command runs,
+  closes everything in it but one end of a socket, and sends it a key's
+  command as its index in `spawncmds` (`build/desktop/dwl-config.h`). Then
+  dwl sets no-new-privileges and a filter that refuses exec, ptrace and
+  `process_vm_writev`, and kills calls of another architecture. The
+  spawner is not dumpable and ends with dwl.
 
 seatd passes it its devices, including hotplugged ones, as descriptors, so
 dwl never opens `/dev`. Running it under `kryptikd run` as a zone of its own
@@ -195,7 +200,10 @@ favour of moving the protocol into the zones, which does shrink it.
    Built.
 2. **Proxies as their own users, confined.** Together with the first step, a
    proxy bug gives the zone nothing it did not have. Built.
-3. **The compositor as its own user, confined,** with the spawner.
+3. **The compositor as its own user, confined,** with the spawner. Built
+   so far: the spawner, and a filter that refuses dwl exec, ptrace and
+   `process_vm_writev`. Still to do: its own user, Landlock, and a filter of
+   the calls it is traced making.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.
 

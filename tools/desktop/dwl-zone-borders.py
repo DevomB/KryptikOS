@@ -1070,6 +1070,135 @@ inputdevice(struct wl_listener *listener, void *data)
 \t * the session is locked is one of lockedkeys. */
 \tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 """),
+    # The spawner (docs/design/compositor-separation.md): dwl forks it before it confines itself,
+    # and from then on starts no program: a key's command goes to the spawner as its index in
+    # dwl-config.h's spawncmds, and dwl's filter refuses exec.
+    ("""#include <sys/wait.h>
+""",
+     """#include <sys/wait.h>
+#include <stddef.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+"""),
+    ("""static void spawn(const Arg *arg);
+""",
+     """static void spawn(const Arg *arg);
+static void startspawner(void);
+static void confineexec(void);
+"""),
+    ("""static pid_t child_pid = -1;
+""",
+     """static pid_t child_pid = -1;
+static int spawnfd = -1;
+"""),
+    ("""void
+spawn(const Arg *arg)
+{
+\tif (fork() == 0) {
+\t\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\t\tsetsid();
+\t\texecvp(((char **)arg->v)[0], (char **)arg->v);
+\t\tdie("dwl: execvp %s failed:", ((char **)arg->v)[0]);
+\t}
+}
+""",
+     """void
+spawn(const Arg *arg)
+{
+\tunsigned char i;
+\tfor (i = 0; i < LENGTH(spawncmds); i++)
+\t\tif ((const void *)spawncmds[i] == arg->v)
+\t\t\tbreak;
+\tif (i == LENGTH(spawncmds))
+\t\tfprintf(stderr, "dwl: %s is not in the spawner's table\\n", ((char **)arg->v)[0]);
+\telse if (send(spawnfd, &i, 1, MSG_NOSIGNAL) != 1)
+\t\tfprintf(stderr, "dwl: the spawner did not take %s: %s\\n", ((char **)arg->v)[0], strerror(errno));
+}
+
+/* Kryptik: the spawner, forked before dwl confines itself. It runs only the table's commands, each
+ * as dwl's spawn did, holds nothing of dwl's but its end of the socket, and ends with dwl. */
+static void
+startspawner(void)
+{
+\tint sv[2];
+\tlong fd, max = sysconf(_SC_OPEN_MAX);
+\tunsigned char i;
+\tssize_t n;
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+\t\tdie("startup: the spawner's socket:");
+\tswitch (fork()) {
+\tcase -1:
+\t\tdie("startup: the spawner's fork:");
+\tcase 0:
+\t\tbreak;
+\tdefault:
+\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\treturn;
+\t}
+\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (fd = 3; fd < max; fd++)
+\t\tif (fd != sv[1])
+\t\t\tclose((int)fd);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(sv[1], &i, 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (i >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tclose(sv[1]);
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[i][0], (char *const *)spawncmds[i]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[i][0]);
+\t}
+\t_exit(0);
+}
+
+/* Kryptik: dwl execs nothing once the spawner runs, and reaches into no other process; calls of
+ * another ABI are refused too. prctl's filter covers the calling thread, and dwl has one. */
+static void
+confineexec(void)
+{
+\tstruct sock_filter f[] = {
+\t\tBPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+\t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+\t\tBPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+\t\tBPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0x40000000, 4, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execve, 3, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execveat, 2, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_ptrace, 1, 0),
+\t\tBPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_process_vm_writev, 0, 1),
+\t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+\t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+\t};
+\tstruct sock_fprog prog = { .len = (unsigned short)LENGTH(f), .filter = f };
+\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0)
+\t\tdie("startup: the no-exec filter:");
+}
+"""),
+    ("""\t/* Mark stdout as non-blocking to avoid the startup script
+""",
+     """\t/* Kryptik: from here dwl starts no program itself. */
+\tstartspawner();
+\tconfineexec();
+
+\t/* Mark stdout as non-blocking to avoid the startup script
+"""),
 ]
 
 
