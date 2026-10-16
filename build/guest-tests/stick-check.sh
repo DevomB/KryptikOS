@@ -200,6 +200,20 @@ card)
     else
         fail "card-ends-with-zone" "info stick $(stick_of untrusted); holders $(held_by "$P"); mapping $(mapped untrusted && echo kept || echo gone)"
     fi
+    # The card readers many laptops build in, Realtek's on PCIe (its base class FF) and on USB,
+    # which QEMU has neither of: eudev loads each by the reader's id, then the SD interface's
+    # driver by the cell the reader's driver makes.
+    unresolved=""
+    for a in pci:v000010ECd0000525Asv00001028sd0000087CbcFFsc00i00=rtsx_pci \
+             usb:v0BDAp0129d3960dcFFdsc00dp00icFFiscFFipFFin00=rtsx_usb \
+             platform:rtsx_pci_sdmmc=rtsx_pci_sdmmc platform:rtsx_usb_sdmmc=rtsx_usb_sdmmc; do
+        [[ "$(modprobe -R "${a%=*}" 2>&1)" == "${a#*=}" ]] || unresolved="${unresolved} ${a#*=}"
+    done
+    if [[ -z "$unresolved" ]]; then
+        pass "card-reader-drivers" "Realtek's PCIe and USB card readers, and their SD interfaces, resolve by alias as eudev loads them"
+    else
+        fail "card-reader-drivers" "no module for:${unresolved}"
+    fi
     ;;
 *)
     fail "phase" "usage: stick-check.sh plugged|hold|pulled|medium|card USER [SHA]"
