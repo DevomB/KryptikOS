@@ -102,6 +102,12 @@ pub struct Zone {
     pub images: Vec<String>,
     /// `[sound] play = false`: no socket to zone 0's mixer (sound.rs). The nic zone never has one.
     pub sound: bool,
+    /// `[storage] removable = false`: no USB stick is ever given to this zone (stick.rs). The nic
+    /// zone never gets one.
+    pub removable: bool,
+    /// `[camera] use = false`: the camera is never granted to this zone, which gets no camera
+    /// directory or /dev/video0 (camera.rs). The nic zone never has one.
+    pub camera: bool,
     /// `[desktop] hold_awake = true`: a window of the zone may hold the screen awake, as dwl allows
     /// (docs/design/laptop.md), so its proxy lets the idle inhibitor through. Off unless the file
     /// says so; never the nic zone's, which draws no window.
@@ -139,13 +145,14 @@ impl fmt::Display for ZoneError {
 pub const KNOWN_KEYS: &[&str] = &[
     "zone.name", "zone.description",
     "network.mode", "network.nic", "network.local",
-    "storage.mode", "storage.volume", "storage.size",
+    "storage.mode", "storage.volume", "storage.size", "storage.removable",
     "policy.seccomp", "policy.landlock",
     "limits.memory_max", "limits.pids_max", "limits.cpu_max", "limits.io_max",
     "identity.uid_base",
     "transfer.to", "transfer.max_bytes",
     "software.images",
     "sound.play",
+    "camera.use",
     "desktop.hold_awake",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
@@ -439,6 +446,26 @@ impl Zone {
             Some(v) => return Err(bad("sound.play", v, "true or false")),
         };
 
+        let removable = match kv.get("storage.removable").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone is given no USB stick")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("storage.removable", v, "true or false")),
+        };
+
+        let camera = match kv.get("camera.use").map(String::as_str) {
+            None => network != NetworkMode::Nic,
+            Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone is given no camera")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("camera.use", v, "true or false")),
+        };
+
         let hold_awake = match kv.get("desktop.hold_awake").map(String::as_str) {
             None | Some("false") => false,
             Some("true") if network == NetworkMode::Nic => {
@@ -522,6 +549,8 @@ impl Zone {
             transfer_max,
             images,
             sound,
+            removable,
+            camera,
             hold_awake,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),

@@ -3,6 +3,7 @@
 
 NO-CET  usr/bin/kryptikd                        # stable rustc marks nothing for CET, nor does the std it links
 NO-CET  usr/bin/kryptik-wlproxy                 # the same
+NO-CET  usr/bin/kryptik-stick                   # the same
 NO-CET  usr/lib/libgmp.so.*                     # GMP's hand-written x86-64 assembly carries no CET note
 
 # man-db's programs load its private libraries from /usr/lib/man-db.
@@ -95,6 +96,7 @@ NO-SSP  usr/lib/ld-linux-x86-64.so.2  # glibc builds the loader without the stac
 NO-SSP  usr/lib/libgcc_s.so.1       # GCC builds libgcc with -fno-stack-protector: it runs beneath any stack guard
 NO-SSP  usr/bin/kryptikd            # Rust: stable rustc has no stack protector, and safe Rust checks every index
 NO-SSP  usr/bin/kryptik-wlproxy     # the same
+NO-SSP  usr/bin/kryptik-stick       # the same
 
 # Imports of calls that _FORTIFY_SOURCE=2 or 3 always turns into _chk ones.
 NO-FORTIFY  usr/bin/pldd            # glibc builds elf/, dlfcn/, csu/ and debug/ without FORTIFY (Makeconfig's do-fortify): the loader's bootstrap and the checks themselves

@@ -49,6 +49,8 @@ source "${SELF}/suite-lib.sh"
 VARSF="${VMDIR}/gui-vars.fd"; cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VARSF"
 SHOT="${VMDIR}/gui-untrusted.ppm"
 SHOT_FS="${VMDIR}/gui-untrusted-fullscreen.ppm"
+SHOT_MARKS="${VMDIR}/gui-untrusted-fullscreen-marks.ppm"
+SHOT_NOMARKS="${VMDIR}/gui-untrusted-fullscreen-no-marks.ppm"
 SHOT_OVER="${VMDIR}/gui-untrusted-oversize.ppm"
 SHOT_HEAD="${VMDIR}/gui-second-head.ppm"
 SHOT_POPUP="${VMDIR}/gui-untrusted-popup.ppm"
@@ -89,6 +91,9 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT SCREENSHOT-READY" "sleep:2" "screendump:${SHOT}" \
     "expect:GT KEY-FULLSCREEN\r?\n" "key:alt+e" \
     "expect:GT SCREENSHOT-FULLSCREEN" "sleep:2" "screendump:${SHOT_FS}" \
+    "expect:GT KEY-MARKS-FULLSCREEN" "key:alt+e" \
+    "expect:GT SCREENSHOT-MARKS" "sleep:2" "screendump:${SHOT_MARKS}" \
+    "expect:GT SCREENSHOT-NO-MARKS" "sleep:2" "screendump:${SHOT_NOMARKS}" \
     "expect:GT KEY-FULLSCREEN-AGAIN" "key:alt+e" \
     "expect:GT KEY-MENU" "key:alt+p" \
     "expect:GT KEY-FOCUS-OVERSIZE" "key:alt+j" \
@@ -147,6 +152,8 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT KEY-VIEW-BROWSER" "key:alt+3" "expect:GT KEY-BROWSER-AWAY" "key:alt+1" \
     "expect:GT KEY-BROWSER-AGAIN" "key:alt+shift+u" "expect:GT KEY-BROWSER-ASIDE" "key:alt+1" \
     "expect:GT KEY-BROWSER-LAUNCH" "key:alt+shift+u" "expect:GT KEY-BROWSER-BACK" "key:alt+1" \
+    "expect:GT KEY-VT-ADMIN" "key:ctrl+alt+f2" "expect:GT KEY-VT-DESKTOP" "key:ctrl+alt+f1" \
+    "expect:GT KEY-MENU-AFTER-VT" "key:alt+p" \
     "expect:GT END" "expect:GCHECK-DONE" \
     "send:su - root -c 'poweroff'" "expect:Password: ?" "send:${RPASS}" \
     "expect:Power down" "wait-exit"
@@ -167,22 +174,24 @@ for name in session-socket compositor-running chrome-focus-record chrome-window-
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
             second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up browser-key-brings-forward browser-front-only-the-users browser-front-request browser-key-launches \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
-            password-check-pauses lock-takes-keyboard lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
+            password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
             zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
+            second-head-scale-chosen zone-sees-heads-unnamed \
+            vt-admin-login vt-desktop-back vt-desktop-takes-keys \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name zone-fractional-scale compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
-            zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do
+            zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key marks-fullscreen zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 
 # ----------------------------------------------------------------- step 3 --
 step "step 3: the screenshots show every window framed on all four sides"
-check_shot() {   # check_shot FILE WHAT ZONE:focused|unfocused|fullscreen...
+check_shot() {   # check_shot FILE WHAT ZONE:focused|unfocused[@SCALE]|fullscreen...
 local shot="$1" what="$2" verdict
 local good="every window is framed in its zone's colour, at its width, on all four sides" bad="a window's frame or bar is missing or wrong"
 shift 2
@@ -305,7 +314,16 @@ for spec in want:
         print(f"  #{rgb} inside {zone}'s frame {x0},{y0}-{x1},{y1}: {within} px within it, {outside} px outside{'' if good else '  <- WRONG'}")
         ok = ok and good
         continue
+    # ZONE:fullscreen=TEXT: the bar reads TEXT, the zone's name and what follows it.
     zone, state = spec.split(":")
+    text = None
+    if state.startswith("fullscreen="):
+        state, text = state.split("=", 1)
+    # ZONE:focused@2: on an output at scale 2, where dwl's frame is twice as wide in pixels.
+    k = 1
+    if "@" in state:
+        state, k = state.split("@")
+        k = int(k)
     col = named[zone]
     box, sides = frame(col)
     if box is None:
@@ -313,7 +331,7 @@ for spec in want:
         ok = False
         continue
     if state == "fullscreen":
-        rows, ink = bar("zone 0" if zone == "unzoned" else zone, col)
+        rows, ink = bar(text if text is not None else "zone 0" if zone == "unzoned" else zone, col)
         wrong = sum(at(x, y) != rows[y][x] for y in range(barpx) for x in range(w))
         good = (box == (0, 0, w - 1, hgt - 1) and sides["top"] == barpx + bw and not wrong
                 and sides["bottom"] == sides["left"] == sides["right"] == bw)
@@ -326,15 +344,15 @@ for spec in want:
                 print("    " + "".join("#" if at(x, y) == ink else "." if at(x, y) == col else "?" for x in range(min(w, 150))))
         ok = ok and good
         continue
-    expect = bw if state == "focused" else bw - band
+    expect = (bw if state == "focused" else bw - band) * k
     good = all(v == expect for v in sides.values())
     if state == "unfocused" and good:
         # The band, in the root colour, lies just inside each side.
         x0, y0, x1, y1 = box
         xm, ym = (x0 + x1) // 2, (y0 + y1) // 2
         good = min(run(xm, y0 + expect, 0, 1, root), run(xm, y1 - expect, 0, -1, root),
-                   run(x0 + expect, ym, 1, 0, root), run(x1 - expect, ym, -1, 0, root)) >= band
-    extra = f" + {band} band" if state == "unfocused" else ""
+                   run(x0 + expect, ym, 1, 0, root), run(x1 - expect, ym, -1, 0, root)) >= band * k
+    extra = f" + {band * k} band" if state == "unfocused" else ""
     print(f"  {zone} ({state}): frame {box[0]},{box[1]}-{box[2]},{box[3]}: top {sides['top']} bottom {sides['bottom']}"
           f" left {sides['left']} right {sides['right']} px, want {expect}{extra}{'' if good else '  <- WRONG'}")
     ok = ok and good
@@ -350,11 +368,13 @@ fi
 check_shot "$SHOT" "windowed" untrusted:focused unzoned:unfocused
 # Alt+e: the window fills the screen below a bar that names its zone.
 check_shot "$SHOT_FS" "fullscreen" untrusted:fullscreen
+check_shot "$SHOT_MARKS" "fullscreen, its zone holding the microphone and the camera" "untrusted:fullscreen=untrusted   mic untrusted   cam untrusted"
+check_shot "$SHOT_NOMARKS" "fullscreen, both taken back and a record the mixer did not write" untrusted:fullscreen
 # wlprobe oversize commits a buffer 40 px larger than its configure: the
 # borders must stay above the surface, or its excess covers them.
 check_shot "$SHOT_OVER" "oversized buffer" untrusted:focused unzoned:unfocused
 # The second monitor's own picture: the zone's window alone on it.
-check_shot "$SHOT_HEAD" "second head" untrusted:focused
+check_shot "$SHOT_HEAD" "second head, at scale 2" untrusted:focused@2
 # wlprobe popup draws a cyan popup from its window's centre, larger than the
 # screen, that may be neither moved nor resized: it must show only inside the
 # window, which keeps its whole frame, and zone 0's window keeps the keyboard.

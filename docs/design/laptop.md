@@ -5,11 +5,12 @@ like the clipboard, Bluetooth, suspend from the lid, the power key and
 idleness with the zone volumes' keys dropped too, power management, hotplug
 and several monitors, and keyboard layouts and input methods. Each part
 meets a rule the architecture already set: [ADR-013](../decisions.md) builds
-no sound, the architecture allows no shared D-Bus, the threat model gives up
+in only what boot needs, the architecture allows no shared D-Bus, the threat model gives up
 on a suspended machine's memory, there is no logind, and nothing reaches a
 zone except through its proxy and its broker. One section each, with its
 options, its recommendation and its check. In [decisions](../decisions.md),
-ADR-021 is proposed and ADR-022, for suspend, accepted.
+ADR-021 decides sound, ADR-022 suspend, ADR-027 Bluetooth and ADR-028
+input methods.
 
 ## Sound
 
@@ -184,7 +185,8 @@ in `make sound-test`, all of which it checks but the keys, which
 No Bluetooth until sound exists. Then a Bluetooth zone, audio only, with the
 kernel patch carried on linux-hardened (ADR-009's rebase cost) and offered
 upstream. Bluetooth keyboards and mice stay out for as long as a compromised
-bluetoothd could type into the chrome.
+bluetoothd could type into the chrome. [Bluetooth](bluetooth.md) weighs this
+again, and ADR-027 decides it: none for 1.0, then that zone.
 
 ### Check
 
@@ -581,14 +583,35 @@ instead.
 ## Hotplug and several monitors
 
 dwl follows outputs as they come and go through wlroots' DRM backend and
-eudev, and draws borders and the chrome on each. What needs deciding is
-what zones learn. `wl_output` carries the monitor's make, model and name,
-which come from its EDID and sometimes include a serial. Every zone sees the
-same values, which links zones to each other and to the machine. The proxy
-rewrites them to neutral values per output (`Monitor 1`) and keeps the
-geometry and scale. Check: through any zone's proxy, `wl_output` reports no
-make, model or serial from the EDID, and a second monitor plugged into the
-VM appears in every zone.
+eudev, and draws borders and the chrome on each. `wl_output` carries the
+monitor's make, model and name, which come from its EDID and sometimes
+include a serial; every zone would see the same values, which link zones to
+each other and to the machine. A zone's proxy names each output by its
+number (`output-N`), blanks the make and model, and keeps the geometry and
+scale.
+
+A laptop's high-resolution panel at scale 1 draws everything at half the
+size it should be, so a monitor's scale and place are the user's to pick.
+`kryptik display NAME SCALE [X Y]` keeps a line in `~/.config/kryptik/display`
+(`*` for any monitor no line names), and `kryptik-display`, a client of
+wlroots' output management, which dwl serves to zone 0 alone, makes it: at
+once, and, run by the chrome, at every login and whenever a monitor comes.
+It changes a monitor only when it is not as chosen, and asks the same thing
+once, so a monitor the idle lock turned off, which the output management
+stops listing until it is on again, is never turned on by it. A monitor no
+line names gets 2 if it is a built-in panel (eDP, LVDS, DSI) of 192 dpi or
+more and 1200 lines or more, as GNOME decides, and 1 otherwise: a
+television's EDID may give its aspect ratio as its size, so only built-in
+panels are measured. Zones are told the scale through `wl_output`, rounded
+up to a whole number, and draw that much larger; the compositor scales them
+down to a fraction such as 1.5. dwl and the proxy needed no change.
+
+Check: `make gui-test` writes the user's line for the first monitor at 1 and
+`* 2`, plugs a second monitor in, and finds it at scale 2 and the first at 1;
+through a zone's proxy both outputs are named `output-N`, with no make or
+model, one of them at scale 2. `tools/tests/display.sh` checks what
+`kryptik display` keeps and refuses. The panel's own default waits for
+physical hardware, as QEMU has no built-in panel.
 
 ## Order
 

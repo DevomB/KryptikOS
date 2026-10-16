@@ -21,9 +21,10 @@ ACTION="${1:-mount}"
 IN_ROOT="/kryptik"
 IN_SOURCES="/kryptik-sources"
 IN_WORK="/kryptik-work"
-# Single files: the kryptikd and wlproxy binaries built outside.
+# Single files: the kryptikd, wlproxy and kryptik-stick binaries built outside.
 IN_KRYPTIKD="/kryptik-kryptikd"
 IN_WLPROXY="/kryptik-wlproxy"
+IN_STICK="/kryptik-stick"
 
 # Bound one subdirectory at a time: $KRYPTIK_WORK contains sysroot/, and
 # binding all of it would give the chroot a nested view of its own root to
@@ -181,6 +182,7 @@ mount_list() {
         "$IN_SOURCES" \
         "$IN_KRYPTIKD" \
         "$IN_WLPROXY" \
+        "$IN_STICK" \
         "/dev" \
         "/dev/pts" \
         "/dev/shm" \
@@ -260,6 +262,15 @@ mount_virtual() {
             die "KRYPTIK_WLPROXY_BIN=${KRYPTIK_WLPROXY_BIN} does not exist"
         fi
     fi
+    # The zones' reader of USB sticks, likewise.
+    if [[ -n "${KRYPTIK_STICK_BIN:-}" ]]; then
+        if [[ -f "$KRYPTIK_STICK_BIN" ]]; then
+            : > "${LFS}${IN_STICK}"
+            bind_hardened "$KRYPTIK_STICK_BIN" "${LFS}${IN_STICK}" "nodev,nosuid,ro"
+        else
+            die "KRYPTIK_STICK_BIN=${KRYPTIK_STICK_BIN} does not exist"
+        fi
+    fi
 
     # nosuid,nodev: setuid files and device nodes in shm are escape primitives.
     if [[ -h "$LFS/dev/shm" ]]; then
@@ -286,9 +297,9 @@ umount_virtual() {
         mount_status >&2
         return 1
     fi
-    # The files the two binaries were bound onto. Left behind, they end up in
+    # The files the three binaries were bound onto. Left behind, they end up in
     # the root image, and stage 01 takes a file there for a mount.
-    rm -f "${LFS}${IN_KRYPTIKD}" "${LFS}${IN_WLPROXY}"
+    rm -f "${LFS}${IN_KRYPTIKD}" "${LFS}${IN_WLPROXY}" "${LFS}${IN_STICK}"
     ok "unmounted"
 }
 
@@ -312,6 +323,7 @@ chroot_env() {
         ${SOURCE_DATE_EPOCH:+"SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"} \
         "KRYPTIK_KRYPTIKD_BIN=${KRYPTIK_KRYPTIKD_BIN:+$IN_KRYPTIKD}" \
         "KRYPTIK_WLPROXY_BIN=${KRYPTIK_WLPROXY_BIN:+$IN_WLPROXY}" \
+        "KRYPTIK_STICK_BIN=${KRYPTIK_STICK_BIN:+$IN_STICK}" \
         "KRYPTIK_ALLOW_UNCHROOTED=0" \
         "NO_COLOR=${NO_COLOR:-}"
 }

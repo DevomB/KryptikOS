@@ -47,6 +47,11 @@ and `vault` has no sound at all. Of other zones' sound it learns one thing:
 the card stays open five seconds after the last sound, so how soon its own
 first sound is taken tells it whether any zone played in that time, a bit
 two zones could also signal through.
+The camera reaches a zone only while the user has granted it, one zone at a
+time, until the user takes it back, the zone stops or the screen locks; its
+driver is loaded for the grant alone, so no camera's descriptors are parsed
+before the user asks, and the zone holding it reaches Video4Linux and the
+driver through the node it is given. `vault` and the net zone never get it.
 Escaping needs a kernel bug
 ([kernel local privilege escalation](#kernel-local-privilege-escalation)).
 
@@ -238,8 +243,14 @@ A USB stick or an SD card plugged into a running machine reaches the
 kernel, which reads its partition table as it does any disk's, and no
 program in zone 0: eudev probes none of its filesystems
 (`59-kryptik-removable.rules`), and Kryptik finds its own partitions by
-the names the kernel read from their tables (`devices.sh`). A device that
-also presents a keyboard is taken as one.
+the names the kernel read from their tables (`devices.sh`). Its filesystem
+is parsed only in the zone the user gives one of its partitions to, by
+`kryptik-stick`, a program of that zone, on a descriptor of a device-mapper
+mapping of that partition alone: zone 0 mounts nothing, the kernel's FAT
+driver never sees it, and a stick made to subvert the reader reaches what
+that zone holds. Eject, the zone's stop or pulling the stick out ends the
+grant, and the zone reads nothing of it after. A device that also presents
+a keyboard is taken as one.
 
 ### Microarchitectural side channels
 

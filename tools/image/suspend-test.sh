@@ -76,6 +76,7 @@ DRIVE_TIMEOUT=900 drive --qmp "$QMP" \
     "expect:GT ZONE-PASS-TYPE 1" "${ZPASS_KEYS[@]}" "key:ret" \
     "expect:GT SLEEPING 1" "asleep-or:120:GT DID-NOT-SLEEP 1" "if-asleep:dump:${DUMP}" "if-asleep:sleep:75" "if-asleep:wakeup" \
     "expect:GT LOCK-TYPE-STATE 2" "${SPASS_KEYS[@]}" "key:ret" \
+    "expect:GT ZONE-PASS-SKIP" "key:ret" \
     "expect:GT KEY-LOCK 2" "key:alt+shift+l" \
     "expect:GT SLEEPING 2" "asleep-or:120:GT DID-NOT-SLEEP 2" "if-asleep:sleep:5" "if-asleep:wakeup" \
     "expect:GT LOCK-TYPE-STATE 3" "${SPASS_KEYS[@]}" "key:ret" \
@@ -107,8 +108,9 @@ for name in second-passphrase session-up zones-ticking state-suspended zones-fro
             nothing-else-waits lock-refuses-wrong-passphrase passphrase-resumes zones-thawed writer-resumes zones-tick-again \
             slept-and-woke woke-to-state-prompt prompt-outlasts-watchdog resumed-after-sleep zones-thawed-after-sleep \
             sleep-refusal-told resumed-after-refusal \
-            zone-waits-for-its-passphrase info-says-waiting launch-told-waiting zone-refuses-wrong-passphrase chrome-asks-waiting-zone \
-            zone-passphrase-resumes zone-waits-after-sleep waiting-zone-stops volume-opens-after-giving-up \
+            zone-waits-for-its-passphrase info-says-waiting launch-told-waiting menu-says-waiting zone-refuses-wrong-passphrase \
+            chrome-asks-waiting-zone zone-passphrase-resumes zone-waits-after-sleep enter-leaves-zone-waiting waiting-zone-stops \
+            volume-opens-after-giving-up \
             power-key-sleeps power-key-held-off-after-wake power-key-heeded-after-holdoff power-key-resumes \
             power-key-sleeps-locked power-key-locked-resumes \
             lock-pid-written lock-up-sleeps lock-up-resumes lock-pid-removed idle-sleeps idle-sleep-resumes; do

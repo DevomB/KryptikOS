@@ -18,6 +18,10 @@
 //!              resume-state, the state partition's passphrase on one descriptor
 //!              resume-zone <zone>, after a sleep, that zone's volume passphrase on one
 //!                descriptor; `info` says `waiting yes` until it is given
+//!              sticks, the USB stick partitions a zone may be given, a line each
+//!              stick-grant <zone> <partition> ro|rw | stick-eject <zone>
+//!              camera-grant <zone>, answered `ok <camera>` | camera-revoke, answered
+//!                `ok <zone>`, `ok <zone> stayed` (its driver still loaded) or `ok none`
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
@@ -1286,10 +1290,11 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                     reply(
                         &conn,
                         &format!(
-                            "encrypted {}\nrunning {}\nwaiting {}\nlabel {}\n{}end\n",
+                            "encrypted {}\nrunning {}\nwaiting {}\nstick {}\nlabel {}\n{}end\n",
                             if enc { "yes" } else { "no" },
                             if zone_running(name) { "yes" } else { "no" },
                             if crate::suspend::waiting().iter().any(|z| z == name) { "yes" } else { "no" },
+                            crate::stick::grant_of(name).map_or("none".to_string(), |g| format!("{} {}", g.mode(), g.what)),
                             z.label.as_deref().unwrap_or(&z.name),
                             net.map_or(String::new(), |n| format!("network {n}\n")),
                         ),
@@ -1385,6 +1390,83 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                         format!("error: {e}\n")
                     }
                 },
+            };
+            reply(&conn, &said);
+        }
+        // The user's gesture in the chrome: which zone gets which stick, and when it goes.
+        "sticks" => {
+            crate::stick::reap_pulled();
+            let mut out = String::new();
+            for p in crate::stick::eligible() {
+                out.push_str(&format!("{} {}\n", p.name, p.what));
+            }
+            out.push_str("end\n");
+            reply(&conn, &out);
+        }
+        "stick-grant" => {
+            let w: Vec<&str> = first.split_whitespace().collect();
+            let (zone, part, writable) = match w.as_slice() {
+                [_, z, p, "ro"] => (*z, *p, false),
+                [_, z, p, "rw"] => (*z, *p, true),
+                _ => {
+                    reply(&conn, "error: stick-grant <zone> <partition> ro|rw\n");
+                    return None;
+                }
+            };
+            if !ident_ok(zone) {
+                reply(&conn, "error: bad zone name\n");
+                return None;
+            }
+            let said = match zone_named(cfg, zone).and_then(|z| crate::stick::grant(&z, part, writable)) {
+                Ok(g) => {
+                    eprintln!("kryptikd serve: uid {uid} gave zone {zone:?} {}, {}", g.partition, g.mode());
+                    format!("ok {} {}\n", g.mode(), g.what)
+                }
+                Err(e) => format!("error: {e}\n"),
+            };
+            reply(&conn, &said);
+        }
+        "stick-eject" => {
+            let zone = first.split_whitespace().nth(1).unwrap_or("");
+            if !ident_ok(zone) {
+                reply(&conn, "error: bad zone name\n");
+                return None;
+            }
+            let said = match crate::stick::eject(zone) {
+                Ok(true) => {
+                    eprintln!("kryptikd serve: uid {uid} took the stick back from zone {zone:?}");
+                    "ok\n".to_string()
+                }
+                Ok(false) => format!("error: zone {zone:?} holds no stick\n"),
+                Err(e) => format!("error: {e}\n"),
+            };
+            reply(&conn, &said);
+        }
+        // The chrome's k<N>, and k alone or the screen lock taking it back.
+        "camera-grant" => {
+            let zone = first.split_whitespace().nth(1).unwrap_or("");
+            if !ident_ok(zone) {
+                reply(&conn, "error: bad zone name\n");
+                return None;
+            }
+            let said = match zone_named(cfg, zone).and_then(|z| crate::camera::grant(&z)) {
+                Ok(g) => {
+                    eprintln!("kryptikd serve: uid {uid} gave zone {zone:?} the camera, {}", g.name);
+                    format!("ok {}\n", g.name)
+                }
+                Err(e) => format!("error: {e}\n"),
+            };
+            reply(&conn, &said);
+        }
+        "camera-revoke" => {
+            let said = match crate::camera::revoke() {
+                Ok(Some(e)) => {
+                    eprintln!("kryptikd serve: uid {uid} took the camera back from zone {:?}{}", e.zone,
+                              if e.stayed { "; its driver stays loaded" } else { "" });
+                    format!("ok {}{}\n", e.zone, if e.stayed { " stayed" } else { "" })
+                }
+                Ok(None) => "ok none\n".to_string(),
+                Err(e) => format!("error: {e}\n"),
             };
             reply(&conn, &said);
         }
@@ -1657,6 +1739,12 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
         cfg.wifi_dir.display(),
         cfg.log_dir.display()
     );
+
+    if !cfg.developer {
+        if let Err(e) = crate::camera::mount_run_dir() {
+            eprintln!("kryptikd serve: {}: {e}; the compositor's bar will not mark the camera", crate::camera::RUN_DIR);
+        }
+    }
 
     let mut pending: Vec<Pending> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
