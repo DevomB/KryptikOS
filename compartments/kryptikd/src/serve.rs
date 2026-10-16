@@ -1232,8 +1232,21 @@ fn check_password(cfg: &ServeConfig, uid: u32, text: &str, attempts: &mut crate:
     }
 }
 
+/// Whether a passphrase's descriptor holds it in memory: a pipe, or a memfd or tmpfs file, which
+/// take seals. Read while a volume is suspended, a file on it would miss the caches the seal
+/// dropped and wait on that volume, and with it every request, until nothing could resume it.
+fn in_memory(fd: &OwnedFd) -> bool {
+    let raw = fd.as_raw_fd();
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(raw, &mut st) } != 0 {
+        return false;
+    }
+    (st.st_mode & libc::S_IFMT) == libc::S_IFIFO || unsafe { libc::fcntl(raw, libc::F_GET_SEALS) } >= 0
+}
+
 /// The request's first line asks about the state partition while it is suspended, the passphrase
-/// on `carried` for resume-state. Nothing here reads a file on that partition.
+/// on `carried` for resume-state, in memory alone (`in_memory`): nothing here reads a file on
+/// that partition.
 fn while_suspended(uid: u32, first: &str, carried: Option<OwnedFd>, pause: &mut crate::password::Attempts) -> String {
     match first {
         "unlock-kind" => "ok state\n".into(),
@@ -1245,6 +1258,9 @@ fn while_suspended(uid: u32, first: &str, carried: Option<OwnedFd>, pause: &mut 
             let Some(fd) = carried else {
                 return "error: resume-state: the passphrase comes on a descriptor\n".into();
             };
+            if !in_memory(&fd) {
+                return "error: resume-state: the passphrase comes in a pipe or a memfd, not a file\n".into();
+            }
             let pass = match crate::volume::Passphrase::from_fd(fd.into_raw_fd()) {
                 Ok(p) => p,
                 Err(e) => return format!("error: {e}\n"),
@@ -1453,6 +1469,10 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 reply(&conn, "error: resume-zone: the passphrase comes on a descriptor\n");
                 return None;
             };
+            if !in_memory(&fd) {
+                reply(&conn, "error: resume-zone: the passphrase comes in a pipe or a memfd, not a file\n");
+                return None;
+            }
             let said = match crate::volume::Passphrase::from_fd(fd.into_raw_fd()) {
                 Err(e) => format!("error: {e}\n"),
                 Ok(pass) => match crate::suspend::resume_zone(zone, &pass) {

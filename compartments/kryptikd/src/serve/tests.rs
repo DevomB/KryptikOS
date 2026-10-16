@@ -335,3 +335,21 @@ fn a_suspended_state_answers_the_lock_alone() {
     let (r, _w) = pipe().unwrap();
     assert_eq!(while_suspended(1000, "resume-state", Some(r), &mut pause), "error: wait 2 s\n");
 }
+
+/// While the state partition is suspended, a passphrase in a file on a disk is refused before it
+/// is read, as one on that partition would hold the daemon; a pipe and a memfd are taken.
+#[test]
+fn a_suspended_state_takes_its_passphrase_from_memory_alone() {
+    let (r, _w) = pipe().unwrap();
+    assert!(in_memory(&r), "a pipe");
+    let m = unsafe { libc::memfd_create(b"kryptikd-test\0".as_ptr().cast(), libc::MFD_CLOEXEC) };
+    assert!(m >= 0, "memfd_create");
+    assert!(in_memory(&unsafe { OwnedFd::from_raw_fd(m) }), "a memfd");
+    let f = OwnedFd::from(std::fs::File::open("/proc/self/exe").unwrap());
+    assert!(!in_memory(&f), "a file on a disk");
+    let mut pause = crate::password::Attempts::default();
+    assert_eq!(
+        while_suspended(1000, "resume-state", Some(f), &mut pause),
+        "error: resume-state: the passphrase comes in a pipe or a memfd, not a file\n"
+    );
+}
