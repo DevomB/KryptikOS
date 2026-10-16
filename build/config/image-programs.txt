@@ -740,6 +740,7 @@ usr/lib/kryptik/guest-tests/broker-client.py
 usr/lib/kryptik/guest-tests/camera-check.sh
 usr/lib/kryptik/guest-tests/gui-check.sh
 usr/lib/kryptik/guest-tests/icmp-echo.py
+usr/lib/kryptik/guest-tests/image-probe.sh
 usr/lib/kryptik/guest-tests/power-check.sh
 usr/lib/kryptik/guest-tests/probe-sources.py
 usr/lib/kryptik/guest-tests/sound-check.sh
@@ -1116,6 +1117,7 @@ usr/libexec/kryptik/esp-records.sh
 usr/libexec/kryptik/eudev-trigger.sh
 usr/libexec/kryptik/firstboot.sh
 usr/libexec/kryptik/hw-report.sh
+usr/libexec/kryptik/image-store.sh
 usr/libexec/kryptik/installer-run.sh
 usr/libexec/kryptik/keyboard.sh
 usr/libexec/kryptik/kryptik-sound

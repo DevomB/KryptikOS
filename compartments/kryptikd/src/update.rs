@@ -280,7 +280,7 @@ fn check_lock() -> Result<std::fs::File, String> {
 }
 
 /// An exclusive flock on `path`, made if missing; held while the returned file is open.
-fn lock(path: &Path) -> Result<std::fs::File, String> {
+pub(crate) fn lock(path: &Path) -> Result<std::fs::File, String> {
     use std::os::unix::io::AsRawFd;
     let f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -376,7 +376,7 @@ fn check_in(tool: &Path, dir: &Path, verb: &str, inputs: &[(&Path, &str)], whole
 }
 
 /// A fresh directory that mkdtemp names under `base`, or under the system's temporary directory.
-fn make_scratch(base: &Path) -> Result<PathBuf, String> {
+pub(crate) fn make_scratch(base: &Path) -> Result<PathBuf, String> {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let parent = if base.is_dir() { base.to_path_buf() } else { std::env::temp_dir() };
     let mut template = parent.join("kryptik-check.XXXXXX").as_os_str().as_bytes().to_vec();
@@ -403,6 +403,12 @@ pub fn tool_checks() -> Checks<'static> {
         },
         manifest: &|d| check_signed_pair("check-manifest", d),
     }
+}
+
+/// `kryptik-update check-images` on the image list and signature in `dir`, named as a release's
+/// manifest is: whether the list is signed in the image namespace.
+pub fn check_images(dir: &Path) -> Result<String, String> {
+    check_signed_pair("check-images", dir)
 }
 
 /// `kryptik-update check-release` on the manifest and signature in `dir`:

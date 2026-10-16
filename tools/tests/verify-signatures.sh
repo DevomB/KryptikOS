@@ -502,6 +502,23 @@ fresh_root; run
 expect_fail "a file the signed list does not name fails" \
     "does not match a digest in summed-SHA-256.txt"
 
+# Like Node.js's SHASUMS256.txt: every release's list has the same name, so the one cached can be an
+# earlier release's, and its signature with it.
+for r in first second; do printf 'fixture payload for %s\n' "$r" > "${SRC}/${r}.tar.gz"; done
+list_release() {  # list_release NAME: upstream's list names NAME's file alone, signed afresh
+    sha256sum "${SRC}/$1.tar.gz" | sed "s#  .*#  $1.tar.gz#" > "${SRC}/SHASUMS256.txt"
+    fixgpg --yes --local-user good@example.test \
+        --detach-sign -o "${SRC}/SHASUMS256.txt.sig" "${SRC}/SHASUMS256.txt" >/dev/null 2>&1
+}
+list_release first
+: > "${W}/manifest"; add_row first sums:SHASUMS256.txt.sig
+fresh_root; run --strict
+expect_pass "a list named alike for every release verifies" "verified:     1"
+list_release second
+: > "${W}/manifest"; add_row second sums:SHASUMS256.txt.sig
+fresh_root; run --strict
+expect_pass "an earlier release's cached list is fetched again, with its signature" "verified:     1"
+
 # --- unaudited imported keys ------------------------------------------------
 
 write_manifest unknown
@@ -905,6 +922,45 @@ if [[ "$RC" -ne 0 ]] && grep -qF "published copy at file://${PROV}/missing.asc n
 else
     red "and --strict counts its source unverifiable (exit ${RC})"; show
 fi
+# A pull request's gate: the host's silence is a warning, and the key held still decides.
+fresh_root
+runprov --strict --unread-warns --report="${W}/r9.tsv"
+if [[ "$RC" -eq 0 && "$(klass_of "${W}/r9.tsv" good)" == "signature-keyring-key" ]] \
+   && grep -qF "as its published copy did not answer (--unread-warns)" "$OUT" \
+   && grep -qF "  - good (file://${PROV}/missing.asc)" "$OUT"; then
+    green "--strict --unread-warns checks it against the key held, and names it"
+else
+    red "--strict --unread-warns checks it against the key held (exit ${RC}, got $(klass_of "${W}/r9.tsv" good))"; show
+fi
+fresh_root
+runprov --unread-warns
+if [[ "$RC" -ne 0 ]] && grep -qF -- "--unread-warns eases --strict; give both" "$OUT"; then
+    green "--unread-warns alone is refused"
+else
+    red "--unread-warns alone is refused (exit ${RC})"; show
+fi
+# It eases nothing else: a copy that answers with another key still fails,
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  korg  file://${PROV}/good.asc  2026-09-11  unknown  deliberately the wrong key"
+runprov --strict --unread-warns --report="${W}/r10.tsv"
+if [[ "$RC" -ne 0 && "$(klass_of "${W}/r10.tsv" unknown)" == "published-key-changed" ]]; then
+    green "--unread-warns still fails a locator that serves another key"
+else
+    red "--unread-warns still fails a locator that serves another key (exit ${RC}, got $(klass_of "${W}/r10.tsv" unknown))"; show
+fi
+# and a key held but unaudited stays unaudited when its copy does not answer.
+fresh_root
+write_manifest unknown
+run --fetch-unknown-keys
+prov_table "${UNKFPR}  korg  file://${PROV}/missing.asc  2026-09-11  unknown  its published copy gone"
+runprov --strict --unread-warns
+if [[ "$RC" -ne 0 ]] && grep -qF "signed by unaudited keys" "$OUT"; then
+    green "--unread-warns still fails an unaudited key whose copy did not answer"
+else
+    red "--unread-warns still fails an unaudited key whose copy did not answer (exit ${RC})"; show
+fi
+rm -f "${FAKE}/keys.manifest"
 
 # --- malformed provenance rows ----------------------------------------------
 
@@ -974,6 +1030,11 @@ bad_prov "${UNKFPR}  savannah  https://savannah.example/project/release-gpgkeys.
          "a savannah locator on another host is refused"
 bad_prov "${UNKFPR}  savannah  https://savannah.gnu.org/project/memberlist.php?group=x  2026-09-11  unknown  x" \
          "a savannah locator that is not the project's release keyring is refused"
+# An origin row says where a pinned key's material comes from, and nothing about who signs.
+bad_prov "${UNKFPR}  origin  https://example.test/KEY  2026-10-13  unknown  unknown fixture <unknown@example.test>" \
+         "an origin row for a key no pin names is refused"
+bad_prov "14F26682D0916CDD81E37B6D61B7B526D98F0353  origin  http://archive.mozilla.org/KEY  2026-10-13  firefox  Mozilla" \
+         "an origin locator that is not https is refused"
 
 # Shipped github rows need both the endpoint shape and the release-author tie.
 gh_bad=0

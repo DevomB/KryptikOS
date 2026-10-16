@@ -69,9 +69,9 @@ done
 
 # --- every external tool, checked before the first write -------------------
 missing=""
-for tool in sfdisk blockdev blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
+for tool in sfdisk blockdev flock blkid cryptsetup veritysetup stty mkfs.ext4 dd sha256sum mount umount sync awk sed od \
             grep readlink lsblk head tail wc cmp cp mkdir stat tr cut basename mv mountpoint rmdir chmod rm cat sleep \
-            loadkeys chattr kryptik-efiboot; do
+            loadkeys chattr kryptik-efiboot kryptikd; do
     command -v "$tool" >/dev/null 2>&1 || missing="${missing} ${tool}"
 done
 [ -z "$missing" ] || die "this system is missing:${missing}
@@ -80,8 +80,8 @@ touches a disk, not at the moment it is first called."
 
 # Only a table the kernel reads whole (BLKRRPART) gives each partition its name (PARTNAME),
 # which kryptik_named looks up. Partitions added one at a time, as partx adds them and as sfdisk
-# does when its own re-read finds the disk busy, carry none. udev's probe of the new table keeps
-# the disk busy for a moment.
+# does when its own re-read finds the disk busy, carry none. A program that still has an old
+# partition open keeps the disk busy for a moment.
 reread_table() {   # DISK
     n=0
     until blockdev --rereadpt "$1" 2>/dev/null; do
@@ -117,6 +117,7 @@ mounted_on() {   # mounted_on DEVS < TABLE: "SOURCE on WHERE" for each source th
 . /usr/libexec/kryptik/medium-root.sh
 # The ESP's kernels and records, written as every other tool writes them.
 . /usr/libexec/kryptik/esp-records.sh
+. /usr/libexec/kryptik/image-store.sh
 [ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
 [ -z "$PRESEED" ] || preseed_ok "$PRESEED"
 
@@ -183,20 +184,24 @@ fi
 # --- what we are installing, from the medium ---------------------------------
 media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
 [ -n "$media" ] || die "this is not an install medium (no kryptik.media= on the signed command line)"
-mkdir -p "$MNT_BASE/media" "$MNT_BASE/esp" "$MNT_BASE/state" "$MNT_BASE/tesp"
+mkdir -p "$MNT_BASE/media" "$MNT_BASE/esp" "$MNT_BASE/state" "$MNT_BASE/tesp" "$MNT_BASE/images"
 MAPPING=kryptik-install-state
 cleanup() {
     [ -t 0 ] && stty echo 2>/dev/null || true
-    for m in "$MNT_BASE/tesp" "$MNT_BASE/state" "$MNT_BASE/esp" "$MNT_BASE/media"; do
+    for m in "$MNT_BASE/tesp" "$MNT_BASE/state" "$MNT_BASE/images" "$MNT_BASE/esp" "$MNT_BASE/media"; do
         mountpoint -q "$m" 2>/dev/null && umount "$m" 2>/dev/null || true
         rmdir "$m" 2>/dev/null || true
     done
     [ -b "/dev/mapper/$MAPPING" ] && cryptsetup close "$MAPPING" 2>/dev/null || true
+    rm -rf "$MNT_BASE/images-checked"
     rmdir "$MNT_BASE" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 ESP_SRC=""      # a block device or a regular file holding the ESP image
+IMG_SRC=""      # the medium's software images, if it carries any
+# Image NAME as the medium carries it, never past the size its list signs and one byte.
+medium_image() { head -c "$(( $2 + 1 ))" "$IMG_SRC/$1.img"; }   # medium_image NAME BYTES
 ROOT_SRC=""     # block device holding the root image at ROOT_OFF
 ROOT_OFF=0
 case "$media" in
@@ -208,14 +213,22 @@ case "$media" in
         [ -b "$ESP_SRC" ] || die "no single kryptik-esp partition on the medium this system booted from"
         mount -t vfat -o ro "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP"
         ROOT_JSON="$MNT_BASE/esp/kryptik/root.json"
+        # The release's software images, when the medium carries them, in a partition of their own.
+        IMG_DEV="$(kryptik_part kryptik-images 2>/dev/null)" || IMG_DEV=""
+        if [ -b "$IMG_DEV" ]; then
+            mount -t vfat -o ro,nosuid,nodev,noexec "$IMG_DEV" "$MNT_BASE/images" || die "could not mount the medium's kryptik-images"
+            IMG_SRC="$MNT_BASE/images"
+        fi
         ;;
     iso)
-        mount -t iso9660 -o ro /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
+        # As the stick's images partition is: Rock Ridge can carry device nodes and set-id files.
+        mount -t iso9660 -o ro,nosuid,nodev,noexec /dev/sr0 "$MNT_BASE/media" || die "could not mount the medium (/dev/sr0)"
         ESP_SRC="$MNT_BASE/media/esp.img"
         [ -f "$ESP_SRC" ] || die "no esp.img on the medium"
         # For its kernels, read before anything is written.
         mount -t vfat -o ro,loop "$ESP_SRC" "$MNT_BASE/esp" || die "could not mount the medium's ESP image"
         ROOT_JSON="$MNT_BASE/media/root.json"
+        if [ -f "$MNT_BASE/media/images/images.manifest" ]; then IMG_SRC="$MNT_BASE/media/images"; fi
         ROOT_SRC=/dev/sr0
         # The signed linear table "0 N linear /dev/sr0 START" puts the root image at sector START.
         ROOT_OFF="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"
@@ -225,6 +238,14 @@ case "$media" in
     *) die "unknown medium type '${media}'" ;;
 esac
 medium_root "$ROOT_JSON" /proc/cmdline
+ROOT_HASH="$(json_field "$ROOT_JSON" root_hash)"
+# The medium's software images, checked before anything is written (medium-root.sh); the list
+# and signature kept later are the ones checked, from IMG_CHECKED.
+IMG_CHECKED="$MNT_BASE/images-checked"
+if [ -n "$IMG_SRC" ]; then
+    rm -rf "$IMG_CHECKED" && mkdir -m 0700 "$IMG_CHECKED" || die "cannot make $IMG_CHECKED"
+    medium_images_ok "$IMG_SRC" "$IMG_CHECKED"
+fi
 for s in a b; do
     kernel_names_root "$MNT_BASE/esp/EFI/kryptik/kryptik-$s.efi" \
         || die "the medium's kernel for slot $s does not carry the root hash its signed command line names; nothing was written"
@@ -329,6 +350,12 @@ kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOU
 
 # --- partition -------------------------------------------------------------
 say "partitioning (sfdisk, GPT: kryptik-esp, kryptik-a, kryptik-b, kryptik-state)"
+# The disk stays locked until the install ends, as udev asks of whatever writes a partition
+# table. When sfdisk closes the disk, eudev re-reads its table unless the disk is locked, and a
+# re-read after ours drops the new partitions while they are named and written. The lock dies
+# with this process; sfdisk and the tools after it take none of their own.
+exec 7<"$TARGET_REAL"
+flock -w 30 -x 7 || die "another program held ${TARGET} locked for 30 seconds; nothing was written"
 P1="$(part_dev "$TARGET_REAL" 1)"; P2="$(part_dev "$TARGET_REAL" 2)"
 P3="$(part_dev "$TARGET_REAL" 3)"; P4="$(part_dev "$TARGET_REAL" 4)"
 GPT_ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
@@ -400,6 +427,10 @@ fi
 # --- the state partition: what installed this, and the first-boot preseed --
 mount -t ext4 -o rw "/dev/mapper/$MAPPING" "$MNT_BASE/state" || die "could not mount kryptik-state"
 mkdir -p "$MNT_BASE/state/lib/kryptik"
+if [ -n "$IMG_SRC" ]; then
+    images_keep "$IMG_CHECKED/images.manifest" "$IMG_CHECKED/images.manifest.sig" "$MNT_BASE/state/lib/kryptik/images" "$ROOT_HASH" medium_image
+    say "images       $(grep -c '^image: ' "$IMG_CHECKED/images.manifest") kept for ${VERSION}"
+fi
 cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
 {
   "installed_at": "$(date -Iseconds 2>/dev/null || echo unknown)",

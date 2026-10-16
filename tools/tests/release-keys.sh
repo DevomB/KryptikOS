@@ -72,7 +72,7 @@ make_medium() {   # a complete key medium, as the ceremony leaves it
     ssh-keygen -q -t ed25519 -N '' -C 'kryptik-release (test)' -f "$M/kryptik-release" < /dev/null
     ssh-keygen -q -t ed25519 -N '' -C 'kryptik-latest (test)' -f "$M/kryptik-latest" < /dev/null
     {
-        printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-release.pub")"
+        printf 'kryptik-release namespaces="kryptik-release,kryptik-media,kryptik-image" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-release.pub")"
         printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-latest.pub")"
     } > "$M/release-signers"
     openssl req -new -x509 -newkey rsa:2048 -nodes -days 30 -sha256 -subj "/CN=test Secure Boot key/" \
@@ -142,10 +142,12 @@ make_medium; sed -i 's/namespaces="kryptik-latest"/namespaces="kryptik-release"/
 refused "an anchor that lets the statement key sign releases" "not held to its own namespace"
 make_medium; sed -i 's/namespaces="kryptik-latest"/namespaces="kryptik-latest,kryptik-media"/' "$M/release-signers"
 refused "an anchor that lets the statement key sign the media's checksums" "kryptik-latest is not held to its own namespaces"
-make_medium; sed -i 's/namespaces="kryptik-release,kryptik-media"/namespaces="kryptik-release"/' "$M/release-signers"
+make_medium; sed -i 's/namespaces="kryptik-release,kryptik-media,kryptik-image"/namespaces="kryptik-release"/' "$M/release-signers"
 refused "an anchor that leaves the media's checksums to no key" "kryptik-release is not held to its own namespaces"
-make_medium; sed -i 's/namespaces="kryptik-release,kryptik-media"/namespaces="kryptik-release,kryptik-media,kryptik-latest"/' "$M/release-signers"
+make_medium; sed -i 's/namespaces="kryptik-release,kryptik-media,kryptik-image"/namespaces="kryptik-release,kryptik-media,kryptik-image,kryptik-latest"/' "$M/release-signers"
 refused "an anchor that lets the release key sign statements" "kryptik-release is not held to its own namespaces"
+make_medium; sed -i 's/namespaces="kryptik-release,kryptik-media,kryptik-image"/namespaces="kryptik-release,kryptik-media"/' "$M/release-signers"
+refused "an anchor that leaves image lists to no key" "kryptik-release is not held to its own namespaces"
 make_medium; sed -i '1p' "$M/release-signers"
 refused "an anchor listing a key twice" "a key is listed twice"
 make_medium; printf 'someone namespaces="someone" %s\n' "$(cut -d' ' -f1,2 < "$M/kryptik-release.pub")" >> "$M/release-signers"
@@ -158,7 +160,7 @@ refused "a release key the anchor does not list" "kryptik-release.pub is not a k
 # While a key is replaced, the anchor lists the old one and the new one, and
 # the medium may hold either.
 make_medium; ssh-keygen -q -t ed25519 -N '' -C 'kryptik-release (next)' -f "${W}/next" < /dev/null
-printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 < "${W}/next.pub")" >> "$M/release-signers"
+printf 'kryptik-release namespaces="kryptik-release,kryptik-media,kryptik-image" %s\n' "$(cut -d' ' -f1,2 < "${W}/next.pub")" >> "$M/release-signers"
 rm "$M/kryptik-release" "$M/kryptik-release.pub"; mv "${W}/next" "$M/kryptik-release"; mv "${W}/next.pub" "$M/kryptik-release.pub"
 keys production "$PW" "$M"; rc=$?
 if [[ "$rc" -eq 0 && "$(got RELEASE_KEY)" == "${M}/kryptik-release" ]]; then

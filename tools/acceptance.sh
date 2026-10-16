@@ -338,9 +338,9 @@ it_compositor_sources() {
     return "$ok"
 }
 it_sources_lock() {
-    echo "-- every build input matches sources.lock (offline)"
-    ( cd "$KRYPTIK_SOURCES" && sha256sum --check --quiet --strict "${ROOT}/sources.lock" ) || return 1
-    echo "  ok: $(grep -c . "${ROOT}/sources.lock") entries verified"
+    echo "-- every build input matches sources.lock and the software images' lock (offline)"
+    ( cd "$KRYPTIK_SOURCES" && sha256sum --check --quiet --strict "${ROOT}/sources.lock" "${ROOT}/build/images/sources.lock" ) || return 1
+    echo "  ok: $(cat "${ROOT}/sources.lock" "${ROOT}/build/images/sources.lock" | grep -c .) entries verified"
 }
 # Check each medium's sidecar against the hash the run took at the start.
 it_media_hashes() {

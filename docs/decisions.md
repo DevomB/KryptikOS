@@ -260,7 +260,7 @@ firmware's boot entries and a judged trial, not a loader's menu.
 file; an initramfs inside the signed image, measured but a second userland to
 keep small and right.
 
-## ADR-015 (proposed): Applications ship as signed images beside the root
+## ADR-015: Applications ship as signed images beside the root
 
 The root keeps the base system: what zone 0 runs and what every zone needs.
 Applications (the browser and its toolkit, a mail client, a document viewer,
@@ -293,7 +293,7 @@ ephemeral zones); another distribution's userland in a zone (gives up
 ADR-001 where the applications run); everything on the root (does not fit
 the slots of machines already installed).
 
-## ADR-016 (proposed): Firefox in zones, rendering in software; the GPU and X11 by zone
+## ADR-016: Firefox in zones, rendering in software; the GPU and X11 by zone
 
 The browser is Firefox ESR, built by stage 04's GCC for Wayland alone, on
 GTK 3 without X11 or D-Bus, and run with its own seccomp sandbox inside the

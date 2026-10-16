@@ -192,6 +192,58 @@ else
 fi
 
 echo
+echo "-- the medium's software images go through kryptikd before anything is written"
+# A kryptikd that answers check-images as the medium in DIR has it: DIR/answer is "ok" or the refusal.
+# What it checks is images.rs's (check_medium) and kryptik-update's (tools/tests/image-list.sh): an
+# unsigned list, one signed in kryptik-release, a missing or short image. This is how the installer
+# takes the answer, and where.
+if ! declare -F medium_images_ok >/dev/null; then
+    red "could not read medium_images_ok from ${MEDIUM_ROOT}"
+else
+    stub="$(mktemp -d)"
+    cat > "${stub}/kryptikd" <<'STUB'
+#!/bin/sh
+[ "$1" = check-images ] && [ "$#" -eq 4 ] || { echo "usage: kryptikd check-images DIR BASE OUT" >&2; exit 2; }
+printf '%s\n' "$3" > "$2/base-asked"
+a="$(cat "$2/answer")"
+[ "$a" = ok ] && { echo checked > "$4/images.manifest"; echo "1 images of release 1.0.0 for this root"; exit 0; }
+echo "kryptikd: check-images: $a" >&2
+exit 1
+STUB
+    chmod 0755 "${stub}/kryptikd"
+    med="$(mktemp -d)"
+    V_HASH="$(printf 'c%.0s' $(seq 64))"
+    echo ok > "${med}/answer"
+    chk="$(mktemp -d)"
+    ( PATH="${stub}:$PATH"; medium_images_ok "$med" "$chk" ) >/dev/null 2>&1 \
+        && [[ "$(cat "${med}/base-asked" 2>/dev/null)" == "$V_HASH" && "$(cat "${chk}/images.manifest" 2>/dev/null)" == checked ]] \
+        && green "a medium kryptikd accepts is taken, checked for the signed root, its checked list handed on" \
+        || red "a medium kryptikd accepts was refused, checked for another root, or its list not handed on"
+    for why in "the medium's image list is refused: not signed as an image list" \
+               "image browser: /media/images/browser.img holds 4096 bytes, and the list signs 12288"; do
+        echo "$why" > "${med}/answer"
+        out="$( (PATH="${stub}:$PATH"; medium_images_ok "$med" "$chk") 2>&1 )"; rc=$?
+        [[ "$rc" -ne 0 && "$out" == *"software images are refused: ${why}"* ]] \
+            && green "a refusal stops the install with kryptikd's reason (${why%%:*})" \
+            || red "a refusal was not passed on: rc=${rc} ${out}"
+    done
+    rm -rf "$stub" "$med" "$chk"
+fi
+grep -qF 'images_keep "$IMG_CHECKED/images.manifest" "$IMG_CHECKED/images.manifest.sig"' "$INSTALLER" \
+    && green "the list kept is the one kryptikd checked, not the medium's read again" \
+    || red "images_keep reads the list from the medium a second time"
+if awk '/medium_images_ok "\$IMG_SRC" "\$IMG_CHECKED"/ && !c { c = NR }
+        /^sfdisk / && !w { w = NR }
+        END { exit !(c && w && c < w) }' "$INSTALLER"; then
+    green "the medium's images are checked before the partition table, the first write"
+else
+    red "the medium's image check is not before the first write"
+fi
+grep -qE 'kryptik-efiboot kryptikd; do$' "$INSTALLER" \
+    && green "kryptikd is among the tools checked up front" \
+    || red "kryptikd is not among the tools checked up front"
+
+echo
 echo "-- --slot-size is a number of MiB, no less than a slot needs"
 eval "$(sed -n '/^slot_size_ok()/,/^}/p' "$INSTALLER")"
 if ! declare -F slot_size_ok >/dev/null; then
@@ -275,6 +327,15 @@ else
 fi
 grep -v '^ *#' "$INSTALLER" | grep -qw partx && red "the installer adds partitions with partx, which leaves them nameless" \
     || green "the installer has no partx, whose partitions the kernel leaves nameless"
+locked="$(grep -n '^flock -w [0-9]* -x 7 || die' "$INSTALLER" | cut -d: -f1)"
+opened="$(grep -n '^exec 7<"\$TARGET_REAL"$' "$INSTALLER" | cut -d: -f1)"
+[[ "$opened" =~ ^[0-9]+$ && "$locked" =~ ^[0-9]+$ && "$opened" -lt "$locked" && "$locked" -lt "$written" ]] \
+    && green "the whole disk is locked before its table is written, so eudev's own re-read gives way" \
+    || red "the disk is opened at line ${opened:-none} and locked at ${locked:-none}; the table is written from ${written:-none}"
+# A tool that waited for the lock this process holds would never get it.
+grep -v '^ *#' "$INSTALLER" | grep -qE -- '--lock|LOCK_BLOCK_DEVICE' \
+    && red "a tool the installer runs asks for a lock on the disk it holds" \
+    || green "no tool the installer runs asks for a lock on the disk it holds"
 grep -q '^kryptik_named kryptik-a | grep -qx "\$P2" || die' "$INSTALLER" \
     && green "the written table is checked by the name the kernel gives, as the system will find it" \
     || red "the installer does not check partition 2's name through kryptik_named"

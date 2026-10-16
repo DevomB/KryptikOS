@@ -108,6 +108,52 @@ buffers are deleted and no surface shows one of them, counting each buffer a
 synchronized subsurface committed until wlroots applies that subsurface's
 cache.
 
+## Wayland shared memory
+
+A zone's windows reach dwl as shared memory: a client hands dwl a descriptor
+(`wl_shm.create_pool`), which dwl maps and draws from. The proxy bounds what
+a zone hands over (`compositor/wlproxy/src/policy.rs`):
+
+| Bound | Per connection | Per zone | What it holds |
+| --- | --- | --- | --- |
+| Pools | 128 | 256 | dwl's mappings, one a pool, far below `vm.max_map_count`, past which dwl's own mappings fail |
+| Bytes in pools | 1 GiB | 1 GiB | what dwl maps for a zone at one time, at most 128 MiB a pool (a 6K frame) |
+| Windows | 32 | 64 | how many windows a zone puts on the screen |
+
+Passing one ends the client's connection, as Wayland answers a pool or a
+window it will not make only with a protocol error. Firefox draws all its
+windows over one connection, so a breach closes every one of them at once.
+
+**What a browser needs.** Firefox renders each window into pools of its own:
+the buffer on screen, the one it draws and up to three spare
+(`widget/gtk/WindowSurfaceWaylandMultiBuffer.cpp`), and GTK holds one or two
+for the window itself. At 3840×2160 a frame is 33 MB, so a window takes 100
+to 230 MB. Two windows on two 4K heads, developer tools and a
+picture-in-picture window come to about 0.7 GB in about 30 pools. The bounds
+before these, 128 MiB a connection and 256 MiB a zone, ended Firefox with one
+4K window open, and a ninth window under the earlier limit of 8.
+
+**What the zone pays for, and what dwl does.** A page the zone writes is
+charged to the zone's cgroup and held by its `memory_max`. A page dwl reads
+before the zone has written it is allocated by dwl's fault and charged to
+dwl. The byte bounds limit that while the pools live: a zone can make dwl
+hold at most 1 GiB this way at one time. They do not limit it after. A zone
+that keeps its own descriptor once a pool is gone keeps the pages dwl
+faulted, still charged to dwl, and can do it again with a new pool, a
+screen's worth of pages a frame. No bound on live pools closes that, at any
+size.
+
+**Closing it, not built yet.** The proxy would keep a duplicate of each
+pool's descriptor and punch the pool's range (`fallocate` with
+`FALLOC_FL_PUNCH_HOLE`) once the pool and its buffers are gone and no surface
+shows one, which frees what dwl faulted. It would refuse a pool it could not
+punch: a read-only descriptor, a write seal, a file that is not shared
+memory. What dwl holds for a zone is then bounded by the per-zone bound, and
+a `memory.max` on the session's cgroup contains the rest. Checking at a
+commit that a buffer's pages are resident is not enough, as the zone can
+punch them itself between the check and dwl's read. The measurement under
+Tests confirms the charge on the installed kernel.
+
 ## Files
 
 `cgroup.rs`, `spawn.rs` (cgroup setup before the intermediate unshares;

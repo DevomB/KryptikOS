@@ -52,8 +52,8 @@ often a major version happens. The proposed decision is ADR-023 in
 `--slot-size` covers the user who knows. The default is the question.
 Image plus half again was right for a root that grew slowly. Version 2 puts
 more in the root: firmware, Mesa if the compositor moves to the GPU, and the
-browser stack itself unless applications ship as images (ADR-015, proposed
-in `docs/design/software-delivery.md`). The browser design works out that the
+browser stack itself unless applications ship as images (ADR-015,
+`docs/design/software-delivery.md`). The browser design works out that the
 software-rendered browser in the root alone leaves about 400 MiB of today's
 slot.
 

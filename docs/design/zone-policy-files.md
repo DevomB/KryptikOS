@@ -77,6 +77,11 @@ a kill, is printed with `soft` after its name and gets the same errno here:
   and again on a timer, and writes at the normal priority when refused, where
   a kill would end the browser. A policy may allow it, and the kernel still
   refuses the real-time class without `CAP_SYS_NICE`.
+- `quotactl` fails with EPERM: Firefox's disk-space check reads the user's
+  quota on the profile's device from its network cache's thread, a moment
+  after it starts, and keeps the free space `statfs` gave when refused,
+  where a kill ended the browser before its window showed. It stays denied:
+  no policy opens it, as setting a quota is the call's other use.
 
 A printed name can go on an `allow-syscall` line unless it is on the denied
 list; a call refused for its arguments (namespace flags to `clone`,

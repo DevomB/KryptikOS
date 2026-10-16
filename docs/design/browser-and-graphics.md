@@ -6,7 +6,7 @@ Today a zone gets a terminal and a text browser, drawn into shared memory
 and composited on the CPU. This document chooses the browser, the toolkit
 under it, how a zone is given the GPU and what the proxy must then carry,
 how Xwayland runs inside a zone (ADR-004), and what all of it costs the
-root. The proposed decision is ADR-016 in [decisions](../decisions.md).
+root. The decision is ADR-016 in [decisions](../decisions.md).
 
 ## Where things stand
 
@@ -22,9 +22,10 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
   (below). A cursor named through `wp_cursor_shape_manager_v1` is drawn by
   the compositor from its own theme, while an image a zone draws is never
   taken. It disconnects a client
-  that binds anything else, and bounds shared-memory pools at 64 MiB each,
-  128 MiB per connection and 256 MiB per zone
-  (`compositor/wlproxy/src/policy.rs`).
+  that binds anything else, and bounds shared-memory pools at 128 MiB each
+  and 1 GiB per connection and per zone, which Firefox on two 4K heads fits
+  (`compositor/wlproxy/src/policy.rs`,
+  [resource limits](resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
 - **A zone has no GPU device.** Its `/dev` holds `null`, `zero`, `full`,
   `random`, `urandom`, `tty`, its own `/dev/shm` and a devpts instance
   (`DEVICES` in `compartments/kryptikd/src/rootfs.rs`).
@@ -48,8 +49,8 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
 - **ADR-001 and ADR-010.** Built from source here; Rust comes from the pinned
   release toolchain, as for kryptikd.
 - **The slot size** of machines already installed (below), and the software
-  images proposed as ADR-015 in `docs/design/software-delivery.md`, beside
-  this design.
+  images of ADR-015 (`docs/design/software-delivery.md`), beside this
+  design.
 
 ## The browser
 
@@ -58,9 +59,9 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
 - **Build.** Firefox builds with GCC 11.1 or newer on Linux, so stage 04's
   GCC 14 can compile it. It still needs clang and libclang, since bindgen
   generates its style system's bindings through libclang whatever the
-  compiler; the pinned Rust toolchain and cbindgen; Node.js, unless the
-  build passes `--disable-nodejs`, which upstream warns will become an
-  error; Python 3; and nasm for its codecs' SIMD. Its wasm-sandboxed
+  compiler; the pinned Rust toolchain and cbindgen; Node.js, which the
+  build runs for the devtools debugger's modules, `--disable-nodejs` or
+  not; Python 3; and nasm for its codecs' SIMD. Its wasm-sandboxed
   libraries (RLBox: graphite, hunspell, expat, ogg, woff2 and others run as
   WebAssembly compiled back to native code) need clang's `wasm32` target and
   a WASI sysroot. They are worth keeping: a font or spelling parser bug stays
@@ -71,23 +72,72 @@ root. The proposed decision is ADR-016 in [decisions](../decisions.md).
 - **Its sandbox inside a zone.** Firefox confines its content processes with
   seccomp-bpf, installed with `seccomp(2)` and `SECCOMP_FILTER_FLAG_TSYNC`,
   and adds a namespace layer (chroot, no network) where it can create user
-  namespaces. Two things stop it in a zone today:
+  namespaces.
   - At start it probes for user namespaces by calling
-    `clone(CLONE_NEWUSER)` in its own process (`SandboxInfo.cpp`), unless
-    `MOZ_ASSUME_USER_NS` says the answer. The zone filter kills that call,
-    and the browser with it.
-  - `seccomp(2)` is not in the base list, so the call is killed too.
+    `clone(CLONE_NEWUSER)` in its own process (`SandboxInfo.cpp`). The zone
+    filter answers `clone` and `unshare` with namespace flags with `EPERM`,
+    as the kernel answers an unprivileged caller, so the probe fails and the
+    browser starts; Chromium and bubblewrap probe the same way, and an
+    `EPERM` grants nothing.
+  - `seccomp(2)` is not in the base list. The browser image needs it
+    (`build/images/browser.needs`), and the zones that run the browser,
+    `untrusted`, `personal` and `work`, grant it with
+    `allow-syscall seccomp`, which `kryptikd check` holds them to.
 
-  The fix for the first is general: answer `clone` and `unshare` with
-  namespace flags with `EPERM`, as the kernel itself answers an unprivileged
-  caller, instead of killing. Chromium, bubblewrap and Firefox all probe this
-  way, and an `EPERM` grants nothing. The second is a policy line,
-  `allow-syscall seccomp`, in the zones that run the browser. Firefox's
-  filters then stack under the zone's, and the stricter answer wins. Its
-  namespace layer stays off, the price of no nested user namespaces
-  (`hardened.fragment`).
+  Firefox's filters then stack under the zone's, and the stricter answer
+  wins. Its namespace layer stays off, the price of no nested user
+  namespaces (`hardened.fragment`).
 - **Updates.** The extended-support release (ESR) has a security release
   every four weeks, like the rapid channel, with fewer feature changes.
+
+### A second launch where Firefox is open
+
+With no remote, a second `firefox` in a zone whose browser is open finds
+its profile locked and says that Firefox is already running. The browser
+key (Alt+Shift+u) and the menu's `b` should instead put that zone's open
+Firefox window in front, and start Firefox only when the zone has none. A
+design, not yet built:
+
+- **Who knows the window.** dwl alone. For every window it holds the zone,
+  taken from the socket the client came through and never from the client,
+  the `app_id` Firefox sets, its tags and monitor, and the focus order. The
+  `app_id` is the client's own word, but a match is only sought among one
+  zone's windows, so a zone that claims it can bring forward only its own
+  window. The chrome sees only the focused window of each output, from
+  dwl's status. The launch daemon sees the zone's processes, not its
+  windows.
+- **The key.** A dwl action in place of `spawn`, focus-or-launch, given the
+  zone, the `app_id` and the launch command. It takes the first window in
+  the focus order whose zone and `app_id` match, so the one used last. If
+  that window is not shown, dwl first views its first tag on its monitor,
+  as Alt and the tag's number would, then gives it the keyboard. With no
+  such window, it starts the command as the key does now. No channel to
+  dwl is needed.
+- **The menu.** The chrome keeps the launch, as the zone's passphrase is
+  asked on its terminal. It needs two things from dwl:
+  - dwl's status gains a line naming each zone's open `app_id`s. The
+    chrome's status reader records it beside the focus record, in the
+    session's runtime directory, and `b` looks there first.
+  - When the browser is open, the chrome writes a one-line request, the
+    zone and that `app_id`, to a file in that directory. dwl watches it the
+    way it watches the microphone and camera marks: inotify on the
+    directory, and a file that must be the session user's own and not
+    writable by group or others. dwl reads it, removes it and acts on it as
+    the key does. The runtime directory is the session user's alone, mode
+    0700, so no zone can make the request.
+- **On another tag or monitor.** dwl views the window's tag on the monitor
+  it is on, and the keyboard follows it there. A window is never moved
+  between tags, so the vault keeps its tag.
+- **A waiting zone.** The window of a zone frozen after a sleep, its volume
+  waiting for the passphrase, comes forward all the same and does not
+  answer. The menu already says the zone is waiting and asks with `p`.
+- **Not chosen.** Firefox's remote over a D-Bus session bus private to the
+  zone would hand the second launch to the open browser, but it puts D-Bus
+  back into the image and the zone, which the build leaves out on purpose.
+  A Wayland protocol for the chrome, wlroots' foreign-toplevel management
+  or one of Kryptik's own, is more code than a status line and a watched
+  file, and foreign-toplevel management carries no zone: the chrome would
+  have to trust the titles.
 
 ### Chromium
 
@@ -109,21 +159,144 @@ browser.
 ## The toolkit stack
 
 GTK 3 for Firefox, built with `-Dx11_backend=false`, so no X11 library
-enters the image, and without the accessibility bridge, which talks D-Bus:
+enters the image, and without the accessibility bridge, which talks D-Bus.
+It is the `toolkit` software image (`build/images/toolkit.sh`), which the
+browser image is built over:
 
-- glib, pango, harfbuzz, fribidi, freetype, fontconfig, cairo (pixman is
-  already built), gdk-pixbuf with libpng and libjpeg-turbo, libepoxy, ATK
-  from at-spi2-core;
-- shared-mime-info, the hicolor theme and one small icon theme;
-- GSettings with its keyfile backend, since dconf needs D-Bus;
-- fonts: DejaVu is shipped; Noto for wider scripts costs tens of megabytes,
-  and CJK fonts a hundred or more, so they are a choice, not a default.
+- glib (with pcre2, without its JIT), pango, harfbuzz, fribidi, freetype,
+  fontconfig, cairo (pixman is the root's), gdk-pixbuf with libpng, libepoxy
+  and ATK from at-spi2-core, built alone with a patch that drops its
+  unused libxml2;
+- the Khronos EGL headers from libglvnd, which libepoxy and GTK's Wayland
+  backend compile against. No EGL library comes with them: a zone has no
+  GPU, so GL stays unavailable there;
+- gdk-pixbuf reads PNG alone, built in: GTK's theme and icons are PNG, and
+  each other loader is a parser more. JPEG, GIF and the rest come only if a
+  program the image carries needs them; Firefox decodes its own;
+- the hicolor theme. An icon theme with symbolic icons needs librsvg, so
+  GTK falls back to its built-in icons until one is chosen;
+- fontconfig's and GTK's configuration under `/usr/etc`, as an image adds
+  nothing outside `/usr`; fontconfig keeps its cache in the user's home;
+- GSettings with the memory backend by default, or the keyfile backend
+  (`GSETTINGS_BACKEND=keyfile`), since dconf needs D-Bus;
+- printing to a file alone, which GTK requires; no CUPS;
+- fonts: DejaVu is the root's; Noto for wider scripts costs tens of
+  megabytes, and CJK fonts a hundred or more, so they are a choice, not a
+  default.
+
+gtk3-demo and gtk3-widget-factory come with it, the first GUI programs a
+zone can run. The zones suite runs `fc-match` and `gtk-query-immodules-3.0`
+in a zone that names the image, which loads every library GTK needs.
 
 Firefox's own copies of NSS, NSPR, libvpx, dav1d and opus stay bundled: they
 are built from source in its tree either way, and every library made
 separate is a recipe and a pin review of its own. H.264 needs FFmpeg's
 decoder, which Firefox loads if it is present; whether to ship it is a
 licensing question as much as a size one, and is left open.
+
+## The document viewer
+
+PDFs open in the browser's own viewer, pdf.js, which runs as page script
+inside the content process's sandbox. No image of its own is needed until a
+workflow needs a format pdf.js does not read. zathura, the light viewer that
+was the alternative, moved to GTK 4 in 2026 and now also needs json-glib,
+libmagic, sqlite and xxhash. Building it would mean a second toolkit image,
+or pinning a GTK 3 branch nobody maintains any more.
+
+## How the browser image is built
+
+Firefox ESR 153 is the `browser` software image, built over the toolkit
+image and over build-only layers that never reach a zone (`image_ships=no`,
+[software delivery](software-delivery.md)). Stage 04 already treats cmake
+this way: a pinned binary the build runs and never installs. ESR 153's own
+floors are given with each layer.
+
+- **Its layers.**
+  - **`rust`:** the pinned release toolchain for `x86_64-unknown-linux-gnu`,
+    vouched for by the same Rust key as kryptikd's. ESR 153 needs 1.90 or
+    newer.
+  - **`clang`:** LLVM's release build, for libclang. bindgen loads it to
+    generate the style system's bindings, and its `wasm32` target compiles
+    the sandboxed libraries. It is about a gigabyte compressed, in the
+    sources cache. A source build of clang and libclang would instead cost
+    an hour each time the base system changes.
+  - **`cbindgen`:** 0.29.4 or newer, built with the `rust` layer. Its crate
+    and the crates its lock file names are fetched before the build, since
+    the chroot has no network, and checked against that lock.
+  - **`nasm`:** for dav1d's AV1 decoder.
+  - **`node`:** Node.js's release build, the program alone, which the build
+    runs for the devtools debugger's modules. ESR 153's configure still
+    takes `--disable-nodejs`, but the build then stops at those modules.
+    12.22.12 or newer; the pin keeps to an LTS line, and one of the
+    releasers whose keys Node.js lists signs its checksum list.
+- **The build.**
+  - Stage 04's GCC with the hardening flags; an exception each flag needs
+    goes into `hardening-exceptions.txt` with its reason. Firefox drops
+    `-fno-delete-null-pointer-checks`, under which GCC 14 cannot evaluate
+    SpiderMonkey's compile-time checks (Mozilla's own builds go without it
+    too), and carries the few changes a GCC
+    build needs (`build/patches/firefox-153.5.0`).
+  - `--enable-default-toolkit=cairo-gtk3-wayland-only`, `--disable-dbus`,
+    `--enable-release`, `--disable-tests`, `--disable-crashreporter`,
+    `--disable-updater` (updates are the image's) and `--disable-eme`.
+    With neither D-Bus nor X11 Firefox has no remote: a second launch in a
+    zone whose browser is open is not handed to it, and says that Firefox is
+    already running (`0004` in the patch set).
+  - `--disable-jemalloc`, as the image preloads hardened_malloc for every
+    process.
+  - `--enable-audio-backends=alsa`: a zone's default ALSA device is zone
+    0's mixer (the laptop design's sound path). Firefox needs alsa-lib in
+    any case, as Web MIDI on Linux links ALSA's sequencer API; with no
+    sequencer in the kernel and no `/dev/snd` in a zone, it reaches no
+    device.
+  - The first build is `--without-wasm-sandboxed-libraries`. The next adds
+    a WASI sysroot to the `clang` layer, since a font or spelling parser
+    bug should stay inside that sandbox.
+  - The build's Glean step caches what it parses in SQLite, through
+    Python's `sqlite3`, which the base system's Python lacks, as zone 0 has
+    no SQLite. The recipe compiles that module from the base system's own
+    Python source and the SQLite Firefox carries, into the build's root
+    alone, and `browser.strip` keeps it out of the image.
+- **Time.**
+  - On four cores with GCC, without LTO or PGO, ESR takes some hours. The
+    images build in a job of their own, between stages 04-05 and stage 06,
+    since a runner gives a job six hours and a stage 04 built from nothing
+    (a tag's, or a run after a new pin) beside the browser and stage 06
+    would not fit one job. Not every run should pay it.
+  - The trees of the shipped images go into a cache of their own, keyed by
+    their fingerprints, which include the base system's stamp up to
+    `wlroots`, the last step an image builds against. A run restores a tree
+    whose inputs have not changed, so only a change to the browser, the
+    toolkit or the base system up to `wlroots` rebuilds it; zone 0's own
+    programs, which stage 04 builds after it, do not.
+- **Updates.** ESR has a security release every four weeks. Its pins are the
+  images' (`build/images/versions.env`), so a bump rebuilds the browser and
+  leaves stage 04 and its cache alone.
+- **Choices taken.**
+  - **The Rust tarballs are image sources.** The `rust` layer lists the
+    rustc, cargo and rust-std tarballs `build/config/rust.lock` pins, so the
+    signature and currency gates cover them, and kryptikd's compiler with
+    them. A CI check holds both locks to the same hashes, so the shipped
+    daemon and the browser are built by one release, bumped every six weeks.
+  - **cbindgen is built inside the chroot, offline.** Its crate and the
+    crates its own lock file names are fetched beforehand and checked
+    against that lock. In the chroot each is unpacked into a vendored source
+    directory, and `cargo build --offline --locked` uses the `rust` layer.
+    Stage 03's runner and stage 04's cache key stay as they are.
+  - **The images' sources have a cache of their own.** They go under
+    `sources/images/`, keyed by `build/images/sources.lock`, each named in
+    `sources/` by a link, so every tool finds it where it always has. The
+    root's set is keyed by `sources.lock` alone and saved with `images/` set
+    aside, so a browser bump copies neither set into the other's entry. A job
+    that builds no image fetches the root's alone (`fetch-sources.sh --root`).
+  - **Mozilla's key comes from Mozilla.** The fingerprint is pinned like
+    every other, confirmed by Mozilla's security blog post of August 2026.
+    The key material is taken from the `KEY` file beside the release rather
+    than from the keyserver, whose copy lacks the new subkey and the old
+    one's revocation. That is an `origin` row in `tools/key-provenance.tsv`,
+    a kind only a pinned key may have: the pin says who signs, the row only
+    where the key is fetched from on every run, so a later revocation lands.
+    Rust's and LLVM's keys come from their own sites the same way.
 
 ## GPU rendering, zone by zone
 
@@ -287,7 +460,7 @@ filesystem and the hash tree.
   400 MiB left. Mesa and libLLVM leave about 200 MiB; a mail client after
   that does not fit, and the release that crosses the line needs a
   reinstall: a major version under [releases](../releases.md).
-- As a software image (ADR-015, proposed), the browser costs the root
+- As a software image (ADR-015), the browser costs the root
   nothing, and the state partition about twice the image while an update is
   in flight.
 - **Build time.** Firefox is one of the largest builds there is, and it

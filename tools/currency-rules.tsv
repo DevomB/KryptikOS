@@ -43,3 +43,28 @@ libdisplay-info	api	https://gitlab.freedesktop.org/api/v4/projects/emersion%2Fli
 # Each series changes the API dwl uses.
 wlroots	api	https://gitlab.freedesktop.org/api/v4/projects/wlroots%2Fwlroots/repository/tags?per_page=100	name	series
 dwl	api	https://codeberg.org/api/v1/repos/dwl/dwl/tags?limit=50	name	-
+# The software images' sources (build/images/versions.env).
+pcre2	listing	https://api.github.com/repos/PCRE2Project/pcre2/tags?per_page=50	"name": "pcre2-([0-9]+\.[0-9]+)"	-
+# GNOME numbers a development series with an odd minor; each project's cache.json names every release.
+glib	listing	https://download.gnome.org/sources/glib/cache.json	glib-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz	even
+# Pango 1.90 and up are the next major's previews.
+pango	listing	https://download.gnome.org/sources/pango/cache.json	pango-(1\.[0-8][0-9]?\.[0-9]+)\.tar\.xz	even
+gdk-pixbuf	listing	https://download.gnome.org/sources/gdk-pixbuf/cache.json	gdk-pixbuf-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz	even
+at-spi2-core	listing	https://download.gnome.org/sources/at-spi2-core/cache.json	at-spi2-core-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz	even
+# GTK 3 is in maintenance as 3.24.x; GTK 4 is another toolkit.
+gtk3	listing	https://download.gnome.org/sources/gtk/cache.json	gtk-(3\.24\.[0-9]+)\.tar\.xz	-
+# 1.6 is the stable series; the 1.7 tags are betas.
+libpng	listing	https://api.github.com/repos/pnggroup/libpng/tags?per_page=100	"name": "v(1\.6\.[0-9]+)"	-
+fontconfig	api	https://gitlab.freedesktop.org/api/v4/projects/890/releases?per_page=20	tag_name	drop90
+libglvnd	api	https://gitlab.freedesktop.org/api/v4/projects/glvnd%2Flibglvnd/releases?per_page=20	tag_name	-
+# GitHub's API answers with spaced JSON, which only a listing pattern reads.
+rustc	listing	https://api.github.com/repos/rust-lang/rust/releases?per_page=20	"tag_name": "([0-9]+\.[0-9]+\.[0-9]+)"	-
+cbindgen	listing	https://api.github.com/repos/mozilla/cbindgen/releases?per_page=20	"tag_name": "v?([0-9]+\.[0-9]+\.[0-9]+)"	-
+# The directory links alone: the page's DOCTYPE names HTML 4.01, and "4.01//" is no release.
+nasm	listing	https://www.nasm.us/pub/nasm/releasebuilds/	href="([0-9]+\.[0-9]+(\.[0-9]+)?)/"	-
+# Every release in one index; a new major is a new LTS line, not a currency fix.
+node	listing	https://nodejs.org/dist/index.json	"version":"v([0-9]+\.[0-9]+\.[0-9]+)"	major
+# The current ESR and, while two overlap, the next one; the pin's own ESR series is what counts.
+firefox	listing	https://product-details.mozilla.org/1.0/firefox_versions.json	"FIREFOX_ESR[_NEXT]*": "([0-9]+\.[0-9]+\.[0-9]+)esr"	major
+# An odd minor is a development snapshot.
+cairo	listing	https://www.cairographics.org/releases/	cairo-([0-9]+\.[0-9]+\.[0-9]+)\.tar\.xz	even
