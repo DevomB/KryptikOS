@@ -89,6 +89,7 @@ let the row's note name what did not work:
 | on an AMD laptop whose `sleep` line says s2idle, a sleep of two minutes | it wakes to the lock, not to a fresh boot: the watchdog does not feed AMD's TCO timer there, as it would count through the sleep, and the report's line for it says inactive |
 | an SD card in the laptop's own reader | the window that asks which zone gets a stick opens, as for a USB stick |
 | a USB headset, and `c` and a zone's number in the menu | it plays what the zone plays, and records there once granted |
+| an external monitor on a laptop with two GPUs, an AMD one beside the built-in | it shows the desktop, whose frames wlroots copies to the second GPU's ports; dark, the row's note names both, as the listing's `display` line does |
 | `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
 | Firefox in `untrusted`: Alt+p, its number and `b` | a window opens; where the listing's `shstk` line says yes, this is the only test of Firefox starting with shadow stacks on, and a failure names SHSTK in what it prints |
 
