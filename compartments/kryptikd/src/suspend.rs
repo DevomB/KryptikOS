@@ -35,6 +35,10 @@ const FREEZE_WITHIN: Duration = Duration::from_secs(10);
 /// How long the state partition's resume may take, its key derivation included.
 const RESUME_WITHIN: Duration = Duration::from_secs(60);
 const PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+/// A seal that failed after wiping a zone volume's key counts itself here, beside the launch
+/// socket, where group kryptik reads it: that zone waits with the state partition up, which the
+/// chrome cannot tell from a seal under way.
+const LEFT_WAITING: &str = "/run/kryptik-launch/left-waiting";
 
 /// Whether the device-mapper device `name` is suspended, as `sys_block` says, or None if no
 /// device has that name.
@@ -192,20 +196,36 @@ pub fn seal() -> Result<Vec<String>, String> {
     // asks for neither skip_lockfs nor noflush), so no zone and no kernel thread, ext4's lazy
     // init or its journal, writes to a volume without its key; the resume thaws it. One asleep
     // since an earlier sleep, its passphrase not given yet, stays as it is.
+    let mut wiped = false;
     for zone in crate::volume::mappings() {
         if suspended(&crate::volume::mapper_name(&zone)) {
             continue;
         }
         if let Err(e) = crate::volume::suspend_mapping(&crate::volume::mapper_name(&zone)) {
             thaw();
+            if wiped {
+                count_left_waiting(Path::new(LEFT_WAITING));
+            }
             return Err(format!("zone {zone:?}'s volume did not suspend: {e}"));
         }
+        wiped = true;
     }
     if let Err(e) = crate::volume::suspend_mapping(STATE_MAPPER) {
         thaw();
+        if wiped {
+            count_left_waiting(Path::new(LEFT_WAITING));
+        }
         return Err(format!("the state partition did not suspend: {e}"));
     }
     Ok(zones)
+}
+
+/// One more seal that stopped with a zone volume's key gone, counted at `path`, 0644 whatever the
+/// daemon's umask, as the session reads it. Best effort: the count only opens the chrome's window,
+/// and its menu names a waiting zone either way.
+fn count_left_waiting(path: &Path) {
+    let n: u64 = fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let _ = crate::files::write_atomic(path, &[format!("{}\n", n + 1).as_bytes()], 0o644, None);
 }
 
 /// Put the machine to sleep (suspend to RAM); returns once it has woken, or with why it did not

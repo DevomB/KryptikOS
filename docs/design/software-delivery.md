@@ -291,11 +291,15 @@ up ADR-001 in the zones where the applications run.
   the list's signature again, as nobody, on a copy of the bytes it then
   reads. A mapping that dm-verity has marked corrupted is not used again:
   the next start of a zone that names the image is refused, with the
-  reason, until this machine restarts. For each distinct set of images
+  reason, until this machine restarts. An update that carries the image
+  replaces the stored copy, since the store keeps an image only while its
+  size and SHA-256 match the list's. For each distinct set of images
   a zone names, kryptikd mounts a read-only overlay (no upper directory; the
   images' `usr` over the root's `/usr`; redirects in a layer not followed)
   at `/run/kryptik/usr/<set>` in the initial namespace, and the zone's bind
-  of `/usr` takes that instead. A set already mounted there is used only if
+  of `/usr` takes that instead, through a descriptor kryptikd opens before
+  it takes the zone's ids: `/run/kryptik` is root's alone, and the zone's
+  mapped root may not walk it. A set already mounted there is used only if
   it stacks exactly those mounts, as its name holds 64 bits of each root
   hash. Since zone 0 mounts it and the zone only receives a bind, the
   hardened kernel's `OVERLAY_FS_UNPRIVILEGED`, which is off, does not come
@@ -342,7 +346,7 @@ image-only update from the channel:
   zone already running keeps the old image until it stops;
 - a flipped block in a stored image reads as an I/O error in the zone, the
   machine keeps running, and the next start of a zone that names the image is
-  refused with the reason until it is fetched again;
+  refused with the reason until the machine restarts;
 - an image built for another base, an image manifest signed in
   `kryptik-release`, and a root manifest signed in `kryptik-image` are each
   refused;

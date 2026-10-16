@@ -494,9 +494,17 @@ grep -q PERSONAL-UP "$LOG/personal-bg.out" && pass "encrypted-zone-start" "perso
 # with the storage checks). It must find that launcher's command line, or
 # finding no passphrase says nothing. The [e] and [s] keep a grep's own
 # command line from matching.
-pp_seen=0; pp_leak=0
+# leaks PATTERN: the files under /run/kryptik and the command lines that hold
+# it. The signed images a zone stacks are mounted under /run/kryptik/images and
+# /run/kryptik/usr (images.rs) and hold only what was signed, a browser's whole
+# tree among it, so they are not searched.
+leaks() {
+    { find /run/kryptik \( -path /run/kryptik/images -o -path /run/kryptik/usr \) -prune -o -type f -print0 2>/dev/null
+      printf '%s\0' /proc/[0-9]*/cmdline; } | xargs -0r grep -ls -- "$1" 2>/dev/null
+}
+pp_seen=0
 grep -qs 'passphrase-fil[e]' /proc/[0-9]*/cmdline && pp_seen=1
-grep -rqs 'personal-pas[s]' /run/kryptik /proc/[0-9]*/cmdline && pp_leak=1
+pp_leak="$(leaks 'personal-pas[s]')"
 # An echo that gets no answer shows separation only while personal holds the
 # address that was tried, and untrusted has a path: it reaches the bridge.
 per_init="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
@@ -1497,27 +1505,28 @@ else
 fi
 
 # --- zones: resource limits and lifecycle -----------------------------------
-STORM='import os, time
+# Threads, which pids.max counts as it counts processes: as many forked Pythons as the browser's
+# limit would fill the VM's memory, which untrusted's memory_max does not bound below. Daemon
+# threads, so every one ends as the interpreter exits after its line.
+STORM='import threading, time
+threading.stack_size(65536)
 n = 0
-for i in range(3000):
+for i in range(10000):
     try:
-        p = os.fork()
-    except BlockingIOError:
+        threading.Thread(target=time.sleep, args=(300,), daemon=True).start()
+    except RuntimeError:
         break
-    if p == 0:
-        time.sleep(300); os._exit(0)
     n += 1
-print("FORKED=%d" % n)
+print("STARTED=%d" % n)
 print("LIMIT-SURVIVED")'
-# Python, as bash retries a failed fork for about 15 s and would not reach pids.max in time.
 zrun untrusted 60 -- /usr/bin/python3 -c "$STORM"
 if [[ "$ZOUT" == *LIMIT-SURVIVED* ]]; then
-    forked="$(grep -o 'FORKED=[0-9]*' "$LOG/untrusted.out" | cut -d= -f2)"
+    started="$(grep -o 'STARTED=[0-9]*' "$LOG/untrusted.out" | cut -d= -f2)"
     limit="$(sed -n 's/^pids_max *= *\([0-9]*\).*/\1/p' "$Z/untrusted.toml")"
     # At most the limit, and at least half of it, or the check proves nothing.
-    [[ -n "$forked" && "$forked" -le "${limit:-1024}" && "$forked" -ge $(( ${limit:-1024} / 2 )) ]] && pass "pids-limit" "bounded at pids_max=$limit (forked $forked before EAGAIN), zone survived" || fail "pids-limit" "forked=$forked limit=$limit"
+    [[ -n "$started" && "$started" -le "${limit:-1024}" && "$started" -ge $(( ${limit:-1024} / 2 )) ]] && pass "pids-limit" "bounded at pids_max=$limit (started $started threads before EAGAIN), zone survived" || fail "pids-limit" "started=$started limit=$limit"
 else
-    fail "pids-limit" "the zone did not survive the fork storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+    fail "pids-limit" "the zone did not survive the thread storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 fi
 # dd's own status and words: a tmpfs that took all 3000 MiB is not bounded.
 zrun untrusted 60 -- sh -c 'out=$(dd if=/dev/zero of=$HOME/big bs=1M count=3000 2>&1); echo "DD-RC=$?"; echo "$out" | grep -o "No space left on device" | head -1; rm -f $HOME/big; echo TMPFS-SURVIVED'
@@ -1660,10 +1669,11 @@ grep -qE 'VAULT-PING rc=2 ' <<<"$ZOUT" && pass "vault-ping" "ping in an offline 
 [[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *LINKS=0* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -1 "$LOG/vault.err")"
 # No passphrase on any command line or in the registry: while personal ran
 # (above), and now that every zone that took one has stopped.
+pp_late="$(leaks 'personal-pas[s]\|vault-pas[s]\|dev-pas[s]')"
 if [[ "$pp_seen" != 1 ]]; then
     fail "no-passphrase-leak" "the search did not see personal's launcher while it ran, so it proves nothing"
-elif [[ "$pp_leak" = 1 ]] || grep -rqs 'personal-pas[s]\|vault-pas[s]\|dev-pas[s]' /run/kryptik /proc/[0-9]*/cmdline; then
-    fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"
+elif [[ -n "$pp_leak$pp_late" ]]; then
+    fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line: $(printf '%s\n' $pp_leak $pp_late | sort -u | tr '\n' ' ')"
 else
     pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line, while personal ran and after the zones stopped"
 fi
@@ -1815,7 +1825,10 @@ else
         irun imgok /usr/bin/kryptik-probe
         rc1="$ZRC"; said1="$ZOUT $ZERR"
         irun imgok /usr/bin/kryptik-probe
-        if [[ "$rc1" -ne 0 && "$said1" == *"Input/output error"* && "$ZRC" -ne 0 && "$ZERR" == *"read back other than signed"* ]]; then
+        # EIO in either C library's words: kryptikd is static musl ("I/O error"), the image's
+        # programs are glibc's ("Input/output error").
+        if [[ "$rc1" -ne 0 && ( "$said1" == *"Input/output error"* || "$said1" == *"I/O error"* ) \
+              && "$ZRC" -ne 0 && "$ZERR" == *"read back other than signed"* ]]; then
             pass "image-corrupt" "a flipped block reads as an I/O error in the zone, and the next start is refused"
         else
             fail "image-corrupt" "first rc ${rc1}: $(tail -2 <<<"$said1" | tr '\n' ' '); then rc ${ZRC}: $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
