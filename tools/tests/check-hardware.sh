@@ -59,6 +59,12 @@ disks behind a driver that is a module, which boot.fragment must build in before
 0000:00:14.3 class 028000 8086:a0f0 sub 8086:0074 rev 20 driver iwlwifi | Network controller | Intel Corporation Wi-Fi 6 AX201
 
 == usb ==
+3-4 13d3:5411 speed 480 | Azurewave Integrated Camera
+3-4:1.0 interface class 0e/01/00 driver uvcvideo
+3-4:1.1 interface class 0e/02/00 driver uvcvideo
+3-10 8087:0026 speed 12 | Intel Corp. AX201 Bluetooth
+3-10:1.0 interface class e0/01/01 driver -
+3-10:1.1 interface class e0/01/01 driver -
 
 == no driver ==
 
@@ -76,6 +82,13 @@ codec 10ec0287 sub 17aa22e6
 codec 80862812 sub 80860101
 nhlt: 2 endpoints, pdm 1, ssp 1
 
+== laptop ==
+backlight intel_backlight type raw max 19200
+power_supply AC type Mains online 1
+power_supply BAT0 type Battery scope System status Discharging capacity 87 technology Li-ion
+sleep states: freeze mem
+sleep mem: s2idle [deep]
+
 == network ==
 rfkill0 wlan phy0 soft 0 hard 0
 in the net zone:
@@ -84,6 +97,7 @@ in the net zone:
   default route by wlan0
 
 == input ==
+"Lid Switch" | event1
 "AT Translated Set 2 keyboard" | kbd event0
 
 == modules ==
@@ -137,6 +151,44 @@ grep -qF "digital microphones on Intel's DSP, driven by sof-audio-pci-intel-tgl"
 vary noaudio '/^== audio ==$/,/^$/d'; see "$W/noaudio.txt"
 grep -qF '  audio      not in this report' <<<"$OUT" && grep -q '^  carries    certified$' <<<"$OUT" \
     && green "a report from before the section: said so, and no level asks for it" || red "a report with no audio section: $(grep -E 'audio|carries' <<<"$OUT")"
+
+echo "-- a laptop's parts, its sleep, its camera and its Bluetooth"
+# has NAME LINE: the tool's words on $W/NAME.txt hold LINE whole.
+has() { see "$W/$1.txt"; if grep -qxF -- "$2" <<<"$OUT"; then green "$3"; else red "$3: $(grep -E '^  (laptop|sleep|camera|bluetooth) ' <<<"$OUT" | tr '\n' '|')"; fi; }
+cp "$W/good.txt" "$W/as-is.txt"
+has as-is "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "the backlight and its kind, the battery, mains and the lid"
+has as-is "  sleep      mem is deep; s2idle also offered" "what a sleep to memory is, and what else is offered"
+has as-is "  camera     USB video 13d3:5411, driven by uvcvideo" "a USB camera, once, by its device's IDs"
+has as-is "  bluetooth  USB 8087:0026, not driven" "a Bluetooth controller, once, and that nothing drives it"
+vary mouse '/^power_supply BAT0/a power_supply hidpp_battery_0 type Battery scope Device status Discharging capacity 40 technology -'
+has mouse "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "a mouse's battery is not the machine's"
+vary resting 's/status Discharging/status Not charging/'
+has resting "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "a status of two words leaves the kind"
+vary desktop '/^backlight /d; /^power_supply /d; /^"Lid Switch"/d'
+has desktop "  laptop     none of a laptop's parts: no backlight, battery or lid switch" "a desktop has none of them, and says so"
+vary s2idle 's/^sleep mem: .*/sleep mem: [s2idle]/'
+has s2idle "  sleep      mem is s2idle, the only kind offered" "s2idle with no deep beside it"
+vary nomem 's/^sleep states: .*/sleep states: freeze disk/'
+has nomem "  sleep      no sleep to memory (offered: freeze disk)" "no mem at all"
+vary mipi '/^3-4/d
+/^sleep mem:/a\
+camera ipu6 0000:00:05.0 8086:a75d driver -\
+camera acpi OVTI01A0:00 sensor\
+camera acpi INT3472:01 sensor power\
+camera acpi INTC1009:00 visual sensing controller'
+has mipi "  camera     IPU6 8086:a75d, not driven; sensor OVTI01A0, behind a Visual Sensing Controller" "a MIPI camera: the IPU, its sensor and the controller between"
+vary nocamera '/^3-4/d'
+has nocamera "  camera     no camera found" "no camera, and says so"
+vary btusb 's/^\(3-10:1\.[01] interface class e0\/01\/01 driver\) -$/\1 btusb/'
+has btusb "  bluetooth  USB 8087:0026, driven by btusb" "and what drives it, once a driver does"
+vary nobt '/^3-10/d'
+has nobt "  bluetooth  no Bluetooth controller on USB" "no Bluetooth, and says so"
+vary nolaptop '/^== laptop ==$/,/^$/d'; see "$W/nolaptop.txt"
+if [[ "$(grep -cE '^  (laptop|sleep|camera) +not in this report$' <<<"$OUT")" -eq 3 ]] && grep -q '^  carries    certified$' <<<"$OUT"; then
+    green "a report from before the section: said so, and no level asks for them"
+else
+    red "a report with no laptop section: $(grep -E '^  (laptop|sleep|camera|carries) ' <<<"$OUT" | tr '\n' '|')"
+fi
 
 echo "-- each thing a certified listing needs"
 short medium    's/^booted: .*/booted: the usb medium/'           "not taken on an installed system (booted: the usb medium)"

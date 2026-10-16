@@ -56,6 +56,86 @@ audio_of() {
     else local IFS=';'; sed 's/;/; /g' <<<"${parts[*]}"; fi
 }
 
+# laptop_of REPORT: what a laptop has that a desktop lacks: each backlight
+# and its kind, the machine's own batteries and its mains, and the lid switch.
+laptop_of() {
+    local l bl bat mains parts=()
+    grep -qxF '== laptop ==' "$1" || { echo "not in this report"; return; }
+    l="$(section laptop "$1")"
+    bl="$(awk '$1 == "backlight" { printf "%s%s (%s)", sep, $2, $4; sep = ", " }' <<<"$l")"
+    [[ -z "$bl" ]] || parts+=("backlight ${bl}")
+    # A mouse's or a headset's battery is the device's, not the machine's. The
+    # kind is the line's last word, as a status may be two ("Not charging").
+    bat="$(awk '$1 == "power_supply" && $4 == "Battery" && $6 == "System" {
+        printf "%s%s%s", sep, $2, ($NF == "-" ? "" : " (" $NF ")"); sep = ", " }' <<<"$l")"
+    [[ -z "$bat" ]] || parts+=("battery ${bat}")
+    mains="$(awk '$1 == "power_supply" && $4 == "Mains" { printf "%s%s", sep, $2; sep = " " }' <<<"$l")"
+    [[ -z "$mains" ]] || parts+=("mains ${mains}")
+    if grep -q '^"Lid Switch"' <<<"$(section input "$1")"; then parts+=("lid switch"); fi
+    if [[ "${#parts[@]}" -eq 0 ]]; then echo "none of a laptop's parts: no backlight, battery or lid switch"
+    else local IFS=';'; sed 's/;/; /g' <<<"${parts[*]}"; fi
+}
+
+# sleep_of REPORT: what a sleep to memory is on the machine, deep (S3) or
+# s2idle, and the other kinds it offers.
+sleep_of() {
+    local l states mem chosen others
+    grep -qxF '== laptop ==' "$1" || { echo "not in this report"; return; }
+    l="$(section laptop "$1")"
+    states="$(field 'sleep states' <<<"$l")"; mem="$(field 'sleep mem' <<<"$l")"
+    grep -qw mem <<<"$states" || { echo "no sleep to memory (offered: ${states:-nothing})"; return; }
+    chosen="$(grep -o '\[[a-z0-9]*\]' <<<"$mem" | tr -d '[]')"
+    others="$(tr ' ' '\n' <<<"$mem" | grep -v '^\[' | grep . | paste -sd' ' -)"
+    if [[ -z "$chosen" ]]; then echo "mem offered, of no kind the report names"
+    elif [[ -z "$others" ]]; then echo "mem is ${chosen}, the only kind offered"
+    else echo "mem is ${chosen}; ${others} also offered"; fi
+}
+
+# camera_of REPORT: a USB video device and what drives it; and a MIPI
+# camera's parts: Intel's image processing unit and what drives it, and the
+# sensors ACPI names, behind a Visual Sensing Controller where it has one.
+camera_of() {
+    local l uvc ipu sensors parts=()
+    grep -qxF '== laptop ==' "$1" && grep -qxF '== usb ==' "$1" || { echo "not in this report"; return; }
+    l="$(section laptop "$1")"
+    # Video's control interface (0e/01), which uvcvideo binds, under its device's IDs.
+    uvc="$(section usb "$1" | awk '
+        $2 != "interface" { id[$1] = $2; next }
+        $4 ~ /^0e\/01\// { d = $1; sub(/:.*/, "", d); if (!(d in seen)) { seen[d] = 1; n++; dev[n] = d; drv[n] = $6 } }
+        END { for (i = 1; i <= n; i++) print (dev[i] in id ? id[dev[i]] : "?"), (drv[i] == "-" ? "" : drv[i]) }')"
+    while read -r u d; do
+        [[ -z "$u" ]] || parts+=("USB video ${u}, $(took "$d")")
+    done <<<"$uvc"
+    ipu="$(awk '$1 == "camera" && $2 ~ /^ipu/ { print toupper($2), $4, ($6 == "-" ? "" : $6) }' <<<"$l")"
+    while read -r k i d; do
+        [[ -z "$k" ]] || parts+=("${k} ${i}, $(took "$d")")
+    done <<<"$ipu"
+    sensors="$(awk '$1 == "camera" && $2 == "acpi" && $4 == "sensor" && NF == 4 { sub(/:.*/, "", $3); print $3 }' <<<"$l" | sort -u | paste -sd' ' -)"
+    if [[ -n "$sensors" ]]; then
+        [[ "$sensors" == *" "* ]] && sensors="sensors ${sensors}" || sensors="sensor ${sensors}"
+        grep -q '^camera acpi .* visual sensing controller$' <<<"$l" && sensors+=", behind a Visual Sensing Controller"
+        parts+=("$sensors")
+    fi
+    if [[ "${#parts[@]}" -eq 0 ]]; then echo "no camera found"
+    else local IFS=';'; sed 's/;/; /g' <<<"${parts[*]}"; fi
+}
+
+# bluetooth_of REPORT: each Bluetooth controller on USB (e0/01/01) and what
+# drives it.
+bluetooth_of() {
+    local bt out=()
+    grep -qxF '== usb ==' "$1" || { echo "not in this report"; return; }
+    bt="$(section usb "$1" | awk '
+        $2 != "interface" { id[$1] = $2; next }
+        $4 == "e0/01/01" { d = $1; sub(/:.*/, "", d); if (!(d in seen)) { seen[d] = 1; n++; dev[n] = d; drv[n] = $6 } }
+        END { for (i = 1; i <= n; i++) print (dev[i] in id ? id[dev[i]] : "?"), (drv[i] == "-" ? "" : drv[i]) }')"
+    while read -r u d; do
+        [[ -z "$u" ]] || out+=("USB ${u}, $(took "$d")")
+    done <<<"$bt"
+    if [[ "${#out[@]}" -eq 0 ]]; then echo "no Bluetooth controller on USB"
+    else local IFS=';'; sed 's/;/; /g' <<<"${out[*]}"; fi
+}
+
 # examine REPORT: MACHINE, RELEASE and FACTS, with NOT_REPORTED and
 # NOT_CERTIFIED, each empty or one reason per line.
 examine() {
@@ -119,6 +199,10 @@ examine() {
     fact display "${cards:-no DRM device}${outputs:+: ${outputs//;/; }}"
     [[ -n "$cards" && -n "$outputs" ]] || lacks "no display the compositor can use: no DRM device with a connected output"
     fact audio "$(audio_of "$r")"
+    fact laptop "$(laptop_of "$r")"
+    fact sleep "$(sleep_of "$r")"
+    fact camera "$(camera_of "$r")"
+    fact bluetooth "$(bluetooth_of "$r")"
 
     # A path out: the default route leaves by one of the machine's own
     # interfaces, and that one has a carrier.

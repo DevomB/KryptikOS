@@ -14,8 +14,9 @@ This page is about what was seen to work.
 `kryptik-hwreport` prints what a machine is made of and what the image lacks
 for it: the maker and model, the firmware's Secure Boot state, the processor
 and its microcode, every PCI and USB device with the driver that took it, the
-disks and the drivers under them, the display, the sound hardware, network and
-input devices, the loaded modules and the kernel log. Its `missing` section is
+disks and the drivers under them, the display, the sound hardware, a laptop's
+backlights, batteries, sleep states and camera parts, network and input
+devices, the loaded modules and the kernel log. Its `missing` section is
 the part to act on: the firmware the kernel asked for and did not find, each a
 line for `build/config/firmware.list`, and the devices and disks that want a
 driver's line in `build/config/kernel/boot.fragment`.
@@ -83,7 +84,10 @@ firmware setting that had to change. A machine that runs a later release gets
 a new report and a new row.
 
 `tools/check-hardware.sh REPORT` prints what a report shows and the level it
-carries, with each reason it falls short of `certified`. `--list` checks the
+carries, with each reason it falls short of `certified`. One line each says
+what the machine's sound, laptop parts, sleep, camera and Bluetooth are, and
+what drives them; no level asks for any of them, as 1.0 drives few of them on
+a laptop. `--list` checks the
 whole list: every row's report is there and carries the level the row claims,
 was taken on the row's day and not in a virtual machine, no report holds a
 hardware address, a UUID or a serial number, and no report is without a row.
