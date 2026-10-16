@@ -171,33 +171,49 @@ grep -qF "alpha 1.0: only file://${ROWM}/alpha_1.0.orig.tar.gz serves it; not ht
 MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" run --probe
 expect_fail "--probe fails on a source no place serves" "alpha 1.0: no place serves it (asked https://127.0.0.1:9/alpha-1.0.tar.gz)"
 
-# A host that refuses HEAD: the probe asks for one byte, and the answer's status decides. Python's
-# server ignores the range and starts the whole file, and answers a missing one with a page; the
-# first is served and the second not, whatever exit the curl at hand gives for each.
+# A host that refuses HEAD, as an object store refuses a URL presigned for GET: the probe asks for
+# one byte, and the last answer's status decides. Python's server ignores the range, so a file it
+# has comes whole (alpha) or is stopped at the cap (big), a redirect's body comes first (moved),
+# and a missing file gets a page; whatever exit the curl at hand gives for each.
+NH="${W}/nohead-files"
+mkdir -p "$NH" && cp "${UPSTREAM}/alpha-1.0.tar.gz" "$NH/" && head -c 204800 /dev/urandom > "${NH}/big-1.0.tar.gz"
 cat > "${W}/nohead.py" <<'PY'
 import functools, http.server, sys
 class NoHead(http.server.SimpleHTTPRequestHandler):
     def do_HEAD(self):
         self.send_error(405)
+    def do_GET(self):
+        if self.path.startswith("/moved/"):
+            body = b"moved " * 400
+            self.send_response(302)
+            self.send_header("Location", self.path[len("/moved"):])
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
     def log_message(self, *args):
         pass
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(NoHead, directory=sys.argv[1]))
 print(srv.server_address[1], flush=True)
 srv.serve_forever()
 PY
-python3 -I "${W}/nohead.py" "$UPSTREAM" > "${W}/nohead.port" 2>/dev/null &
+python3 -I "${W}/nohead.py" "$NH" > "${W}/nohead.port" 2>/dev/null &
 NOHEAD=$!
 trap 'kill "$NOHEAD" 2>/dev/null; rm -rf "$W"' EXIT
 for _ in $(seq 1 50); do [[ -s "${W}/nohead.port" ]] && break; sleep 0.1; done
 port="$(head -1 "${W}/nohead.port")"
 {
-    printf 'alpha|1.0|http://127.0.0.1:%s/alpha-1.0.tar.gz|probe|listing\n' "$port"
+    printf 'alpha|1.0|http://127.0.0.1:%s/moved/alpha-1.0.tar.gz|probe|listing\n' "$port"
+    printf 'big|1.0|http://127.0.0.1:%s/big-1.0.tar.gz|probe|listing\n' "$port"
     printf 'omega|9.0|http://127.0.0.1:%s/omega-9.0.tar.gz|probe|listing\n' "$port"
 } > "${W}/manifest-nohead"
 MANIFEST="${W}/manifest-nohead" MIRROR_DISTFILES="" run --probe
 expect_fail "--probe asks a host that refuses HEAD for one byte, and a missing file fails" "omega 9.0: no place serves it"
-grep -qF "alpha 1.0: only http://127.0.0.1:${port}/alpha-1.0.tar.gz serves it" "$OUT" \
-    && green "there, a file the host has counts and an error page does not" || { red "--probe misread the host that refuses HEAD"; show; }
+grep -qF "alpha 1.0: only http://127.0.0.1:${port}/moved/alpha-1.0.tar.gz serves it" "$OUT" \
+    && green "there, a file behind a redirect counts" || { red "--probe misread the redirect"; show; }
+grep -qF "big 1.0: only http://127.0.0.1:${port}/big-1.0.tar.gz serves it" "$OUT" \
+    && green "there, a whole file stopped at the cap counts" || { red "--probe misread the file sent whole"; show; }
 kill "$NOHEAD" 2>/dev/null; wait "$NOHEAD" 2>/dev/null
 
 # --- checksum refusal -------------------------------------------------------

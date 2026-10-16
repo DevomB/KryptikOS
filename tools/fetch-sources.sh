@@ -327,13 +327,13 @@ fetch_attempt() {
 }
 
 # serves URL: whether URL answers for the file without sending it: HEAD, or a one-byte range where
-# a host refuses HEAD. The range's status decides, not curl's exit: --max-filesize stops a host
-# that ignores the range and starts the whole file, and some curls stop an error page's body the
-# same way, before -f would.
+# a host refuses HEAD, as a presigned object store does for a release download. The last answer's
+# status decides, not curl's exit. --max-filesize stops a host that ignores the range and starts a
+# whole tarball; above a redirect's or an error page's body, as some curls apply it to each answer.
 serves() {
     curl -fsIL --connect-timeout 15 --max-time 45 -o /dev/null "$1" 2>/dev/null && return 0
     local code
-    code="$(curl -sL -r 0-0 --max-filesize 1 --connect-timeout 15 --max-time 45 -o /dev/null \
+    code="$(curl -sL -r 0-0 --max-filesize 65536 --connect-timeout 15 --max-time 45 -o /dev/null \
         -w '%{http_code}' "$1" 2>/dev/null)" || true
     [[ "$code" == 200 || "$code" == 206 ]]
 }
