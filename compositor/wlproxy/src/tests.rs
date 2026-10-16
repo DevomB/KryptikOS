@@ -41,6 +41,8 @@ fn a_passed_listener_is_taken_in_place_of_a_path() {
     assert!(o.listen.as_os_str().is_empty());
     let o = parse(&args(&["--zone", "work", "--listen", "/tmp/w", "--upstream", "/u"]));
     assert_eq!(o.listen_fd, None);
+    assert!(!o.hold_awake, "a zone holds the screen awake only when its file says so");
+    assert!(parse(&args(&["--zone", "personal", "--listen-fd", "3", "--upstream", "/u", "--hold-awake"])).hold_awake);
     let path = std::env::temp_dir().join(format!("wlproxy-listening-{}", std::process::id()));
     let sock = std::os::unix::net::UnixListener::bind(&path).unwrap();
     assert!(listening(sock.as_raw_fd()));
@@ -52,8 +54,11 @@ fn a_passed_listener_is_taken_in_place_of_a_path() {
 #[test]
 fn clients_fit_limit() {
     assert_eq!(FDS_PER_SESSION, 130);
-    assert_eq!(clients_within(1024, 32), 7);
-    assert_eq!(clients_within(4096, 32), 31);
+    assert_eq!(FDS_RESERVED, 8 + 256, "and a copy of each pool the zone may hold");
+    // kryptikd's limit for its proxies (proxy.rs NOFILE) fits its 32 clients.
+    assert_eq!(clients_within(32 * 130 + 40 + 256, 32), 32);
+    assert_eq!(clients_within(1024, 32), 5);
+    assert_eq!(clients_within(4096, 32), 29);
     assert_eq!(clients_within(1 << 20, 32), 32);
     assert_eq!(clients_within(64, 32), 1);
     assert_eq!(clients_within(u64::MAX, 16), 16);

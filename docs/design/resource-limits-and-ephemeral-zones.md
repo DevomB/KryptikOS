@@ -145,7 +145,7 @@ hold at most 1 GiB this way at one time. They do not limit it after. A zone
 that keeps its own descriptor once a pool is gone keeps the pages dwl
 faulted, still charged to dwl, and can do it again with a new pool, a
 screen's worth of pages a frame. No bound on live pools closes that, at any
-size.
+size; freeing the pages does.
 
 **The desktop's bound.** dwl runs in a cgroup of its own,
 `kryptik-desktop`. It sits beside `kryptik/` rather than in it, so nothing
@@ -164,16 +164,25 @@ group. Zones keep running when the desktop ends, and the pages of the pools
 they keep stay charged to the old group. Removing it moves those charges to
 the root, so they do not count against the next desktop's bound.
 
-**Closing it, not built yet.** The proxy would keep a duplicate of each
-pool's descriptor and punch the pool's range (`fallocate` with
+**Freeing the pages.** The proxy keeps its own copy of each pool's
+descriptor and punches the pool's range (`fallocate` with
 `FALLOC_FL_PUNCH_HOLE`) once the pool and its buffers are gone and no surface
-shows one, which frees what dwl faulted. It would refuse a pool it could not
-punch: a read-only descriptor, a write seal, a file that is not shared
-memory. What dwl holds for a zone is then bounded by the per-zone bound, and
-the desktop's bound contains the rest. Checking at a
-commit that a buffer's pages are resident is not enough, as the zone can
-punch them itself between the check and dwl's read. The measurement under
-Tests confirms the charge on the installed kernel.
+shows one, which frees what dwl faulted with the rest. It refuses a pool it
+could not punch: one not open for writing, one sealed against writes, a file
+that is not shared memory. It seals each pool it takes against a later seal
+(`F_SEAL_SEAL`) before it reads the seals, so no write seal can come between
+the two. Two pools of one connection may share a file: the first to go leaves
+the pages alone and hands its range to the other, and the last to go punches
+the widest. Two connections sharing one file only clear each other's pages
+early, which the zone does to itself. The proxy's filter allows `fallocate`
+for that punch alone. The pools of a connection that ended are punched a
+second later, once dwl has read the hang-up, and count against the zone until
+then. What dwl holds for a zone is then bounded by the per-zone bound. A page
+a zone splices into a pipe outlives the punch while the pipe holds it, which
+the zone's descriptors and pipe sizes bound. The desktop's bound contains the
+rest. Checking at a commit that a buffer's pages are resident is not enough,
+as the zone can punch them itself between the check and dwl's read. The
+measurement under Tests confirms the charge on the installed kernel.
 
 ## Files
 

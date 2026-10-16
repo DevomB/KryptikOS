@@ -214,30 +214,28 @@ session keeps the group, and dwl runs without it.
 - Everything that asks the daemon for anything keeps the group: the chrome,
   which the spawner starts once dwl names its display, the lock, and the
   keys' commands.
+- The mixer records who holds the microphone in `/run/kryptik-sound/marks`,
+  which it alone writes and anyone on the host reads, as the camera's grant
+  already is; `control` keeps the socket and the levels. The record names
+  only the zone that holds the microphone, which the screen shows anyway,
+  and no zone sees `/run/kryptik-sound`. dwl still takes it only as the
+  mixer's own.
 - If the daemon does not start dwl, the session's process becomes dwl, with
   the group and without the desktop's bound, and the session log says so.
   The desktop suite's `dwl-without-group` fails then.
 
 What is left, in order:
 
-1. **The microphone's mark.** dwl reads the mixer's record of who holds the
-   microphone through the group, as `/run/kryptik-sound/control` is the
-   group's alone. The mixer writes the record in `/run/kryptik-sound/marks`
-   instead, readable by anyone on the host, as the camera's grant already
-   is, and `control` keeps only the socket. The record names only the zone
-   that holds the microphone, which the screen shows anyway, and no zone
-   sees `/run/kryptik-sound`. dwl still takes it only as the mixer's own.
-   This lands with the part above, or the mark stops showing.
-2. **Signals.** Landlock's signal scope (ABI 6) keeps dwl from signalling
+1. **Signals.** Landlock's signal scope (ABI 6) keeps dwl from signalling
    any process outside its own domain: the lock, the chrome, the user's
    zones' launchers. dwl's one signal ended its startup command's process
    group; with the chrome the spawner's, dwl sends none, so the scope costs
    nothing now. A kernel without ABI 6 keeps the rest of the ruleset.
-3. **A user of its own,** the end state above. Its sockets and directory
+2. **A user of its own,** the end state above. Its sockets and directory
    then need an owner other than the session (dwl's socket reached through
    a group, the zones' socket directory made for that user), and seatd's
-   group moves to it. This is the largest of the three, and it gains less
-   once the first two are built, so it comes last.
+   group moves to it. This is the larger of the two, and it gains less once
+   the rest is built, so it comes last.
 
 ### Only pixels and input cross
 
@@ -278,8 +276,8 @@ favour of moving the protocol into the zones, which does shrink it.
 3. **The compositor as its own user, confined,** with the spawner. Built
    so far: the spawner; a filter that refuses dwl exec, ptrace and
    `process_vm_writev`; Landlock; and dwl without group `kryptik`. Still to
-   do: the microphone's mark outside the group's directory, Landlock's signal
-   scope, its own user, and a filter of the calls it is traced making.
+   do: Landlock's signal scope, its own user, and a filter of the calls it
+   is traced making.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.
 

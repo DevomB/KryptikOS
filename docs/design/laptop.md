@@ -105,7 +105,14 @@ laptop does without it, and the order they come in after 1.0.
   `volume -5`); the microphone key says `revoke`. The mixer applies the
   volumes, squared so the steps sound even, and
   sets the card's own controls to unity when it opens it, so a card that
-  came up muted plays.
+  came up muted plays. The volumes and mutes outlast the mixer: it keeps a
+  record of them in `/run`, where a restart starts from it, and its
+  service's finish script carries it to the state partition
+  (`/var/lib/kryptik-sound/levels`), reading it with the mixer's rights and
+  keeping only the lines such a record holds, for the run script to put
+  back after a boot. The microphone's
+  grant is never kept, and neither script looks at the state partition
+  while a sleep seals it.
 - **The card** is a USB device when one is plugged in, as it is plugged in
   to be used, otherwise the first card with a device 0; an HDMI-only card
   has none. The mixer opens it only while something plays and closes it
@@ -333,10 +340,10 @@ minutes without input, or the minutes in `~/.config/kryptik/lock-idle` (0
 never). A minute after the lock it turns the screens off through dwl's
 `zwlr_output_power_manager_v1`, and the first key or movement turns them on
 again; an unlock turns them on as well, should the watcher be gone. It
-counts input alone (the protocol's version 2), so an idle inhibitor, which
-the browser design would let a zone hold to keep the screen awake, never
-keeps the session unlocked or the screens lit. No zone can bind the
-notifier, which would tell it when the user is away.
+counts input, and a hold dwl counts for a zone under the conditions in
+Holding the screen awake, below; an inhibitor of any other zone, or of
+zone 0, never keeps the session unlocked or the screens lit. No zone can
+bind the notifier, which would tell it when the user is away.
 
 The lock's check, in `make gui-test`:
 
@@ -427,7 +434,11 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 - **The lid and the power key** are dwl's, as input devices: the power key
   is a key, which dwl binds to `kryptik-lock --suspend`, and the lid a
   switch, which Kryptik's dwl patch turns into the same command when it
-  closes (above). Nothing in zone 0 runs as root for them.
+  closes (above). Nothing in zone 0 runs as root for them. Many Intel
+  laptops send the power key, and the wake from s2idle by it, to Intel's
+  HID event filter or virtual button device instead of ACPI's power
+  button; `intel-hid` and `intel-vbtn`, modules eudev loads by those
+  devices' ACPI IDs, make it a key there too.
 - **The power service** (`build/service-scripts/power.sh`, the `power`
   service), in zone 0, reads the battery and the mains adapter or USB
   charger from `/sys/class/power_supply` every 30 s; a mouse's battery
@@ -457,7 +468,11 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   dwl's brightness keys run `brightness.sh up|down`, a twentieth of the
   range a step and never down to dark, on the backlight the kernel's
   documentation prefers when a panel has several (firmware, then platform,
-  then raw).
+  then raw). The level a step leaves is kept in the user's configuration
+  (`~/.config/kryptik/brightness`: the panel, the level and its range), and
+  the session sets it again as the next login starts, as a share of the
+  panel's range. A step taken under the lock that follows a sleep is not
+  kept, as the home directory waits with the state partition.
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
   zone 0 tool to blank the screen, then lock, then suspend. All three are
   built (`kryptik-lock --idle`, above), lock first: a screen turned off
@@ -465,18 +480,29 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   Suspending when idle is off unless the user asks for it (above).
 - **Holding the screen awake.** A zone playing a video may hold off both the
   lock and the blanking, through the proxy's idle inhibition (the browser
-  design), under these conditions. They come with the browser image, the
-  first thing that needs them; until then no zone can, and both count input
-  alone.
+  design), under these conditions. dwl counts a hold under them and tells its
+  idle notifier so, and `kryptik-lock` waits on the notification that counts
+  inhibitors: the lock, the blanking and a sleep after them all heed it.
   - The zone's file on the verified root opts in (`[desktop] hold_awake =
-    true`). It is off by default, and never set for `untrusted`, where
-    unknown links open.
-  - A hold counts only while the inhibiting surface is mapped and visible on
-    a lit output and its zone's window has the keyboard; losing either ends
-    it.
-  - It is capped at four hours, after which the lock comes as usual, and any
-    zone 0 action, a lid close or a suspend ends it. The chrome shows which
-    zone holds the screen awake for as long as it does.
+    true`): `personal` and `work`, where the browser plays video. It is off
+    by default, and set false for `untrusted`, where unknown links open.
+    kryptikd starts the zone's proxy with `--hold-awake` from that file, and
+    dwl reads the same file through `zone-colours.h`, for the sockets it
+    offers the inhibitor on and the holds it counts.
+  - A hold counts only while the inhibiting window is mapped and visible on
+    a lit output, a window of its zone has the keyboard and the session is
+    unlocked; losing any of these ends it. A zone 0 window taking the
+    keyboard ends it, and so do a lid close and a suspend, each of which
+    locks first. A hold that ended begins again, with the four hours anew,
+    once its window is back with the keyboard: after an unlock, the user is
+    there.
+  - It lasts four hours from when it began or a key or button was last
+    pressed, whatever window took the press (`holdawakesecs` in dwl's
+    configuration); then the lock comes as usual. dwl's status names the
+    zone holding the screen awake (`<output> holdawake <zone>`), for the
+    chrome to show for as long as it does, and the bar over a fullscreen
+    window names it beside the microphone's and the camera's holders: a
+    video in front covers the chrome.
   - The moment no hold qualifies, the lock and the blanking count input
     alone again.
 - The chrome's menu has a Power line, from the power service's state: on

@@ -9,6 +9,7 @@
 #   ./tools/fetch-sources.sh --list-image NAME  only those software image NAME is built from
 #   ./tools/fetch-sources.sh --crates CRATE     name, version and hash of the crates CRATE's lock names
 #   ./tools/fetch-sources.sh --probe            ask every place each source is kept for its file: no download
+#   ./tools/fetch-sources.sh --check-mirrors    download each mirror row's file and hold it to the lock
 #
 # The software images' sources are pinned in build/images/versions.env and locked in
 # build/images/sources.lock, so a change to them is no input of stage 04. They are kept in
@@ -29,8 +30,9 @@ case "${1:-}" in
     --list-image) MODE="list-image"; IMAGE="${2:?--list-image needs an image name}" ;;
     --crates) MODE="crates"; CRATE="${2:?--crates needs a .crate file}" ;;
     --probe) MODE="probe" ;;
+    --check-mirrors) MODE="check-mirrors" ;;
     "")     ;;
-    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, --crates CRATE, --probe, or nothing)" ;;
+    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, --crates CRATE, --probe, --check-mirrors, or nothing)" ;;
 esac
 
 # Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs, and crates.io.
@@ -239,7 +241,7 @@ case "$MODE" in
         exit 0 ;;
 esac
 
-[[ "$MODE" == probe ]] || mkdir -p "$KRYPTIK_SOURCES"
+[[ "$MODE" == probe || "$MODE" == check-mirrors ]] || mkdir -p "$KRYPTIK_SOURCES"
 
 # The last mirror for every source fetched over HTTPS, Gentoo's copies of upstream's own files,
 # kept while an ebuild names the version: a fallback for current pins, not an archive. Here, not in
@@ -330,12 +332,22 @@ fetch_attempt() {
 # a host refuses HEAD, as a presigned object store does for a release download. The last answer's
 # status decides, not curl's exit. --max-filesize stops a host that ignores the range and starts a
 # whole tarball; above a redirect's or an error page's body, as some curls apply it to each answer.
-# A timeout or a 5xx is asked twice more before the place counts as not serving.
+# A timeout or a 5xx is asked twice more before the place counts as not serving. A host that gave
+# no answer at all (no address, no connection, nothing in time) is not asked again this run, so one
+# that hangs costs a minute, not a minute for each file it holds.
+declare -A SILENT=()
 serves() {
+    local host="${1#*://}" code rc=0
+    # A file:// URL has no host; the key is never empty, which bash refuses.
+    host="${host%%/*}"
+    [[ -z "${SILENT[h:${host}]:-}" ]] || return 1
     curl -fsIL --connect-timeout 15 --max-time 45 -o /dev/null "$1" 2>/dev/null && return 0
-    local code
     code="$(curl -sL -r 0-0 --max-filesize 65536 --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 3 \
-        -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" || true
+        -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" || rc=$?
+    if [[ "$code" == 000 && ( "$rc" -eq 6 || "$rc" -eq 7 || "$rc" -eq 28 ) ]]; then
+        SILENT[h:${host}]=1
+        warn "${host} gave no answer: its other places count as not serving this run"
+    fi
     [[ "$code" == 200 || "$code" == 206 ]]
 }
 
@@ -343,25 +355,39 @@ serves() {
 # place serves would stop a build from an empty cache, and one only a single place serves is one
 # outage away from that (docs/supply-chain.md).
 if [[ "$MODE" == probe ]]; then
-    total=0 lone=0 none=0
-    while IFS='|' read -r _ name ver url _; do
-        [[ -n "$name" ]] || continue
-        total=$((total + 1))
-        mapfile -t places < <(locations_of "$url" "$name" "$ver")
-        up=() down=()
+    total=0 lone=0 none=0 again=()
+    # probe_one NAME VER URL [last]: every place asked. One that no place serves is put by for a
+    # last look at the end of the run, and named only if that look finds none either.
+    probe_one() {
+        local u
+        local -a places up=() down=()
+        mapfile -t places < <(locations_of "$3" "$1" "$2")
         for u in "${places[@]}"; do
             if serves "$u"; then up+=("$u"); else down+=("$u"); fi
         done
         if [[ "${#up[@]}" -eq 0 ]]; then
-            err "${name} ${ver}: no place serves it (asked ${places[*]})"
+            if [[ -z "${4:-}" ]]; then again+=("$1|$2|$3"); return 0; fi
+            err "$1 $2: no place serves it (asked ${places[*]})"
             none=$((none + 1))
         elif [[ "${#up[@]}" -eq 1 ]]; then
-            warn "${name} ${ver}: only ${up[0]} serves it${down[*]:+; not ${down[*]}}"
+            warn "$1 $2: only ${up[0]} serves it${down[*]:+; not ${down[*]}}"
             lone=$((lone + 1))
         else
-            ok "${name} ${ver}: ${#up[@]} of ${#places[@]} places${down[*]:+; not ${down[*]}}"
+            ok "$1 $2: ${#up[@]} of ${#places[@]} places${down[*]:+; not ${down[*]}}"
         fi
+    }
+    while IFS='|' read -r _ name ver url _; do
+        [[ -n "$name" ]] || continue
+        total=$((total + 1))
+        probe_one "$name" "$ver" "$url"
     done < <(all_sources)
+    # The last look asks every host afresh: one silent for a moment earlier in the run is not
+    # taken as gone for good.
+    SILENT=()
+    for s in "${again[@]}"; do
+        IFS='|' read -r name ver url <<< "$s"
+        probe_one "$name" "$ver" "$url" last
+    done
     [[ "$none" -eq 0 ]] || die "${none} of ${total} source(s) served by no place: a build from an empty cache stops at them"
     ok "${total} source(s), each served somewhere; ${lone} by one place alone"
     exit 0
@@ -415,6 +441,52 @@ lookup_hash() {   # lookup_hash FILE LOCK
     [[ -f "$2" ]] || return 1
     awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$2"
 }
+
+# Each mirror row's file, downloaded and held to the lock as a fetch holds it. A row serving other
+# bytes is wrong, and so is a row for no source here, which never applies: either fails. A row that
+# no longer serves the pinned version is a warning, as a distribution's copy lapses when the pin
+# moves past it. Nothing is kept.
+if [[ "$MODE" == check-mirrors ]]; then
+    # Read whole first: a manifest that fails part way stops the check, not just its count.
+    sources="$(all_sources)"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    rows=0 good=0 lapsed=0 wrong=0 names=" "
+    while IFS='|' read -r owner name ver url _; do
+        [[ -n "$name" ]] || continue
+        names+="${name} "
+        lock="$KRYPTIK_LOCK"; [[ "$owner" == . ]] || lock="$KRYPTIK_IMAGES_LOCK"
+        want="$(lookup_hash "$(basename "$url")" "$lock")" || want=""
+        while read -r m; do
+            rows=$((rows + 1))
+            rm -f "${tmp}/file"
+            if ! curl -fsSL --connect-timeout 15 --max-time 900 --max-filesize 4294967296 --retry 2 --retry-delay 3 \
+                    -o "${tmp}/file" "$m" 2>/dev/null; then
+                warn "${name} ${ver}: ${m} does not serve it"
+                lapsed=$((lapsed + 1))
+            elif [[ -z "$want" ]]; then
+                err "${name} ${ver}: no lock entry for $(basename "$url") to hold ${m} to"
+                wrong=$((wrong + 1))
+            elif [[ "$(sha256_of "${tmp}/file")" == "$want" ]]; then
+                ok "${name} ${ver}: ${m} has the lock's bytes"
+                good=$((good + 1))
+            else
+                err "${name} ${ver}: ${m} serves other bytes than the lock's, or answers a missing file with a page"
+                wrong=$((wrong + 1))
+            fi
+        done < <(mirrors_of "$name" "$ver")
+    done <<< "$sources"
+    if [[ -f "$MIRRORS" ]]; then
+        while read -r p; do
+            [[ "$names" == *" ${p} "* ]] && continue
+            err "a row for ${p}, which is no source here"
+            wrong=$((wrong + 1))
+        done < <(awk '!/^[[:space:]]*#/ && NF { print $1 }' "$MIRRORS" | sort -u)
+    fi
+    [[ "$wrong" -eq 0 ]] || die "${wrong} wrong mirror row(s) in ${MIRRORS#"$KRYPTIK_ROOT"/}: correct or remove them"
+    ok "${rows} mirror row(s): ${good} with the lock's bytes, ${lapsed} no longer serving the pin"
+    exit 0
+fi
 
 if [[ "$MODE" == "lock" ]]; then
     warn "Lock mode: recording checksums of whatever downloads."

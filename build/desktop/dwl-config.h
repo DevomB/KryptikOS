@@ -11,7 +11,6 @@
                         (hex & 0xFF) / 255.0f }
 /* appearance */
 static const int sloppyfocus               = 1;  /* focus follows mouse */
-static const int bypass_surface_visibility = 0;
 static const unsigned int borderpx         = 6;  /* the identity channel: wide */
 static const unsigned int bandpx           = 2;  /* how much narrower an unfocused border's colour is */
 static const unsigned int barpx            = 22; /* the bar naming a fullscreen window's zone */
@@ -20,12 +19,16 @@ static const float rootcolor[]             = COLOR(0x101418ff);
 static const float urgentcolor[]           = COLOR(KRYPTIK_URGENT_BORDER);
 static const float fullscreen_bg[]         = {0.0f, 0.0f, 0.0f, 1.0f};
 
-/* zone -> border colour and proxy uid, and a socket each; see zone-colours.h */
-#define ZONE_ENTRY(name, border, proxy) { name, COLOR(border), proxy },
+/* zone -> border colour, proxy uid and whether it may hold the screen awake, and a socket
+ * each; see zone-colours.h */
+#define ZONE_ENTRY(name, border, proxy, hold) { name, COLOR(border), proxy, hold },
 static const ZoneColor zonecolors_table[] = {
 	KRYPTIK_ZONE_COLOURS(ZONE_ENTRY)
 };
 static const float unzonedcolor[] = COLOR(KRYPTIK_UNZONED_BORDER);
+/* How long a zone's window holds the screen awake after the last key or button is pressed
+ * (dwl-zone-borders.py's checkidleinhibitor); the lock and the blanking then come as usual. */
+static const int holdawakesecs = 4 * 60 * 60;
 
 /* tagging - TAGCOUNT must be no greater than 31 */
 #define TAGCOUNT (9)
@@ -92,6 +95,11 @@ static const enum libinput_config_tap_button_map button_map = LIBINPUT_CONFIG_TA
 static const char *termcmd[]      = { "kryptik-launch", "--ask", "work",      "--", "havoc", NULL };
 static const char *personalcmd[]  = { "kryptik-launch", "--ask", "personal",  "--", "havoc", NULL };
 static const char *untrustedcmd[] = { "kryptik-launch", "--ask", "untrusted", "--", "firefox", NULL };
+/* The app_id Firefox claims, its remoting name on the default update channel, which the proxy
+ * stamps kryptik.<zone>.firefox-default. The browser key puts untrusted's open Firefox in front
+ * and starts one only when it has none; the menu's b asks the same of any zone. */
+static const char browserappid[] = "firefox-default";
+static const FocusOrLaunch untrustedbrowser = { "untrusted", browserappid, untrustedcmd };
 static const char *menucmd[]      = { "havoc", "/usr/bin/kryptik-chrome", "--menu", NULL };
 /* The screen lock, opened by the login password (docs/design/laptop.md). */
 static const char *lockcmd[]      = { "kryptik-lock", NULL };
@@ -120,7 +128,7 @@ static const Key keys[] = {
 	{ MODKEY,                    XKB_KEY_p,           spawn,            {.v = menucmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_Return,      spawn,            {.v = termcmd} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_p,           spawn,            {.v = personalcmd} },
-	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_u,           spawn,            {.v = untrustedcmd} },
+	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_u,           focusorlaunch,    {.v = &untrustedbrowser} },
 	{ MODKEY|WLR_MODIFIER_SHIFT, XKB_KEY_l,           spawn,            {.v = lockcmd} },
 	{ 0,                         XKB_KEY_XF86PowerOff, spawn,           {.v = suspendcmd} },
 	{ 0,                         XKB_KEY_XF86AudioRaiseVolume, spawn,   {.v = volupcmd} },

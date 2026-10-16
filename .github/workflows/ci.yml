@@ -37,8 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      # alsa-lib's headers for tools/tests/sound-tools.sh, which compiles the sound's C programs.
+      - name: Install shellcheck and alsa-lib's headers
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck libasound2-dev
 
       - name: Syntax check every script
         run: |
@@ -194,6 +195,9 @@ jobs:
       - name: Every source is served somewhere
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         continue-on-error: true
+        # It takes about three minutes; bounded, so a host that answers slowly holds up the
+        # signature gate after it for no longer than this.
+        timeout-minutes: 8
         run: ./tools/fetch-sources.sh --probe
 
       - name: Provenance of unsigned sources
@@ -457,3 +461,10 @@ jobs:
       # is, would stop at; a source one place alone serves is a warning, a mirror row's cue.
       - name: Every place each source is kept, asked for its file
         run: ./tools/fetch-sources.sh --probe
+
+      # Each mirror row's file, downloaded and held to the lock: a row serving other bytes, or one
+      # for no source, fails; one that no longer serves the pin is a warning. Its downloads stay
+      # on the runner.
+      - name: Every mirror row has the lock's bytes
+        if: ${{ !cancelled() }}
+        run: ./tools/fetch-sources.sh --check-mirrors

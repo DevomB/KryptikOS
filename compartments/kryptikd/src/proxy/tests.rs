@@ -67,10 +67,23 @@ fn dwl_knows_each_shipped_zones_proxy_uid() {
         let z = Zone::from_file(&path).expect("a shipped zone parses");
         let head = format!("X(\"{}\",", z.name);
         let row = header.lines().map(str::trim_start).find(|l| l.starts_with(&head)).unwrap_or_else(|| panic!("no row for {}", z.name));
-        let tail = &row[row.rfind(',').unwrap() + 1..];
-        let uid: u32 = tail[..tail.find(')').unwrap()].trim().parse().unwrap();
+        // X(zone, border, proxy, hold)
+        let args: Vec<&str> = row[row.find('(').unwrap() + 1..row.rfind(')').unwrap()].split(',').map(str::trim).collect();
+        let uid: u32 = args[2].parse().unwrap();
         assert_eq!(uid, uid_for(z.uid_base.expect("a shipped zone declares uid_base")), "{}", z.name);
+        // dwl reads the same file for whether the zone may hold the screen awake.
+        assert_eq!(args[3], if z.hold_awake { "1" } else { "0" }, "{}", z.name);
         seen += 1;
     }
     assert!(seen >= 6, "{seen} zones");
+}
+
+/// The proxy lets the idle inhibitor through only for a zone whose file says hold_awake.
+#[test]
+fn the_idle_inhibitor_follows_the_zone_file() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../zones");
+    for (file, hold) in [("personal.toml", true), ("untrusted.toml", false), ("vault.toml", false)] {
+        let z = crate::zone::Zone::from_file(&dir.join(file)).expect(file);
+        assert_eq!(proxy_words(&z, "1000").contains(&"--hold-awake"), hold, "{file}");
+    }
 }

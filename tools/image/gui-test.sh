@@ -125,6 +125,8 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-FOCUS-HOLD" "key:alt+j" \
+    "expect:GT LOCK-TYPE-HOLD" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-SUSPEND" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT KEY-VOLUME-DOWN" "key:volumedown" \
     "expect:GT KEY-LOCK-LAYOUT" "key:alt+shift+l" \
@@ -147,7 +149,9 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT KEY-MENU-OPEN" "key:alt+p" \
     "type-from:GT OPEN-TYPE 1 ([a-z0-9]+)" "type-from:GT OPEN-TYPE 2 ([a-z0-9]+)" \
     "type-from:GT OPEN-TYPE 3 ([a-z0-9]+)" \
-    "expect:GT KEY-VIEW-BROWSER" "key:alt+3" "expect:GT KEY-BROWSER-BACK" "key:alt+1" \
+    "expect:GT KEY-VIEW-BROWSER" "key:alt+3" "expect:GT KEY-BROWSER-AWAY" "key:alt+1" \
+    "expect:GT KEY-BROWSER-AGAIN" "key:alt+shift+u" "expect:GT KEY-BROWSER-ASIDE" "key:alt+1" \
+    "expect:GT KEY-BROWSER-LAUNCH" "key:alt+shift+u" "expect:GT KEY-BROWSER-BACK" "key:alt+1" \
     "expect:GT KEY-VT-ADMIN" "key:ctrl+alt+f2" "expect:GT KEY-VT-DESKTOP" "key:ctrl+alt+f1" \
     "expect:GT KEY-MENU-AFTER-VT" "key:alt+p" \
     "expect:GT END" "expect:GCHECK-DONE" \
@@ -168,16 +172,18 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             map-keeps-zone0-focus close-keeps-zone0-focus alone-keeps-no-keyboard alone-reached-by-key focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone menu-names-stale-statement menu-names-install-age menu-update-auto menu-names-failed-trial menu-names-armed-trial zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved zone-copy-pastes-in-zone zone-copy-stays-in-zone zone-copy-not-in-zone0 \
             move-door-unreached move-crosses-zones move-leaves-nothing-behind move-in-no-log move-door-refuses-others \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
-            second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up \
+            second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up browser-key-brings-forward browser-front-only-the-users browser-front-request browser-key-launches \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
+            zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
+            chrome-names-hold idle-lock-heeds-hold chrome-hold-cleared \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             second-head-scale-chosen zone-sees-heads-unnamed \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group dwl-confined-to-its-files \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
-            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name compositor-socket-unreached \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name zone-fractional-scale compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
             zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key marks-fullscreen zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do
