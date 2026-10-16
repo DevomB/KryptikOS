@@ -46,6 +46,8 @@ export WLR_RENDERER=pixman
 export XCURSOR_PATH=/usr/share/icons
 mkdir -p "$rt/kryptik" && chmod 0700 "$rt/kryptik"
 log="$rt/kryptik/session.log"
+# The screen at the level the last brightness step left (brightness.sh), before anything shows.
+/usr/libexec/kryptik/brightness.sh restore 2>> "$log" || :
 
 {
     echo "kryptik-session: $(id -un) uid $(id -u) on $(tty 2>/dev/null || echo '?') at $(date -Iseconds 2>/dev/null || date)"
