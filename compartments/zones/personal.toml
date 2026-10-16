@@ -35,3 +35,8 @@ label          = "PERSONAL"
 # The browser, and the toolkit it is built over (docs/design/software-delivery.md); the call its
 # content sandbox needs is granted in the zone's policy.
 images = "browser toolkit"
+
+[desktop]
+# Video in the browser: a window of this zone may hold off the lock and the blanking while it is
+# shown and has the keyboard, for four hours from the last key or button (docs/design/laptop.md).
+hold_awake = true

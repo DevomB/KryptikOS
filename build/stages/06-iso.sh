@@ -330,15 +330,16 @@ EOF
     cat "${IMG}/root.json"
 }
 
-# make_ext4 TREE IMAGE BYTES UUID [LABEL]: the sysroot's mke2fs (1.47.1), which clamps every time it
-# writes to SOURCE_DATE_EPOCH, in the chroot; TREE and IMAGE are under the work tree's images/.
+# make_ext4 TREE IMAGE BYTES UUID [LABEL [INODES]]: the sysroot's mke2fs (1.47.1), which clamps every
+# time it writes to SOURCE_DATE_EPOCH, in the chroot; TREE and IMAGE are under the work tree's images/.
 # Blocks of 4096 bytes, the size dm-verity reads every image in: ext4 refuses a smaller block on
-# that device (EINVAL), and mke2fs.conf gives a file system under 512 MiB blocks of 1024.
+# that device (EINVAL), and mke2fs.conf gives a file system under 512 MiB blocks of 1024. INODES
+# fixes the inode count, where mke2fs.conf would give one inode per 4 KiB under 512 MiB.
 make_ext4() {
     rm -f "$2"; truncate -s "$3" "$2"
     env KRYPTIK_ROOT="$KRYPTIK_ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
         "$CHROOTD" run /usr/sbin/mke2fs -q -F -t ext4 -b 4096 -L "${5:-kryptik-root}" -O '^has_journal' -U "$4" \
-        -E "root_owner=0:0,hash_seed=$4" -d "/kryptik-work${1#"$KRYPTIK_WORK"}" "/kryptik-work${2#"$KRYPTIK_WORK"}" \
+        ${6:+-N "$6"} -E "root_owner=0:0,hash_seed=$4" -d "/kryptik-work${1#"$KRYPTIK_WORK"}" "/kryptik-work${2#"$KRYPTIK_WORK"}" \
         > /dev/null
 }
 
@@ -375,16 +376,24 @@ pack_image() {
     "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "$stage" --list "${KRYPTIK_ROOT}/build/images/${name}.programs" >&2 || failed=1
     "${KRYPTIK_ROOT}/tools/check-image-licences.sh" --image "$name" "$stage" >&2 || failed=1
     [[ "$failed" -eq 0 ]] || { echo "FAIL: image ${name} did not pass the checks above" >&2; return 1; }
-    local bytes; bytes="$(du -sb "$stage" | cut -f1)"
-    local fs_bytes=$(( bytes + bytes / 8 + 16 * 1024 * 1024 ))
+    # The tree in 4 KiB blocks: each file rounded up, each directory one at least, and a symlink
+    # too long for its inode one, where du -sb counts bytes and misses what small files waste.
+    # Then an inode each with an eighth to spare, a sixteenth for extent and index blocks, and
+    # 16 MiB for the bitmaps, the group descriptors and their copies.
+    local blocks inodes
+    read -r blocks inodes < <(find "$stage" -printf '%y %s\n' \
+        | awk '{ n++ } $1 == "f" { b += int(($2 + 4095) / 4096) } $1 == "d" { b += ($2 > 4096 ? int(($2 + 4095) / 4096) : 1) }
+               $1 == "l" && $2 >= 60 { b++ } END { print b + 0, n + 0 }')
+    inodes=$(( inodes + inodes / 8 + 64 ))
+    local fs_bytes=$(( blocks * 4096 + blocks * 4096 / 16 + inodes * 256 + 16 * 1024 * 1024 ))
     fs_bytes=$(( (fs_bytes + 4095) / 4096 * 4096 ))
     local img="${IMAGES}/${name}.img" id
     # The UUID and directory hash seed, from what the image is and the root it is built for.
     id="$(printf 'kryptik-image %s %s %s' "$name" "$version" "$base" | sha256_of_stdin)"
     id="${id:0:8}-${id:8:4}-${id:12:4}-${id:16:4}-${id:20:12}"
-    make_ext4 "$stage" "$img" "$fs_bytes" "$id" "kryptik-${name}"
+    make_ext4 "$stage" "$img" "$fs_bytes" "$id" "kryptik-${name}" "$inodes"
     if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
-        make_ext4 "$stage" "${img}.again" "$fs_bytes" "$id" "kryptik-${name}"
+        make_ext4 "$stage" "${img}.again" "$fs_bytes" "$id" "kryptik-${name}" "$inodes"
         cmp -s "$img" "${img}.again" || { echo "FAIL: two mke2fs runs over image ${name} wrote different images" >&2; return 1; }
         rm -f "${img}.again"
     fi

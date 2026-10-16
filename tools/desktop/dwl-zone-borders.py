@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers, popups, the lid
-and the keys heeded under the screen lock.
+"""Patch dwl.c (dwl v0.8) for zone sockets, borders, focus, scene layers, popups, the lid,
+the keys heeded under the screen lock and a zone's hold on the screen.
 
 Usage: dwl-zone-borders.py DWL_SOURCE_DIR           (edits dwl.c in place)
        dwl-zone-borders.py --check DWL_SOURCE_DIR   (exit 0 if it would apply)
@@ -16,7 +16,8 @@ import sys
 # Its border is that
 # zone's colour; focus is shown by width (a band of the root colour when
 # unfocused), and fullscreen keeps the border under a bar that names the
-# zone, and the zones that hold the microphone and the camera. A zone's
+# zone, the zones that hold the microphone and the camera, and the zone
+# holding the screen awake. A zone's
 # popups are drawn inside its window's frame and last while the window has
 # the keyboard.
 
@@ -76,6 +77,8 @@ static const unsigned char zonefont[128][7] = {
 #define MARKEVENTS (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE)
 #define SOUNDUID 87 /* the mixer's, build/services/kryptik-sound/run */
 static char miczone[16], camzone[16];
+/* The zone holding the screen awake as the bars last named it (checkidleinhibitor). */
+static const ZoneColor *barhold;
 static int markfd = -1;
 static struct wl_event_source *marktimer;
 
@@ -112,7 +115,8 @@ readmark(const char *file, uid_t owner, const char *prefix, char *out, size_t si
 /* Kryptik: a fullscreen window leaves the top barpx rows of its output to a
  * bar in its zone's colour that names the zone, outside the window's frame:
  * its surfaces and its popups are clipped to the frame. After the name, the
- * zones that hold the microphone and the camera, whichever zones they are. */
+ * zones that hold the microphone and the camera, whichever zones they are,
+ * and the zone holding the screen awake: a video in front covers the chrome. */
 static void
 zonebar(Client *c)
 {
@@ -120,7 +124,7 @@ zonebar(Client *c)
 \tconst ZoneColor *z = clientzone(c);
 \tconst float *ink;
 \tstruct wlr_box box = c->mon->m;
-\tchar name[64] = "zone 0";
+\tchar name[80] = "zone 0"; /* a zone and three marks, each name at most 12 bytes */
 \tint s = (int)barscale, pad = ((int)barpx - 7 * s) / 2, x, row, col, n;
 \tsize_t i;
 
@@ -131,6 +135,8 @@ zonebar(Client *c)
 \t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   mic %s", miczone);
 \tif (camzone[0])
 \t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   cam %s", camzone);
+\tif (barhold)
+\t\tsnprintf(name + strlen(name), sizeof(name) - strlen(name), "   awake %s", barhold->zone);
 \tink = 0.299f * c->zoneborder[0] + 0.587f * c->zoneborder[1]
 \t\t\t+ 0.114f * c->zoneborder[2] > 0.5f ? black : white;
 
@@ -157,8 +163,9 @@ zonebar(Client *c)
 }
 
 /* Kryptik: both files read again, and every fullscreen window's bar drawn again
- * if either holder changed. Both watches are set again too: a directory made
- * anew, or mounted over, drops its watch, which would hide every later grant. */
+ * if either holder, or the zone holding the screen awake, changed. Both watches
+ * are set again too: a directory made anew, or mounted over, drops its watch,
+ * which would hide every later grant. */
 static void
 marksupdate(void)
 {
@@ -171,10 +178,11 @@ marksupdate(void)
 \t}
 \treadmark(MICMARK, SOUNDUID, "", mic, sizeof(mic));
 \treadmark(CAMMARK, 0, "zone ", cam, sizeof(cam));
-\tif (strcmp(mic, miczone) == 0 && strcmp(cam, camzone) == 0)
+\tif (strcmp(mic, miczone) == 0 && strcmp(cam, camzone) == 0 && holdzone == barhold)
 \t\treturn;
 \tsnprintf(miczone, sizeof(miczone), "%s", mic);
 \tsnprintf(camzone, sizeof(camzone), "%s", cam);
+\tbarhold = holdzone;
 \twl_list_for_each(c, &clients, link)
 \t\tif (c->isfullscreen && c->mon)
 \t\t\tzonebar(c);
@@ -236,6 +244,7 @@ typedef struct {
 	const char *zone;     /* its socket's name under /run/kryptik-compositor/<uid> */
 	const float border[4];
 	unsigned int proxy;   /* its proxy's uid: with the session's, the one peer its socket takes */
+	int hold;             /* its file lets its windows hold the screen awake (checkidleinhibitor) */
 } ZoneColor;
 """),
     # A client's zone and its colour, placed before applyrules.
@@ -326,20 +335,24 @@ run(char *startup_cmd)
 static const char *const zoneglobals[] = {
 \t"wl_compositor", "wl_subcompositor", "wl_shm", "wl_seat", "wl_output",
 \t"xdg_wm_base", "zxdg_decoration_manager_v1", "wp_viewporter",
-\t"wp_cursor_shape_manager_v1",
+\t"wp_cursor_shape_manager_v1", "wp_fractional_scale_manager_v1",
 };
 
-/* Kryptik: a client of a zone's socket is told only of zoneglobals, and
- * binding another global by its number ends its connection; a client of
- * dwl's own socket sees them all. */
+/* Kryptik: a client of a zone's socket is told only of zoneglobals, and of
+ * the idle inhibitor if its zone may hold the screen awake; binding another
+ * global by its number ends its connection. A client of dwl's own socket
+ * sees them all. */
 static bool
 zoneglobal(const struct wl_client *client, const struct wl_global *global, void *data)
 {
+\tconst ZoneColor *z = wl_client_get_user_data((struct wl_client *)client);
 \tconst char *name = wl_global_get_interface(global)->name;
 \tsize_t i;
 
-\tif (!wl_client_get_user_data((struct wl_client *)client))
+\tif (!z)
 \t\treturn true;
+\tif (strcmp(name, "zwp_idle_inhibit_manager_v1") == 0)
+\t\treturn z->hold;
 \tfor (i = 0; i < LENGTH(zoneglobals); i++)
 \t\tif (strcmp(zoneglobals[i], name) == 0)
 \t\t\treturn true;
@@ -459,6 +472,191 @@ run(char *startup_cmd)
 """,
      """\t\t\tprintf("%s appid \\n", m->wlr_output->name);
 \t\t\tprintf("%s zone \\n", m->wlr_output->name);
+"""),
+    # The browser key and the menu's b put a zone's open browser in front
+    # (docs/design/browser-and-graphics.md). The window is found by the zone of
+    # its client's socket and the app_id its proxy stamps, kryptik.<zone>.<claimed>,
+    # so a client that claims another zone's browser is never taken.
+    ("""} ZoneColor;
+""",
+     """} ZoneColor;
+
+typedef struct {
+\tconst char *zone;     /* whose window is sought, by its socket */
+\tconst char *claimed;  /* the app_id its client claims, before the proxy's kryptik.<zone>. */
+\tconst char **cmd;     /* started when the zone has no such window */
+} FocusOrLaunch;
+"""),
+    ("""static void focusmon(const Arg *arg);
+""",
+     """static void focusmon(const Arg *arg);
+static void focusorlaunch(const Arg *arg);
+"""),
+    ("""void
+focusmon(const Arg *arg)
+{
+""",
+     """#include <sys/inotify.h>
+
+/* Kryptik: ZONE's window whose app_id is kryptik.ZONE.CLAIMED, the one used
+ * last, or NULL. The zone is its socket's, never the client's word. */
+static Client *
+zonewindow(const char *zone, const char *claimed)
+{
+\tconst ZoneColor *z;
+\tchar want[160];
+\tClient *c;
+
+\tif (snprintf(want, sizeof(want), "kryptik.%s.%s", zone, claimed) >= (int)sizeof(want))
+\t\treturn NULL;
+\twl_list_for_each(c, &fstack, flink) {
+\t\tz = clientzone(c);
+\t\tif (c->mon && z && strcmp(z->zone, zone) == 0 && strcmp(client_get_appid(c), want) == 0)
+\t\t\treturn c;
+\t}
+\treturn NULL;
+}
+
+/* Kryptik: C put in front where it is, never moved to another tag: its first
+ * tag viewed on its own monitor when it is not shown there, then the keyboard,
+ * as Alt and the tag's number and a pick would. */
+static void
+bringforward(Client *c)
+{
+\tArg a;
+
+\tif (locked || !c->mon)
+\t\treturn;
+\tselmon = c->mon;
+\tif (!VISIBLEON(c, c->mon)) {
+\t\ta.ui = c->tags & -c->tags;
+\t\tview(&a);
+\t}
+\tfocusclient(c, 1);
+}
+
+/* Kryptik: the zone's open window of that app_id in front, or its command
+ * started when it has none: the browser key. */
+void
+focusorlaunch(const Arg *arg)
+{
+\tconst FocusOrLaunch *f = arg->v;
+\tClient *c = zonewindow(f->zone, f->claimed);
+\tArg a = {.v = f->cmd};
+
+\tif (c)
+\t\tbringforward(c);
+\telse
+\t\tspawn(&a);
+}
+
+/* Kryptik: the chrome's menu asks for a zone's open browser in front with one
+ * line naming the zone in browser-front, in $XDG_RUNTIME_DIR/kryptik/front: a
+ * directory of its own, so what dwl reads and removes there is the request
+ * alone. It is taken only from a regular file of the session user's that no
+ * one else may write, in a directory of that user's that no one else may
+ * write, and removed before it is acted on. It only brings a window forward:
+ * every launch stays the chrome's, which asks a zone's passphrase on its own
+ * terminal. */
+static char frontdir[256], frontfile[288];
+static int frontfd = -1;
+static struct wl_event_source *fronttimer;
+
+static void
+frontread(void)
+{
+\tchar buf[64];
+\tconst ZoneColor *z;
+\tstruct stat st, dir;
+\tssize_t n = 0;
+\tClient *c;
+\tint fd;
+
+\tif (!frontfile[0])
+\t\treturn;
+\tif (frontfd >= 0)
+\t\tinotify_add_watch(frontfd, frontdir, IN_CLOSE_WRITE | IN_MOVED_TO);
+\tif ((fd = open(frontfile, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)) < 0) {
+\t\tif (errno != ENOENT)
+\t\t\tunlink(frontfile);
+\t\treturn;
+\t}
+\tif (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == getuid() && !(st.st_mode & 022)
+\t\t\t&& stat(frontdir, &dir) == 0 && dir.st_uid == getuid() && !(dir.st_mode & 022))
+\t\tn = read(fd, buf, sizeof(buf) - 1);
+\tclose(fd);
+\tunlink(frontfile);
+\tif (n <= 0)
+\t\treturn;
+\tbuf[n] = '\\0';
+\tbuf[strcspn(buf, "\\n")] = '\\0';
+\tfor (z = zonecolors_table; z < END(zonecolors_table); z++)
+\t\tif (strcmp(z->zone, buf) == 0 && (c = zonewindow(z->zone, browserappid)))
+\t\t\tbringforward(c);
+}
+
+static int
+frontevent(int fd, uint32_t mask, void *data)
+{
+\tchar events[4096];
+
+\twhile (read(fd, events, sizeof(events)) > 0)
+\t\t;
+\tfrontread();
+\treturn 0;
+}
+
+/* Kryptik: a look each second besides the watch, which cannot be set while
+ * the directory is not there. */
+static int
+fronttick(void *data)
+{
+\tfrontread();
+\twl_event_source_timer_update(fronttimer, 1000);
+\treturn 0;
+}
+
+static void
+frontwatch(void)
+{
+\tconst char *rt = getenv("XDG_RUNTIME_DIR");
+
+\tif (!rt || snprintf(frontdir, sizeof(frontdir), "%s/kryptik/front", rt) >= (int)sizeof(frontdir)
+\t\t\t|| snprintf(frontfile, sizeof(frontfile), "%s/browser-front", frontdir) >= (int)sizeof(frontfile)) {
+\t\tfrontfile[0] = '\\0';
+\t\treturn;
+\t}
+\tif ((frontfd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC)) >= 0)
+\t\twl_event_loop_add_fd(event_loop, frontfd, WL_EVENT_READABLE, frontevent, NULL);
+\tif ((fronttimer = wl_event_loop_add_timer(event_loop, fronttick, NULL)))
+\t\tfronttick(NULL);
+}
+
+void
+focusmon(const Arg *arg)
+{
+"""),
+    # printstatus: the zones whose browser is open, for the menu's b, among the
+    # selected output's lines, before the layout line that ends them.
+    ("""\t\tprintf("%s layout %s\\n", m->wlr_output->name, m->ltsymbol);
+""",
+     """\t\tif (m == selmon) {
+\t\t\tconst ZoneColor *z;
+
+\t\t\tprintf("%s browsers", m->wlr_output->name);
+\t\t\tfor (z = zonecolors_table; z < END(zonecolors_table); z++)
+\t\t\t\tif (zonewindow(z->zone, browserappid))
+\t\t\t\t\tprintf(" %s", z->zone);
+\t\t\tprintf("\\n");
+\t\t}
+\t\tprintf("%s layout %s\\n", m->wlr_output->name, m->ltsymbol);
+"""),
+    # run: the menu's requests watched once the event loop runs.
+    ("""\tzonesockets();
+""",
+     """\tzonesockets();
+\t/* Kryptik: the menu's requests to put a zone's open browser in front. */
+\tfrontwatch();
 """),
     # mapnotify: zone-coloured borders, then the band over them as four
     # strips. The surface stays below both, or a buffer larger than its
@@ -1069,6 +1267,173 @@ inputdevice(struct wl_listener *listener, void *data)
      """\t/* On _press_ attempt to process a compositor keybinding, which while
 \t * the session is locked is one of lockedkeys. */
 \tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+"""),
+    # Holding the screen awake (docs/design/laptop.md): an idle inhibitor counts only from a
+    # zone whose file allows it, on a window of it shown on a lit output while a window of that
+    # zone has the keyboard, for holdawakesecs from when that began or a key or button was last
+    # pressed. A zone 0 client's inhibitor holds nothing, and the status names the holder.
+    ("""static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
+""",
+     """static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
+/* Kryptik: the zone holding the screen awake, if any; the monotonic milliseconds its hold
+ * counts from, 0 while none qualifies; and the timer that ends it. */
+static const ZoneColor *holdzone;
+static int64_t holdsince;
+static struct wl_event_source *holdtimer;
+"""),
+    ("""static void checkidleinhibitor(struct wlr_surface *exclude);
+""",
+     """static void checkidleinhibitor(struct wlr_surface *exclude);
+static void holdpress(void);
+static void keyboardfocuschange(struct wl_listener *listener, void *data);
+"""),
+    ("""static struct wl_listener new_idle_inhibitor = {.notify = createidleinhibitor};
+""",
+     """static struct wl_listener new_idle_inhibitor = {.notify = createidleinhibitor};
+static struct wl_listener keyboard_focus_change = {.notify = keyboardfocuschange};
+"""),
+    ("""void
+checkidleinhibitor(struct wlr_surface *exclude)
+{
+\tint inhibited = 0, unused_lx, unused_ly;
+\tstruct wlr_idle_inhibitor_v1 *inhibitor;
+\twl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link) {
+\t\tstruct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
+\t\tstruct wlr_scene_tree *tree = surface->data;
+\t\tif (exclude != surface && (bypass_surface_visibility || (!tree
+\t\t\t\t|| wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly)))) {
+\t\t\tinhibited = 1;
+\t\t\tbreak;
+\t\t}
+\t}
+
+\twlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
+}
+""",
+     """static int64_t
+monotonicms(void)
+{
+\tstruct timespec ts;
+
+\tclock_gettime(CLOCK_MONOTONIC, &ts);
+\treturn (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+void
+checkidleinhibitor(struct wlr_surface *exclude)
+{
+\tstruct wlr_surface *focused = seat->keyboard_state.focused_surface;
+\tconst ZoneColor *keyzone = focused
+\t\t\t? wl_client_get_user_data(wl_resource_get_client(focused->resource)) : NULL;
+\tconst ZoneColor *found = NULL;
+\tstruct wlr_idle_inhibitor_v1 *inhibitor;
+\tint64_t left = 0;
+\tint unused_lx, unused_ly;
+
+\twl_list_for_each(inhibitor, &idle_inhibit_mgr->inhibitors, link) {
+\t\tstruct wlr_surface *surface = wlr_surface_get_root_surface(inhibitor->surface);
+\t\tconst ZoneColor *z = wl_client_get_user_data(wl_resource_get_client(surface->resource));
+\t\t/* A mapped window's scene tree, which unmapnotify clears (patch 0003). A zone
+\t\t * has no layer surface, so the tree's data is its Client. */
+\t\tstruct wlr_scene_tree *tree = surface->data;
+\t\tClient *c;
+
+\t\tif (surface == exclude || locked || !z || !z->hold || z != keyzone || !tree
+\t\t\t\t|| !(c = tree->node.data) || !c->mon || c->mon->asleep
+\t\t\t\t|| !c->mon->wlr_output->enabled || !VISIBLEON(c, c->mon)
+\t\t\t\t|| !wlr_scene_node_coords(&tree->node, &unused_lx, &unused_ly))
+\t\t\tcontinue;
+\t\tfound = z;
+\t\tbreak;
+\t}
+\tif (!found) {
+\t\tholdsince = 0;
+\t} else {
+\t\tif (!holdsince)
+\t\t\tholdsince = monotonicms();
+\t\t/* Run out: the lock comes as usual until a key or button starts the cap again. */
+\t\tif ((left = holdsince + holdawakesecs * 1000LL - monotonicms()) <= 0)
+\t\t\tfound = NULL;
+\t}
+\tif (holdtimer)
+\t\twl_event_source_timer_update(holdtimer, found ? (int)left : 0);
+\twlr_idle_notifier_v1_set_inhibited(idle_notifier, found != NULL);
+\tif (found != holdzone) {
+\t\tholdzone = found;
+\t\tprintstatus();
+\t}
+}
+
+static int
+holdtick(void *data)
+{
+\tcheckidleinhibitor(NULL);
+\treturn 0;
+}
+
+/* Kryptik: a key or button pressed, whatever it reaches: the user is there, so a
+ * hold's cap starts again. */
+void
+holdpress(void)
+{
+\tif (holdsince) {
+\t\tholdsince = monotonicms();
+\t\tcheckidleinhibitor(NULL);
+\t}
+}
+
+void
+keyboardfocuschange(struct wl_listener *listener, void *data)
+{
+\tcheckidleinhibitor(NULL);
+}
+"""),
+    ("""\twlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+
+\t/* On _press_ attempt to process a compositor keybinding, which while
+""",
+     """\twlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+\tif (event->state == WL_KEYBOARD_KEY_STATE_PRESSED)
+\t\tholdpress();
+
+\t/* On _press_ attempt to process a compositor keybinding, which while
+"""),
+    ("""\tcase WL_POINTER_BUTTON_STATE_PRESSED:
+\t\tcursor_mode = CurPressed;
+""",
+     """\tcase WL_POINTER_BUTTON_STATE_PRESSED:
+\t\tcursor_mode = CurPressed;
+\t\tholdpress();
+"""),
+    ("""\tm->asleep = !event->mode;
+\tupdatemons(NULL, NULL);
+""",
+     """\tm->asleep = !event->mode;
+\tupdatemons(NULL, NULL);
+\t/* Kryptik: a hold counts only on a lit output. */
+\tcheckidleinhibitor(NULL);
+"""),
+    ("""\twl_signal_add(&seat->events.start_drag, &start_drag);
+""",
+     """\twl_signal_add(&seat->events.start_drag, &start_drag);
+\t/* Kryptik: a hold ends when its zone's window loses the keyboard. */
+\twl_signal_add(&seat->keyboard_state.events.focus_change, &keyboard_focus_change);
+"""),
+    ("""\twl_list_remove(&new_idle_inhibitor.link);
+""",
+     """\twl_list_remove(&new_idle_inhibitor.link);
+\twl_list_remove(&keyboard_focus_change.link);
+"""),
+    ("""\tfrontwatch();
+""",
+     """\tfrontwatch();
+\t/* Kryptik: a hold's cap, checked again when it runs out. */
+\tholdtimer = wl_event_loop_add_timer(event_loop, holdtick, NULL);
+"""),
+    ("""\t\t\tprintf("%s browsers", m->wlr_output->name);
+""",
+     """\t\t\tprintf("%s holdawake %s\\n", m->wlr_output->name, holdzone ? holdzone->zone : "");
+\t\t\tprintf("%s browsers", m->wlr_output->name);
 """),
 ]
 

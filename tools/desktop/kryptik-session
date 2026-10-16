@@ -44,8 +44,11 @@ export WLR_RENDERER=pixman
 # Cursor themes from the verified root alone: one looked for under the home directory
 # would wait on the state partition while a suspend has it, and stall dwl at the prompt.
 export XCURSOR_PATH=/usr/share/icons
-mkdir -p "$rt/kryptik" && chmod 0700 "$rt/kryptik"
+# front holds the menu's requests to dwl, which may read and remove there alone.
+mkdir -p "$rt/kryptik/front" && chmod 0700 "$rt/kryptik" "$rt/kryptik/front"
 log="$rt/kryptik/session.log"
+# The screen at the level the last brightness step left (brightness.sh), before anything shows.
+/usr/libexec/kryptik/brightness.sh restore 2>> "$log" || :
 
 {
     echo "kryptik-session: $(id -un) uid $(id -u) on $(tty 2>/dev/null || echo '?') at $(date -Iseconds 2>/dev/null || date)"
@@ -56,5 +59,6 @@ log="$rt/kryptik/session.log"
     done
 } >> "$log"
 
-# dwl pipes its status to the chrome; when dwl exits, the login ends.
-exec /usr/bin/dwl -s /usr/bin/kryptik-chrome 2>> "$log"
+# dwl pipes its status to the chrome; when dwl exits, the login ends. It runs in the desktop's
+# cgroup, whose memory.max bounds what a zone can make the compositor hold.
+exec /usr/bin/kryptik-launch --desktop -- /usr/bin/dwl -s /usr/bin/kryptik-chrome 2>> "$log"

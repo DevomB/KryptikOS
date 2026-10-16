@@ -170,6 +170,13 @@ r="$(ask 'clipboard-move alpha alpha\n')"
 if [[ "$r" == "error: clipboard-move needs two different zone names"* ]]; then pass "S3f clipboard-move refuses the same zone twice"; else fail "S3f: $r"; fi
 r="$(ask 'clipboard-move alpha beta\n')"
 if [[ "$r" == "error:"* && "$r" == *"not running"* ]]; then pass "S3g clipboard-move of zones that are not running is refused: ${r%$'\n'}"; else fail "S3g: $r"; fi
+# The desktop's cgroup is the installed system's: a root run would bound and move this suite.
+if (( PRIVILEGED == 1 )); then
+    elsewhere "S3h desktop moves its asker into kryptik-desktop, under a memory.max (gui-check's desktop-memory-bound)"
+else
+    r="$(ask 'desktop\n')"
+    if [[ "$r" == "error:"* ]]; then pass "S3h desktop needs a root daemon, and says why: ${r%$'\n'}"; else fail "S3h desktop: $r"; fi
+fi
 r="$(ask 'runtime\n')"
 if [[ "$r" == ok\ /* ]]; then
     d="${r#ok }"; d="${d%$'\n'}"
