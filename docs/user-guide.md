@@ -199,7 +199,10 @@ image; the refusal names the exact minimum). A disk that already holds a
 Kryptik installation or medium is refused too, since it may hold the only
 copy of someone's encrypted state. To reinstall over one, add
 `--replace-kryptik`: the installer names the Kryptik partitions it is about
-to destroy and then asks for `ERASE` as usual.
+to destroy and then asks for `ERASE` as usual. Another disk in the machine
+that carries a Kryptik installation is left alone, but the installer warns:
+with both there, the boot may take that disk's system, and its state. Take
+it out, or install to it instead.
 
 Each root slot is sized for the image and half again, so that a later, larger
 release still fits. `--slot-size MIB` makes both slots larger than that,
@@ -578,7 +581,9 @@ firmware an entry for the slot it commits, which a firmware that boots a
 fixed disk only from such an entry needs.
 
 `--backup-state-header FILE` and `--restore-state-header FILE` save and put
-back the state partition's LUKS2 header. FILE is on a disk mounted for it, as
+back the state partition's LUKS2 header. Over a header that still opens, the
+restore takes only a backup of the same volume, and names both when they
+differ. FILE is on a disk mounted for it, as
 in section 2: the medium keeps nothing of its own. Keep the backup somewhere
 that is not the installed disk: a damaged header with no backup is a lost
 state partition.
