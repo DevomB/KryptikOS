@@ -310,6 +310,26 @@ fn failed_job_says_why() {
     assert_eq!(got, "error: stop exited 3: zone \"alpha\" did not stop\n");
 }
 
+/// A stick taken back as a job of its own answers when it ends: ok, or the eject's own reason.
+#[test]
+fn a_stick_eject_answers_when_its_job_ends() {
+    use std::io::Read;
+    let answer = |st: i32, why: &[u8]| {
+        let (conn, mut client) = UnixStream::pair().unwrap();
+        let mut err = memfile("t-err").unwrap();
+        err.write_all(why).unwrap();
+        let what = JobKind::StickEject { uid: 1000, zone: "work".into() };
+        let mut j = Job { conn, pid: 0, what, out: memfile("t-out").unwrap(), err, exited: None };
+        finish_job(&mut j, st);
+        drop(j);
+        let mut got = String::new();
+        client.read_to_string(&mut got).unwrap();
+        got
+    };
+    assert_eq!(answer(0, b""), "ok\n");
+    assert_eq!(answer(1 << 8, b"zone \"work\" holds no stick"), "error: zone \"work\" holds no stick\n");
+}
+
 /// While the state partition is suspended: what unlocks is the state passphrase, everything else
 /// but a suspend, which handle() turns into the sleep alone, is refused, and the passphrase comes
 /// on a descriptor, under its own pause.
