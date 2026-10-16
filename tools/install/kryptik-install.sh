@@ -408,6 +408,8 @@ esp_place "$MNT_BASE/tesp/EFI/kryptik/kryptik-a.efi" "$MNT_BASE/tesp/EFI/BOOT/BO
     || die "BOOTX64.EFI could not be made the slot A kernel"
 esp_put "$MNT_BASE/tesp/kryptik/committed-slot" a || die "slot A could not be recorded as committed"
 rm -f "$MNT_BASE/tesp/kryptik/media-kernel"
+# The stick's hardware reports (kryptik-hwreport) are not the installation's.
+rm -rf "$MNT_BASE/tesp/kryptik-report"
 # Slot b was cleared above: the medium's kernel and version for it would name a release it does not hold.
 rm -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-b.efi" "$MNT_BASE/tesp/kryptik/version-b"
 sync
