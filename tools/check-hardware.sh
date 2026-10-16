@@ -199,7 +199,7 @@ examine() {
         "") dma="not in this report" ;;
         none) dma="none: nothing confines a device's DMA" ;;
         *"; groups: "*DMA*) dma="on: ${iommu}" ;;
-        *"; groups: "*) dma="on, but in passthrough: no group translates a device's DMA (${iommu})" ;;
+        *"; groups: "*identity*) dma="on, but in passthrough: no group translates a device's DMA (${iommu})" ;;
         *) dma="on: ${iommu}" ;;
     esac
     fact dma "${dma}${tb:+; thunderbolt ${tb//;/; thunderbolt }}"
