@@ -842,8 +842,8 @@ fn start_desktop(cfg: &ServeConfig, conn: UnixStream, uid: u32, asker: i32, text
             jobs.push(Job { conn, pid, what: JobKind::Desktop { uid }, out, err, exited: None });
         }
         Err(e) => {
-            // The reason goes to the asker, whose session log and terminal say it.
-            eprintln!("kryptikd serve: no desktop for pid {asker}");
+            // Kept here too: an asker refused as no login of the user's is not the one to rely on.
+            eprintln!("kryptikd serve: no desktop for pid {asker}: {e}");
             reply(&conn, &format!("error: {e}\n"));
         }
     }
