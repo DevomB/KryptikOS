@@ -172,8 +172,10 @@ vary s2idle 's/^sleep mem: .*/sleep mem: [s2idle]/'
 has s2idle "  sleep      mem is s2idle, the only kind offered" "s2idle with no deep beside it"
 vary s2slept 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 2 successful, 0 failed, hardware asleep 1800000000 us last, 3600000000 us in all'
 has s2slept "  sleep      mem is s2idle, the only kind offered; its last sleep kept the hardware asleep 1800 s" "an s2idle sleep that reached the hardware's state, and for how long"
-vary s2awake 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all'
-has s2awake "  sleep      mem is s2idle, the only kind offered; its last sleep never reached the hardware's sleep state, which drains the battery" "one that never got there"
+vary s2awake 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all\npower controller: amd_pmc'
+has s2awake "  sleep      mem is s2idle, the only kind offered; its last sleep never reached the hardware's sleep state, which drains the battery" "one that never got there, by the power controller's count"
+vary s2uncounted 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all\npower controller: none'
+has s2uncounted "  sleep      mem is s2idle, the only kind offered; no power controller driver counts how long its sleeps reach the hardware's sleep state" "a time no driver counts proves nothing"
 vary deepslept '/^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all'
 has deepslept "  sleep      mem is deep; s2idle also offered" "deep sleep, which counts no hardware time, is not judged by it"
 vary nomem 's/^sleep states: .*/sleep states: freeze disk/'

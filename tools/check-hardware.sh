@@ -79,7 +79,7 @@ laptop_of() {
 # s2idle, and the other kinds it offers; for s2idle, after a sleep, whether
 # the last one reached the hardware's own sleep state.
 sleep_of() {
-    local l states mem chosen others out ok hw
+    local l states mem chosen others out ok hw pmc
     grep -qxF '== laptop ==' "$1" || { echo "not in this report"; return; }
     l="$(section laptop "$1")"
     states="$(field 'sleep states' <<<"$l")"; mem="$(field 'sleep mem' <<<"$l")"
@@ -89,11 +89,14 @@ sleep_of() {
     if [[ -z "$chosen" ]]; then out="mem offered, of no kind the report names"
     elif [[ -z "$others" ]]; then out="mem is ${chosen}, the only kind offered"
     else out="mem is ${chosen}; ${others} also offered"; fi
-    # Deep sleep counts no hardware time, so only s2idle's last sleep is judged.
+    # Deep sleep counts no hardware time, so only s2idle's last sleep is judged, and a time of 0
+    # says something only where a power controller driver counts it.
     read -r ok hw <<<"$(awk '$1 == "sleep" && $2 == "stats:" { print $3, $9 }' <<<"$l")"
+    pmc="$(field 'power controller' <<<"$l")"
     if [[ "$chosen" == s2idle && "${ok:-}" =~ ^[0-9]+$ && "$ok" -gt 0 && "${hw:-}" =~ ^[0-9]+$ ]]; then
-        if [[ "$hw" -eq 0 ]]; then out+="; its last sleep never reached the hardware's sleep state, which drains the battery"
-        else out+="; its last sleep kept the hardware asleep $(( hw / 1000000 )) s"; fi
+        if [[ "$hw" -gt 0 ]]; then out+="; its last sleep kept the hardware asleep $(( hw / 1000000 )) s"
+        elif [[ -n "$pmc" && "$pmc" != none ]]; then out+="; its last sleep never reached the hardware's sleep state, which drains the battery"
+        else out+="; no power controller driver counts how long its sleeps reach the hardware's sleep state"; fi
     fi
     echo "$out"
 }
