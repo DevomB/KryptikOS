@@ -12,8 +12,9 @@ This page is about what was seen to work.
 ## A report
 
 `kryptik-hwreport` prints what a machine is made of and what the image lacks
-for it: the maker and model, the firmware's Secure Boot state, the processor
-and its microcode, every PCI and USB device with the driver that took it, the
+for it: the maker and model, the firmware's Secure Boot state, the watchdogs
+and whether one reset the boot before, the processor and its microcode, every
+PCI and USB device with the driver that took it, the
 disks and the drivers under them, the display, the sound hardware, a laptop's
 backlights, batteries, sleep states and camera parts, network and input
 devices, the loaded modules and the kernel log. Its `missing` section is
@@ -85,7 +86,7 @@ let the row's note name what did not work:
 | a zone playing sound | the built-in speakers play it where the listing's `audio` line names an HD Audio codec and nothing beyond it |
 | unplug the mains, then plug it in | the menu's Power line follows, with the battery's charge |
 | a charger too weak for the machine, such as a phone's USB-C one | the Power line says on battery though plugged in, and the warnings at 10% and 5% come as they do unplugged |
-| on an AMD laptop whose `sleep` line says s2idle, a sleep of two minutes | it wakes to the lock, not to a fresh boot: the watchdog does not feed AMD's TCO timer there, as it would count through the sleep |
+| on an AMD laptop whose `sleep` line says s2idle, a sleep of two minutes | it wakes to the lock, not to a fresh boot: the watchdog does not feed AMD's TCO timer there, as it would count through the sleep, and the report's line for it says inactive |
 | an SD card in the laptop's own reader | the window that asks which zone gets a stick opens, as for a USB stick |
 | a USB headset, and `c` and a zone's number in the menu | it plays what the zone plays, and records there once granted |
 | `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
