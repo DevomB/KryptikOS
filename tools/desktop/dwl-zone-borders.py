@@ -1199,6 +1199,90 @@ confineexec(void)
 
 \t/* Mark stdout as non-blocking to avoid the startup script
 """),
+    # Landlock: dwl reads only what it needs once it runs, and writes no file.
+    ("""#include <linux/seccomp.h>
+""",
+     """#include <linux/seccomp.h>
+#include <linux/landlock.h>
+"""),
+    ("""static void confineexec(void);
+""",
+     """static void confineexec(void);
+static void confinefs(void);
+"""),
+    ("""\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0)
+\t\tdie("startup: the no-exec filter:");
+}
+""",
+     """\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0)
+\t\tdie("startup: the no-exec filter:");
+}
+
+/* Kryptik: from here dwl writes no file and reads only what it needs while it runs: keymaps and
+ * cursors under /usr, hotplug under /sys and udev's, and the microphone's and the camera's marks.
+ * No TCP either. Any failure leaves dwl as it was, and says so: the desktop still starts. */
+long syscall(long number, ...);
+static void
+confinefs(void)
+{
+\tstatic const char *const readable[] = {
+\t\t"/usr", "/sys", "/run/udev", "/etc/udev", "/run/kryptik-sound", "/run/kryptik-camera",
+\t};
+\tstruct landlock_ruleset_attr attr = {
+\t\t.handled_access_fs = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE
+\t\t\t| LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
+\t\t\t| LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK
+\t\t\t| LANDLOCK_ACCESS_FS_MAKE_SYM | LANDLOCK_ACCESS_FS_REFER
+\t\t\t| LANDLOCK_ACCESS_FS_TRUNCATE,
+\t\t.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP,
+\t};
+\tstruct landlock_path_beneath_attr beneath = {
+\t\t.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
+\t};
+\tsize_t i;
+\tlong abi;
+\tint set;
+
+\tabi = syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+\tif (abi < 4) {
+\t\tfprintf(stderr, "dwl: not confined to its files: no Landlock ABI 4 in this kernel (%ld)\\n", abi);
+\t\treturn;
+\t}
+\tif ((set = (int)syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0)) < 0) {
+\t\tfprintf(stderr, "dwl: not confined to its files: a Landlock ruleset: %s\\n", strerror(errno));
+\t\treturn;
+\t}
+\tfor (i = 0; i < LENGTH(readable); i++) {
+\t\tif ((beneath.parent_fd = open(readable[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+\t\t\tfprintf(stderr, "dwl: Landlock: %s is not readable: %s\\n", readable[i], strerror(errno));
+\t\t\tcontinue;
+\t\t}
+\t\tif (syscall(SYS_landlock_add_rule, set, LANDLOCK_RULE_PATH_BENEATH, &beneath, 0) < 0) {
+\t\t\tfprintf(stderr, "dwl: not confined to its files: Landlock refused %s: %s\\n", readable[i], strerror(errno));
+\t\t\tclose(beneath.parent_fd);
+\t\t\tclose(set);
+\t\t\treturn;
+\t\t}
+\t\tclose(beneath.parent_fd);
+\t}
+\tif (syscall(SYS_landlock_restrict_self, set, 0) < 0)
+\t\tfprintf(stderr, "dwl: not confined to its files: landlock_restrict_self: %s\\n", strerror(errno));
+\telse
+\t\tfprintf(stderr, "dwl: confined: reads only below its %zu paths, writes no file and has no TCP (Landlock ABI %ld)\\n",
+\t\t\tLENGTH(readable), abi);
+\tclose(set);
+}
+"""),
+    ("""\tstartspawner();
+\tconfineexec();
+""",
+     """\tstartspawner();
+\tconfineexec();
+\tconfinefs();
+"""),
 ]
 
 

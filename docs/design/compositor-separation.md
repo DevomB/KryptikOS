@@ -139,7 +139,13 @@ confines itself as a zone is confined:
 - a seccomp filter from the calls `kryptikd seccomp-trace` finds it making
   under the desktop suite;
 - Landlock with read-only `/usr` (keymaps compile from
-  `/usr/share/X11/xkb`) and nothing else;
+  `/usr/share/X11/xkb`) and nothing else. Built: once the spawner runs, dwl
+  may read below `/usr` (keymaps, cursors), `/sys`, `/run/udev` and
+  `/etc/udev` (wlroots and libinput read these when a screen or an input
+  device is plugged in), and the microphone's and the camera's marks
+  (`/run/kryptik-sound`, `/run/kryptik-camera`). It writes no file and
+  opens no TCP. The zones' sockets and its own are made before then. A
+  kernel without Landlock leaves dwl as it was, and the session log says so;
 - no exec. dwl's `spawn` keys and its status command move to a small
   spawner, started before the sandbox, that runs only a fixed table of
   commands. Built: dwl forks the spawner once the status command runs,
@@ -201,9 +207,9 @@ favour of moving the protocol into the zones, which does shrink it.
 2. **Proxies as their own users, confined.** Together with the first step, a
    proxy bug gives the zone nothing it did not have. Built.
 3. **The compositor as its own user, confined,** with the spawner. Built
-   so far: the spawner, and a filter that refuses dwl exec, ptrace and
-   `process_vm_writev`. Still to do: its own user, Landlock, and a filter of
-   the calls it is traced making.
+   so far: the spawner; a filter that refuses dwl exec, ptrace and
+   `process_vm_writev`; and Landlock. Still to do: its own user, and a
+   filter of the calls it is traced making.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.
 
