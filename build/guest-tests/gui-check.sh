@@ -1356,7 +1356,7 @@ else
     fail "hold-ends-off-keyboard" "zone 0's window: $(tr '\n' ' ' < "$LOG/hold-zone0.out" | cut -c1-200); personal's probe: $(since_mark hold personal | tail -3 | tr '\n' ' '); idle probe: $(tr '\n' ' ' < "$LOG/hold-idle-away.out")"
 fi
 # Closed, it gives personal's window the keyboard back; the lock takes it, and the hold ends.
-kill "$hold0_pid" 2>/dev/null; wait "$hold0_pid" 2>/dev/null
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 30 hold-0' 2>/dev/null; wait "$hold0_pid" 2>/dev/null
 wait_for 10 hold_keys 2; back=$?
 as_user "/usr/bin/kryptik-lock" > "$LOG/hold-lock.out" 2>&1 &
 holdlock_pid=$!
