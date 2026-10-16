@@ -154,6 +154,15 @@ ended = waited(lambda: spawner.poll() is not None, 10)
 print("PASS" if dwl_rc == 0 and ended else "FAIL", f": dwl stopped ({dwl_rc}), and its spawner with it ({spawner.poll()})")
 EOF
     sed 's/^\(PASS\|FAIL\) :/\1:/' "$W/split.out"
+    grep -h '^dwl: \(confined\|not confined\)' "$W/split-dwl.log" 2>/dev/null | sed 's/^/INFO: the split: /'
+    # A dwl that confined itself on a kernel with Landlock's scopes signals nothing outside its
+    # domain when split, as it starts nothing itself, whatever headers built it.
+    conf="$(grep -h '^dwl: confined' "$W/split-dwl.log" 2>/dev/null)"
+    if [[ "$conf" =~ ABI\ ([0-9]+)\)$ ]] && (( BASH_REMATCH[1] >= 6 )); then
+        [[ "$conf" == *", signals nothing outside it ("* ]] \
+            && check ok "the split dwl signals nothing outside its domain (Landlock ABI ${BASH_REMATCH[1]})" \
+            || check no "the split dwl took no signal scope at Landlock ABI ${BASH_REMATCH[1]}: $conf"
+    fi
     grep -q '^FAIL' "$W/split.out" && { fail=1; tail -5 "$W/split-dwl.log" 2>/dev/null; }
     grep -q '^PASS' "$W/split.out" || { echo "FAIL: the split did not run: $(tail -3 "$W/split.out" | tr '\n' ' ')"; fail=1; }
 fi
