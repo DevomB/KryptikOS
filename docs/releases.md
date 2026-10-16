@@ -27,7 +27,12 @@ the release key made offline. The dated builds CI makes of every push to main
 
 ## Cutting one
 
-1. Pick the revision: a commit on main whose Distro run passed whole.
+1. Pick the revision: a commit on main whose Distro run passed whole and,
+   for a production release, whose rehearsal passed
+   ([release keys](release-keys.md#using-them)). The jobs that only a tag
+   runs, the draft and the corresponding source among them, are rehearsed by
+   a `v0.*` tag, which builds a development release and drafts it as a
+   pre-release that can be deleted afterwards.
 2. Tag it and push the tag:
 
    ```sh

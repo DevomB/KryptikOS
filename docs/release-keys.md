@@ -123,8 +123,18 @@ For each release:
    signs the statement again; a machine that hears nothing for 30 days says
    so.
 
-`gh workflow run distro.yml -f role=production` rehearses the whole flow on
-any branch, with a throwaway medium made for that run.
+A rehearsal runs the whole flow with a throwaway medium made for that run:
+binding, the `sign` job without its approval, and every suite on the signed
+media. Rehearse at the commit you mean to tag before a release whose build,
+stage 06 or suites changed since the last rehearsal. A fault found there
+costs a run; one found under the tag costs a version number. Run it from a
+branch of its own, since a dispatch on main would cancel main's run in flight
+(both are in one concurrency group):
+
+```sh
+git push origin <commit>:refs/heads/rehearse-production
+gh workflow run distro.yml --ref rehearse-production -f role=production
+```
 
 A production image can also be built on one machine with a key medium
 ([building](building.md)). That machine then holds the keys while its chroot
