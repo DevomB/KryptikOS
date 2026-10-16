@@ -171,15 +171,21 @@ grep -qF "alpha 1.0: only file://${ROWM}/alpha_1.0.orig.tar.gz serves it; not ht
 MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" run --probe
 expect_fail "--probe fails on a source no place serves" "alpha 1.0: no place serves it (asked https://127.0.0.1:9/alpha-1.0.tar.gz)"
 
-# A host that gives no answer at all is asked once a run: its other places count as not serving.
+# A host that gives no answer at all is asked once a pass: its other places count as not serving,
+# and what no place served gets a last look, every host asked afresh. Two passes, so said twice.
 { printf 'alpha|1.0|https://127.0.0.1:9/alpha-1.0.tar.gz|probe|listing\n'
   printf 'beta|2.0|https://127.0.0.1:9/beta-2.0.tar.gz|probe|listing\n'; } > "${W}/manifest-silent"
 MANIFEST="${W}/manifest-silent" MIRROR_DISTFILES="" run --probe
 expect_fail "--probe counts a silent host's later places as not serving" "beta 2.0: no place serves it"
-if [[ "$(grep -c '127.0.0.1:9 gave no answer' "$OUT")" -eq 1 ]]; then
-    green "and asks a silent host once a run, saying so"
+if [[ "$(grep -c '127.0.0.1:9 gave no answer' "$OUT")" -eq 2 ]]; then
+    green "and asks a silent host once in each pass, the last look's included, saying so"
 else
-    red "a silent host was not asked once, or not said so: $(grep -c '127.0.0.1:9 gave no answer' "$OUT")"; show
+    red "a silent host was not asked once a pass, or not said so: $(grep -c '127.0.0.1:9 gave no answer' "$OUT")"; show
+fi
+if [[ "$(grep -c 'no place serves it' "$OUT")" -eq 2 ]]; then
+    green "and names each source no place served once, after the last look"
+else
+    red "the sources no place served were not named once each: $(grep -c 'no place serves it' "$OUT")"; show
 fi
 
 # A host that refuses HEAD, as an object store refuses a URL presigned for GET: the probe asks for

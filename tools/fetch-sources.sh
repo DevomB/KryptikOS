@@ -353,25 +353,39 @@ serves() {
 # place serves would stop a build from an empty cache, and one only a single place serves is one
 # outage away from that (docs/supply-chain.md).
 if [[ "$MODE" == probe ]]; then
-    total=0 lone=0 none=0
-    while IFS='|' read -r _ name ver url _; do
-        [[ -n "$name" ]] || continue
-        total=$((total + 1))
-        mapfile -t places < <(locations_of "$url" "$name" "$ver")
-        up=() down=()
+    total=0 lone=0 none=0 again=()
+    # probe_one NAME VER URL [last]: every place asked. One that no place serves is put by for a
+    # last look at the end of the run, and named only if that look finds none either.
+    probe_one() {
+        local u
+        local -a places up=() down=()
+        mapfile -t places < <(locations_of "$3" "$1" "$2")
         for u in "${places[@]}"; do
             if serves "$u"; then up+=("$u"); else down+=("$u"); fi
         done
         if [[ "${#up[@]}" -eq 0 ]]; then
-            err "${name} ${ver}: no place serves it (asked ${places[*]})"
+            if [[ -z "${4:-}" ]]; then again+=("$1|$2|$3"); return 0; fi
+            err "$1 $2: no place serves it (asked ${places[*]})"
             none=$((none + 1))
         elif [[ "${#up[@]}" -eq 1 ]]; then
-            warn "${name} ${ver}: only ${up[0]} serves it${down[*]:+; not ${down[*]}}"
+            warn "$1 $2: only ${up[0]} serves it${down[*]:+; not ${down[*]}}"
             lone=$((lone + 1))
         else
-            ok "${name} ${ver}: ${#up[@]} of ${#places[@]} places${down[*]:+; not ${down[*]}}"
+            ok "$1 $2: ${#up[@]} of ${#places[@]} places${down[*]:+; not ${down[*]}}"
         fi
+    }
+    while IFS='|' read -r _ name ver url _; do
+        [[ -n "$name" ]] || continue
+        total=$((total + 1))
+        probe_one "$name" "$ver" "$url"
     done < <(all_sources)
+    # The last look asks every host afresh: one silent for a moment earlier in the run is not
+    # taken as gone for good.
+    SILENT=()
+    for s in "${again[@]}"; do
+        IFS='|' read -r name ver url <<< "$s"
+        probe_one "$name" "$ver" "$url" last
+    done
     [[ "$none" -eq 0 ]] || die "${none} of ${total} source(s) served by no place: a build from an empty cache stops at them"
     ok "${total} source(s), each served somewhere; ${lone} by one place alone"
     exit 0
