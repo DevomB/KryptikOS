@@ -429,3 +429,17 @@ fn every_descriptor_is_taken_and_past_twelve_refused() {
     let (n, got) = recv_with_fds(b.as_raw_fd(), &mut buf, 0).unwrap();
     assert_eq!((n, got.len()), (1, 2));
 }
+
+/// A datagram queue is taken past its empty datagrams, as its empty queue answers EAGAIN: one
+/// ahead of a lingering socket does not leave that socket for the kernel to close here.
+#[test]
+fn a_datagram_queue_is_taken_past_its_empty_datagrams() {
+    let (sock, _peer) = lingering_socket();
+    let (a, b) = std::os::unix::net::UnixDatagram::pair().unwrap();
+    a.send(b"").unwrap();
+    send_with_fds(a.as_raw_fd(), b"x", &[sock.as_raw_fd()]);
+    drop(sock);
+    let t = Instant::now();
+    release(OwnedFd::from(b));
+    assert!(t.elapsed() < Duration::from_secs(5), "released in {:?}", t.elapsed());
+}

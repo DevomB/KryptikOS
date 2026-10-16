@@ -172,29 +172,36 @@ pub fn release(fd: OwnedFd) {
     }
 }
 
-/// Shut `fd` (`how`), then move every descriptor still queued on it into `out`, each defused. Shut
-/// for reading, a socket takes nothing more, so this ends; a message without bytes or
-/// descriptors ends it too, as a stream's end does.
+/// Shut `fd` (`how`), then take every descriptor still queued on it: a Unix socket goes into
+/// `out`, to have its own queue taken in turn, and anything else closes at once, defused. Shut for
+/// reading, a socket takes nothing more. A stream's 0 is its end, as a stream carries no empty
+/// message; an empty datagram queue answers EAGAIN, so empty datagrams are read past; a
+/// seqpacket's 0 may be either, and 1024 messages bound it.
 fn take_queue(fd: RawFd, how: libc::c_int, out: &mut Vec<OwnedFd>) {
     // SAFETY: shutdown on a descriptor the caller holds.
     unsafe { libc::shutdown(fd, how) };
+    let stream = sock_option(fd, libc::SO_TYPE) == Some(libc::SOCK_STREAM);
     let mut buf = [0u8; 4096];
     for _ in 0..1024 {
         match recv_message(fd, &mut buf, libc::MSG_DONTWAIT) {
-            Ok((0, got, _)) if got.is_empty() => break,
-            Ok((_, mut got, _)) => out.append(&mut got.0),
+            Ok((0, got, _)) if got.is_empty() && stream => break,
+            Ok((_, mut got, _)) => out.extend(got.0.drain(..).filter(|f| is_unix_socket(f.as_raw_fd()))),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break,
         }
     }
 }
 
-fn is_unix_socket(fd: RawFd) -> bool {
-    let mut domain: libc::c_int = 0;
+fn sock_option(fd: RawFd, opt: libc::c_int) -> Option<libc::c_int> {
+    let mut v: libc::c_int = 0;
     let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
     // SAFETY: an int-sized option read into an int.
-    let r = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_DOMAIN, (&mut domain as *mut libc::c_int).cast(), &mut len) };
-    r == 0 && domain == libc::AF_UNIX
+    let r = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, opt, (&mut v as *mut libc::c_int).cast(), &mut len) };
+    (r == 0).then_some(v)
+}
+
+fn is_unix_socket(fd: RawFd) -> bool {
+    sock_option(fd, libc::SO_DOMAIN) == Some(libc::AF_UNIX)
 }
 
 /// A connection read to its end: shut for reading, with whatever it still queues released.
