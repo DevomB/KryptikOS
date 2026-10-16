@@ -494,9 +494,17 @@ grep -q PERSONAL-UP "$LOG/personal-bg.out" && pass "encrypted-zone-start" "perso
 # with the storage checks). It must find that launcher's command line, or
 # finding no passphrase says nothing. The [e] and [s] keep a grep's own
 # command line from matching.
-pp_seen=0; pp_leak=0
+# leaks PATTERN: the files under /run/kryptik and the command lines that hold
+# it. The signed images a zone stacks are mounted under /run/kryptik/images and
+# /run/kryptik/usr (images.rs) and hold only what was signed, a browser's whole
+# tree among it, so they are not searched.
+leaks() {
+    { find /run/kryptik \( -path /run/kryptik/images -o -path /run/kryptik/usr \) -prune -o -type f -print0 2>/dev/null
+      printf '%s\0' /proc/[0-9]*/cmdline; } | xargs -0r grep -ls -- "$1" 2>/dev/null
+}
+pp_seen=0
 grep -qs 'passphrase-fil[e]' /proc/[0-9]*/cmdline && pp_seen=1
-grep -rqs 'personal-pas[s]' /run/kryptik /proc/[0-9]*/cmdline && pp_leak=1
+pp_leak="$(leaks 'personal-pas[s]')"
 # An echo that gets no answer shows separation only while personal holds the
 # address that was tried, and untrusted has a path: it reaches the bridge.
 per_init="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
@@ -1661,10 +1669,11 @@ grep -qE 'VAULT-PING rc=2 ' <<<"$ZOUT" && pass "vault-ping" "ping in an offline 
 [[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *LINKS=0* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -1 "$LOG/vault.err")"
 # No passphrase on any command line or in the registry: while personal ran
 # (above), and now that every zone that took one has stopped.
+pp_late="$(leaks 'personal-pas[s]\|vault-pas[s]\|dev-pas[s]')"
 if [[ "$pp_seen" != 1 ]]; then
     fail "no-passphrase-leak" "the search did not see personal's launcher while it ran, so it proves nothing"
-elif [[ "$pp_leak" = 1 ]] || grep -rqs 'personal-pas[s]\|vault-pas[s]\|dev-pas[s]' /run/kryptik /proc/[0-9]*/cmdline; then
-    fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"
+elif [[ -n "$pp_leak$pp_late" ]]; then
+    fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line: $(printf '%s\n' $pp_leak $pp_late | sort -u | tr '\n' ' ')"
 else
     pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line, while personal ran and after the zones stopped"
 fi
@@ -1816,7 +1825,10 @@ else
         irun imgok /usr/bin/kryptik-probe
         rc1="$ZRC"; said1="$ZOUT $ZERR"
         irun imgok /usr/bin/kryptik-probe
-        if [[ "$rc1" -ne 0 && "$said1" == *"Input/output error"* && "$ZRC" -ne 0 && "$ZERR" == *"read back other than signed"* ]]; then
+        # EIO in either C library's words: kryptikd is static musl ("I/O error"), the image's
+        # programs are glibc's ("Input/output error").
+        if [[ "$rc1" -ne 0 && ( "$said1" == *"Input/output error"* || "$said1" == *"I/O error"* ) \
+              && "$ZRC" -ne 0 && "$ZERR" == *"read back other than signed"* ]]; then
             pass "image-corrupt" "a flipped block reads as an I/O error in the zone, and the next start is refused"
         else
             fail "image-corrupt" "first rc ${rc1}: $(tail -2 <<<"$said1" | tr '\n' ' '); then rc ${ZRC}: $(tail -2 <<<"$ZERR" | tr '\n' ' ')"

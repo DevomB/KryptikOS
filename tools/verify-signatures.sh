@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Verify upstream GPG signatures for fetched source tarballs.
 #
-#   ./tools/verify-signatures.sh [--strict] [--refresh] [--fetch-unknown-keys]
+#   ./tools/verify-signatures.sh [--strict [--unread-warns]] [--refresh] [--fetch-unknown-keys]
 #                                [--report=FILE] [--notes=FILE]
 #     --strict              release gate: anything unverified or unaudited fails,
 #                           except an unheld key the notes record as no-usable-key
+#     --unread-warns        under --strict, a key whose published copy did not answer
+#                           is checked against the key held, with a warning
 #     --refresh             discard cached keys and re-import
 #     --fetch-unknown-keys  import keys the signatures name (unaudited)
 #     --report=FILE         per-source results to FILE
@@ -25,6 +27,7 @@ export GNUPGHOME="${KEYDIR}/gnupg"
 
 FETCH_UNKNOWN=0
 STRICT=0
+UNREAD_WARNS=0
 REPORT=""
 NOTES="$(dirname "${BASH_SOURCE[0]}")/source-notes.tsv"
 for a in "$@"; do
@@ -32,12 +35,14 @@ for a in "$@"; do
         --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
         --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
         --strict) STRICT=1 ;;
+        --unread-warns) UNREAD_WARNS=1 ;;
         --report=*) REPORT="${a#--report=}" ;;
         --notes=*) NOTES="${a#--notes=}" ;;
-        -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
+[[ "$UNREAD_WARNS" -eq 0 || "$STRICT" -eq 1 ]] || die "--unread-warns eases --strict; give both"
 [[ -n "$REPORT" ]] && : > "$REPORT"
 
 # no-usable-key notes let their sources pass --strict; --strict fails a note whose key is held.
@@ -206,6 +211,7 @@ declare -a UNVERIFIABLE_LIST=()
 declare -a EXPIRED_LIST=()
 declare -a REVOKED_LIST=()
 declare -a FETCHED_LIST=()
+declare -a UNREAD_LIST=()
 
 mark_unverifiable() {
     UNVERIFIABLE=$((UNVERIFIABLE + 1))
@@ -286,6 +292,18 @@ PINNED_FPRS=(
     # https://github.com/nodejs/node#release-keys (retrieved 2026-10-15) lists the releasers' keys, which
     # its release-keys repository serves. Each release is signed by one releaser; this one signs 24.22.0.
     "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C"   # Richard Lau, Node.js
+    # https://sourceware.org/pub/lvm2/mcsontos.pubkey.asc (retrieved 2026-10-16), the key file beside
+    # the releases, there since 2026-09-30: the key already signing them, 2.03.42 among them.
+    "D501A478440AE2FD130A1BE8B9112431E509039F"   # Marian Csontos, lvm2
+    # https://facebook.github.io/zstd/signing-key.asc (retrieved 2026-10-16), on zstd's own site;
+    # zstd.net/signing-key.asc, the address its maintainers gave in facebook/zstd#2520, redirects there.
+    "4EF4AC63455FC9F4545D9B7DEF8FE99528B52FFD"   # Zstandard Release Signing Key, zstd
+    # zlib.net links its "PGP key" to https://madler.net/madler/pgp.html (retrieved 2026-10-16), the
+    # author's own page, which carries this key armoured.
+    "5ED46A6721D365587791E2AA783FCD8E58BCAFBA"   # Mark Adler, zlib (DSA-1024 with SHA-1: weak)
+    # https://gitlab.freedesktop.org/svu.gpg (retrieved 2026-10-16) serves this one under his account
+    # on the forge xkeyboard-config is developed on; it signs 2.48's tag and tarball.
+    "FFB4CCD275AAA422F5F9808E0661D98FC933A145"   # Sergey Udaltsov, xkeyboard-config
 )
 
 # Primaries and subkeys: GOODSIG names a subkey, while pins and keys.manifest hold primaries.
@@ -562,12 +580,14 @@ check_sig() {
         if row="$(provenance_row "$name" "$keyid")"; then
             if [[ -z "${PROV_MISSED[$row]:-}" ]]; then
                 pkind="${PROV_KIND[$row]}"
-            elif [[ "$STRICT" -eq 1 ]]; then
+            elif [[ "$STRICT" -eq 1 && "$UNREAD_WARNS" -eq 0 ]]; then
                 warn "${name}: signature valid  [${signer:-unknown}], but the key's published copy was not read"
                 mark_unverifiable "${name} (its key's published copy at ${PROV_LOC[$row]} not read this run)"
                 report "$name" published-key-unread "${signer:-unknown} (${keyid}); ${PROV_LOC[$row]}${how}"
                 return 0
             else
+                # A host that did not answer is no fault of the change being checked; the key held is.
+                [[ "$STRICT" -eq 1 ]] && UNREAD_LIST+=("${name} (${PROV_LOC[$row]})")
                 how="${how}; published copy at ${PROV_LOC[$row]} not read this run"
             fi
         fi
@@ -972,6 +992,12 @@ if [[ "${#UNVERIFIABLE_LIST[@]}" -gt 0 ]]; then
     echo
     dim "Unverifiable (not proof of tampering - a signature that could not be checked):"
     printf '  - %s\n' "${UNVERIFIABLE_LIST[@]}"
+fi
+
+if [[ "${#UNREAD_LIST[@]}" -gt 0 ]]; then
+    echo
+    warn "${#UNREAD_LIST[@]} source(s) checked against the key held, as its published copy did not answer (--unread-warns):"
+    printf '  - %s\n' "${UNREAD_LIST[@]}"
 fi
 
 if [[ "${#UNSIGNED_LIST[@]}" -gt 0 ]]; then
