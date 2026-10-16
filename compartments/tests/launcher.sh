@@ -824,8 +824,10 @@ seccomp_kill() { # desc shell-command
 
 seccomp_kill "I3  mount(2) kills the zone (re-mount under Landlock)" \
              '/bin/mount -t tmpfs none /tmp'
+# GNU coreutils puts chroot in /usr/sbin, uutils (Ubuntu 26.04) in /usr/bin; the zone binds both.
+chroot_bin="$(PATH=/usr/sbin:/usr/bin command -v chroot || echo /usr/sbin/chroot)"
 seccomp_kill "I4  chroot(2) kills the zone (double-chroot escape)" \
-             '/usr/sbin/chroot / /bin/true'
+             "$chroot_bin / /bin/true"
 # unshare(2) is denied too, but fails with EPERM: Firefox, Chromium and
 # bubblewrap probe for user namespaces and must hear no, as the kernel tells an
 # unprivileged caller. unshare(1) lives to say so, and readlink never runs in a

@@ -668,6 +668,7 @@ fn the_proxy_makes_its_calls_alone() {
             libc::SYS_ioctl => [4, 0x5421, 0, 0, 0, 0],
             libc::SYS_mmap | libc::SYS_mprotect => [0, 4096, 3, 0, 0, 0],
             libc::SYS_sendto => [5, 0x1000, 12, 0x4000, 0, 0],
+            libc::SYS_fallocate => [5, 3, 0, 4096, 0, 0],
             _ => [0; 6],
         };
         assert_eq!(call(nr, args), SECCOMP_RET_ALLOW, "{}", name_of(nr).unwrap_or("?"));
@@ -689,6 +690,12 @@ fn the_proxy_makes_its_calls_alone() {
     }
     // A datagram to an address it names: another socket on the machine, not its peer.
     assert_eq!(call(libc::SYS_sendto, [5, 0x1000, 12, 0, 0x2000, 16]), SECCOMP_RET_KILL_PROCESS);
+    // The punch alone: the mode is an int to the kernel, as an ioctl's command is.
+    assert_eq!(call(libc::SYS_fallocate, [5, 0x1_0000_0003, 0, 4096, 0, 0]), SECCOMP_RET_ALLOW);
+    for (mode, why) in [(0, "allocate"), (1, "allocate, keeping the size"), (2, "a punch alone, which the kernel refuses"),
+                        (0x8, "collapse"), (0x10, "zero"), (0x11, "zero, keeping the size"), (0x20, "insert")] {
+        assert_eq!(call(libc::SYS_fallocate, [5, mode, 0, 4096, 0, 0]), SECCOMP_RET_KILL_PROCESS, "{why}");
+    }
     for nr in [libc::SYS_mmap, libc::SYS_mprotect] {
         assert_eq!(call(nr, [0, 4096, 0, 0, 0, 0]), SECCOMP_RET_ALLOW, "PROT_NONE, the stack guard");
         assert_eq!(call(nr, [0, 4096, 4, 0, 0, 0]), SECCOMP_RET_KILL_PROCESS, "PROT_EXEC");

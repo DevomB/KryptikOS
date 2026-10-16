@@ -32,10 +32,11 @@ create_user() {   # create_user NAME
     case "$1" in
         ''|*[!a-z0-9_-]*|-*) say "refusing user name '$1': lower-case letters, digits, _ and - only"; return 1 ;;
     esac
+    # seat is dwl's, which the launch daemon gives it: the user is not in it.
     getent group seat >/dev/null 2>&1 || groupadd -r seat
     getent group kryptik >/dev/null 2>&1 || groupadd -r kryptik
-    useradd -m -k /etc/skel -s /usr/bin/bash -G seat,kryptik,wheel "$1" || return 1
-    say "created user '$1' (groups: seat kryptik wheel)"
+    useradd -m -k /etc/skel -s /usr/bin/bash -G kryptik,wheel "$1" || return 1
+    say "created user '$1' (groups: kryptik wheel)"
 }
 
 if complete; then

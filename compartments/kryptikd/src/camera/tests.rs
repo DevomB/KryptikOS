@@ -57,14 +57,44 @@ fn the_device_to_let_go_of_is_the_nodes_own() {
     let _ = fs::remove_dir_all(&s);
 }
 
+const DEVPATH: &str = "/devices/pci0000:00/0000:00:14.0/usb3/3-6/3-6:1.0/video4linux/video0";
+
+fn a_grant() -> Grant {
+    Grant { zone: "personal".into(), node: "video0".into(), name: "Integrated Camera".into(), device: DEVPATH.into(), seqnum: 4242 }
+}
+
 #[test]
 fn a_grant_record_reads_back_as_written_and_nothing_else_does() {
-    let g = Grant { zone: "personal".into(), node: "video0".into(), name: "Integrated Camera".into() };
+    let g = a_grant();
     assert_eq!(Grant::parse(&g.render()), Some(g));
-    for bad in ["", "zone personal\nnode video0\n", "zone ../x\nnode video0\nname a\n", "zone work\nnode sda\nname a\n",
-                "zone work\nnode video0\nname a\nextra 1\n", "zone Work\nnode video0\nname a\n"] {
-        assert_eq!(Grant::parse(bad), None, "{bad:?} was read as a grant");
+    let tail = format!("device {DEVPATH}\nseqnum 4242\n");
+    for bad in [String::new(), format!("zone personal\nnode video0\n{tail}"), format!("zone ../x\nnode video0\nname a\n{tail}"),
+                format!("zone work\nnode sda\nname a\n{tail}"), format!("zone work\nnode video0\nname a\n{tail}extra 1\n"),
+                format!("zone Work\nnode video0\nname a\n{tail}"), "zone work\nnode video0\nname a\n".to_string(),
+                "zone work\nnode video0\nname a\ndevice /devices/../x\nseqnum 1\n".to_string(),
+                "zone work\nnode video0\nname a\ndevice /sys/x\nseqnum 1\n".to_string(),
+                format!("zone work\nnode video0\nname a\ndevice {DEVPATH}\nseqnum many\n")] {
+        assert_eq!(Grant::parse(&bad), None, "{bad:?} was read as a grant");
     }
+}
+
+#[test]
+fn a_node_is_named_as_udev_names_it() {
+    let s = sys("devpath");
+    node(&s, UVC, "usb", "video0", 0, "81:0", "Integrated Camera");
+    assert_eq!(devpath_of(&s, "video0").as_deref(), Some(DEVPATH));
+    assert_eq!(devpath_of(&s, "video7"), None, "a node pulled out has no path");
+    let _ = fs::remove_dir_all(&s);
+}
+
+#[test]
+fn only_the_granted_cameras_removal_after_the_grant_ends_it() {
+    let g = a_grant();
+    assert!(g.ended_by(DEVPATH, 4243), "this camera, taken away after the grant");
+    assert!(!g.ended_by(DEVPATH, 4242), "the event the grant was numbered at");
+    assert!(!g.ended_by(DEVPATH, 4100), "the same camera let go of by an earlier grant's end, the same path again");
+    assert!(!g.ended_by("/devices/platform/vivid.0/video4linux/video3", 5000), "another camera's node");
+    assert!(!g.ended_by(&DEVPATH.replace("video0", "video1"), 5000), "the camera's metadata node");
 }
 
 #[test]

@@ -37,8 +37,10 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - name: Install shellcheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      # alsa-lib's headers for tools/tests/sound-tools.sh, which compiles the sound's C programs, and
+      # dosfstools, mtools and xorriso for media-same.sh, which stage 06's media functions need.
+      - name: Install shellcheck, alsa-lib's headers and the media tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck libasound2-dev dosfstools mtools xorriso
 
       - name: Syntax check every script
         run: |
@@ -194,6 +196,9 @@ jobs:
       - name: Every source is served somewhere
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         continue-on-error: true
+        # It takes about three minutes; bounded, so a host that answers slowly holds up the
+        # signature gate after it for no longer than this.
+        timeout-minutes: 8
         run: ./tools/fetch-sources.sh --probe
 
       - name: Provenance of unsigned sources
@@ -357,6 +362,43 @@ jobs:
           cd compartments/kryptikd && cargo build --quiet
           cd ../.. && ./compartments/kryptikd/probes/boundary-checks.sh
 
+  # A job of its own, as it fetches pinned sources: a host that does not answer holds up no
+  # Distro dispatch, which waits on the compartment layer alone.
+  compositor:
+    name: Compositor build
+    runs-on: ubuntu-latest
+    # A fetch is bounded by curl's --max-time, but apt-get on a runner has hung before.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: The compositor's sources, keyed by their sources.lock lines
+        id: sources
+        run: |
+          echo "key=$(grep -E '  (wlroots-|wayland-protocols-|wayland-[0-9]|dwl-v|pixman-|libdrm-|libxkbcommon-|meson-)' sources.lock | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/kryptik-compositor-sources
+          key: compositor-sources-${{ steps.sources.outputs.key }}
+
+      - name: The host's headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwayland-dev libwayland-bin libxkbcommon-dev libinput-dev \
+              libpixman-1-dev libdrm-dev libudev-dev libseat-dev pkg-config ninja-build bison libffi-dev \
+              libexpat1-dev xkb-data strace
+
+      # Kryptik's patches and edits to dwl, compiled against the pinned wlroots' headers: a C
+      # error in them shows here, not hours into a Distro build.
+      - name: dwl compiles with Kryptik's edits
+        run: KRYPTIK_TEST_SOURCES="$HOME/.cache/kryptik-compositor-sources" tools/tests/dwl-compile.sh
+
+      # The same dwl built over the pinned libraries and run headless: it starts, serves a client a
+      # window, and stops on SIGTERM.
+      - name: dwl runs headless
+        run: KRYPTIK_TEST_SOURCES="$HOME/.cache/kryptik-compositor-sources" tools/tests/dwl-headless.sh
+
   kernel:
     name: Kernel currency
     runs-on: ubuntu-latest
@@ -420,3 +462,10 @@ jobs:
       # is, would stop at; a source one place alone serves is a warning, a mirror row's cue.
       - name: Every place each source is kept, asked for its file
         run: ./tools/fetch-sources.sh --probe
+
+      # Each mirror row's file, downloaded and held to the lock: a row serving other bytes, or one
+      # for no source, fails; one that no longer serves the pin is a warning. Its downloads stay
+      # on the runner.
+      - name: Every mirror row has the lock's bytes
+        if: ${{ !cancelled() }}
+        run: ./tools/fetch-sources.sh --check-mirrors

@@ -48,6 +48,8 @@ KRYPTIK_VERSION="${KRYPTIK_VERSION:-0.1.$(date +%Y%m%d).$(git -c safe.directory=
 COMMIT="$(git -c safe.directory="$TOP" -C "$TOP" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)"
 ESP_MIB=512
 export KRYPTIK_VERSION
+# mtools writes FAT times in local time, so the media's bytes would follow the build machine's zone.
+export TZ=UTC
 # This release's software images, beside its payload and channel: two releases' media can share IMG.
 IMAGES="${IMG}/images-${KRYPTIK_VERSION}"
 # Where the image's net zone asks for releases (docs/design/update-channel.md).
@@ -330,15 +332,16 @@ EOF
     cat "${IMG}/root.json"
 }
 
-# make_ext4 TREE IMAGE BYTES UUID [LABEL]: the sysroot's mke2fs (1.47.1), which clamps every time it
-# writes to SOURCE_DATE_EPOCH, in the chroot; TREE and IMAGE are under the work tree's images/.
+# make_ext4 TREE IMAGE BYTES UUID [LABEL [INODES]]: the sysroot's mke2fs (1.47.1), which clamps every
+# time it writes to SOURCE_DATE_EPOCH, in the chroot; TREE and IMAGE are under the work tree's images/.
 # Blocks of 4096 bytes, the size dm-verity reads every image in: ext4 refuses a smaller block on
-# that device (EINVAL), and mke2fs.conf gives a file system under 512 MiB blocks of 1024.
+# that device (EINVAL), and mke2fs.conf gives a file system under 512 MiB blocks of 1024. INODES
+# fixes the inode count, where mke2fs.conf would give one inode per 4 KiB under 512 MiB.
 make_ext4() {
     rm -f "$2"; truncate -s "$3" "$2"
     env KRYPTIK_ROOT="$KRYPTIK_ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
         "$CHROOTD" run /usr/sbin/mke2fs -q -F -t ext4 -b 4096 -L "${5:-kryptik-root}" -O '^has_journal' -U "$4" \
-        -E "root_owner=0:0,hash_seed=$4" -d "/kryptik-work${1#"$KRYPTIK_WORK"}" "/kryptik-work${2#"$KRYPTIK_WORK"}" \
+        ${6:+-N "$6"} -E "root_owner=0:0,hash_seed=$4" -d "/kryptik-work${1#"$KRYPTIK_WORK"}" "/kryptik-work${2#"$KRYPTIK_WORK"}" \
         > /dev/null
 }
 
@@ -375,16 +378,24 @@ pack_image() {
     "${KRYPTIK_ROOT}/tools/check-image-programs.sh" "$stage" --list "${KRYPTIK_ROOT}/build/images/${name}.programs" >&2 || failed=1
     "${KRYPTIK_ROOT}/tools/check-image-licences.sh" --image "$name" "$stage" >&2 || failed=1
     [[ "$failed" -eq 0 ]] || { echo "FAIL: image ${name} did not pass the checks above" >&2; return 1; }
-    local bytes; bytes="$(du -sb "$stage" | cut -f1)"
-    local fs_bytes=$(( bytes + bytes / 8 + 16 * 1024 * 1024 ))
+    # The tree in 4 KiB blocks: each file rounded up, each directory one at least, and a symlink
+    # too long for its inode one, where du -sb counts bytes and misses what small files waste.
+    # Then an inode each with an eighth to spare, a sixteenth for extent and index blocks, and
+    # 16 MiB for the bitmaps, the group descriptors and their copies.
+    local blocks inodes
+    read -r blocks inodes < <(find "$stage" -printf '%y %s\n' \
+        | awk '{ n++ } $1 == "f" { b += int(($2 + 4095) / 4096) } $1 == "d" { b += ($2 > 4096 ? int(($2 + 4095) / 4096) : 1) }
+               $1 == "l" && $2 >= 60 { b++ } END { print b + 0, n + 0 }')
+    inodes=$(( inodes + inodes / 8 + 64 ))
+    local fs_bytes=$(( blocks * 4096 + blocks * 4096 / 16 + inodes * 256 + 16 * 1024 * 1024 ))
     fs_bytes=$(( (fs_bytes + 4095) / 4096 * 4096 ))
     local img="${IMAGES}/${name}.img" id
     # The UUID and directory hash seed, from what the image is and the root it is built for.
     id="$(printf 'kryptik-image %s %s %s' "$name" "$version" "$base" | sha256_of_stdin)"
     id="${id:0:8}-${id:8:4}-${id:12:4}-${id:16:4}-${id:20:12}"
-    make_ext4 "$stage" "$img" "$fs_bytes" "$id" "kryptik-${name}"
+    make_ext4 "$stage" "$img" "$fs_bytes" "$id" "kryptik-${name}" "$inodes"
     if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
-        make_ext4 "$stage" "${img}.again" "$fs_bytes" "$id" "kryptik-${name}"
+        make_ext4 "$stage" "${img}.again" "$fs_bytes" "$id" "kryptik-${name}" "$inodes"
         cmp -s "$img" "${img}.again" || { echo "FAIL: two mke2fs runs over image ${name} wrote different images" >&2; return 1; }
         rm -f "${img}.again"
     fi
@@ -553,11 +564,33 @@ s_sign_kernels() {
     echo "ok: a foreign certificate does not verify the signature"
 }
 
+# uuid_of TEXT: TEXT's SHA-256 in the form of a UUID, for an ID a tool would draw at random.
+uuid_of() {
+    local h; h="$(printf '%s' "$1" | sha256_of_stdin)"
+    printf '%s-%s-%s-%s-%s\n' "${h:0:8}" "${h:8:4}" "${h:12:4}" "${h:16:4}" "${h:20:12}"
+}
+
+# again OUT MAKER ARGS...: MAKER OUT ARGS once more into OUT.again, two seconds on, as FAT keeps
+# times to two seconds; fails unless both wrote the same bytes.
+again() {
+    local out="$1" maker="$2"; shift 2
+    [[ -n "${SOURCE_DATE_EPOCH:-}" ]] || { echo "no SOURCE_DATE_EPOCH: $(basename "$out") carries this build's times"; return 0; }
+    sleep 2
+    "$maker" "${out}.again" "$@"
+    cmp -s "$out" "${out}.again" || { echo "FAIL: ${maker} wrote $(basename "$out") differently a second time"; return 1; }
+    rm -f "${out}.again"
+    echo "ok: ${maker} writes $(basename "$out") the same a second time"
+}
+
 make_esp() {   # make_esp OUT BOOTX64-VARIANT [KERNEL-SUFFIX]
     local out="$1" boot="$2" k="${3:-.signed.efi}"
+    # The volume ID, which mkfs.vfat would take from the clock. --invariant gives the label the
+    # same time in every build, and comes before -i, as it sets an ID of its own; mtools dates
+    # what it writes at SOURCE_DATE_EPOCH.
+    local id; id="$(printf 'kryptik-esp %s %s %s' "$KRYPTIK_VERSION" "$(root_json root_hash)" "$boot" | sha256_of_stdin)"
     rm -f "$out"
     truncate -s $(( ESP_MIB * 1024 * 1024 )) "$out"
-    mkfs.vfat -F 32 -n KRYPTIKESP "$out" >/dev/null
+    mkfs.vfat -F 32 -n KRYPTIKESP --invariant -i "${id:0:8}" "$out" >/dev/null
     mmd -i "$out" ::/EFI ::/EFI/BOOT ::/EFI/kryptik ::/kryptik
     mcopy -i "$out" "${IMG}/kernels/${boot}${k}" ::/EFI/BOOT/BOOTX64.EFI
     mcopy -i "$out" "${IMG}/kernels/slot-a${k}" ::/EFI/kryptik/kryptik-a.efi
@@ -577,6 +610,7 @@ make_esp() {   # make_esp OUT BOOTX64-VARIANT [KERNEL-SUFFIX]
 s_esp() {
     echo "inputs digest: $1"
     make_esp "${IMG}/esp-usb.img" media-usb
+    again "${IMG}/esp-usb.img" make_esp media-usb
     echo "--- ESP (usb) ---"; mdir -i "${IMG}/esp-usb.img" -/ :: | grep -vE '^\s*$'
 }
 
@@ -602,7 +636,7 @@ make_images_fs() {
     local id; id="$(printf 'kryptik-images %s %s' "$KRYPTIK_VERSION" "$(root_json root_hash)" | sha256_of_stdin)"
     rm -f "$2"
     truncate -s $(( mib * 1048576 )) "$2"
-    mkfs.vfat -F 32 -n KRYPTIKIMG -i "${id:0:8}" "$2" >/dev/null
+    mkfs.vfat -F 32 -n KRYPTIKIMG --invariant -i "${id:0:8}" "$2" >/dev/null
     mcopy -i "$2" "$1"/* ::/
 }
 
@@ -617,13 +651,17 @@ make_gpt_image() {   # make_gpt_image OUT ESP-IMG ROOT-IMG ROOT-LABEL [IMAGES-FS
     local root_start=$(( esp_start + esp_sectors ))
     local images_start=$(( root_start + root_sectors ))
     local total=$(( images_start + images_sectors + 2048 + 34 ))
-    local table="label: gpt
+    # The disk's and the partitions' GUIDs, which sfdisk would draw at random.
+    local g table
+    g="kryptik-gpt ${KRYPTIK_VERSION} $(root_json root_hash) ${label}"
+    table="label: gpt
+label-id: $(uuid_of "$g")
 unit: sectors
-start=${esp_start}, size=${esp_sectors}, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=\"kryptik-esp\"
-start=${root_start}, size=${root_sectors}, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=\"${label}\""
+start=${esp_start}, size=${esp_sectors}, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, uuid=$(uuid_of "$g 1"), name=\"kryptik-esp\"
+start=${root_start}, size=${root_sectors}, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, uuid=$(uuid_of "$g 2"), name=\"${label}\""
     # The release's software images, after the root: the installer copies them into the store.
     [[ -z "$imgfs" ]] || table+="
-start=${images_start}, size=${images_sectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=\"kryptik-images\""
+start=${images_start}, size=${images_sectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=$(uuid_of "$g 3"), name=\"kryptik-images\""
     rm -f "$out"
     truncate -s $(( total * 512 )) "$out"
     sfdisk --quiet --wipe always "$out" <<< "$table"
@@ -642,6 +680,7 @@ s_usb() {
         fs=("${IMG}/medium-images.img")
     fi
     make_gpt_image "$out" "${IMG}/esp-usb.img" "${IMG}/kryptik-root.img" kryptik-media "${fs[@]}"
+    again "$out" make_gpt_image "${IMG}/esp-usb.img" "${IMG}/kryptik-root.img" kryptik-media "${fs[@]}"
     rm -rf "${IMG}/medium-images" "${IMG}/medium-images.img"
     sha256sum "$out" | sed "s| .*/| |" > "${out}.sha256"
     echo "usb image: $(stat -c %s "$out") bytes ($(du -h "$out" | cut -f1) on disk)"
@@ -667,10 +706,13 @@ EOF
         graft+=(images="$imgdir")
     fi
     rm -f "$out"
+    # xorriso dates a file by its mtime and takes SOURCE_DATE_EPOCH for the rest, the GPT's GUIDs
+    # among them (xorrisofs(1)); -r records owner root and read-only modes, not this build's.
+    [[ -z "${SOURCE_DATE_EPOCH:-}" ]] || find "$esp" "$t" ${imgdir:+"$imgdir"} -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
     # Linux filesystem data, as a GUID: xorriso takes an MBR type byte or a
     # GUID, not sfdisk's 0x8300 shorthand.
     local rc
-    xorriso -as mkisofs -quiet -o "$out" -iso-level 3 -V KRYPTIK -J -R \
+    xorriso -as mkisofs -quiet -o "$out" -iso-level 3 -V KRYPTIK -J -r \
         -e esp.img -no-emul-boot -isohybrid-gpt-basdat \
         -append_partition 2 0FC63DAF-8483-4772-8E79-3D69D8477DE4 "${IMG}/kryptik-root.img" -appended_part_as_gpt \
         -graft-points "${graft[@]}" 2>&1 | grep -vE '^\s*$'
@@ -726,6 +768,7 @@ s_iso() {
         [[ -f "${imgdir}/images.manifest.sig" ]] || { echo "images.manifest is not signed"; return 1; }
     fi
     make_iso "$iso" "${IMG}/esp-iso.img" ${imgdir:+"$imgdir"}
+    again "$iso" make_iso "${IMG}/esp-iso.img" ${imgdir:+"$imgdir"}
     rm -rf "${IMG}/iso-images"
     local start2; start2="$(part2_start "$iso")"
     [[ "$start2" == "$start" ]] || { echo "FAIL: the root partition moved from where the ISO kernel was bound (${start} -> ${start2})"; return 1; }

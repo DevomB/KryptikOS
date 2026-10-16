@@ -22,6 +22,10 @@
 //!              stick-grant <zone> <partition> ro|rw | stick-eject <zone>
 //!              camera-grant <zone>, answered `ok <camera>` | camera-revoke, answered
 //!                `ok <zone>`, `ok <zone> stayed` (its driver still loaded) or `ok none`
+//!              desktop, `env NAME=VALUE` lines for dwl's keymap, `end`, with three descriptors
+//!                (the spawner's socket, dwl's status, the log): dwl started as the login's user
+//!                in group seat and without group kryptik, answered `started <pid>`, then again
+//!                when dwl ends
 //!              stop <zone> | clipboard-move <from> <to> | info <zone> | status |
 //!              runtime | wifi-list | update-status | update-fetch | update-forget |
 //!              update-apply | update-auto on|off
@@ -77,12 +81,45 @@ fn clear_cloexec(fd: RawFd) {
     }
 }
 
-/// One recvmsg into `buf`, owning any descriptors; truncated control data is refused.
-pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Vec<OwnedFd>)> {
-    // Aligned for cmsghdr, with room for twelve, so an excess is refused by count.
+/// The most descriptors a request may carry.
+const MAX_HANDED: usize = 12;
+/// Room for every descriptor one message can carry (the kernel's SCM_MAX_FD, 253): CMSG_SPACE of
+/// 253 descriptors. The kernel closes what does not fit, on the receiving thread.
+const CONTROL_LEN: usize = 1032;
+
+/// Descriptors a peer handed over, released when dropped: see release().
+pub struct Received(pub Vec<OwnedFd>);
+
+impl std::ops::Deref for Received {
+    type Target = [OwnedFd];
+    fn deref(&self) -> &[OwnedFd] {
+        &self.0
+    }
+}
+
+impl Drop for Received {
+    fn drop(&mut self) {
+        for fd in self.0.drain(..) {
+            release(fd);
+        }
+    }
+}
+
+/// One recvmsg into `buf`, owning any descriptors, each with SO_LINGER off as it arrives. More
+/// than a request may carry are refused, and released.
+pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Received)> {
+    let (n, got, truncated) = recv_message(fd, buf, flags)?;
+    if truncated || got.len() > MAX_HANDED {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "more descriptors than a request may carry"));
+    }
+    Ok((n, got))
+}
+
+/// One recvmsg with room for every descriptor; whether the control data was cut off besides.
+fn recv_message(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Received, bool)> {
     #[repr(C, align(8))]
-    struct Control([u8; 64]);
-    let mut control = Control([0; 64]);
+    struct Control([u8; CONTROL_LEN]);
+    let mut control = Control([0; CONTROL_LEN]);
     let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = &mut iov;
@@ -93,7 +130,7 @@ pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::
     if n < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let mut got = Vec::new();
+    let mut got = Received(Vec::new());
     unsafe {
         let mut c = libc::CMSG_FIRSTHDR(&msg);
         while !c.is_null() {
@@ -101,16 +138,77 @@ pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::
                 let data = libc::CMSG_DATA(c) as *const RawFd;
                 let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / std::mem::size_of::<RawFd>();
                 for i in 0..count {
-                    got.push(OwnedFd::from_raw_fd(std::ptr::read_unaligned(data.add(i))));
+                    let handed = std::ptr::read_unaligned(data.add(i));
+                    defuse(handed);
+                    got.0.push(OwnedFd::from_raw_fd(handed));
                 }
             }
             c = libc::CMSG_NXTHDR(&msg, c);
         }
     }
-    if msg.msg_flags & libc::MSG_CTRUNC != 0 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "more descriptors than a request may carry"));
+    Ok((n as usize, got, msg.msg_flags & libc::MSG_CTRUNC != 0))
+}
+
+/// SO_LINGER off: a sender may set it so that the last close of a socket waits as long as a peer
+/// that never reads keeps it. Anything but a socket is left as it is (ENOTSOCK).
+fn defuse(fd: RawFd) {
+    let off = libc::linger { l_onoff: 0, l_linger: 0 };
+    // SAFETY: a socket option set on a descriptor the caller holds.
+    unsafe {
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_LINGER, (&off as *const libc::linger).cast(), std::mem::size_of::<libc::linger>() as libc::socklen_t)
+    };
+}
+
+/// Close a descriptor a peer handed over without waiting on it here. A Unix socket is shut and
+/// its queue taken first, and each descriptor in it released the same way: left queued, the
+/// kernel would close them on this thread with the socket.
+pub fn release(fd: OwnedFd) {
+    let mut todo = vec![fd];
+    while let Some(fd) = todo.pop() {
+        defuse(fd.as_raw_fd());
+        if is_unix_socket(fd.as_raw_fd()) {
+            take_queue(fd.as_raw_fd(), libc::SHUT_RDWR, &mut todo);
+        }
     }
-    Ok((n as usize, got))
+}
+
+/// Shut `fd` (`how`), then take every descriptor still queued on it: a Unix socket goes into
+/// `out`, to have its own queue taken in turn, and anything else closes at once, defused. Shut for
+/// reading, a socket takes nothing more. A stream's 0 is its end, as a stream carries no empty
+/// message; an empty datagram queue answers EAGAIN, so empty datagrams are read past; a
+/// seqpacket's 0 may be either, and 1024 messages bound it.
+fn take_queue(fd: RawFd, how: libc::c_int, out: &mut Vec<OwnedFd>) {
+    // SAFETY: shutdown on a descriptor the caller holds.
+    unsafe { libc::shutdown(fd, how) };
+    let stream = sock_option(fd, libc::SO_TYPE) == Some(libc::SOCK_STREAM);
+    let mut buf = [0u8; 4096];
+    for _ in 0..1024 {
+        match recv_message(fd, &mut buf, libc::MSG_DONTWAIT) {
+            Ok((0, got, _)) if got.is_empty() && stream => break,
+            Ok((_, mut got, _)) => out.extend(got.0.drain(..).filter(|f| is_unix_socket(f.as_raw_fd()))),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+}
+
+fn sock_option(fd: RawFd, opt: libc::c_int) -> Option<libc::c_int> {
+    let mut v: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: an int-sized option read into an int.
+    let r = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, opt, (&mut v as *mut libc::c_int).cast(), &mut len) };
+    (r == 0).then_some(v)
+}
+
+fn is_unix_socket(fd: RawFd) -> bool {
+    sock_option(fd, libc::SO_DOMAIN) == Some(libc::AF_UNIX)
+}
+
+/// A connection read to its end: shut for reading, with whatever it still queues released.
+pub fn release_queued(fd: RawFd) {
+    let mut queued = Vec::new();
+    take_queue(fd, libc::SHUT_RD, &mut queued);
+    drop(Received(queued));
 }
 
 // --- who is asking ----------------------------------------------------------
@@ -188,22 +286,33 @@ pub fn peer_cred(fd: RawFd) -> std::io::Result<libc::ucred> {
 
 // --- the request -------------------------------------------------------------
 
-/// `run`, `wifi-add` and `wifi-forget` end at an `end` line, other verbs at a newline.
+/// `run`, `wifi-add`, `wifi-forget` and `desktop` end at an `end` line, other verbs at a newline.
 fn request_complete(text: &[u8]) -> bool {
     if !text.ends_with(b"\n") {
         return false;
     }
-    if text.starts_with(b"run ") || text.starts_with(b"wifi-add\n") || text.starts_with(b"wifi-forget\n") {
+    if text.starts_with(b"run ") || text.starts_with(b"wifi-add\n") || text.starts_with(b"wifi-forget\n") || text.starts_with(b"desktop\n") {
         text.ends_with(b"\nend\n")
     } else {
         true
     }
 }
 
-/// Read the request, and at most one descriptor (with its first bytes), within `deadline`.
-fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<OwnedFd>), String> {
+/// The descriptors a request may carry: one, or the desktop's three.
+const MAX_CARRIED: usize = 3;
+
+/// Read the request, and the descriptors that come with its first bytes, within `deadline`.
+/// Nothing more is read from the connection after: what it still queues is released then, not
+/// closed by the kernel on this thread with the connection.
+fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>), String> {
+    let r = read_request(fd, deadline);
+    release_queued(fd);
+    r
+}
+
+fn read_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>), String> {
     let mut text = Vec::new();
-    let mut carried: Option<OwnedFd> = None;
+    let mut carried = Received(Vec::new());
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -222,21 +331,21 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<OwnedFd
             continue; // the deadline check above reports it
         }
         let mut buf = [0u8; 4096];
-        // The descriptors are owned, so any refusal below closes them.
-        let (n, mut got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
+        // The descriptors are held as Received, so any refusal below releases them.
+        let (n, got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
             Ok(x) => x,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(e.to_string()),
             Err(e) => return Err(format!("recvmsg: {e}")),
         };
         if !got.is_empty() {
-            if !text.is_empty() {
+            if !text.is_empty() || !carried.is_empty() {
                 return Err("a descriptor must accompany the first bytes of a request".into());
             }
-            if got.len() > 1 || carried.is_some() {
-                return Err(format!("at most one descriptor per request, got {}", got.len() + usize::from(carried.is_some())));
+            if got.len() > MAX_CARRIED {
+                return Err(format!("at most {MAX_CARRIED} descriptors per request, got {}", got.len()));
             }
-            carried = got.pop();
+            carried = got;
         }
         if n == 0 {
             break;
@@ -252,7 +361,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Option<OwnedFd
             break;
         }
     }
-    Ok((text, carried))
+    Ok((text, std::mem::take(&mut carried.0)))
 }
 
 fn ident_ok(s: &str) -> bool {
@@ -708,8 +817,8 @@ impl Pending {
     }
 }
 
-/// A slow request (`stop`, `update-apply`), answered once `reap` sees its command end. Not a
-/// thread: `reap` collects every child and would take the status a thread waited for.
+/// A slow request (`stop`, `update-apply`, `stick-eject`), answered once `reap` sees its command
+/// end. Not a thread: `reap` collects every child and would take the status a thread waited for.
 struct Job {
     conn: UnixStream,
     pid: libc::pid_t,
@@ -728,6 +837,11 @@ enum JobKind {
     /// The machine's sleep, whose write returns once it has woken: the daemon answers the
     /// screen lock meanwhile.
     Sleep,
+    /// A login's compositor, dwl, for as long as the login lasts.
+    Desktop { uid: u32 },
+    /// A stick taken back from a zone, which first writes out what the zone left unwritten: on a
+    /// slow stick that takes long, and every other request would wait on it.
+    StickEject { uid: u32, zone: String },
 }
 
 fn memfile(name: &str) -> Result<std::fs::File, String> {
@@ -756,10 +870,11 @@ fn start_job(conn: UnixStream, what: JobKind, cmd: &mut std::process::Command) -
     }
 }
 
-/// Start a job that is the daemon's own work, in a child of its own: kryptikd is static, so the
-/// child starts nothing and reads nothing under /etc while the state partition is suspended.
-/// Its status is left for `reap`; what `work` gives as an error is the job's reason.
-fn fork_job(conn: UnixStream, what: JobKind, work: fn() -> Result<(), String>) -> Result<Job, (UnixStream, String)> {
+/// Start a job that is the daemon's own work, in a child of its own: kryptikd is static, so work
+/// that starts nothing, as the sleep's, reads nothing under /etc while the state partition is
+/// suspended (a stick's eject runs dmsetup, and is never asked for then). Its status is left for
+/// `reap`; what `work` gives as an error is the job's reason.
+fn fork_job(conn: UnixStream, what: JobKind, work: impl FnOnce() -> Result<(), String>) -> Result<Job, (UnixStream, String)> {
     let files = memfile("kryptikd-job-out").and_then(|o| memfile("kryptikd-job-err").map(|e| (o, e)));
     let (out, err) = match files {
         Ok(f) => f,
@@ -792,6 +907,54 @@ fn start_sleep(conn: UnixStream, jobs: &mut Vec<Job>) {
     match fork_job(conn, JobKind::Sleep, crate::suspend::sleep) {
         Ok(j) => jobs.push(j),
         Err((conn, e)) => reply(&conn, &format!("error: the machine did not sleep: {e}; the state partition waits for its passphrase\n")),
+    }
+}
+
+/// The desktop's compositor for `uid`'s login, which `asker` asked for with `text` and the three
+/// descriptors in `handed` (desktop.rs): dwl, started as the user with the login's groups less
+/// this daemon's, in the desktop's bounded cgroup. Answered `started <pid>` at once, and again
+/// when dwl ends, which ends the login.
+fn start_desktop(cfg: &ServeConfig, conn: UnixStream, uid: u32, asker: i32, text: &str, handed: Vec<OwnedFd>, jobs: &mut Vec<Job>) {
+    if cfg.developer {
+        reply(&conn, "error: a developer instance starts no desktop\n");
+        return;
+    }
+    if jobs.iter().any(|j| j.what == (JobKind::Desktop { uid })) {
+        reply(&conn, &format!("error: uid {uid}'s desktop runs already\n"));
+        return;
+    }
+    let started = (|| -> Result<(libc::pid_t, std::fs::File, std::fs::File, String), String> {
+        let keymap = crate::desktop::parse(text)?;
+        let h = crate::desktop::handed(handed)?;
+        let runtime = runtime_dir(cfg, uid)?;
+        let (group, max) = crate::cgroup::prepare_desktop(uid, asker).map_err(|e| e.to_string())?;
+        // The groups the login was given, read once from the asker, which is still uid's.
+        let status = std::fs::read_to_string(format!("/proc/{asker}/status")).map_err(|e| format!("pid {asker}: {e}"))?;
+        let (real, gid, groups) = crate::desktop::ids_of(&status).ok_or(format!("pid {asker}'s ids are unreadable"))?;
+        let ours = gid_of_group(&cfg.group).ok_or(format!("no group {}", cfg.group))?;
+        if real != uid || gid == ours {
+            return Err(format!("pid {asker} is not a login of uid {uid}'s"));
+        }
+        // seatd answers group seat, which dwl alone of the session holds.
+        let seat = gid_of_group("seat").ok_or("no group seat")?;
+        let groups = crate::desktop::groups_for_dwl(&groups, ours, seat);
+        let env = crate::desktop::environment(&runtime, &keymap);
+        let out = memfile("kryptikd-desktop-out")?;
+        let err = memfile("kryptikd-desktop-err")?;
+        let pid = crate::desktop::start(uid, gid, &groups, &group.join("cgroup.procs"), &env, h, err.as_raw_fd())?;
+        Ok((pid, out, err, format!("{} under memory.max {max}", group.display())))
+    })();
+    match started {
+        Ok((pid, out, err, at)) => {
+            eprintln!("kryptikd serve: the desktop: dwl {pid} in {at}, in group seat and without {}", cfg.group);
+            reply(&conn, &format!("started {pid}\n"));
+            jobs.push(Job { conn, pid, what: JobKind::Desktop { uid }, out, err, exited: None });
+        }
+        Err(e) => {
+            // Kept here too: an asker refused as no login of the user's is not the one to rely on.
+            eprintln!("kryptikd serve: no desktop for pid {asker}: {e}");
+            reply(&conn, &format!("error: {e}\n"));
+        }
     }
 }
 
@@ -853,6 +1016,25 @@ fn finish_job(j: &mut Job, st: i32) {
             let why = why(j, "no reason given");
             eprintln!("kryptikd serve: the machine did not sleep: {why}");
             reply(&j.conn, &format!("error: the machine did not sleep: {why}; the state partition waits for its passphrase\n"));
+        }
+        // Only a child that could not become dwl writes to the job's stderr: dwl writes the log.
+        JobKind::Desktop { .. } => {
+            let failed = read_back(&mut j.err);
+            if failed.trim().is_empty() {
+                eprintln!("kryptikd serve: the desktop ended: dwl {} {}", j.pid, exit_text(st));
+                reply(&j.conn, &format!("ok dwl {}\n", exit_text(st)));
+            } else {
+                eprintln!("kryptikd serve: the desktop did not start: dwl {}: {}", j.pid, failed.trim());
+                reply(&j.conn, &format!("error: dwl did not start: {}\n", failed.trim()));
+            }
+        }
+        JobKind::StickEject { uid, zone } if ok => {
+            eprintln!("kryptikd serve: uid {uid} took the stick back from zone {zone:?}");
+            reply(&j.conn, "ok\n");
+        }
+        JobKind::StickEject { .. } => {
+            let why = why(j, "the stick was not taken back");
+            reply(&j.conn, &format!("error: {why}\n"));
         }
     }
 }
@@ -1164,8 +1346,21 @@ fn check_password(cfg: &ServeConfig, uid: u32, text: &str, attempts: &mut crate:
     }
 }
 
+/// Whether a passphrase's descriptor holds it in memory: a pipe, or a memfd or tmpfs file, which
+/// take seals. Read while a volume is suspended, a file on it would miss the caches the seal
+/// dropped and wait on that volume, and with it every request, until nothing could resume it.
+fn in_memory(fd: &OwnedFd) -> bool {
+    let raw = fd.as_raw_fd();
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(raw, &mut st) } != 0 {
+        return false;
+    }
+    (st.st_mode & libc::S_IFMT) == libc::S_IFIFO || unsafe { libc::fcntl(raw, libc::F_GET_SEALS) } >= 0
+}
+
 /// The request's first line asks about the state partition while it is suspended, the passphrase
-/// on `carried` for resume-state. Nothing here reads a file on that partition.
+/// on `carried` for resume-state, in memory alone (`in_memory`): nothing here reads a file on
+/// that partition.
 fn while_suspended(uid: u32, first: &str, carried: Option<OwnedFd>, pause: &mut crate::password::Attempts) -> String {
     match first {
         "unlock-kind" => "ok state\n".into(),
@@ -1177,6 +1372,9 @@ fn while_suspended(uid: u32, first: &str, carried: Option<OwnedFd>, pause: &mut 
             let Some(fd) = carried else {
                 return "error: resume-state: the passphrase comes on a descriptor\n".into();
             };
+            if !in_memory(&fd) {
+                return "error: resume-state: the passphrase comes in a pipe or a memfd, not a file\n".into();
+            }
             let pass = match crate::volume::Passphrase::from_fd(fd.into_raw_fd()) {
                 Ok(p) => p,
                 Err(e) => return format!("error: {e}\n"),
@@ -1215,7 +1413,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
     // hang; meanwhile the socket's 0660 root:kryptik is the gate.
     if crate::suspend::state_suspended() {
         let said = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
-            Ok((mut raw, carried)) => {
+            Ok((mut raw, mut carried)) => {
                 let first = String::from_utf8_lossy(raw.split(|&b| b == b'\n').next().unwrap_or_default()).into_owned();
                 // The rest may hold a password: wiped, never read.
                 raw.fill(0);
@@ -1230,8 +1428,10 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                         start_sleep(conn, jobs);
                         return None;
                     }
+                } else if carried.len() > 1 {
+                    "error: at most one descriptor while the state partition is suspended\n".into()
                 } else {
-                    while_suspended(uid, &first, carried, &mut pauses.state)
+                    while_suspended(uid, &first, carried.pop(), &mut pauses.state)
                 }
             }
             Err(e) => format!("error: {e}\n"),
@@ -1244,7 +1444,7 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
         eprintln!("kryptikd serve: refused uid {uid} (pid {})", peer.pid);
         return None;
     }
-    let (mut raw, carried) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
+    let (mut raw, mut handed) = match recv_request(fd, Instant::now() + REQUEST_DEADLINE) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("kryptikd serve: uid {uid}: {e}");
@@ -1265,6 +1465,12 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
     }
     let first = text.lines().next().unwrap_or("");
     let verb = first.split_whitespace().next().unwrap_or("");
+    // The desktop alone takes more than one descriptor.
+    if verb != "desktop" && handed.len() > 1 {
+        reply(&conn, &format!("error: at most one descriptor per request but desktop's, got {}\n", handed.len()));
+        return None;
+    }
+    let carried = if verb == "desktop" { None } else { handed.pop() };
     match verb {
         "status" => {
             let mut out = String::new();
@@ -1307,6 +1513,11 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
             Ok(d) => reply(&conn, &format!("ok {}\n", d.display())),
             Err(e) => reply(&conn, &format!("error: {e}\n")),
         },
+        // The session's last step: dwl, started here as a job of the login's.
+        "desktop" => {
+            start_desktop(cfg, conn, uid, peer.pid, &text, handed, jobs);
+            return None;
+        }
         "clipboard-move" => {
             let mut w = first.split_whitespace().skip(1);
             let (from, to) = (w.next().unwrap_or(""), w.next().unwrap_or(""));
@@ -1372,6 +1583,10 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 reply(&conn, "error: resume-zone: the passphrase comes on a descriptor\n");
                 return None;
             };
+            if !in_memory(&fd) {
+                reply(&conn, "error: resume-zone: the passphrase comes in a pipe or a memfd, not a file\n");
+                return None;
+            }
             let said = match crate::volume::Passphrase::from_fd(fd.into_raw_fd()) {
                 Err(e) => format!("error: {e}\n"),
                 Ok(pass) => match crate::suspend::resume_zone(zone, &pass) {
@@ -1432,15 +1647,21 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 reply(&conn, "error: bad zone name\n");
                 return None;
             }
-            let said = match crate::stick::eject(zone) {
-                Ok(true) => {
-                    eprintln!("kryptikd serve: uid {uid} took the stick back from zone {zone:?}");
-                    "ok\n".to_string()
-                }
-                Ok(false) => format!("error: zone {zone:?} holds no stick\n"),
-                Err(e) => format!("error: {e}\n"),
+            if jobs.iter().any(|j| matches!(&j.what, JobKind::StickEject { zone: z, .. } if z == zone)) {
+                reply(&conn, &format!("error: zone {zone:?}'s stick is being taken back already\n"));
+                return None;
+            }
+            let z = zone.to_string();
+            let what = JobKind::StickEject { uid, zone: z.clone() };
+            let eject = move || match crate::stick::eject(&z) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(format!("zone {z:?} holds no stick")),
+                Err(e) => Err(e),
             };
-            reply(&conn, &said);
+            match fork_job(conn, what, eject) {
+                Ok(j) => jobs.push(j),
+                Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
+            }
         }
         // The chrome's k<N>, and k alone or the screen lock taking it back.
         "camera-grant" => {
@@ -1509,6 +1730,11 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
             let dir = std::path::Path::new(up::STATE_DIR);
             let running = up::running_version();
             let mut said = verb.to_string();
+            // kryptik-update reads the stage while it applies it, which fetch and forget may clear.
+            if matches!(verb, "update-fetch" | "update-forget") && jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
+                reply(&conn, "error: an update is being applied\n");
+                return None;
+            }
             let done = match verb {
                 "update-status" => {
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
@@ -1523,11 +1749,6 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                         .map(|v| format!("{v} will be fetched when the net zone next asks; `kryptik update status` shows it arriving\n"))
                 }
                 "update-forget" => {
-                    // kryptik-update reads the stage while it applies it.
-                    if jobs.iter().any(|j| j.what == JobKind::UpdateApply) {
-                        reply(&conn, "error: an update is being applied\n");
-                        return None;
-                    }
                     up::forget(dir).map(|v| {
                         format!("{v} is no longer fetched, and what had arrived of it is deleted; automatic fetching passes it over, and `kryptik update fetch` asks for it again\n")
                     })
