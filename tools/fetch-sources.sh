@@ -546,7 +546,7 @@ while IFS='|' read -r owner name ver url _; do
         want=""
         [[ "$MODE" == lock ]] || want="$(lookup_hash "$file" "$lock")" || want=""
         if ! fetch_one "$url" "$dest" "$name" "$ver" "$want"; then
-            die "download failed: ${name} ${ver} (every mirror tried). Re-run to resume."
+            die "download failed: ${name} ${ver} (every mirror tried). Re-run to try again: a partial download is resumed."
         fi
         fetched=$((fetched + 1))
         was_fetched=yes
