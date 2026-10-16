@@ -182,6 +182,9 @@ else
     info "desktop-charge: the probe drew nothing: $(since_mark charge untrusted | tail -3 | tr '\n' ' ')"
 fi
 wait "$charge_job" 2>/dev/null
+# The launch returns once the zone runs; the probe keeps its window 10 s, and the next checks
+# start untrusted themselves.
+wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
 # No zone reaches dwl's sockets: of every socket untrusted's user can find, none
 # is dwl's own or one of its zones' sockets, and its own is the proxy's. Each file is
 # stat'ed, which sees through a socket bound in over a file. The launcher marks
