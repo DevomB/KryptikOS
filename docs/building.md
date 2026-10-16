@@ -12,8 +12,9 @@ On Debian or Ubuntu, the same set the Distro workflow installs
 ```sh
 sudo apt install -y build-essential bison flex texinfo gawk m4 patch perl \
     python3 python3-pip xz-utils bzip2 zstd cpio rsync bc curl git openssl \
-    libssl-dev libelf-dev e2fsprogs dosfstools mtools xorriso util-linux \
-    cryptsetup-bin sbsigntool qemu-system-x86 ovmf musl-tools file
+    libssl-dev libelf-dev e2fsprogs dosfstools mtools exfatprogs xorriso \
+    util-linux cryptsetup-bin sbsigntool libasound2-dev qemu-system-x86 ovmf \
+    musl-tools file
 sudo dpkg-reconfigure dash        # answer "No": /bin/sh must be bash
 ```
 
