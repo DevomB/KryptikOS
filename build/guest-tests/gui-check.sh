@@ -876,6 +876,13 @@ if [[ -z "$unfiltered" ]] && grep -qE '^Seccomp:[[:space:]]+2$' "/proc/${dwl_pid
 else
     fail "dwl-execs-nothing" "dwl ${dwl_pid:-gone}: $(grep -E '^(Seccomp|NoNewPrivs):' "/proc/${dwl_pid:-0}/status" 2>&1 | tr '\n' ' '); threads without the filter: ${unfiltered:-none}; spawner: ${spawner:-none}; $(pgrep -u "$USER_NAME" -a dwl | tr '\n' ';')"
 fi
+# And it reads only below its own list and writes no file (Landlock), as its session log says:
+# every path of the list there, and one thread to bind.
+if grep -qE '^dwl: confined: reads only below ([0-9]+) of its \1 paths, .*\(1 thread, ' "$RT/kryptik/session.log" 2>/dev/null; then
+    pass "dwl-confined-to-its-files" "$(grep -m1 '^dwl: confined: ' "$RT/kryptik/session.log")"
+else
+    fail "dwl-confined-to-its-files" "session.log: $(grep -a '^dwl: \(not confined\|Landlock\)' "$RT/kryptik/session.log" 2>/dev/null | head -3 | tr '\n' ' ')"
+fi
 [[ -n "$zoned" ]] && pass "zone-app-in-cgroup" "the zone's terminal runs in its cgroup:$zoned" || fail "zone-app-in-cgroup" "no havoc in a /kryptik cgroup; processes in one: $(grep -ls kryptik /proc/[0-9]*/cgroup 2>/dev/null | wc -l)"
 
 stop_zone personal
