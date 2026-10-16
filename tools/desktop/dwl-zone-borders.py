@@ -1228,6 +1228,11 @@ confineexec(void)
 """,
      """#include <linux/seccomp.h>
 #include <linux/landlock.h>
+/* Kryptik: Landlock's scopes as Linux 6.12 numbers them, for headers older than the kernel. */
+#ifndef LANDLOCK_SCOPE_SIGNAL
+#define LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET (1ULL << 0)
+#define LANDLOCK_SCOPE_SIGNAL (1ULL << 1)
+#endif
 """),
     ("""static void confineexec(void);
 """,
@@ -1261,6 +1266,12 @@ landlockpath(int set, const char *path, __u64 access)
 \treturn r;
 }
 
+/* Kryptik: landlock_ruleset_attr with the scopes' field, which older headers lack. A kernel
+ * without scopes takes the longer form while that field is zero. */
+struct rulesetattr {
+\t__u64 handled_access_fs, handled_access_net, scoped;
+};
+
 /* Kryptik: from here dwl writes no file and reads only what it needs while it runs: keymaps and
  * cursors under /usr, hotplug under /sys and udev's, the microphone's and the camera's marks, and
  * the chrome's request for a browser in front, which it may also remove. No TCP, and, where the
@@ -1275,7 +1286,7 @@ confinefs(void)
 \tstatic const char *const readable[] = {
 \t\t"/usr", "/sys", "/run/udev", "/etc/udev", "/run/kryptik-sound", "/run/kryptik-camera",
 \t};
-\tstruct landlock_ruleset_attr attr = {
+\tstruct rulesetattr attr = {
 \t\t.handled_access_fs = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE
 \t\t\t| LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
 \t\t\t| LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE
@@ -1308,13 +1319,11 @@ confinefs(void)
 \t\tfprintf(stderr, "dwl: not confined to its files: no Landlock ABI 4 in this kernel (%ld)\\n", abi);
 \t\treturn;
 \t}
-#ifdef LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET
 \t/* No signal either, unless dwl started a command itself (-s), which its cleanup ends. */
 \tif (abi >= 6) {
 \t\tattr.scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | (child_pid > 0 ? 0 : LANDLOCK_SCOPE_SIGNAL);
 \t\tsignals = child_pid > 0 ? "" : ", signals nothing outside it";
 \t}
-#endif
 \tif ((set = (int)syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0)) < 0) {
 \t\tfprintf(stderr, "dwl: not confined to its files: a Landlock ruleset: %s\\n", strerror(errno));
 \t\treturn;
