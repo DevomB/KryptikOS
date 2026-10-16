@@ -233,6 +233,10 @@ A desktop someone can live in, built the same way.
 - **Input methods.** Decided (ADR-028): none for 1.0; after it, one per
   zone that asks, fcitx5 as a software image, its virtual keyboard bound
   to the zone ([input methods](design/input-methods.md)).
+- **Time zones.** None is shipped yet, so every clock reads UTC. Still to
+  come: the IANA database, built and verified as any other source; the
+  user's zone asked at first boot; and a zone's file choosing that zone or
+  UTC, which a zone that should not tell where its user is keeps.
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so
