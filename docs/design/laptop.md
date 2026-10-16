@@ -442,22 +442,29 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 - **The power service** (`build/service-scripts/power.sh`, the `power`
   service), in zone 0, reads the battery and the mains adapter or USB
   charger from `/sys/class/power_supply` every 30 s; a mouse's battery
-  (scope `Device`) does not count, and of two batteries the fuller does. On
-  battery at 10% and again at 5% it warns, once each a discharge: the
-  chrome's status loop opens a window that says what comes at 3% and
-  follows the charge until the machine is on mains. At 3% or under, seen
-  twice running, it stops every zone as `kryptikd stop` does, each launcher
-  closing its volume, and powers the machine off, since there is no
-  hibernation. Each look is written to `/run/kryptik-power/state`, which the
-  chrome reads, so the menu says what the service acts on.
+  (scope `Device`) does not count, of two batteries the fuller does, and a
+  battery whose capacity does not read counts by the energy or the charge
+  it holds against full. A battery that says it discharges runs down
+  whatever the adapter says, as on a charger that gives less than the
+  machine uses, so the machine counts as on battery, and the chrome says
+  it is plugged in. On battery at 10% and again at 5% it warns, once each
+  a discharge: the chrome's status loop opens a window that says what
+  comes at 3% and follows the charge until the machine is on mains. At 3%
+  or under, seen twice running, it stops every zone as `kryptikd stop`
+  does, each launcher closing its volume, and powers the machine off,
+  since there is no hibernation. Each look is written to
+  `/run/kryptik-power/state`, which the chrome reads, so the menu says what
+  the service acts on.
 - **A gauge that reads too low.** A worn battery whose gauge says 3% or less
   while it still holds charge powers the machine off a minute after every
   boot on battery. Requiring a reading above 3% earlier in the boot would
   stop that, at the cost of an unclean death for a boot that starts at 2%.
   Which to take is for the tests on physical hardware.
 - **The energy preference.** The same service sets
-  `energy_performance_preference` to `balance_power` on battery and
-  `balance_performance` on mains whenever the source changes, on each
+  `energy_performance_preference` to `balance_power` without a charger and
+  `balance_performance` with one whenever that changes, by the charger
+  rather than the battery's running down, so a machine that outdraws its
+  charger under load does not swing between the two, on each
   processor policy that offers it (amd-pstate and intel_pstate both do).
   PCIe link power and NVMe power states keep the kernel's defaults, and no
   rule turns on USB autosuspend for input devices, which too often
@@ -519,14 +526,17 @@ machine down with every volume closed.
 `make power-test` does the battery's part with `test_power`: the service
 follows the adapter both ways, the menu's Power line names the source and
 the charge, a window warns at 10% and again at 5%, follows the charge and
-closes on mains, and with the battery at 2% unplugged the service stops the
-zones and powers off; the host then finds on the state partition that it
-said so and that a running zone's volume was closed first. The guest also
-finds the power controllers' drivers among the kernel's modules. The energy
-preference, which QEMU's processors do not offer, is checked against
-stand-in `/sys` trees (`tools/tests/power.sh`). QEMU has no backlight:
-the brightness steps are checked the same way (`tools/tests/brightness.sh`),
-and the rule and the keys wait for physical hardware.
+closes on mains, a battery that runs down with the adapter on is on
+battery and the line says the machine is plugged in, and with the battery
+at 2% unplugged the service stops the zones and powers off; the host then
+finds on the state partition that it said so and that a running zone's
+volume was closed first. The guest also finds the power controllers'
+drivers among the kernel's modules. The energy preference, which QEMU's
+processors do not offer, and a battery whose capacity does not read are
+checked against stand-in `/sys` trees (`tools/tests/power.sh`). QEMU has
+no backlight: the brightness steps are checked the same way
+(`tools/tests/brightness.sh`), and the rule and the keys wait for physical
+hardware.
 
 ## Keyboard layouts and input methods
 

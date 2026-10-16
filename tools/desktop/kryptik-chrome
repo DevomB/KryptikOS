@@ -300,7 +300,12 @@ run_battery() {
     clear 2>/dev/null
     echo "================ KRYPTIK - the battery (zone 0) ================"
     echo "The battery is low. At 3% the zones stop, each closing its volume, and the"
-    echo "machine powers off. Plug it in, or save what you are working on now."
+    if [ "$(power_field charger)" = yes ]; then
+        echo "machine powers off. It is plugged in, but its charger gives less than the"
+        echo "machine uses: use a stronger one, or save what you are working on now."
+    else
+        echo "machine powers off. Plug it in, or save what you are working on now."
+    fi
     echo
     said="" n=0
     while [ "$(power_field source)" = battery ] && [ "$n" -lt 120 ]; do
@@ -424,7 +429,9 @@ menu_power() {
     case "$chg" in ""|*[!0-9]*) return 0 ;; esac
     echo
     if [ "$(power_field source)" = battery ]; then
-        echo "Power: on battery, at ${chg}%; at 3% the zones stop and the machine powers off"
+        how="on battery"
+        [ "$(power_field charger)" = yes ] && how="on battery though plugged in"
+        echo "Power: ${how}, at ${chg}%; at 3% the zones stop and the machine powers off"
     else
         echo "Power: on mains, the battery at ${chg}%"
     fi

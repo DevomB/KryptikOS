@@ -133,6 +133,20 @@ else
     fail "power-on-mains-again" "$(uncaught | grep -a 'power:' | tail -2 | tr '\n' ' ')"
 fi
 
+# --- plugged in to a charger that gives less than the machine uses: the battery runs down ---
+weak='on battery, the battery at 30%: the charger gives less than the machine uses'
+before="$(said "$weak")"
+echo 30 > "$TP/battery_capacity"; echo discharging > "$TP/battery_status"
+line=""
+wait_for 45 more "$weak" "$before" && looked battery 30 && line="$(power_line)"
+if [[ "$line" == "Power: on battery though plugged in, at 30%; at 3% the zones stop and the machine powers off" ]]; then
+    pass "power-weak-charger" "the adapter on and the battery running down: the service and the menu say so"
+else
+    fail "power-weak-charger" "${line:-no Power line}; state: $(tr '\n' ' ' < /run/kryptik-power/state); $(uncaught | grep -a 'power:' | tail -2 | tr '\n' ' ')"
+fi
+echo charging > "$TP/battery_status"
+wait_for 45 looked mains 30
+
 # --- a critical battery --------------------------------------------------------------------
 # An encrypted zone runs, so the host can find, on the state partition, that its volume was
 # closed before the power went: the launcher's own words, kept in $LOG/work.out.
