@@ -163,6 +163,25 @@ for g in zwlr_screencopy_manager_v1 zwlr_data_control_manager_v1 zwp_primary_sel
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
 done
 [[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, data-control, primary-selection, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
+# Where a zone's unwritten pool is charged (resource-limits design, Tests). dwl reads it first, so
+# its pages are the desktop's, inside the desktop's bound and outside the zone's. The probe then
+# drops the pool and keeps its descriptor, as a zone may: the pages stay the desktop's until the
+# proxy punches the range.
+desk_mem() { cat /sys/fs/cgroup/kryptik-desktop/memory.current 2>/dev/null || echo 0; }
+charge_said() { since_mark charge untrusted | grep -q "$1"; }
+mark charge untrusted
+before="$(desk_mem)"
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe charge keep" > "$LOG/launch-charge.out" 2>&1 &
+charge_job=$!
+if wait_for 30 charge_said 'sample memory.current now'; then
+    sleep 1
+    held="$(desk_mem)"; kept="$held"
+    wait_for 15 charge_said 'pool gone' && { sleep 1; kept="$(desk_mem)"; }
+    info "desktop-charge: a zone's unwritten 4 MiB pool raised the desktop's memory.current by $(( (held - before) / 1024 )) KiB while dwl showed it, and by $(( (kept - before) / 1024 )) KiB once the pool was gone and the zone kept its descriptor"
+else
+    info "desktop-charge: the probe drew nothing: $(since_mark charge untrusted | tail -3 | tr '\n' ' ')"
+fi
+wait "$charge_job" 2>/dev/null
 # No zone reaches dwl's sockets: of every socket untrusted's user can find, none
 # is dwl's own or one of its zones' sockets, and its own is the proxy's. Each file is
 # stat'ed, which sees through a socket bound in over a file. The launcher marks
