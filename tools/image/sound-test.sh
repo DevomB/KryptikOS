@@ -70,7 +70,7 @@ for name in sound-card codec-bound codec-drivers-ahead pcm-nodes zone-proc-asoun
             zone-socket-no-card zone-plays zones-play-together record-refused-ungranted status-shows-recording \
             holder-recorded record-granted grant-ends-with-zone holder-cleared foreign-uid-refused chrome-grants-microphone \
             chrome-takes-microphone-back chrome-sets-volume microphone-window microphone-window-taken-back \
-            chrome-says-recording microphone-moves volume-steps usb-sound-card plays-on-usb usb-pull-moves-sound \
+            chrome-says-recording microphone-moves volume-steps levels-kept levels-kept-boot levels-kept-filtered levels-kept-unread usb-sound-card plays-on-usb usb-pull-moves-sound \
             usb-pull-zone-plays-on; do
     grep -q "GT PASS ${name}" <<<"$T" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
