@@ -51,6 +51,14 @@ media it tested.
 ## Known gaps
 
 - Testing on physical hardware is planned for October 2026.
+- Thunderbolt, USB4 and USB-C's own drivers are not built: a Thunderbolt or
+  USB4 dock's PCIe devices (its USB controller, its Ethernet) stay dark, as
+  nothing authorizes them, while a monitor over USB-C works where the
+  laptop's controller drives it. Building them comes with a policy for
+  which plugged devices are let in.
+- The state passphrase is asked in sysinit, before eudev loads any module,
+  so only built-in keyboard drivers type it: PS/2 (atkbd) and USB. A laptop
+  whose built-in keyboard is on I2C needs a USB keyboard there.
 - The keys that sign a release from 1.0.0 on are held on GitHub, in the
   repository's protected release environment: a release tag's build uses
   them once the maintainer approves it, so a release is as trustworthy as
