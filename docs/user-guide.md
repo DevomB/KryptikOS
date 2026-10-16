@@ -632,6 +632,9 @@ shows each timer, its timeout and whether it is running.
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
+- No time zone database is shipped yet, so every clock reads UTC, zone 0's
+  and each zone's: a file's time, and the times a zone's programs show, the
+  pages Firefox shows among them.
 - A program in a zone cannot make its window fullscreen; Alt+e does, and
   the window then sits below a bar in its zone's colour that names the
   zone. Other windows show their zone by border colour alone, and the
