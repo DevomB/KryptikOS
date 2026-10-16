@@ -197,6 +197,13 @@ CONFIG_AMD_PMC=m
 CONFIG_INTEL_VSEC=m
 CONFIG_INTEL_PMT_TELEMETRY=m
 CONFIG_INTEL_PMC_CORE=m
+# The power key on Intel laptops whose firmware sends it, and the wake from
+# s2idle by it, to the HID event filter (INT33D5, INTC1051 and later) or the
+# virtual button device (INT33D6) instead of ACPI's power button: without these
+# the key sends nothing there, and dwl's binding for it never runs. Each reports
+# a tablet switch only on a convertible or detachable chassis or a model it lists.
+CONFIG_INTEL_HID_EVENT=m
+CONFIG_INTEL_VBTN=m
 # AQtion (5 and 10 GbE on desktop boards and Thunderbolt docks) and Mellanox
 # ConnectX-4 and later (servers); neither needs firmware.
 CONFIG_AQTION=m
