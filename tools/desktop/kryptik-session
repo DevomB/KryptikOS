@@ -56,5 +56,6 @@ log="$rt/kryptik/session.log"
     done
 } >> "$log"
 
-# dwl pipes its status to the chrome; when dwl exits, the login ends.
-exec /usr/bin/dwl -s /usr/bin/kryptik-chrome 2>> "$log"
+# dwl pipes its status to the chrome; when dwl exits, the login ends. It runs in the desktop's
+# cgroup, whose memory.max bounds what a zone can make the compositor hold.
+exec /usr/bin/kryptik-launch --desktop -- /usr/bin/dwl -s /usr/bin/kryptik-chrome 2>> "$log"

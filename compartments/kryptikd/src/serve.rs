@@ -1307,6 +1307,15 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
             Ok(d) => reply(&conn, &format!("ok {}\n", d.display())),
             Err(e) => reply(&conn, &format!("error: {e}\n")),
         },
+        // The session's last step before it becomes dwl: the asker alone is moved, so all the
+        // desktop starts is under the bound.
+        "desktop" => match crate::cgroup::join_desktop(uid, peer.pid) {
+            Ok((at, max)) => {
+                eprintln!("kryptikd serve: uid {uid}'s desktop (pid {}) runs in {} under memory.max {max}", peer.pid, at.display());
+                reply(&conn, &format!("ok {} memory.max {max}\n", at.display()));
+            }
+            Err(e) => reply(&conn, &format!("error: {e}\n")),
+        },
         "clipboard-move" => {
             let mut w = first.split_whitespace().skip(1);
             let (from, to) = (w.next().unwrap_or(""), w.next().unwrap_or(""));
