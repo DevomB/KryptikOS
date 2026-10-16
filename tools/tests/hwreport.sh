@@ -317,6 +317,9 @@ put sys/power/suspend_stats/success 3
 put sys/power/suspend_stats/fail 1
 put sys/power/suspend_stats/last_hw_sleep 3480000000
 put sys/power/suspend_stats/total_hw_sleep 9000000000
+mkdir -p "$W/sys/bus/platform/drivers/intel_pmc_core" "$W/sys/devices/platform/intel_pmc_core.0"
+ln -s "$W/sys/devices/platform/intel_pmc_core.0" "$W/sys/bus/platform/drivers/intel_pmc_core/intel_pmc_core.0"
+mkdir -p "$W/sys/bus/platform/drivers/amd_pmc"
 pci 0000:00:05.0 0x048000 8086 a75d
 put sys/bus/acpi/devices/OVTI01A0:00/status 15
 put sys/bus/acpi/devices/INT3472:01/status 15
@@ -332,6 +335,7 @@ nolap "never a battery's serial number"     'BAT-SECRET-7'
 lap "the sleep states the kernel offers"     '^sleep states: freeze mem disk$'
 lap "and which one mem is"                   '^sleep mem: s2idle \[deep\]$'
 lap "the sleeps, and the hardware's time asleep" '^sleep stats: 3 successful, 1 failed, hardware asleep 3480000000 us last, 9000000000 us in all$'
+lap "and the power controller driver that counts it" '^power controller: intel_pmc_core$'
 lap "an IPU6 by its PCI ID"                  '^camera ipu6 0000:00:05\.0 8086:a75d driver -$'
 lap "its sensor, by its ACPI ID"             '^camera acpi OVTI01A0:00 sensor$'
 lap "the sensor's power controller"          '^camera acpi INT3472:01 sensor power$'
