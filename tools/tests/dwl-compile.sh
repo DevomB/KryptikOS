@@ -55,7 +55,10 @@ sed -e 's/^#mesondefine \(WLR_HAS_[A-Z0-9_]*\)$/#define \1 0/' "$WLR/include/wlr
     | sed -e 's/^#define \(WLR_HAS_DRM_BACKEND\|WLR_HAS_LIBINPUT_BACKEND\|WLR_HAS_SESSION\) 0$/#define \1 1/' \
     > "$GEN/wlr/config.h"
 IFS=. read -r major minor micro <<<"$V_WLROOTS"
-sed -e "s/@WLR_VERSION_STR@/${V_WLROOTS}/; s/@WLR_VERSION_MAJOR@/${major}/; s/@WLR_VERSION_MINOR@/${minor}/; s/@WLR_VERSION_MICRO@/${micro}/" \
+sed -e "s/^#mesondefine WLR_VERSION_STR$/#define WLR_VERSION_STR \"${V_WLROOTS}\"/" \
+    -e "s/^#mesondefine WLR_VERSION_MAJOR$/#define WLR_VERSION_MAJOR ${major}/" \
+    -e "s/^#mesondefine WLR_VERSION_MINOR$/#define WLR_VERSION_MINOR ${minor}/" \
+    -e "s/^#mesondefine WLR_VERSION_MICRO$/#define WLR_VERSION_MICRO ${micro}/" \
     "$WLR/include/wlr/version.h.in" > "$GEN/wlr/version.h"
 if grep -q '@\|#mesondefine' "$GEN/wlr/config.h" "$GEN/wlr/version.h"; then
     echo "FAIL: wlroots ${V_WLROOTS}'s config.h.in or version.h.in has a placeholder this check does not fill:"
