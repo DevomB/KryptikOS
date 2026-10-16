@@ -922,6 +922,23 @@ if [[ "$RC" -ne 0 ]] && grep -qF "published copy at file://${PROV}/missing.asc n
 else
     red "and --strict counts its source unverifiable (exit ${RC})"; show
 fi
+# A pull request's gate: the host's silence is a warning, and the key held still decides.
+fresh_root
+runprov --strict --unread-warns --report="${W}/r9.tsv"
+if [[ "$RC" -eq 0 && "$(klass_of "${W}/r9.tsv" good)" == "signature-keyring-key" ]] \
+   && grep -qF "as its published copy did not answer (--unread-warns)" "$OUT" \
+   && grep -qF "  - good (file://${PROV}/missing.asc)" "$OUT"; then
+    green "--strict --unread-warns checks it against the key held, and names it"
+else
+    red "--strict --unread-warns checks it against the key held (exit ${RC}, got $(klass_of "${W}/r9.tsv" good))"; show
+fi
+fresh_root
+runprov --unread-warns
+if [[ "$RC" -ne 0 ]] && grep -qF -- "--unread-warns eases --strict; give both" "$OUT"; then
+    green "--unread-warns alone is refused"
+else
+    red "--unread-warns alone is refused (exit ${RC})"; show
+fi
 
 # --- malformed provenance rows ----------------------------------------------
 
