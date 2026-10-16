@@ -459,6 +459,28 @@ fn stage_lock(dir: &Path) -> Result<std::fs::File, String> {
     lock(&dir.join("stage.lock"))
 }
 
+/// kryptik-update's lock, held whole by an apply or a rollback while it runs.
+const UPDATE_LOCK: &str = "/run/kryptik/update.lock";
+
+/// kryptik-update's lock at `path`, taken shared while the stage is cleared, so no apply starts
+/// meanwhile; refused while one runs, as an apply reads the stage. No file is no apply since boot.
+fn no_apply_at(path: &Path) -> Result<Option<std::fs::File>, String> {
+    use std::os::unix::io::AsRawFd;
+    let f = match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } < 0 {
+        let e = std::io::Error::last_os_error();
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            return Err("an update is being applied; ask again when it has ended".into());
+        }
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(Some(f))
+}
+
 fn stored_pointer(dir: &Path) -> Option<Pointer> {
     parse_pointer(&std::fs::read_to_string(dir.join("pointer")).ok()?).ok()
 }
@@ -525,6 +547,7 @@ pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Res
     resolve_base(channel, &p.base, role).map_err(|e| format!("{} cannot be fetched: {e}", p.version))?;
     let _lock = stage_lock(dir)?;
     if wanted(dir).as_deref() != Some(p.version.as_str()) {
+        let _no_apply = no_apply_at(Path::new(UPDATE_LOCK))?;
         clear_stage(dir);
     }
     put_file(&dir.join("wanted"), p.version.as_bytes())?;
@@ -538,6 +561,7 @@ pub fn want(dir: &Path, channel: Option<&str>, role: &str, running: &str) -> Res
 pub fn forget(dir: &Path) -> Result<String, String> {
     let _lock = stage_lock(dir)?;
     let v = wanted(dir).ok_or("no release has been asked for")?;
+    let _no_apply = no_apply_at(Path::new(UPDATE_LOCK))?;
     // Recorded first, so the next poll never asks for it again in between.
     put_file(&dir.join("declined"), v.as_bytes())?;
     let _ = std::fs::remove_file(dir.join("wanted"));

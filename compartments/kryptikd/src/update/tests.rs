@@ -419,6 +419,23 @@ fn forget_waits_for_a_put_in_flight() {
 }
 
 #[test]
+fn the_stage_is_not_cleared_while_an_apply_holds_its_lock() {
+    let d = scratch("apply-lock");
+    std::fs::create_dir_all(&d).unwrap();
+    let path = d.join("update.lock");
+    assert!(no_apply_at(&path).unwrap().is_none(), "no lock file is no apply");
+    // Held as kryptik-update's apply holds it, exclusive, from another descriptor.
+    let applying = lock(&path).unwrap();
+    assert!(no_apply_at(&path).unwrap_err().contains("being applied"));
+    drop(applying);
+    let held = no_apply_at(&path).unwrap().expect("the lock is free");
+    // Shared, as `kryptik-update status` takes it: the two do not refuse each other.
+    assert!(no_apply_at(&path).unwrap().is_some());
+    drop(held);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_manifest_checked_while_its_stage_was_cleared_is_not_kept() {
     let d = scratch("cleared-mid-check");
     latest(&d, &yes(), T0, "production", "1.0.2", pointer_text("1.0.3", "2027-03-02T14:05:00Z").as_bytes(), b"sig").unwrap();
