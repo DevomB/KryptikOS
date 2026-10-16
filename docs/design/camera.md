@@ -104,6 +104,41 @@ itself waits for the tests on physical hardware.
 
 ## Not covered
 
-- MIPI cameras behind the IPU6, and infrared cameras.
+- MIPI cameras behind the IPU6 (below), and infrared cameras.
 - Which USB devices are accepted at all.
 - Screen sharing, which is the compositor's question, not the camera's.
+
+## MIPI cameras
+
+Many Intel laptops since 2022 have a MIPI camera behind the image
+processing unit (the IPU6, and the IPU7 from Lunar Lake on) instead of a
+USB one. The kernel's half is upstream: `VIDEO_INTEL_IPU6` captures the
+sensor's raw frames, `IPU_BRIDGE` describes the sensors from ACPI tables
+made for Windows, `INTEL_SKL_INT3472` powers them, each sensor model has a
+driver of its own, and many models of 2022 and 2023 put Intel's Visual
+Sensing Controller between sensor and IPU (`INTEL_VSC`, with its MEI
+driver). The IPU7's driver is still in staging in 6.18. Their firmware is
+in linux-firmware 20260916: the IPU6's five files are 2.3 MB, the IPU7's
+two 0.5 MB, and the Visual Sensing Controller's 29 files 11.5 MB, before
+compression.
+
+What the kernel gives is raw Bayer frames through a media-controller
+graph: `/dev/media0`, several `/dev/video*` nodes and the sensors'
+`/dev/v4l-subdev*`. Making a picture of them is userspace's work:
+libcamera's software image processing, or Intel's closed one. There it
+leaves ADR-026, which grants a zone one node that hands Firefox a format it
+reads:
+
+- **libcamera in the zone,** given the graph: the zone's kernel reaches the
+  IPU6 driver's, the media controller's and the sensors' ioctls, and a
+  grant has a graph to revoke rather than a node.
+- **libcamera in zone 0,** handing the zone pictures: a camera stack and
+  its image processing become trusted code, and the zone still needs a
+  V4L2 node the pictures come out of, which only an out-of-tree module
+  (v4l2loopback) makes.
+
+Neither fits 1.0, which leaves these cameras unsupported, as ADR-026 has
+it; a USB camera works on those laptops. The firmware is the small part of
+the cost. Where the image processing runs and what a grant hands over are
+the questions, and they wait for a machine with such a camera to answer
+them on.
