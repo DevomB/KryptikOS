@@ -81,12 +81,45 @@ fn clear_cloexec(fd: RawFd) {
     }
 }
 
-/// One recvmsg into `buf`, owning any descriptors; truncated control data is refused.
-pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Vec<OwnedFd>)> {
-    // Aligned for cmsghdr, with room for twelve, so an excess is refused by count.
+/// The most descriptors a request may carry.
+const MAX_HANDED: usize = 12;
+/// Room for every descriptor one message can carry (the kernel's SCM_MAX_FD, 253): CMSG_SPACE of
+/// 253 descriptors. The kernel closes what does not fit, on the receiving thread.
+const CONTROL_LEN: usize = 1032;
+
+/// Descriptors a peer handed over, released when dropped: see release().
+pub struct Received(pub Vec<OwnedFd>);
+
+impl std::ops::Deref for Received {
+    type Target = [OwnedFd];
+    fn deref(&self) -> &[OwnedFd] {
+        &self.0
+    }
+}
+
+impl Drop for Received {
+    fn drop(&mut self) {
+        for fd in self.0.drain(..) {
+            release(fd);
+        }
+    }
+}
+
+/// One recvmsg into `buf`, owning any descriptors, each with SO_LINGER off as it arrives. More
+/// than a request may carry are refused, and released.
+pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Received)> {
+    let (n, got, truncated) = recv_message(fd, buf, flags)?;
+    if truncated || got.len() > MAX_HANDED {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "more descriptors than a request may carry"));
+    }
+    Ok((n, got))
+}
+
+/// One recvmsg with room for every descriptor; whether the control data was cut off besides.
+fn recv_message(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::Result<(usize, Received, bool)> {
     #[repr(C, align(8))]
-    struct Control([u8; 64]);
-    let mut control = Control([0; 64]);
+    struct Control([u8; CONTROL_LEN]);
+    let mut control = Control([0; CONTROL_LEN]);
     let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = &mut iov;
@@ -97,7 +130,7 @@ pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::
     if n < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let mut got = Vec::new();
+    let mut got = Received(Vec::new());
     unsafe {
         let mut c = libc::CMSG_FIRSTHDR(&msg);
         while !c.is_null() {
@@ -105,16 +138,77 @@ pub fn recv_with_fds(fd: RawFd, buf: &mut [u8], flags: libc::c_int) -> std::io::
                 let data = libc::CMSG_DATA(c) as *const RawFd;
                 let count = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / std::mem::size_of::<RawFd>();
                 for i in 0..count {
-                    got.push(OwnedFd::from_raw_fd(std::ptr::read_unaligned(data.add(i))));
+                    let handed = std::ptr::read_unaligned(data.add(i));
+                    defuse(handed);
+                    got.0.push(OwnedFd::from_raw_fd(handed));
                 }
             }
             c = libc::CMSG_NXTHDR(&msg, c);
         }
     }
-    if msg.msg_flags & libc::MSG_CTRUNC != 0 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "more descriptors than a request may carry"));
+    Ok((n as usize, got, msg.msg_flags & libc::MSG_CTRUNC != 0))
+}
+
+/// SO_LINGER off: a sender may set it so that the last close of a socket waits as long as a peer
+/// that never reads keeps it. Anything but a socket is left as it is (ENOTSOCK).
+fn defuse(fd: RawFd) {
+    let off = libc::linger { l_onoff: 0, l_linger: 0 };
+    // SAFETY: a socket option set on a descriptor the caller holds.
+    unsafe {
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_LINGER, (&off as *const libc::linger).cast(), std::mem::size_of::<libc::linger>() as libc::socklen_t)
+    };
+}
+
+/// Close a descriptor a peer handed over without waiting on it here. A Unix socket is shut and
+/// its queue taken first, and each descriptor in it released the same way: left queued, the
+/// kernel would close them on this thread with the socket.
+pub fn release(fd: OwnedFd) {
+    let mut todo = vec![fd];
+    while let Some(fd) = todo.pop() {
+        defuse(fd.as_raw_fd());
+        if is_unix_socket(fd.as_raw_fd()) {
+            take_queue(fd.as_raw_fd(), libc::SHUT_RDWR, &mut todo);
+        }
     }
-    Ok((n as usize, got))
+}
+
+/// Shut `fd` (`how`), then take every descriptor still queued on it: a Unix socket goes into
+/// `out`, to have its own queue taken in turn, and anything else closes at once, defused. Shut for
+/// reading, a socket takes nothing more. A stream's 0 is its end, as a stream carries no empty
+/// message; an empty datagram queue answers EAGAIN, so empty datagrams are read past; a
+/// seqpacket's 0 may be either, and 1024 messages bound it.
+fn take_queue(fd: RawFd, how: libc::c_int, out: &mut Vec<OwnedFd>) {
+    // SAFETY: shutdown on a descriptor the caller holds.
+    unsafe { libc::shutdown(fd, how) };
+    let stream = sock_option(fd, libc::SO_TYPE) == Some(libc::SOCK_STREAM);
+    let mut buf = [0u8; 4096];
+    for _ in 0..1024 {
+        match recv_message(fd, &mut buf, libc::MSG_DONTWAIT) {
+            Ok((0, got, _)) if got.is_empty() && stream => break,
+            Ok((_, mut got, _)) => out.extend(got.0.drain(..).filter(|f| is_unix_socket(f.as_raw_fd()))),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+}
+
+fn sock_option(fd: RawFd, opt: libc::c_int) -> Option<libc::c_int> {
+    let mut v: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: an int-sized option read into an int.
+    let r = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, opt, (&mut v as *mut libc::c_int).cast(), &mut len) };
+    (r == 0).then_some(v)
+}
+
+fn is_unix_socket(fd: RawFd) -> bool {
+    sock_option(fd, libc::SO_DOMAIN) == Some(libc::AF_UNIX)
+}
+
+/// A connection read to its end: shut for reading, with whatever it still queues released.
+pub fn release_queued(fd: RawFd) {
+    let mut queued = Vec::new();
+    take_queue(fd, libc::SHUT_RD, &mut queued);
+    drop(Received(queued));
 }
 
 // --- who is asking ----------------------------------------------------------
@@ -208,9 +302,17 @@ fn request_complete(text: &[u8]) -> bool {
 const MAX_CARRIED: usize = 3;
 
 /// Read the request, and the descriptors that come with its first bytes, within `deadline`.
+/// Nothing more is read from the connection after: what it still queues is released then, not
+/// closed by the kernel on this thread with the connection.
 fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>), String> {
+    let r = read_request(fd, deadline);
+    release_queued(fd);
+    r
+}
+
+fn read_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>), String> {
     let mut text = Vec::new();
-    let mut carried: Vec<OwnedFd> = Vec::new();
+    let mut carried = Received(Vec::new());
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -229,7 +331,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>),
             continue; // the deadline check above reports it
         }
         let mut buf = [0u8; 4096];
-        // The descriptors are owned, so any refusal below closes them.
+        // The descriptors are held as Received, so any refusal below releases them.
         let (n, got) = match recv_with_fds(fd, &mut buf, libc::MSG_DONTWAIT) {
             Ok(x) => x,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -259,7 +361,7 @@ fn recv_request(fd: RawFd, deadline: Instant) -> Result<(Vec<u8>, Vec<OwnedFd>),
             break;
         }
     }
-    Ok((text, carried))
+    Ok((text, std::mem::take(&mut carried.0)))
 }
 
 fn ident_ok(s: &str) -> bool {

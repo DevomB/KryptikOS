@@ -158,7 +158,10 @@ the download private; authenticity does not rest on it. A redirect from https
 is followed only to https, so a server cannot move a production image's
 download into the clear. Each piece of at
 most 1 MiB is one request the launcher answers between looks at its zone,
-under the 5 s deadline, so supervision is never more than a piece away.
+under the 5 s deadline, so supervision is never more than a piece away. Two
+requests also wait on a check of the release, which a hung check holds for
+at most 60 s: the piece that completes the list and its signature, and the
+newest pointer, which comes once an hour.
 
 ## What the user sees
 
