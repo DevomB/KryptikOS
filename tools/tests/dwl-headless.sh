@@ -3,14 +3,15 @@
 # xkbcommon and wlroots (its headless backend alone) are built into a prefix, and dwl with Kryptik's
 # patches and edits over them. dwl starts on a headless output, a client lists its globals and maps
 # a window, and dwl stops on SIGTERM: a change that crashes or hangs dwl shows here, not in a Distro
-# run. Needs meson, ninja, bison, gcc, pkg-config, curl, b2sum, python3, patch and sudo, and the
-# headers of libffi, expat and libinput, which CI installs; without them it exits 77.
-# KRYPTIK_TEST_SOURCES keeps the fetched tarballs between runs (tools/tests/lib/pinned.sh).
+# run. Needs ninja, bison, gcc, pkg-config, curl, b2sum, python3, patch and sudo, and the headers of
+# libffi, expat and libinput, which CI installs; without them it exits 77. Meson is the pinned one,
+# run from its tree. KRYPTIK_TEST_SOURCES keeps the fetched tarballs between runs
+# (tools/tests/lib/pinned.sh).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-for t in meson ninja bison gcc pkg-config curl b2sum python3 patch; do
+for t in ninja bison gcc pkg-config curl b2sum python3 patch; do
     command -v "$t" >/dev/null 2>&1 || { echo "dwl-headless.sh: no $t here (77)"; exit 77; }
 done
 for p in libffi expat libinput; do
@@ -30,11 +31,13 @@ PREFIX="$W/prefix"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig"
 export LD_LIBRARY_PATH="$PREFIX/lib"
 export PATH="$PREFIX/bin:$PATH"
+# The pinned meson, run from its tree: a host's may be older than xkbcommon asks.
+MESON_SRC="$(fetch_pinned meson "meson-${V_MESON}.tar.gz" "$V_MESON")" || exit 1
 # build NAME FILE VERSION MESON-OPTION...: fetched, built and installed into the prefix.
 build() {
     local src
     src="$(fetch_pinned "$1" "$2" "$3")" || exit 1
-    if ! { meson setup "$W/build-$1" "$src" --prefix="$PREFIX" --libdir=lib --buildtype=plain \
+    if ! { python3 "$MESON_SRC/meson.py" setup "$W/build-$1" "$src" --prefix="$PREFIX" --libdir=lib --buildtype=plain \
                -Dwerror=false "${@:4}" && ninja -C "$W/build-$1" install; } > "$W/build-$1.log" 2>&1; then
         echo "FAIL: $1 $3 does not build:"
         tail -25 "$W/build-$1.log"
