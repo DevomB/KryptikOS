@@ -108,6 +108,16 @@ firmware() {
         s="$(one "$d/security")"; p="$(one "$d/iommu_dma_protection")"
         printf 'thunderbolt %s: security %s, iommu protection %s\n' "${d##*/}" "${s:--}" "${p:--}"
     done
+    # Each watchdog: whether it is fed, and whether it reset the machine the time before
+    # (WDIOF_CARDRESET, 32, in bootstatus), as one that rebooted a laptop asleep would have.
+    for w in "$SYS"/class/watchdog/watchdog*; do
+        [ -e "$w" ] || continue
+        b="$(one "$w/bootstatus")"
+        case "$b" in ''|*[!0-9]*) b=0 ;; esac
+        r=""; [ $(( b & 32 )) -eq 0 ] || r=", reset the last boot"
+        printf 'watchdog %s: %s, timeout %s s, %s%s\n' "${w##*/}" "$(one "$w/identity")" "$(one "$w/timeout")" \
+            "$(one "$w/state")" "$r"
+    done
 }
 
 # Shadow stacks: the kernel shows user_shstk where the CPU has them and it turns them on, and only
