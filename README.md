@@ -325,11 +325,13 @@ docs/               Architecture, threat model, decisions, status
 ## Building
 
 The `Distro` workflow (`.github/workflows/distro.yml`) builds and tests
-everything on GitHub's runners: stages 01–02, then stages 04–06, then
-`make acceptance` under KVM, uploading the acceptance report and the tested
-images. A tag `v<version>` builds that version from nothing, tests it and
-drafts it on the Releases page; from `v1` on, the build signs with the
-release keys once the maintainer approves it. To build locally, on Linux:
+everything on GitHub's runners: stages 01–02, stages 04–05, the software
+images and stage 06, each a job of its own (a runner gives a job six hours,
+and Firefox alone takes several), then `make acceptance` under KVM,
+uploading the acceptance report and the tested images. A tag `v<version>`
+builds that version from nothing, tests it and drafts it on the Releases
+page; from `v1` on, the build signs with the release keys once the
+maintainer approves it. To build locally, on Linux:
 
 ```sh
 make check      # what the host is missing

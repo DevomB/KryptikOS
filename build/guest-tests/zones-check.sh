@@ -494,9 +494,17 @@ grep -q PERSONAL-UP "$LOG/personal-bg.out" && pass "encrypted-zone-start" "perso
 # with the storage checks). It must find that launcher's command line, or
 # finding no passphrase says nothing. The [e] and [s] keep a grep's own
 # command line from matching.
-pp_seen=0; pp_leak=0
+# leaks PATTERN: the files under /run/kryptik and the command lines that hold
+# it. The signed images a zone stacks are mounted under /run/kryptik/images and
+# /run/kryptik/usr (images.rs) and hold only what was signed, a browser's whole
+# tree among it, so they are not searched.
+leaks() {
+    { find /run/kryptik \( -path /run/kryptik/images -o -path /run/kryptik/usr \) -prune -o -type f -print0 2>/dev/null
+      printf '%s\0' /proc/[0-9]*/cmdline; } | xargs -0r grep -ls -- "$1" 2>/dev/null
+}
+pp_seen=0
 grep -qs 'passphrase-fil[e]' /proc/[0-9]*/cmdline && pp_seen=1
-grep -rqs 'personal-pas[s]' /run/kryptik /proc/[0-9]*/cmdline && pp_leak=1
+pp_leak="$(leaks 'personal-pas[s]')"
 # An echo that gets no answer shows separation only while personal holds the
 # address that was tried, and untrusted has a path: it reaches the bridge.
 per_init="$(cut -d' ' -f1 /run/kryptik/zones/personal/init.pid 2>/dev/null)"
@@ -1497,27 +1505,28 @@ else
 fi
 
 # --- zones: resource limits and lifecycle -----------------------------------
-STORM='import os, time
+# Threads, which pids.max counts as it counts processes: as many forked Pythons as the browser's
+# limit would fill the VM's memory, which untrusted's memory_max does not bound below. Daemon
+# threads, so every one ends as the interpreter exits after its line.
+STORM='import threading, time
+threading.stack_size(65536)
 n = 0
-for i in range(3000):
+for i in range(10000):
     try:
-        p = os.fork()
-    except BlockingIOError:
+        threading.Thread(target=time.sleep, args=(300,), daemon=True).start()
+    except RuntimeError:
         break
-    if p == 0:
-        time.sleep(300); os._exit(0)
     n += 1
-print("FORKED=%d" % n)
+print("STARTED=%d" % n)
 print("LIMIT-SURVIVED")'
-# Python, as bash retries a failed fork for about 15 s and would not reach pids.max in time.
 zrun untrusted 60 -- /usr/bin/python3 -c "$STORM"
 if [[ "$ZOUT" == *LIMIT-SURVIVED* ]]; then
-    forked="$(grep -o 'FORKED=[0-9]*' "$LOG/untrusted.out" | cut -d= -f2)"
+    started="$(grep -o 'STARTED=[0-9]*' "$LOG/untrusted.out" | cut -d= -f2)"
     limit="$(sed -n 's/^pids_max *= *\([0-9]*\).*/\1/p' "$Z/untrusted.toml")"
     # At most the limit, and at least half of it, or the check proves nothing.
-    [[ -n "$forked" && "$forked" -le "${limit:-1024}" && "$forked" -ge $(( ${limit:-1024} / 2 )) ]] && pass "pids-limit" "bounded at pids_max=$limit (forked $forked before EAGAIN), zone survived" || fail "pids-limit" "forked=$forked limit=$limit"
+    [[ -n "$started" && "$started" -le "${limit:-1024}" && "$started" -ge $(( ${limit:-1024} / 2 )) ]] && pass "pids-limit" "bounded at pids_max=$limit (started $started threads before EAGAIN), zone survived" || fail "pids-limit" "started=$started limit=$limit"
 else
-    fail "pids-limit" "the zone did not survive the fork storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+    fail "pids-limit" "the zone did not survive the thread storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 fi
 # dd's own status and words: a tmpfs that took all 3000 MiB is not bounded.
 zrun untrusted 60 -- sh -c 'out=$(dd if=/dev/zero of=$HOME/big bs=1M count=3000 2>&1); echo "DD-RC=$?"; echo "$out" | grep -o "No space left on device" | head -1; rm -f $HOME/big; echo TMPFS-SURVIVED'
@@ -1660,10 +1669,11 @@ grep -qE 'VAULT-PING rc=2 ' <<<"$ZOUT" && pass "vault-ping" "ping in an offline 
 [[ "$ZOUT" == *VAULT-ISOLATED* && "$ZOUT" == *VAULT-WROTE* && "$ZOUT" == *LINKS=0* ]] && pass "vault-offline" "vault has loopback only, no path to the bridge, and keeps data" || fail "vault-offline" "$(tr '\n' ' ' <<<"$ZOUT") $(tail -1 "$LOG/vault.err")"
 # No passphrase on any command line or in the registry: while personal ran
 # (above), and now that every zone that took one has stopped.
+pp_late="$(leaks 'personal-pas[s]\|vault-pas[s]\|dev-pas[s]')"
 if [[ "$pp_seen" != 1 ]]; then
     fail "no-passphrase-leak" "the search did not see personal's launcher while it ran, so it proves nothing"
-elif [[ "$pp_leak" = 1 ]] || grep -rqs 'personal-pas[s]\|vault-pas[s]\|dev-pas[s]' /run/kryptik /proc/[0-9]*/cmdline; then
-    fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line"
+elif [[ -n "$pp_leak$pp_late" ]]; then
+    fail "no-passphrase-leak" "a passphrase appeared in the registry or a command line: $(printf '%s\n' $pp_leak $pp_late | sort -u | tr '\n' ' ')"
 else
     pass "no-passphrase-leak" "no passphrase in /run/kryptik or any command line, while personal ran and after the zones stopped"
 fi
@@ -1729,6 +1739,135 @@ if [[ -z "$mc_boot" && "$mc_told" == "kryptik microcode: "*": update the machine
     pass "microcode-notice" "no notice at boot here; a refused patch in the kernel log puts one in issue.d: ${mc_told:0:120}"
 else
     fail "microcode-notice" "at boot: ${mc_boot:-none}; after the kernel's line: ${mc_told:-none}"
+fi
+
+# --- software images over a zone's /usr (images.rs) -------------------------
+# The list stage 06 signed for this root, the probe image it names and its two
+# controls, from the disk zones-test attached, kept under the names images.rs
+# reads; then zones of this check's own: one granted the probe's call, one not,
+# and one that names no image.
+IMGS=/var/lib/kryptik/images; IZ=/root/zt/image-zones
+# The label tools/image/zones-test.sh gives the disk, within ext4's 16 bytes.
+img_dev="$(blkid -L kryptik-zt-img 2>/dev/null)"
+mkdir -p /run/zt-images "$IZ/policy"
+if [[ -z "$img_dev" ]] || ! mount -o ro "$img_dev" /run/zt-images; then
+    fail "image-store" "no kryptik-zt-img disk holds the signed images: ${img_dev:-none attached}"
+else
+    D=/run/zt-images
+    this_root="$(sed -n 's/.*sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
+    img_base="$(sed -n 's/^base: //p' "$D/images.manifest")"
+    probe_hash="$(sed -n 's/^image: probe .* root-hash=\([0-9a-f]\{64\}\) .*/\1/p' "$D/images.manifest")"
+    keep_list() {   # keep_list DIR FILE: DIR/FILE and its signature, as the list kept for this root
+        install -D -m 0644 "$1/$2" "$IMGS/$img_base.manifest" && install -m 0644 "$1/$2.sig" "$IMGS/$img_base.manifest.sig"
+    }
+    if [[ -n "$this_root" && "$img_base" == "$this_root" && -n "$probe_hash" ]] && keep_list "$D" images.manifest \
+       && install -D -m 0644 "$D/probe.img" "$IMGS/probe/$probe_hash.img"; then
+        pass "image-store" "the list for this root (${img_base:0:12}...) and the probe image (${probe_hash:0:12}...) kept"
+    else
+        fail "image-store" "list base ${img_base:-none}, probe ${probe_hash:-none}; this root ${this_root:-unknown}"
+    fi
+    izone() {   # izone NAME UID_BASE COLOUR [IMAGES] [POLICY]
+        {
+            printf '[zone]\nname = "%s"\ndescription = "software image check"\n' "$1"
+            printf '[network]\nmode = "none"\n[storage]\nmode = "ephemeral"\nsize = "64M"\n'
+            [[ -z "${5:-}" ]] || printf '[policy]\nseccomp = "%s"\n' "$5"
+            [[ -z "${4:-}" ]] || printf '[software]\nimages = "%s"\n' "$4"
+            printf '[identity]\nuid_base = %s\n[ui]\nborder_color = "%s"\n' "$2" "$3"
+        } > "$IZ/$1.toml"
+    }
+    printf 'allow-syscall mlockall\n' > "$IZ/policy/imgok.seccomp"
+    izone imgok 3932160 '#0a1b2c' probe policy/imgok.seccomp
+    izone imgbare 3997696 '#0a1b3c' probe
+    izone imgnone 4063232 '#0a1b4c'
+    irun() {   # irun ZONE CMD...: sets ZRC, ZOUT and ZERR; IRUN_SECS bounds it (60 s)
+        local zone="$1"; shift
+        timeout -k 5 "${IRUN_SECS:-60}" "$KD" run "$zone" --zones "$IZ" --rootfs "$R" -- "$@" > "$LOG/$zone.out" 2> "$LOG/$zone.err"
+        ZRC=$?; ZOUT="$(cat "$LOG/$zone.out")"; ZERR="$(cat "$LOG/$zone.err")"
+    }
+    irun imgok /usr/bin/kryptik-probe
+    if [[ "$ZRC" -eq 0 && "$ZOUT" == "kryptik-probe 1.0, from the probe image: /usr/bin/kryptik-probe (mlockall: "* ]]; then
+        pass "image-runs" "a zone granted the probe's call runs it from the image over its /usr: $ZOUT"
+    else
+        fail "image-runs" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -3 <<<"$ZERR" | tr '\n' ' ')"
+    fi
+    irun imgbare /usr/bin/kryptik-probe
+    if [[ "$ZRC" -ne 0 && -z "$ZOUT" && "$ZERR" == *'needs `allow-syscall mlockall`'* ]]; then
+        pass "image-needs-refused" "a zone whose policy does not grant the image's call is refused before it starts"
+    else
+        fail "image-needs-refused" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+    fi
+    irun imgnone sh -c 'test -e /usr/bin/kryptik-probe && echo PRESENT || echo ABSENT'
+    [[ "$ZOUT" == ABSENT ]] && pass "image-hidden" "a zone that names no image does not see the probe" \
+        || fail "image-hidden" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+    expl="$("$KD" explain imgok --zones "$IZ" 2>&1)"
+    [[ "$expl" == *"/usr (with the images probe over it, signed for this root and opened with dm-verity)"* ]] \
+        && pass "image-explained" "explain names the image over the zone's /usr" \
+        || fail "image-explained" "$(grep -m1 '^root ' <<<"$expl")"
+    # The controls stage 06 signed: a list in the release manifests' namespace, and one for another root.
+    keep_list "$D/controls/release-ns" manifest && irun imgok /usr/bin/kryptik-probe
+    if [[ "$ZRC" -ne 0 && "$ZERR" == *"the image list for this root is refused"* ]]; then
+        pass "image-list-namespace" "a list the release key signed in kryptik-release is refused"
+    else
+        fail "image-list-namespace" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+    fi
+    keep_list "$D/controls/other-base" manifest && irun imgok /usr/bin/kryptik-probe
+    if [[ "$ZRC" -ne 0 && "$ZERR" == *"is for another root"* ]]; then
+        pass "image-list-other-base" "a signed list for another root is refused"
+    else
+        fail "image-list-other-base" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+    fi
+    keep_list "$D" images.manifest
+    # A byte of the probe program flipped in the stored image: with the cache dropped, dm-verity
+    # turns the read into an I/O error in the zone, and the image is refused from then on.
+    blk="$(debugfs -R 'bmap /usr/bin/kryptik-probe 0' "$IMGS/probe/$probe_hash.img" 2>/dev/null | tail -1)"
+    if [[ "$blk" =~ ^[0-9]+$ ]] && printf '\xa5' | dd of="$IMGS/probe/$probe_hash.img" bs=1 seek=$(( blk * 4096 + 64 )) conv=notrunc,fsync status=none; then
+        echo 3 > /proc/sys/vm/drop_caches
+        irun imgok /usr/bin/kryptik-probe
+        rc1="$ZRC"; said1="$ZOUT $ZERR"
+        irun imgok /usr/bin/kryptik-probe
+        # EIO in either C library's words: kryptikd is static musl ("I/O error"), the image's
+        # programs are glibc's ("Input/output error").
+        if [[ "$rc1" -ne 0 && ( "$said1" == *"Input/output error"* || "$said1" == *"I/O error"* ) \
+              && "$ZRC" -ne 0 && "$ZERR" == *"read back other than signed"* ]]; then
+            pass "image-corrupt" "a flipped block reads as an I/O error in the zone, and the next start is refused"
+        else
+            fail "image-corrupt" "first rc ${rc1}: $(tail -2 <<<"$said1" | tr '\n' ' '); then rc ${ZRC}: $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+        fi
+    else
+        fail "image-corrupt" "could not find or flip the probe's first block (${blk:-none})"
+    fi
+    # The toolkit image over a zone's /usr: its fontconfig finds the root's fonts, every library GTK
+    # loads resolves in the zone, with no display to open, and GTK's settings schemas were compiled
+    # at install, without which its file chooser aborts.
+    tk_hash="$(sed -n 's/^image: toolkit .* root-hash=\([0-9a-f]\{64\}\) .*/\1/p' "$D/images.manifest")"
+    if [[ -n "$tk_hash" ]] && install -D -m 0644 "$D/toolkit.img" "$IMGS/toolkit/$tk_hash.img"; then
+        izone imgtk 4194304 '#0a1b6c' toolkit
+        irun imgtk sh -c 'fc-match sans; gtk-query-immodules-3.0 | head -1; gsettings list-schemas | grep -x org.gtk.Settings.FileChooser'
+        if [[ "$ZRC" -eq 0 && "$ZOUT" == *"DejaVu Sans"* && "$ZOUT" == *"Input Method Modules file"* && "$ZOUT" == *"org.gtk.Settings.FileChooser"* ]]; then
+            pass "image-toolkit" "a zone naming the toolkit loads GTK, finds its fonts and reads its compiled schemas: $(head -1 <<<"$ZOUT")"
+        else
+            fail "image-toolkit" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -3 <<<"$ZERR" | tr '\n' ' ')"
+        fi
+    else
+        fail "image-toolkit" "the list names no toolkit image, or it could not be kept (${tk_hash:-none})"
+    fi
+    # The browser image over the toolkit's, which a zone naming it must name too: Firefox draws a
+    # page of the zone's own with no display, through its content process, its sandbox left on.
+    ff_hash="$(sed -n 's/^image: browser .* root-hash=\([0-9a-f]\{64\}\) .*/\1/p' "$D/images.manifest")"
+    if [[ -n "$ff_hash" && -n "$tk_hash" ]] && install -D -m 0644 "$D/browser.img" "$IMGS/browser/$ff_hash.img"; then
+        # Firefox's content sandbox installs a filter of its own, which the image's needs line asks for.
+        printf 'allow-syscall seccomp\n' > "$IZ/policy/imgff.seccomp"
+        izone imgff 4259840 '#1b0a6c' "browser toolkit" policy/imgff.seccomp
+        IRUN_SECS=180 irun imgff sh -c 'printf "<p>kryptik</p>" > /tmp/page.html && cd /tmp && HOME=/tmp firefox --headless --screenshot /tmp/shot.png file:///tmp/page.html && test -s /tmp/shot.png && echo SHOT-TAKEN'
+        if [[ "$ZRC" -eq 0 && "$ZOUT" == *"SHOT-TAKEN"* ]]; then
+            pass "image-browser" "a zone naming the browser and the toolkit draws a page with Firefox, headless"
+        else
+            fail "image-browser" "rc ${ZRC}: $(tail -3 <<<"$ZOUT" | tr '\n' ' '); $(tail -5 <<<"$ZERR" | tr '\n' ' ')"
+        fi
+    else
+        fail "image-browser" "the list names no browser image, or it could not be kept (${ff_hash:-none})"
+    fi
+    umount /run/zt-images
 fi
 
 echo "ZT SUMMARY passed=$PASS failed=$FAIL"

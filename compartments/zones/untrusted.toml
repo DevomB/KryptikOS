@@ -20,7 +20,8 @@ seccomp  = "policy/untrusted.seccomp"
 
 [limits]
 memory_max = "4G"
-pids_max   = 512
+# Threads count too: Firefox runs a process for each site, each with dozens of threads.
+pids_max   = 2048
 # Two CPUs' worth of time: what runs here cannot take the whole machine.
 cpu_max    = "200%"
 
@@ -35,3 +36,8 @@ border_color   = "#ba7c02"
 border_pattern = "dash-dot"
 glyph          = "▲"
 label          = "UNTRUSTED"
+
+[software]
+# The browser, and the toolkit it is built over (docs/design/software-delivery.md); the call its
+# content sandbox needs is granted in the zone's policy.
+images = "browser toolkit"

@@ -87,6 +87,7 @@ s_boot_check() {
     chk "zone policies"     /usr/lib/kryptik/zones/policy/work.seccomp
     chk "device helper"     /usr/libexec/kryptik/devices.sh x
     chk "ESP record reader" /usr/libexec/kryptik/esp-records.sh
+    chk "image store"       /usr/libexec/kryptik/image-store.sh
     chk "boot scripts"      /usr/libexec/kryptik/sysinit.sh x
     chk "test control helper" /usr/libexec/kryptik/testctl.sh
     chk "keyboard helper"   /usr/libexec/kryptik/keyboard.sh

@@ -363,6 +363,44 @@ out="$(asroot refused verify_manifest "$T/signed" 0)"
     && ok "as root, kryptikd's refusal is apply's, in the checker's words" \
     || bad "verify_manifest as root, refused: $(tail -2 <<<"$out" | tr '\n' ' ')"
 
+# A software image the manifest lists is pinned as the root's files are: what stage_images
+# decompresses after the check is the file that was hashed, whatever the directory holds by then.
+# Three of them, as a release carries: with the update lock on fd 9, the third pin must not reopen 9.
+# The call's output is redirected, so bash holds its own copy of it on 10 meanwhile, close-on-exec:
+# a pin there would be one stat and zstd cannot read.
+mkpayload pinned 2
+for i in browser probe toolkit; do printf 'the signed %s\n' "$i" | zstd -q -c > "pinned/$i.img.zst"; done
+{ sed -n '1,/^--$/p' pinned/manifest | sed 's/^files: 4$/files: 7/'
+  sed -n '/^--$/,$p' pinned/manifest | sed 1d
+  for i in browser probe toolkit; do
+      printf '%s  %s  %s\n' "$(sha256sum "pinned/$i.img.zst" | cut -c1-64)" "$(stat -c %s "pinned/$i.img.zst")" "$i.img.zst"
+  done
+} > pinned/manifest.new && mv pinned/manifest.new pinned/manifest
+ssh-keygen -Y sign -f key -n kryptik-release pinned/manifest >/dev/null 2>&1
+mkdir -p "$T/snap-pinned"
+cat > "$T/case-pinned.sh" <<EOF
+source $T/verify.sh
+SNAP=$T/snap-pinned
+exec 9>$T/update.lock
+flock -n 9 && echo LOCKED
+verify_payload $T/pinned 0 > /dev/null && echo VERIFIED
+[ "\$(readlink /proc/self/fd/9)" = "$T/update.lock" ] && echo LOCK-KEPT
+printf 'swapped in after the check\n' | zstd -q -c > $T/pinned/browser.img.zst.new
+mv $T/pinned/browser.img.zst.new $T/pinned/browser.img.zst
+zstd -dcq < "\$(payload_path browser.img.zst)"
+EOF
+out="$(bash "$T/case-pinned.sh" 2>&1)"
+if [[ "$out" == *VERIFIED* && "$out" == *"the signed browser"* && "$out" != *swapped* ]]; then
+    ok "an image the manifest lists is read through the descriptor it was hashed on, not by its name"
+else
+    bad "an image swapped after the check was read, or the payload did not verify: $(tr '\n' ' ' <<<"$out")"
+fi
+if [[ "$out" == *LOCKED* && "$out" == *LOCK-KEPT* ]]; then
+    ok "three pinned images leave the update lock's descriptor where it was"
+else
+    bad "pinning the images reopened the update lock's descriptor: $(tr '\n' ' ' <<<"$out")"
+fi
+
 # The tool itself: the checks need neither root nor this system's disks.
 if [[ "$(id -u)" != 0 ]]; then
     out="$(sh "$TOOL" check-pointer "$T/ptr/latest" "$T/ptr/latest.sig" 2>&1)"

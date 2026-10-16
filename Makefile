@@ -94,7 +94,7 @@ CHROOT_RUN := $(SUDO) env $(CHROOT_ENV) "$(CHROOTD)"
 .PHONY: help paths check sources lock verify verify-provenance check-pins \
         validate-kernel validate-kernel-hardened validate-kernel-boot check-kernel-eol \
         resolve-kernel-config check-kernel-hardening \
-        toolchain temp-tools sysroot-ready system kernel \
+        toolchain temp-tools sysroot-ready system images kernel \
         chroot chroot-enter chroot-umount chroot-status \
         iso media production-pair ovmf-vars media-smoke-usb media-smoke-iso media-smoke-secureboot \
         media-refused-foreign-keys install-test integrity-test update-test \
@@ -114,6 +114,7 @@ help:
 	@echo "  make temp-tools  stage 02: temporary tools"
 	@echo "                   (stages 01 and 02 are UNPRIVILEGED - run them as you)"
 	@echo "  make system      stage 04: hardened base system"
+	@echo "  make images      software images over the base system (build/images)"
 	@echo "  make kernel      stage 05: hardened kernel"
 	@echo "  make iso         stage 06: verified root image, signed kernels, USB image + ISO"
 	@echo "  make media       stage 06 only (sysroot and kernel already built)"
@@ -278,6 +279,10 @@ sysroot-ready:
 
 system: sysroot-ready
 	@$(CHROOT_RUN) run /kryptik/build/stages/04-base-system.sh
+
+# Root for the overlay each image builds through; its rows run in the chroot over it.
+images: system
+	@$(SUDO) env $(CHROOT_ENV) "$(STAGES)"/04-images.sh
 
 # The EOL check needs the network and the chroot has none, so it runs here first.
 kernel: check-kernel-eol system

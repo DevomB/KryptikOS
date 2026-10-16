@@ -209,7 +209,7 @@ It writes four GPT partitions: `kryptik-esp` (the medium's ESP, with the
 slot A kernel as the boot file), `kryptik-a` (the verified root image, read
 back and hashed against the medium's record), `kryptik-b` (empty until the
 first update), and `kryptik-state` (LUKS2 with ext4 inside: users, zone
-volumes, updates). Its plan names the disk's model and what each of its
+volumes, updates, and the medium's software images). Its plan names the disk's model and what each of its
 partitions holds (`holds  gpt: sda1 ntfs "Windows" 237G; ...`): read it, as
 nothing else tells a backup disk from the one you mean. Before its first
 write it asks you to type `ERASE` (`--yes` skips that), then twice for the
@@ -291,7 +291,7 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | Alt+p | the chrome menu: zones, their applications, stop a zone, move a clipboard between zones, the Wi-Fi networks with w, and with f the zone of the window you last had |
 | Alt+Shift+Return | a terminal (havoc) in the work zone |
 | Alt+Shift+p | a terminal in the personal zone |
-| Alt+Shift+u | the browser (lynx) in the untrusted zone |
+| Alt+Shift+u | the browser (Firefox) in the untrusted zone |
 | Alt+Shift+l | lock the screen until the login password is typed |
 | Super+Space | the next of your desktop's layouts, when you have more than one |
 | volume keys, mute, microphone mute | the volume up or down a step, mute or unmute everything, and take the microphone back from whichever zone has it |
@@ -341,7 +341,11 @@ write then. Testing on physical hardware is planned for October 2026.
 
 Zone windows come from the menu: Alt+p, then a zone's number and `t` (a
 terminal), `e` (the editor) or `b` (the browser), for example `1t`, then
-Enter. A zone with encrypted storage asks for its passphrase when it starts,
+Enter. The browser is Firefox in `untrusted`, `personal` and `work`, which
+carry its software image, and lynx in a terminal elsewhere; Firefox opens
+PDFs too. A zone runs one Firefox: asked for again while it is open there,
+it says that Firefox is already running, and a new window comes from the
+open one (Ctrl+N). A zone with encrypted storage asks for its passphrase when it starts,
 in the menu's window or, for a key, in a small prompt window; the passphrase
 never appears on a command line. On a machine with a battery, a Power
 line under the zones gives its charge and whether the machine runs on it;
@@ -509,9 +513,11 @@ the clock".
 
 A release brought by hand is a signed payload directory holding exactly
 `manifest`, `manifest.sig`, `kryptik-root.img.zst` (the root image,
-compressed), `kryptik-a.efi`, `kryptik-b.efi` and `root.json` (what `make media` writes as
+compressed), `kryptik-a.efi`, `kryptik-b.efi` and `root.json`, and the
+release's software images if it has any (`images.manifest`, its signature
+and `NAME.img.zst` files): what `make media` writes as
 `images/payload-VERSION`, and what a release on the repository's page
-carries). Bring it onto the state partition, for example under
+carries. Bring it onto the state partition, for example under
 `/var/lib/kryptik/updates/`, and as root (the administration login, then
 `su`):
 
@@ -614,6 +620,13 @@ shows each timer, its timeout and whether it is running.
   planned for October 2026. QEMU has no lid, no microphone or brightness
   keys, no backlight, no built-in panel and no camera of the USB Video
   Class, so those parts wait for it.
+- Laptop sound goes through the HD Audio driver and USB audio. On many
+  recent laptops part of it does not work: built-in microphones on Intel's
+  or AMD's audio processor, all built-in sound on Intel laptops whose audio
+  chips sit on SoundWire, and speakers behind a smart amplifier. A USB
+  headset or sound card works on all of them
+  ([laptop sound](design/laptop-audio.md)). Nothing plays through a
+  monitor's speakers over HDMI or DisplayPort.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.

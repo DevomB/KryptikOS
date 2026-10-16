@@ -121,7 +121,7 @@ case "$MODE" in
         ssh-keygen -q -t ed25519 -N '' -C kryptik-release -f "${w}/release" < /dev/null
         ssh-keygen -q -t ed25519 -N '' -C kryptik-latest -f "${w}/latest" < /dev/null
         {
-            printf 'kryptik-release namespaces="kryptik-release,kryptik-media" %s\n' "$(cut -d' ' -f1,2 "${w}/release.pub")"
+            printf 'kryptik-release namespaces="kryptik-release,kryptik-media,kryptik-image" %s\n' "$(cut -d' ' -f1,2 "${w}/release.pub")"
             printf 'kryptik-latest namespaces="kryptik-latest" %s\n' "$(cut -d' ' -f1,2 "${w}/latest.pub")"
         } > "${w}/release-signers"
         KEY="${w}/latest"

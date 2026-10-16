@@ -285,9 +285,9 @@ fn shm_pool_limits() {
     for id in 4..4 + policy::MAX_SHM_POOLS_PER_SESSION as u32 {
         send_with_fd(c.as_raw_fd(), &create(id, 4096), fd.as_raw_fd());
         pump_all(&mut s).unwrap();
+        read_all(&mut sv);
     }
     assert_eq!(s.shm_pool_count, policy::MAX_SHM_POOLS_PER_SESSION);
-    read_all(&mut sv);
     let denied = 4 + policy::MAX_SHM_POOLS_PER_SESSION as u32;
     send_with_fd(c.as_raw_fd(), &create(denied, 4096), fd.as_raw_fd());
     assert!(matches!(pump_all(&mut s), Err(SessionError::ResourceLimit(_))));
@@ -296,15 +296,38 @@ fn shm_pool_limits() {
 
     let (mut s, mut c, mut sv) = make();
     s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
-    for id in 4..6 {
+    let full = (policy::MAX_SHM_BYTES_PER_SESSION / policy::MAX_SHM_POOL_BYTES) as u32;
+    for id in 4..4 + full {
         send_with_fd(c.as_raw_fd(), &create(id, policy::MAX_SHM_POOL_BYTES as i32), fd.as_raw_fd());
         pump_all(&mut s).unwrap();
+        read_all(&mut sv);
     }
     assert_eq!(s.shm_pool_bytes, policy::MAX_SHM_BYTES_PER_SESSION);
-    read_all(&mut sv);
-    send_with_fd(c.as_raw_fd(), &create(6, 4096), fd.as_raw_fd());
+    send_with_fd(c.as_raw_fd(), &create(4 + full, 4096), fd.as_raw_fd());
     assert!(matches!(pump_all(&mut s), Err(SessionError::ResourceLimit(_))));
     assert!(read_all(&mut sv).is_empty());
+}
+
+#[test]
+fn a_browser_on_two_4k_heads_fits() {
+    // Firefox draws each window into pools of its own, a front buffer, the one it draws and up to
+    // three spare, and GTK holds two more for the window: two 4K windows and developer tools.
+    let (mut s, mut c, mut sv) = make();
+    s.objects.place(3, (protocol::find("wl_shm").unwrap(), 1));
+    let (fd, _) = UnixStream::pair().unwrap();
+    let frame = 3840 * 2160 * 4;
+    for id in 4..4 + 3 * 7 {
+        send_with_fd(c.as_raw_fd(), &MessageWriter::new(3, 0).u32(id).i32(frame).finish().unwrap(), fd.as_raw_fd());
+        pump_all(&mut s).unwrap();
+        read_all(&mut sv);
+    }
+    assert_eq!(s.shm_pool_bytes, 3 * 7 * frame as usize);
+    s.objects.place(30, (protocol::find("xdg_surface").unwrap(), 1));
+    for id in 31..31 + 12 {
+        c.write_all(&MessageWriter::new(30, 1).u32(id).finish().unwrap()).unwrap();
+        pump_all(&mut s).unwrap();
+    }
+    assert_eq!(s.toplevels, 12);
 }
 
 #[test]

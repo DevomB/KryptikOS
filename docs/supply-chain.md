@@ -31,7 +31,12 @@ Two build tools that do not ship are special cases:
 ## Source integrity
 
 `sources.lock` pins a SHA-256 for every upstream tarball, and
-`tools/fetch-sources.sh` refuses to proceed on a mismatch.
+`tools/fetch-sources.sh` refuses to proceed on a mismatch. The software
+images' sources are pinned apart, in `build/images/versions.env` and
+`build/images/sources.lock`: they never reach the root, so a change to them
+is no input of stage 04 and leaves its cache standing. Every check here
+reads both, and `fetch-sources.sh --list-root` and `--list-image NAME` give
+each set alone.
 
 Because the lock decides, a file can come from anywhere that serves the
 same bytes. When a source's host does not answer, the fetcher asks the
@@ -41,6 +46,15 @@ distfiles. Where such a mirror keeps upstream's signature beside the file,
 `tools/verify-signatures.sh` takes it from there when upstream's host gives
 none, and it must verify against the same key. Each mirror row was checked
 against the lock and the key when it was added.
+
+Builds read the sources from a cache, so a host that stops serving a file
+goes unseen until a build starts from an empty one, as a release tag's
+does. `./tools/fetch-sources.sh --probe` asks every place each
+source is kept (its own host, the GNU fallback, its mirror rows, Gentoo's
+distfiles) whether it has the file, without downloading it, and fails on a
+source no place serves. A source a single place serves is named as a
+warning: it is one outage from failing, and the cue for a mirror row. CI
+runs the probe every week, and by hand.
 
 The lock alone is trust on first use: `--lock` records the hash of whatever
 was downloaded. Before committing a lock file or changing an entry, run
@@ -84,7 +98,10 @@ revoked, possibly compromised) always fail. `--strict`, the gate CI runs on
 every push, also fails on a signature that could not be checked and on a
 signer never established: a key taken from the signature itself, a key not
 held, a file not downloaded, a key whose published copy
-(`tools/key-provenance.tsv`) could not be read that run. A row there speaks
+(`tools/key-provenance.tsv`) could not be read that run. On a pull request
+CI adds `--unread-warns`: a published copy that does not answer is a warning
+there, and the key held decides, since a host being down is not the change's
+fault; the push to main reads every copy again. A row there speaks
 only for the sources it names. A key that no publisher states anywhere
 passes the gate only while `tools/source-notes.tsv` records the routes that
 were tried (`no-usable-key`). Such a note for a key that is held fails the

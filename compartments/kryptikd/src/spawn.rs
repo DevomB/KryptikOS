@@ -714,6 +714,15 @@ pub fn run_in_zone(
         }
     }
 
+    /* The images the zone names, opened and stacked now in zone 0's namespace, where the list's
+     * signature and the zone's policy are checked first: the zone only binds the result. */
+    let usr = if zone.images.is_empty() {
+        "/usr".to_string()
+    } else {
+        crate::images::prepare(zone, zone_policy.as_ref())
+            .map_err(|e| SpawnError::Setup(format!("zone {:?}: {e}", zone.name)))?
+    };
+
     // One launcher per zone: two would share a data directory, a cgroup and a veth name.
     let entry = registry::claim(&zone.name).map_err(|e| SpawnError::Setup(e.to_string()))?;
 
@@ -875,7 +884,7 @@ pub fn run_in_zone(
         let rc = intermediate_main(
             zone, rootfs, argv, &id, parent_pid, &placed, &ready, &mapped, &initpid,
             zone_policy.as_ref(), &fs_rules, &broker_path_str, wayland_path_str.as_deref(), opts.wayland_inode,
-            wifi_conf.as_deref(), sound_dir.as_deref(), camera_dir.as_deref(),
+            wifi_conf.as_deref(), sound_dir.as_deref(), camera_dir.as_deref(), &usr,
         );
         // Never return: this process must not run the parent's cleanup.
         unsafe { libc::_exit(rc) };
@@ -1108,6 +1117,7 @@ fn intermediate_main(
     wifi_conf: Option<&str>,
     sound_dir: Option<&str>,
     camera_dir: Option<&str>,
+    usr: &str,
 ) -> i32 {
     macro_rules! bail {
         ($($arg:tt)*) => {{
@@ -1241,6 +1251,21 @@ fn intermediate_main(
             Some(format!("/proc/self/fd/{raw}"))
         }
     };
+    /* The images' /usr too: its set is stacked under /run/kryptik (images.rs), which the zone's
+     * mapped root may not walk. Like the broker's, the descriptor dies in pid 1's sweep. */
+    let usr_in_zone = if usr == "/usr" {
+        usr.to_string()
+    } else {
+        let c = match std::ffi::CString::new(usr) {
+            Ok(c) => c,
+            Err(_) => bail!("the images' /usr path contains a NUL"),
+        };
+        let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW) };
+        if fd < 0 {
+            bail!("the images' /usr at {}: {}", usr, io::Error::last_os_error());
+        }
+        format!("/proc/self/fd/{fd}")
+    };
 
     // Until the parent writes our id maps we are nobody (65534) and cannot become root.
     ready.signal();
@@ -1302,7 +1327,7 @@ fn intermediate_main(
     if inner == 0 {
         alive.close_write();
         let service = maps_service(id.privileged, zone_policy);
-        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, sound_dir, camera_dir, service, &alive);
+        let rc = zone_init(zone, rootfs, argv, flags, zone_policy, fs_rules, plumbed, &broker_in_zone, wayland_in_zone.as_deref(), wifi_conf, sound_dir, camera_dir, &usr_in_zone, service, &alive);
         unsafe { libc::_exit(rc) };
     }
     alive.close_read();
@@ -1342,6 +1367,7 @@ fn zone_init(
     wifi_conf: Option<&str>,
     sound_dir: Option<&str>,
     camera_dir: Option<&str>,
+    usr: &str,
     service: bool,
     alive: &SyncPipe,
 ) -> i32 {
@@ -1376,7 +1402,7 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, _) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, sound_dir, camera_dir, service) {
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, sound_dir, camera_dir, usr, service) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };
@@ -1636,7 +1662,17 @@ pub fn explain(zone: &Zone, rootfs: &str, zones_dir: &std::path::Path) -> String
         identity_line,
         data_line,
         storage,
-        rootfs::SYSTEM_PATHS.join(" "),
+        rootfs::SYSTEM_PATHS
+            .iter()
+            .map(|p| match (*p, zone.images.is_empty()) {
+                ("/usr", false) => format!(
+                    "/usr (with the images {} over it, signed for this root and opened with dm-verity)",
+                    zone.images.join(" ")
+                ),
+                _ => p.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
         rootfs::ETC_RO_FILES
             .iter()
             .chain(rootfs::ETC_RO_DIRS)

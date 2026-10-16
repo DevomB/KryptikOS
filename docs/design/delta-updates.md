@@ -10,8 +10,9 @@ whether it is worth doing at today's release sizes.
 ## Where things stand
 
 - **A payload** is `kryptik-root.img.zst`, `kryptik-a.efi`, `kryptik-b.efi`,
-  `root.json`, `manifest` and `manifest.sig`. The manifest lists every
-  file's SHA-256 and size and is signed by the release key
+  `root.json`, `manifest` and `manifest.sig`, and the release's software
+  images if it has any. The manifest lists every file's SHA-256 and size and
+  is signed by the release key
   ([boot and updates](boot-and-updates.md#updates)).
 - **The channel moves whole files.** `update-put` takes the manifest and its
   signature first. Then it takes only listed files, each from the byte zone 0

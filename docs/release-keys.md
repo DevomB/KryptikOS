@@ -18,7 +18,8 @@ run. The build never makes these keys (`build/lib/release-keys.sh`).
 An image trusts the three Ed25519 keys through its anchor,
 `/usr/share/kryptik/trust/release-signers`. Each key is listed under its own
 name and held to its own namespaces: the release key to `kryptik-release` for
-manifests and `kryptik-media` for the media's checksums, the statement key to
+manifests, `kryptik-media` for the media's checksums and `kryptik-image` for
+the lists of software images, the statement key to
 `kryptik-latest`, the control-disk key to `kryptik-testctl`. So a statement
 key cannot sign a release or its media, a control-disk key can arm nothing
 but an install, and no signature passes for one of another kind. A machine

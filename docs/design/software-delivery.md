@@ -7,8 +7,8 @@ ships whole in every release. Version 2's applications (a graphical browser,
 a mail client, a document viewer) do not fit that model for long. This
 document chooses how they arrive: a package manager with a signed binary
 repository, zones that carry their own userland, or something between. The
-[roadmap](../roadmap.md) asks for an ADR first; the proposed text is
-ADR-015 in [decisions](../decisions.md).
+[roadmap](../roadmap.md) asked for an ADR first: it is ADR-015 in
+[decisions](../decisions.md).
 
 ## Where things stand
 
@@ -80,8 +80,8 @@ its files are in the root image.
 - **Policies** are the zone files', as now.
 - **The slot limit** decides it. The browser and its toolkit stack alone
   take most of the 800 MiB of headroom a 1.0 install has (the browser and
-  graphics design, `docs/design/browser-and-graphics.md`, proposed beside
-  this one, works it out); a mail client, a document viewer and Mesa do not
+  graphics design, `docs/design/browser-and-graphics.md`, beside this one,
+  works it out); a mail client, a document viewer and Mesa do not
   fit after it.
 - **Other costs:** every build carries every application; every zone sees
   every application's files, including zones that never run them.
@@ -184,40 +184,131 @@ up ADR-001 in the zones where the applications run.
   or a path the root already has fails the step, so the root's files stay
   the ones verified at boot. The build also writes, per image, the policy
   lines its programs need, found with `kryptikd seccomp-trace`.
-- **Packed.** Stage 06 makes `image-<name>.img` the way it makes the root
-  (ext4 without a journal, then the verity tree) and a manifest:
+
+  The stage is `build/stages/04-images.sh` (`make images`). An image is a
+  file under `build/images/` naming its version and its rows, which run
+  through the same `step()` and hardening flags as stage 04's
+  (`build/lib/recipes.sh`). `tools/check-image-tree.sh` checks the upper
+  directory: no whiteout or opaque directory, no file the root has, no
+  directory of the root's `/usr` with another mode or owner, nothing outside
+  `/usr` and no link that leads out of it, no device node, setuid or setgid
+  bit, or file capability. The
+  probe image (`build/images/probe.sh`), one small program that locks its
+  memory, proves the stage and the zones suite's checks; it ships to no one.
+  An image's sources are pinned in `build/images/versions.env` and locked in
+  `build/images/sources.lock`, so a change to them leaves stage 04 alone,
+  and the image installs their licence files itself, as stage 04 does the
+  root's; stage 06 refuses an image missing one. An image can be built over
+  others (`image_over`): their trees lie under it, above the root, while its
+  rows run, the tree check refuses a file any of them has, and the list's
+  `requires:` line names those that ship. A layer marked `image_ships=no`, a
+  toolchain only builds use, is never packed or listed. `image_over` is not
+  followed through: an image built over one that is itself built over others
+  names those too, and a zone names every image of the chain, as each image's
+  `requires:` line is checked on its own. An image is built again when what
+  it is built from changes: its definition, the shared recipe helpers and
+  flags, its rows' recipes as stage 04 fingerprints a step, the images under
+  it, the base system up to `wlroots`, the last step an image builds against
+  (`IMAGES_BASE`), and the names of the headers, libraries and pkg-config
+  files the sysroot has, which a build's checks can find wherever stage 04
+  put them. Zone 0's own programs and applications come after `wlroots` in
+  stage 04, so changing them rebuilds no image, and a kept image's tree is
+  checked against the root again. A release builds every image from nothing.
+- **Packed.** Stage 06 makes `images-<release>/<name>.img` the way it
+  makes the root (ext4 without a journal in 4096-byte blocks, the size
+  dm-verity reads it in, then the verity tree, with a salt and UUID derived
+  from the content), runs the root's artifact audit
+  over it with the image's own accepted findings
+  (`build/images/NAME.accepted`, each with its reason) or none, and the
+  image's own program list, after leaving out what `build/images/NAME.strip`
+  names (headers, pkg-config files, code generators: what only builds over the
+  image use, which keep them in its build tree), and writes a manifest,
+  `images-<release>/images.manifest`:
 
   ```text
   KRYPTIK-IMAGES-1
-  base: 1.2.0
-  image: browser 140.4.0 root-hash=<64 hex> salt=<hex> bytes=<n> sha256=<64 hex>
+  release: 1.2.0
+  base: <the root's dm-verity root hash>
+  image: browser 140.4.0 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
+  image: toolkit 3.24.49 bytes=<n> sha256=<64 hex> data-blocks=<n> root-hash=<64 hex> salt=<64 hex>
+  requires: browser toolkit
   needs: browser allow-syscall seccomp
   ```
 
   signed by the release key in the namespace `kryptik-image`, which the
-  anchor grants the release key alone.
-- **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, root
-  only. Zone 0 keeps the generation the committed root uses and, during a
-  trial, the one the trial root uses.
-- **Fetched** by the same verbs as a release. The statement of what is
-  current gains one line per image for each base it serves; zone 0 fetches
-  only images whose hash it does not hold, never past the signed size.
+  anchor grants the release key alone. The base is the root hash, not the
+  version, as a version can name two builds; kryptikd reads the running one
+  from the signed kernel's command line. The verity parameters are the
+  root's (SHA-256, 4096-byte blocks, no superblock, the hash tree after
+  `data-blocks`), so every value kryptikd passes to dm-verity is signed.
+  Image lines are sorted by name; a requires line, one per image in image
+  order, names the images it is built over, which a zone naming it must
+  name too; a needs line uses the policy-file syntax. Anything else in the
+  file refuses it. A development build also signs the two lists the guest
+  must refuse, under `images-<release>/controls/`: the same list in
+  `kryptik-release`, and one for another root.
+- **On the medium.** The USB image carries the list, its signature and each
+  image in a third partition, `kryptik-images`; the ISO carries the same
+  files under `/images` in its filesystem. A release without images has
+  neither. The controls stay with the build. Whoever can write the stick
+  can craft that partition, and the installer mounts it, so it is a FAT32
+  like the ESP: the kernel parses no filesystem for it that the medium did
+  not already need. Before the installer writes anything, `kryptikd
+  check-images` checks the list as a kept one is checked, its signature as
+  nobody on a copy, for the root the signed command line names, and finds
+  every image it names there at the size it signs, and hands on the list
+  and signature it checked, which are what the installer keeps; each
+  image's hash is checked as it is copied, as an update's are.
+- **Stored** under `/var/lib/kryptik/images/<name>/<root hash>.img`, with
+  the list for each root as `<base>.manifest` and `.manifest.sig`, root
+  only. Zone 0 keeps the lists of the roots in the two slots and the images
+  they name, so a rollback finds its images; an image both lists name is
+  kept once.
+- **Shipped** with each release. Its payload carries `images.manifest`, the
+  signature and each image as `NAME.img.zst`, compressed for the trip as the
+  root is, all listed in the release manifest, so the channel fetches them
+  with the rest. `kryptik-update apply` checks, before it writes the slot,
+  that the list is for the root the payload carries, and decompresses each
+  image into the store, where the copy is checked against the size and hash
+  the list signs before it takes its name. Once the trial is armed, the
+  store drops the release the slot held. The installer takes the medium's
+  copy (above): kryptikd checks the list and the images' sizes before it
+  writes anything, and it keeps each image as `apply` does.
+  `kryptik-recover --restore-slot` does not open the state partition, so a
+  slot it restores finds its images only if the store still holds that
+  release's, from the install or a kept update; otherwise a zone that names
+  one is refused until the next update brings them.
+- **Fetched** alone for an image-only fix, by the same verbs as a release.
+  The statement of what is current gains one line per image for each base
+  it serves; zone 0 fetches only images whose hash it does not hold, never
+  past the signed size. A second list for a root whose list the store keeps
+  replaces it only if the statement names it as newer: a signed list from
+  before an image's fix, replayed, must not bring the old image back.
 - **Mounted** by kryptikd on first use: a read-only loop device, dm-verity
   with the manifest's root hash, and ext4 mounted read-only, `nosuid,nodev`
-  at `/run/kryptik/images/<name>`. A mapping that dm-verity has marked
-  corrupted is not used again: the next start of a zone that names the image
-  is refused, with the reason, until the image is fetched again. For each distinct set of images a zone
-  names, kryptikd mounts a read-only overlay (no upper directory; the
-  images' `usr` over the root's `/usr`) at `/run/kryptik/usr/<set>` in the
-  initial namespace, and the zone's bind of `/usr` takes that instead. Since
-  zone 0 mounts it and the zone only receives a bind, the hardened kernel's
-  `OVERLAY_FS_UNPRIVILEGED`, which is off, does not come into it. Loop,
-  dm-verity and overlayfs are already built in.
+  under `/run/kryptik/images/<name>/`, one directory per root hash; the
+  mapping and the directory are named by the whole hash. Each start checks
+  the list's signature again, as nobody, on a copy of the bytes it then
+  reads. A mapping that dm-verity has marked corrupted is not used again:
+  the next start of a zone that names the image is refused, with the
+  reason, until this machine restarts. An update that carries the image
+  replaces the stored copy, since the store keeps an image only while its
+  size and SHA-256 match the list's. For each distinct set of images
+  a zone names, kryptikd mounts a read-only overlay (no upper directory; the
+  images' `usr` over the root's `/usr`; redirects in a layer not followed)
+  at `/run/kryptik/usr/<set>` in the initial namespace, and the zone's bind
+  of `/usr` takes that instead, through a descriptor kryptikd opens before
+  it takes the zone's ids: `/run/kryptik` is root's alone, and the zone's
+  mapped root may not walk it. A set already mounted there is used only if
+  it stacks exactly those mounts, as its name holds 64 bits of each root
+  hash. Since zone 0 mounts it and the zone only receives a bind, the
+  hardened kernel's `OVERLAY_FS_UNPRIVILEGED`, which is off, does not come
+  into it. Loop, dm-verity and overlayfs are already built in.
 - **Named** in the zone file:
 
   ```toml
   [software]
-  images = ["browser"]
+  images = "browser"
   ```
 
   `untrusted` names the browser image too, since the
@@ -255,7 +346,7 @@ image-only update from the channel:
   zone already running keeps the old image until it stops;
 - a flipped block in a stored image reads as an I/O error in the zone, the
   machine keeps running, and the next start of a zone that names the image is
-  refused with the reason until it is fetched again;
+  refused with the reason until the machine restarts;
 - an image built for another base, an image manifest signed in
   `kryptik-release`, and a root manifest signed in `kryptik-image` are each
   refused;

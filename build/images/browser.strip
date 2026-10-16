@@ -1,0 +1,5 @@
+# What the browser image never ships to a zone (stage 06's pack_image): the telemetry ping sender,
+# which the policies' DisableTelemetry leaves nothing to send.
+usr/lib/firefox/pingsender
+# Python's sqlite3 module, which the build's Glean step alone needs (browser.sh).
+usr/lib/python3*/lib-dynload/_sqlite3*

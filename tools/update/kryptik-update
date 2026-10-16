@@ -9,13 +9,15 @@
 #   kryptik-update check-manifest DIR       verify only: signature, role, version
 #   kryptik-update check-pointer FILE SIG   verify only: the pointer's signature
 #   kryptik-update check-release DIR        verify only: signature, role; any version
+#   kryptik-update check-images DIR         verify only: an image list's signature
 #
 #   --retry     arm again a slot whose last trial failed
 #   --recovery  accept an older signed release (a downgrade)
 #
 # DIR holds manifest, manifest.sig, kryptik-root.img.zst (the root image,
 # compressed for the trip), kryptik-a.efi, kryptik-b.efi and root.json, and
-# nothing else.
+# the release's software images if it has any (images.manifest, its .sig and
+# NAME.img.zst), and nothing else.
 set -eu
 
 PROG=kryptik-update
@@ -26,6 +28,8 @@ NAMESPACE=kryptik-release
 MAGIC=KRYPTIK-MANIFEST-1
 LATEST_NAMESPACE=kryptik-latest
 LATEST_MAGIC=KRYPTIK-LATEST-1
+IMAGE_NAMESPACE=kryptik-image
+IMAGES_MAGIC=KRYPTIK-IMAGES-1
 # On the verified root: never under /etc, which the state partition can shadow.
 SIGNERS=/usr/share/kryptik/trust/release-signers
 ROLE_FILE=/usr/share/kryptik/trust/required-role
@@ -34,6 +38,8 @@ B=/var/lib/kryptik/boot
 ESP_MNT=/run/kryptik/update-esp
 LOCK=/run/kryptik/update.lock
 LOG=/var/log/kryptik/update.log
+# Software images, by the root they are built for (docs/design/software-delivery.md).
+IMAGES=/var/lib/kryptik/images
 # Where the manifest is copied. Never taken from the environment, since the
 # exit trap removes it; a variable only so the offline suite can set it.
 SNAP=""
@@ -42,7 +48,7 @@ SNAP=""
 # outside their own directory. They read what the net zone sent, so they do not
 # run as root: kryptikd runs them as nobody, on copies.
 case "${1:-}" in
-    check-manifest|check-pointer|check-release)
+    check-manifest|check-pointer|check-release|check-images)
         [ "$(id -u)" != 0 ] || die "$1 does not run as root; kryptikd runs it as nobody"
         tools="ssh-keygen sha256sum cp awk sed sort head mktemp" ;;
     *)
@@ -56,13 +62,14 @@ done
 # Only partitions on the root's own disk; an ambiguous label is refused, never
 # resolved by taking the first (devices.sh).
 case "${1:-}" in
-    check-manifest|check-pointer|check-release) ;;
+    check-manifest|check-pointer|check-release|check-images) ;;
     *)
         # shellcheck source=/dev/null
         . /usr/libexec/kryptik/devices.sh
         # The ESP's records, shown only in the shape Kryptik writes them, and their writers.
         # shellcheck source=/dev/null
-        . /usr/libexec/kryptik/esp-records.sh ;;
+        . /usr/libexec/kryptik/esp-records.sh
+        . /usr/libexec/kryptik/image-store.sh ;;
 esac
 
 running_slot() { sed -n 's/^slot=//p' /run/kryptik/boot-identity 2>/dev/null; }
@@ -121,17 +128,22 @@ cmd_status() {
 # The release's four files are opened once and read only through those
 # descriptors, so what is hashed is what is written even if the directory
 # changes. Links are refused, as is a name replaced while being opened.
-pin() {   # pin FD NAME
+pin() {   # pin FD NAME, or pin - NAME for a descriptor bash picks; either is left in fd
     f="$dir/$2"
     { [ -f "$f" ] && [ ! -L "$f" ]; } || die "payload lacks $2, or it is not a regular file"
-    eval "exec $1< \"\$f\"" || die "cannot open $2"
-    [ "$(stat -c %d:%i "$f")" = "$(stat -L -c %d:%i "/proc/self/fd/$1")" ] || die "$2 changed while it was being opened"
+    if [ "$1" = - ]; then eval 'exec {fd}< "$f"'; else fd="$1"; eval "exec $fd< \"\$f\""; fi || die "cannot open $2"
+    [ "$(stat -c %d:%i "$f")" = "$(stat -L -c %d:%i "/proc/self/fd/$fd")" ] || die "$2 changed while it was being opened"
 }
 payload_path() {   # NAME -> where to read it
     case "$1" in
         kryptik-root.img.zst) echo /proc/self/fd/3 ;; kryptik-a.efi) echo /proc/self/fd/4 ;;
         kryptik-b.efi)    echo /proc/self/fd/5 ;; root.json)     echo /proc/self/fd/6 ;;
-        *) echo "$dir/$1" ;;
+        *)
+            # An image verify_payload pinned (NAME=FD in PINNED), else the payload's file.
+            case " ${PINNED:-} " in
+                *" $1="*) _fd="${PINNED#* $1=}"; echo "/proc/self/fd/${_fd%% *}" ;;
+                *) echo "$dir/$1" ;;
+            esac ;;
     esac
 }
 
@@ -139,6 +151,16 @@ payload_path() {   # NAME -> where to read it
 verify_payload() {   # verify_payload DIR RECOVERY -> sets VERSION ROOT_HASH
     verify_manifest "$1" "$2"
     pin 3 kryptik-root.img.zst; pin 4 kryptik-a.efi; pin 5 kryptik-b.efi; pin 6 root.json
+    # And each software image it lists, so the bytes hashed below are those stage_images
+    # decompresses. A name with a directory in it is refused below, before anything is read.
+    # bash (sh here) picks each descriptor: from 10 up, past the root's and the update lock's,
+    # and never one it holds itself, as it holds a redirected call's own output while it runs.
+    PINNED=""
+    for n in $(sed -n '/^--$/,$p' "$m" | sed '1d' | awk '$3 ~ /\.img\.zst$/ && $3 != "kryptik-root.img.zst" { print $3 }'); do
+        case "$n" in */*|..*) continue ;; esac
+        pin - "$n"
+        PINNED="$PINNED $n=$fd"
+    done
 
     # Nothing unlisted (a directory listing) before hashing every listed file
     # (gigabytes). Names are compared whole, as text, dotfiles included.
@@ -299,6 +321,19 @@ cmd_check_pointer() {
     verify_signed "$SNAP/latest" "$SNAP/latest.sig" "$LATEST_NAMESPACE" pointer
 }
 
+# Exit 0 if a copy of DIR's image list is signed by an enrolled key in the
+# image namespace. What it lists, and whether it fits the running root,
+# kryptikd judges (images.rs).
+cmd_check_images() {
+    [ $# = 1 ] && [ -d "$1" ] || die "check-images needs the directory holding manifest and manifest.sig"
+    SNAP="${SNAP:-$(mktemp -d /run/kryptik/update-manifest.XXXXXX 2>/dev/null || mktemp -d)}"
+    chmod 0700 "$SNAP"
+    cp -- "$1/manifest" "$SNAP/manifest" || die "cannot copy the image list"
+    cp -- "$1/manifest.sig" "$SNAP/manifest.sig" || die "cannot copy the image list's signature"
+    [ "$(head -1 "$SNAP/manifest")" = "$IMAGES_MAGIC" ] || die "the image list is not a $IMAGES_MAGIC"
+    verify_signed "$SNAP/manifest" "$SNAP/manifest.sig" "$IMAGE_NAMESPACE" "image list"
+}
+
 # For the clock's floor (docs/design/time.md): the manifest a slot was applied
 # from, kept on the state partition, believed only as apply would believe it,
 # in any version order, and the created date its signed manifest names.
@@ -329,6 +364,29 @@ unlist_slot() {   # unlist_slot SLOT
     sync
     umount_esp
 }
+
+# The payload's software images, before any slot is written: a copy of its
+# list, read once and checked against the manifest (the payload directory is
+# mutable), and each image kept in the store as the list signs it.
+stage_images() {
+    [ -n "$(manifest_hash images.manifest)" ] || return 0
+    [ -n "$(manifest_hash images.manifest.sig)" ] || die "the payload lists images.manifest without its signature"
+    l="$SNAP/images.manifest"; lsig="$SNAP/images.manifest.sig"
+    cp -- "$(payload_path images.manifest)" "$l" && cp -- "$(payload_path images.manifest.sig)" "$lsig" \
+        || die "cannot copy the image list"
+    [ "$(sha256sum "$l" | cut -c1-64)" = "$(manifest_hash images.manifest)" ] \
+        && [ "$(sha256sum "$lsig" | cut -c1-64)" = "$(manifest_hash images.manifest.sig)" ] \
+        || die "the image list changed after the manifest was checked"
+    for n in $(sed -n 's/^image: \([^ ]*\) .*/\1/p' "$l"); do
+        [ -n "$(manifest_hash "$n.img.zst")" ] || die "the list names image $n, and the payload does not carry $n.img.zst"
+    done
+    images_keep "$l" "$lsig" "$IMAGES" "$ROOT_HASH" payload_image
+    say "the image list for $VERSION kept"
+}
+
+# Image NAME as the payload carries it, decompressed, and never past the size its list signs and one
+# byte: the file is read again after the manifest's check, and a changed one must not fill /var.
+payload_image() { zstd -dcq < "$(payload_path "$1.img.zst")" 2>/dev/null | head -c "$(( $2 + 1 ))"; }   # payload_image NAME BYTES
 
 # Verify everything, then write only the inactive slot, read it back, install
 # its kernel and arm BootNext. BOOTX64.EFI is left to boot-success, which
@@ -366,6 +424,7 @@ cmd_apply() {
     [ -b "$tdev" ] || die "kryptik-$target ($tdev) is not a block device"
     tsize="$(blockdev --getsize64 "$tdev")"
     [ "$tsize" -ge "$ROOT_BYTES" ] || die "slot $target is $tsize bytes; the root image needs $ROOT_BYTES"
+    stage_images
 
     # --- writes begin: the inactive slot only -------------------------------
     unlist_slot "$target"
@@ -402,6 +461,10 @@ cmd_apply() {
 
     # --- arm one trial boot --------------------------------------------------
     arm_trial "$target"
+    # The running root's images stay for a rollback; those of the release this slot held go.
+    # A command line naming no root hash prunes nothing, rather than the running root's list.
+    running_hash="$(sed -n 's/.*"kroot,[^"]* sha256 \([0-9a-f]\{64\}\) .*/\1/p' /proc/cmdline)"
+    if [ -n "$running_hash" ]; then images_prune "$IMAGES" "$running_hash" "$ROOT_HASH"; fi
     printf '%s apply %s -> slot %s\n' "$(date -Iseconds 2>/dev/null)" "$VERSION" "$target" >> "$LOG"
     say "armed: the next boot tries slot $target ($VERSION) once. Reboot to try it."
     say "if it does not come up, the firmware falls back to the committed slot ($slot)."
@@ -447,5 +510,6 @@ case "${1:-}" in
     check-manifest) shift; cmd_check_manifest "$@" ;;
     check-pointer)  shift; cmd_check_pointer "$@" ;;
     check-release)  shift; cmd_check_release "$@" ;;
-    *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    check-images)   shift; cmd_check_images "$@" ;;
+    *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

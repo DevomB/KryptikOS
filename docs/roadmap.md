@@ -31,6 +31,9 @@ work in zones from a terminal and a text browser, and keep it up to date.
       three machines: a wired desktop, an Intel laptop on Wi-Fi alone, an AMD
       laptop. What each lacked becomes a line in `boot.fragment` or
       `firmware.list`, and the machines start a hardware list in the README.
+      The laptops also try what no virtual machine has: the lid, the
+      microphone and brightness keys, the backlight, a built-in panel and a
+      USB Video Class camera.
       Planned for October 2026.
 - [x] **CPU microcode.** Built into the signed kernel from Intel's release and
       AMD's containers in linux-firmware; stage 05 refuses a kernel without
@@ -99,9 +102,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
 
 - [x] **A watchdog for a hung userspace.** The state suite stops the feeder
       and the machine resets and comes back with its data.
-- [x] **Every status row is tested.** Each row of the status table names
+- [ ] **Every status row is tested.** Each row of the status table names
       the check that can fail it; stage 05, stage 06 and `make acceptance`
-      were the last to read *implemented*.
+      were the last to read *implemented*. Brightness, which came with the
+      laptop, reads it again: QEMU has no backlight, so its rule and its keys
+      are tried on the laptops with the physical hardware (above).
 - [x] **The accepted lists are reviewed.** `checker-accepted.txt`,
       `hardening-exceptions.txt`, the setuid allowlist and the artifact
       audit's soft findings: each entry closed or re-justified, with the
@@ -167,9 +172,9 @@ work in zones from a terminal and a text browser, and keep it up to date.
       sysctls as applied.
 - [x] **Signatures as a gate.** `tools/verify-signatures.sh --strict` runs
       on every push in CI's source-manifest job. Every key has a published
-      route to its fingerprint (`tools/key-provenance.tsv`), except ten that
-      have no usable key (elfutils, file, flex, libevdev, libmnl, lvm2,
-      wpa_supplicant, xkeyboard-config, zlib, zstd), which
+      route to its fingerprint (`tools/key-provenance.tsv`), except six that
+      have no usable key (elfutils, file, flex, libevdev, libmnl,
+      wpa_supplicant), which
       `tools/source-notes.tsv` accepts with the routes that were tried; a
       note left after its key is held fails the gate.
 - [x] **Zone 0 runs no user application, proven.** The desktop suite reads
@@ -183,16 +188,31 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **A destroy verb.** `kryptikd volume destroy NAME` erases a stopped
       zone's key slots and deletes its container; it refuses an open volume
       ([design](design/encrypted-volumes.md)). The zone's definition stays.
+- [ ] **Memory a zone makes the compositor hold.** A page of a zone's
+      shared-memory pool that dwl reads before the zone writes it is charged
+      to dwl, not to the zone's `memory_max`, and a zone that keeps the
+      pool's descriptor keeps that page after the pool is gone; the proxy's
+      bounds hold it only while the pools live
+      ([Wayland shared memory](design/resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
+      First the measurement (`wlprobe charge`), then the proxy punching each
+      pool's range once the pool and its buffers are gone, refusing a pool it
+      cannot punch, and a `memory.max` on the session's cgroup.
 
 ## Version 2
 
 A desktop someone can live in, built the same way.
 
-- **Applications.** A graphical browser and the toolkit stack under it, per
-  zone, with GPU rendering decided zone by zone; a mail client, a document
-  viewer, a file manager that understands transfers between zones.
-- **Software from somewhere.** A package manager and a signed binary
-  repository, or zones that carry their own userland. An ADR first.
+- **Applications.** Built: the GTK toolkit and Firefox ESR over it, in
+  `untrusted`, `personal` and `work`, its PDF viewer the document viewer
+  ([browser and graphics](design/browser-and-graphics.md)). Still to come:
+  GPU rendering decided zone by zone, a mail client, and a file manager that
+  understands transfers between zones.
+- **Software from somewhere.** Built: signed software images (ADR-015),
+  built over the root and signed with each release, carried on its install
+  media and in its update payload, and opened with dm-verity and stacked
+  read-only over the `/usr` of the zones that name them
+  ([software delivery](design/software-delivery.md)). Not decided: a package
+  manager, or images released apart from the root.
 - **The laptop.** What the laptop design asked for is built: sound mixed in
   zone 0 for each zone, the microphone granted to one zone at a time;
   suspend with the state partition's and each zone volume's keys dropped,

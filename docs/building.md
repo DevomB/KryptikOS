@@ -43,8 +43,16 @@ make toolchain  # stage 01                     (unprivileged)
 make temp-tools # stage 02                     (unprivileged)
 make system     # stage 04, inside the chroot  (root for the mounts)
 make kernel     # stage 05, inside the chroot
+make images     # the software images over stage 04: the toolkit, the browser (hours)
 make media      # stage 06: USB image, ISO, signed release payload
 ```
+
+`untrusted`, `personal` and `work` name the browser and toolkit images, and a
+zone naming an image does not start unless its root has a signed list that
+holds it, so a medium for use needs `make images` before `make media`. Firefox
+alone takes some three hours on four cores; a rebuilt stage 04 rebuilds it
+only when a step up to `wlroots` changed, or the headers and libraries a build
+can find ([software delivery](design/software-delivery.md)).
 
 `make paths` prints where everything goes; `KRYPTIK_WORK` moves the work tree.
 Each step is stamped, so a rerun resumes where it stopped and a changed
