@@ -45,12 +45,10 @@ codec driver ahead of `snd-hda-intel` (`build/config/modprobe.d/sound.conf`,
 which stage 05 holds to the drivers built).
 
 Not yet: Intel's Sound Open Firmware drivers for laptops with digital
-microphones, AMD's audio coprocessor drivers, and the smart-amplifier
-codecs (Cirrus, TI) many laptops put on their speakers. Most of their
-firmware is in linux-firmware, but Intel's SOF firmware and topology files
-are not: the SOF project publishes them separately (sof-bin). That is a
-second firmware source, which ADR-012 has to name, with its own provenance
-row.
+microphones or SoundWire codecs, AMD's audio coprocessor drivers, and the
+smart-amplifier codecs (Cirrus, TI) many laptops put on their speakers.
+[Laptop sound past HD Audio](laptop-audio.md) says what each needs, what a
+laptop does without it, and the order they come in after 1.0.
 
 ### Who holds `/dev/snd`
 
@@ -65,7 +63,7 @@ row.
 - **A small mixer in zone 0.** `kryptik-sound` runs as a user of its own
   in the `audio` group, never as root. It reads fixed-format sound from one
   socket per zone, mixes it, and plays it through alsa-lib, whose UCM
-  configurations the SOF and AMD laptops need. The microphone's gate is
+  configurations the SOF laptops would need. The microphone's gate is
   trusted code, and only zone 0 reaches the sound drivers' ioctls. It is C,
   built in stage 04 with the hardening flags like the screen lock, not Rust
   like kryptikd: alsa-lib is a glibc library that loads its plugins, and
