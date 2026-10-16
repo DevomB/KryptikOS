@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Verify upstream GPG signatures for fetched source tarballs.
 #
-#   ./tools/verify-signatures.sh [--strict] [--refresh] [--fetch-unknown-keys]
+#   ./tools/verify-signatures.sh [--strict [--unread-warns]] [--refresh] [--fetch-unknown-keys]
 #                                [--report=FILE] [--notes=FILE]
 #     --strict              release gate: anything unverified or unaudited fails,
 #                           except an unheld key the notes record as no-usable-key
+#     --unread-warns        under --strict, a key whose published copy did not answer
+#                           is checked against the key held, with a warning
 #     --refresh             discard cached keys and re-import
 #     --fetch-unknown-keys  import keys the signatures name (unaudited)
 #     --report=FILE         per-source results to FILE
@@ -25,6 +27,7 @@ export GNUPGHOME="${KEYDIR}/gnupg"
 
 FETCH_UNKNOWN=0
 STRICT=0
+UNREAD_WARNS=0
 REPORT=""
 NOTES="$(dirname "${BASH_SOURCE[0]}")/source-notes.tsv"
 for a in "$@"; do
@@ -32,12 +35,14 @@ for a in "$@"; do
         --refresh) rm -rf "$GNUPGHOME" "$GNU_KEYRING" ;;
         --fetch-unknown-keys) FETCH_UNKNOWN=1 ;;
         --strict) STRICT=1 ;;
+        --unread-warns) UNREAD_WARNS=1 ;;
         --report=*) REPORT="${a#--report=}" ;;
         --notes=*) NOTES="${a#--notes=}" ;;
-        -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $a" ;;
     esac
 done
+[[ "$UNREAD_WARNS" -eq 0 || "$STRICT" -eq 1 ]] || die "--unread-warns eases --strict; give both"
 [[ -n "$REPORT" ]] && : > "$REPORT"
 
 # no-usable-key notes let their sources pass --strict; --strict fails a note whose key is held.
@@ -206,6 +211,7 @@ declare -a UNVERIFIABLE_LIST=()
 declare -a EXPIRED_LIST=()
 declare -a REVOKED_LIST=()
 declare -a FETCHED_LIST=()
+declare -a UNREAD_LIST=()
 
 mark_unverifiable() {
     UNVERIFIABLE=$((UNVERIFIABLE + 1))
@@ -562,12 +568,14 @@ check_sig() {
         if row="$(provenance_row "$name" "$keyid")"; then
             if [[ -z "${PROV_MISSED[$row]:-}" ]]; then
                 pkind="${PROV_KIND[$row]}"
-            elif [[ "$STRICT" -eq 1 ]]; then
+            elif [[ "$STRICT" -eq 1 && "$UNREAD_WARNS" -eq 0 ]]; then
                 warn "${name}: signature valid  [${signer:-unknown}], but the key's published copy was not read"
                 mark_unverifiable "${name} (its key's published copy at ${PROV_LOC[$row]} not read this run)"
                 report "$name" published-key-unread "${signer:-unknown} (${keyid}); ${PROV_LOC[$row]}${how}"
                 return 0
             else
+                # A host that did not answer is no fault of the change being checked; the key held is.
+                [[ "$STRICT" -eq 1 ]] && UNREAD_LIST+=("${name} (${PROV_LOC[$row]})")
                 how="${how}; published copy at ${PROV_LOC[$row]} not read this run"
             fi
         fi
@@ -972,6 +980,12 @@ if [[ "${#UNVERIFIABLE_LIST[@]}" -gt 0 ]]; then
     echo
     dim "Unverifiable (not proof of tampering - a signature that could not be checked):"
     printf '  - %s\n' "${UNVERIFIABLE_LIST[@]}"
+fi
+
+if [[ "${#UNREAD_LIST[@]}" -gt 0 ]]; then
+    echo
+    warn "${#UNREAD_LIST[@]} source(s) checked against the key held, as its published copy did not answer (--unread-warns):"
+    printf '  - %s\n' "${UNREAD_LIST[@]}"
 fi
 
 if [[ "${#UNSIGNED_LIST[@]}" -gt 0 ]]; then

@@ -216,8 +216,15 @@ jobs:
           ./tools/provenance-inventory.sh
 
       # Each signature must verify against its publisher's key, or tools/source-notes.tsv says why not.
+      # On a pull request a key's published copy that does not answer is a warning, checked against the
+      # key held: a host being down is not the change's fault, and the push to main reads every copy.
       - name: Signatures, strict
-        run: ./tools/verify-signatures.sh --strict
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./tools/verify-signatures.sh --strict --unread-warns
+          else
+            ./tools/verify-signatures.sh --strict
+          fi
 
       # The root's sources in sources.lock, the software images' in build/images/sources.lock.
       - name: sources.lock covers the manifest
