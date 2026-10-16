@@ -336,13 +336,14 @@ fetch_attempt() {
 declare -A SILENT=()
 serves() {
     local host="${1#*://}" code rc=0
+    # A file:// URL has no host; the key is never empty, which bash refuses.
     host="${host%%/*}"
-    [[ -z "${SILENT[$host]:-}" ]] || return 1
+    [[ -z "${SILENT[h:${host}]:-}" ]] || return 1
     curl -fsIL --connect-timeout 15 --max-time 45 -o /dev/null "$1" 2>/dev/null && return 0
     code="$(curl -sL -r 0-0 --max-filesize 65536 --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 3 \
         -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" || rc=$?
     if [[ "$code" == 000 && ( "$rc" -eq 6 || "$rc" -eq 7 || "$rc" -eq 28 ) ]]; then
-        SILENT[$host]=1
+        SILENT[h:${host}]=1
         warn "${host} gave no answer: its other places count as not serving this run"
     fi
     [[ "$code" == 200 || "$code" == 206 ]]
