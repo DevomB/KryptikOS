@@ -65,6 +65,18 @@ if [[ -z "$unresolved" ]]; then
 else
     fail "power-key-drivers" "no module for:${unresolved}"
 fi
+# A touchpad or touch screen behind Intel's Touch Host Controller, in its I2C or its SPI mode:
+# eudev loads QuickI2C or QuickSPI by the THC's PCI id (Lunar Lake's here), which QEMU has none of.
+unresolved=""
+for a in pci:v00008086d0000A848sv00001043sd00001F5Cbc0Csc80i00=intel_quicki2c \
+         pci:v00008086d0000A849sv00001043sd00001F5Cbc0Csc80i00=intel_quickspi; do
+    [[ "$(modprobe -R "${a%=*}" 2>&1)" == "${a#*=}" ]] || unresolved="${unresolved} ${a#*=}"
+done
+if [[ -z "$unresolved" ]]; then
+    pass "touch-drivers" "a Touch Host Controller in I2C mode resolves to intel_quicki2c, in SPI mode to intel_quickspi"
+else
+    fail "touch-drivers" "no module for:${unresolved}"
+fi
 
 # --- a battery ---------------------------------------------------------------------------
 if modprobe test_power && wait_for 10 test -d /sys/class/power_supply/test_battery; then
