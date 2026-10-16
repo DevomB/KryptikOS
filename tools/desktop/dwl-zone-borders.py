@@ -1136,8 +1136,9 @@ spawn(const Arg *arg)
 \t}
 }
 
-/* Kryptik: the spawner, forked before dwl confines itself. It runs only the table's commands, each
- * as dwl's spawn did, holds nothing of dwl's but its end of the socket, and ends with dwl. */
+/* Kryptik: the spawner, forked before dwl confines itself, or the session's, handed over (-S). It
+ * runs only the table's commands, each as dwl's spawn did, holds nothing of dwl's but its end of
+ * the socket, and ends with dwl; dwl ends with it. */
 static void
 startspawner(void)
 {
@@ -1338,6 +1339,187 @@ confinefs(void)
      """\tstartspawner();
 \tconfineexec();
 \tconfinefs();
+"""),
+    # dwl without group kryptik: the launch daemon starts it (-S), and the session's spawner (-X,
+    # dwl's binary) keeps the group and starts the chrome once dwl names its display.
+    ("""static void confinefs(void);
+""",
+     """static void confinefs(void);
+static int fdarg(const char *s);
+static void spawnerloop(int fd, char **cmd);
+static int spawnergone(int fd, uint32_t mask, void *data);
+"""),
+    ("""\twhile ((c = getopt(argc, argv, "s:hdv")) != -1) {
+\t\tif (c == 's')
+\t\t\tstartup_cmd = optarg;
+""",
+     """\twhile ((c = getopt(argc, argv, "s:hdvS:X:")) != -1) {
+\t\tif (c == 's')
+\t\t\tstartup_cmd = optarg;
+\t\t/* Kryptik: the spawner runs already, at this socket: dwl forks none. */
+\t\telse if (c == 'S')
+\t\t\tspawnfd = fdarg(optarg);
+\t\t/* Kryptik: be the session's spawner on this socket, and nothing else. */
+\t\telse if (c == 'X')
+\t\t\tspawnerloop(fdarg(optarg), argv + optind);
+"""),
+    ("""\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (fd = 3; fd < max; fd++)
+\t\tif (fd != sv[1])
+\t\t\tclose((int)fd);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(sv[1], &i, 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (i >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tclose(sv[1]);
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[i][0], (char *const *)spawncmds[i]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[i][0]);
+\t}
+\t_exit(0);
+}
+""",
+     """\tspawnerloop(sv[1], NULL);
+}
+
+/* Kryptik: a descriptor dwl was handed, by number. */
+static int
+fdarg(const char *s)
+{
+\tchar *end;
+\tlong fd = strtol(s, &end, 10);
+
+\tif (*s == '\\0' || *end != '\\0' || fd < 3 || fd > 1023)
+\t\tdie("dwl: %s is not a descriptor", s);
+\treturn (int)fd;
+}
+
+/* Kryptik: the spawner's loop on FD, its end of dwl's socket. A byte is an index in the table,
+ * whose command runs as dwl's spawn ran it. The session's spawner (-X) has CMD too: a longer
+ * message is the display dwl made, and CMD (the chrome) starts there with descriptor 4, dwl's
+ * status, as its stdin; when dwl is gone, CMD's process group goes too, as dwl's cleanup did. */
+static void
+spawnerloop(int fd, char **cmd)
+{
+\tlong i, max = sysconf(_SC_OPEN_MAX);
+\tpid_t chrome = -1;
+\tchar msg[64];
+\tssize_t n;
+
+\tif (cmd && *cmd && strcmp(*cmd, "--") == 0)
+\t\tcmd++;
+\tif (cmd && !*cmd)
+\t\tcmd = NULL;
+\tif (max < 0 || max > 65536)
+\t\tmax = 65536;
+\tfor (i = 3; i < max; i++)
+\t\tif (i != fd && !(cmd && i == 4))
+\t\t\tclose((int)i);
+\t/* Only the chrome gets dwl's status, and nothing the spawner starts gets dwl's socket. */
+\tfcntl(fd, F_SETFD, FD_CLOEXEC);
+\tif (cmd)
+\t\tfcntl(4, F_SETFD, FD_CLOEXEC);
+\tdup2(STDERR_FILENO, STDOUT_FILENO);
+\tprctl(PR_SET_NAME, "dwl-spawner");
+\tprctl(PR_SET_DUMPABLE, 0);
+\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\tsignal(SIGINT, SIG_DFL);
+\tsignal(SIGTERM, SIG_DFL);
+\tsignal(SIGPIPE, SIG_DFL);
+\tsignal(SIGCHLD, SIG_IGN);
+\twhile ((n = recv(fd, msg, sizeof(msg) - 1, 0)) != 0) {
+\t\tif (n < 0 && errno == EINTR)
+\t\t\tcontinue;
+\t\tif (n < 0)
+\t\t\tbreak;
+\t\tif (n > 1) {
+\t\t\tif (!cmd || chrome > 0)
+\t\t\t\tcontinue;
+\t\t\tmsg[n] = '\\0';
+\t\t\t/* A name in the runtime directory, as dwl's own socket is: no path elsewhere. */
+\t\t\tif (strspn(msg, "abcdefghijklmnopqrstuvwxyz0123456789-") != (size_t)n) {
+\t\t\t\tfprintf(stderr, "dwl-spawner: dwl named no display of its own\\n");
+\t\t\t\tbreak;
+\t\t\t}
+\t\t\tsetenv("WAYLAND_DISPLAY", msg, 1);
+\t\t\tif ((chrome = fork()) == 0) {
+\t\t\t\tdup2(4, STDIN_FILENO);
+\t\t\t\tsetsid();
+\t\t\t\tprctl(PR_SET_PDEATHSIG, SIGTERM);
+\t\t\t\tsignal(SIGCHLD, SIG_DFL);
+\t\t\t\texecvp(cmd[0], cmd);
+\t\t\t\tdie("dwl: execvp %s failed:", cmd[0]);
+\t\t\t}
+\t\t\tcontinue;
+\t\t}
+\t\tif ((unsigned char)msg[0] >= LENGTH(spawncmds) || fork() != 0)
+\t\t\tcontinue;
+\t\tsignal(SIGCHLD, SIG_DFL);
+\t\tsetsid();
+\t\texecvp(spawncmds[(unsigned char)msg[0]][0], (char *const *)spawncmds[(unsigned char)msg[0]]);
+\t\tdie("dwl: execvp %s failed:", spawncmds[(unsigned char)msg[0]][0]);
+\t}
+\tif (chrome > 0) {
+\t\tkill(-chrome, SIGTERM);
+\t\twaitpid(chrome, NULL, 0);
+\t}
+\t_exit(0);
+}
+
+/* Kryptik: a desktop whose keys and lid no longer lock is worse than a new login. */
+static int
+spawnergone(int fd, uint32_t mask, void *data)
+{
+\tfprintf(stderr, "dwl: the spawner is gone: the login ends\\n");
+\tquit(NULL);
+\treturn 0;
+}
+"""),
+    # The forked spawner's variables, which the loop above no longer uses.
+    ("""\tint sv[2];
+\tlong fd, max = sysconf(_SC_OPEN_MAX);
+\tunsigned char i;
+\tssize_t n;
+\tpid_t pid;
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+""",
+     """\tint sv[2];
+\tpid_t pid;
+
+\t/* The session's spawner, handed over: told dwl's display, it starts the chrome there. */
+\tif (spawnfd >= 0) {
+\t\tconst char *display = getenv("WAYLAND_DISPLAY");
+\t\tfcntl(spawnfd, F_SETFD, FD_CLOEXEC);
+\t\tif (!display || send(spawnfd, display, strlen(display), MSG_NOSIGNAL) < 0)
+\t\t\tdie("startup: the spawner did not take the display:");
+\t\twl_event_loop_add_fd(event_loop, spawnfd, 0, spawnergone, NULL);
+\t\treturn;
+\t}
+\tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+"""),
+    ("""\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
+\t\treturn;
+""",
+     """\t\tclose(sv[1]);
+\t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
+\t\twl_event_loop_add_fd(event_loop, spawnfd, 0, spawnergone, NULL);
+\t\treturn;
 """),
 ]
 

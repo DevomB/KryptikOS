@@ -10,6 +10,7 @@ mod camera;
 mod caps;
 mod cgroup;
 mod consent;
+mod desktop;
 mod files;
 mod images;
 mod isolate;

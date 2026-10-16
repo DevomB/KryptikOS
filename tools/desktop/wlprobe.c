@@ -24,8 +24,11 @@
  *   A held window's app_id is $WLPROBE_APP_ID (at most 255 bytes), or wlprobe.
  *   Every held window prints "keyboard entered|left the window|the child"
  *   as wl_keyboard reports it: where the keys go, not what a record says.
- *   wlprobe charge            map one unwritten 4 MiB shmem buffer for 10 s;
- *                             compare zone and compositor cgroup memory.current
+ *   wlprobe charge [keep]     map one unwritten 4 MiB shmem buffer for 10 s;
+ *                             compare zone and compositor cgroup memory.current;
+ *                             with keep, 4 s after it is drawn the buffer and its
+ *                             pool go and the window unmaps, the pool's
+ *                             descriptor kept, as a zone may keep it
  *   wlprobe cursor SECONDS [shape]
  *                             as oversize 0, and when the pointer enters, set a
  *                             cursor image twice the screen's size, hotspot in
@@ -175,6 +178,10 @@ static const char *appid = "wlprobe";
 /* oversize's object ids: each new id is the next unused one (the registry is 2, its sync 3). */
 enum { COMPOSITOR = 4, SHM, WM_BASE, SURFACE, XDG_SURFACE, TOPLEVEL };
 static int oversize, charge, drawn, draw_failed, extra, conf_w, conf_h, closed;
+/* charge keep: 1 until the pool goes, then 2; the pool, its descriptor and when it was drawn. */
+static int charge_keep, keep_fd = -1;
+static uint32_t charge_pool;
+static time_t drawn_at;
 static int askfs, conf_fs;
 static int late, kb_left;                    /* fullscreen late: ask once the keyboard has left */
 /* child: 1 wanted once drawn, 2 wanted once fullscreen, 3 mapped; its objects. */
@@ -240,7 +247,11 @@ static int blit(uint32_t surface, int w, int h, uint32_t rgb)
 	put32(b, pool);
 	put32(b + 4, (uint32_t)size);
 	int r = send_msg_fd(SHM, 0, b, 8, fd);     /* wl_shm.create_pool(id, fd, size) */
-	close(fd);
+	if (charge_keep)
+		keep_fd = fd;
+	else
+		close(fd);
+	charge_pool = pool;
 	if (r) { printf("create_pool: %s\n", strerror(errno)); draw_failed = closed = 1; return -1; }
 	put32(b, buffer); put32(b + 4, 0); put32(b + 8, (uint32_t)w); put32(b + 12, (uint32_t)h);
 	put32(b + 16, (uint32_t)stride); put32(b + 20, 1);
@@ -293,9 +304,25 @@ static void draw(void)
 	int h = charge ? 1024 : (conf_h > 0 ? conf_h : 200) + extra;
 	if (blit(SURFACE, w, h, window_rgb)) return;
 	drawn = 1;
+	drawn_at = time(NULL);
 	printf("committed %dx%d for a %dx%d configure%s%s\n", w, h, conf_w, conf_h,
 		conf_fs ? " (fullscreen)" : "",
 		charge ? " (unwritten shmem; sample memory.current now)" : "");
+	fflush(stdout);
+}
+
+/* The pool and its buffer go and the window unmaps, while this process keeps the pool's
+ * descriptor: what the compositor faulted in it stays where it was charged, unless the proxy
+ * punches the range. */
+static void drop_pool(void)
+{
+	unsigned char b[12];
+	send_msg(last_buffer, 0, b, 0);            /* wl_buffer.destroy */
+	send_msg(charge_pool, 1, b, 0);            /* wl_shm_pool.destroy */
+	put32(b, 0); put32(b + 4, 0); put32(b + 8, 0);
+	send_msg(SURFACE, 1, b, 12);               /* wl_surface.attach: no buffer */
+	send_msg(SURFACE, 6, b, 0);                /* wl_surface.commit */
+	printf("pool gone, descriptor %d kept (sample memory.current again)\n", keep_fd);
 	fflush(stdout);
 }
 
@@ -746,6 +773,10 @@ static int hold_oversize(int more, int seconds, const char *title)
 			open_child();
 		if (popup == 1 && drawn)
 			open_popup();
+		if (charge_keep == 1 && drawn && time(NULL) >= drawn_at + 4) {
+			drop_pool();
+			charge_keep = 2;
+		}
 	}
 	return draw_failed ? 1 : 0;
 }
@@ -760,13 +791,13 @@ int main(int argc, char **argv)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
 	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
 	    || (!strcmp(argv[1], "child") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
-	    || (!strcmp(argv[1], "charge") && argc != 2)
+	    || (!strcmp(argv[1], "charge") && (argc > 3 || (argc == 3 && strcmp(argv[2], "keep"))))
 	    || (!strcmp(argv[1], "cursor") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "shape"))))
 	    || (!strcmp(argv[1], "animate") && argc != 3)
 	    || (!strcmp(argv[1], "popup") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "grab"))))
 	    || (!strcmp(argv[1], "copy") && (argc != 4 || strlen(argv[3]) > 200))
 	    || (!strcmp(argv[1], "paste") && argc != 3) || (!strcmp(argv[1], "outputs") && argc != 2)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE [NAME] | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS | outputs\n");
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE [NAME] | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge [keep] | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS | outputs\n");
 		return 2;
 	}
 	const char *own_id = getenv("WLPROBE_APP_ID");
@@ -824,7 +855,7 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "oversize")) return hold_oversize(atoi(argv[2]), atoi(argv[3]), argc > 4 ? argv[4] : "oversize");
 	if (!strcmp(argv[1], "fullscreen")) { askfs = 1; late = argc == 4; return hold_oversize(0, atoi(argv[2]), "fullscreen"); }
 	if (!strcmp(argv[1], "child")) { child = argc == 4 ? 2 : 1; return hold_oversize(0, atoi(argv[2]), "child-parent"); }
-	if (!strcmp(argv[1], "charge")) { charge = 1; return hold_oversize(0, 10, "shm-charge"); }
+	if (!strcmp(argv[1], "charge")) { charge = 1; charge_keep = argc == 3; return hold_oversize(0, 10, "shm-charge"); }
 	if (!strcmp(argv[1], "cursor")) { cursor = 1; cursor_shape = argc == 4; return hold_oversize(0, atoi(argv[2]), "cursor"); }
 	if (!strcmp(argv[1], "popup")) { popup = 1; popup_grab = argc == 4; return hold_oversize(0, atoi(argv[2]), "popup"); }
 	if (!strcmp(argv[1], "copy")) {

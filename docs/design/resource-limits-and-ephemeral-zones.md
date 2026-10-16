@@ -94,19 +94,23 @@ are delegated and as root on the installed system (the zones suite).
 there; `cgroup.rs` and `zone.rs` unit-test the sweep, the limits and
 `storage.size`.
 
-Whether a zone's Wayland shared memory is charged to its cgroup is not
-confirmed; it takes a measurement on the installed image. Record
-`memory.current` and `memory.stat` for the zone's and dwl's cgroups, then run
-`wlprobe charge` through `kryptik-launch` in that zone, which commits one
-unwritten 4 MiB buffer for ten seconds. Confirm the window was rendered and
-compare both cgroups while the buffer is held; if dwl's cgroup is an ancestor
-of the zone's, subtract the zone's change. A rise outside the zone with no
-matching charge to the zone would mean a zone can make dwl hold memory
-outside the zone's limit. The proxy's pool limits apply either way, and a
-pool stays charged while the compositor may still hold it: until it and its
-buffers are deleted and no surface shows one of them, counting each buffer a
-synchronized subsurface committed until wlroots applies that subsurface's
-cache.
+Whether a zone's Wayland shared memory is charged to its cgroup takes a
+measurement on the installed image, and the desktop suite takes it: it runs
+`wlprobe charge keep` in `untrusted`, which commits one unwritten 4 MiB buffer
+and then, four seconds after it is drawn, drops the buffer and its pool while
+keeping the pool's descriptor. Its `desktop-charge` line gives the desktop's
+`memory.current` rise while dwl shows the buffer and once the pool is gone. By
+hand: record `memory.current` and `memory.stat` for the zone's and dwl's
+cgroups, then run `wlprobe charge` through `kryptik-launch` in that zone,
+which commits one unwritten 4 MiB buffer for ten seconds. Confirm the window
+was rendered and compare both cgroups while the buffer is held; if dwl's
+cgroup is an ancestor of the zone's, subtract the zone's change. A rise
+outside the zone with no matching charge to the zone would mean a zone can
+make dwl hold memory outside the zone's limit. The proxy's pool limits apply
+either way, and a pool stays charged while the compositor may still hold it:
+until it and its buffers are deleted and no surface shows one of them,
+counting each buffer a synchronized subsurface committed until wlroots applies
+that subsurface's cache.
 
 ## Wayland shared memory
 
@@ -143,13 +147,30 @@ faulted, still charged to dwl, and can do it again with a new pool, a
 screen's worth of pages a frame. No bound on live pools closes that, at any
 size.
 
+**The desktop's bound.** dwl runs in a cgroup of its own,
+`kryptik-desktop`. It sits beside `kryptik/` rather than in it, so nothing
+that takes a leaf there for a zone's or a proxy's counts the compositor as
+one. Its `memory.max` is a quarter of the memory, and 1 GiB at least
+(`desktop_memory_max` in `cgroup.rs`). The session's last step asks the
+launch daemon for the desktop (`kryptik-launch --desktop`), and the daemon
+starts dwl there: dwl moves itself in before it takes the user's ids
+(compositor-separation.md). What dwl faults for a zone is charged there. A
+zone that pushes the compositor past the bound therefore ends the desktop,
+not the machine: the kernel reclaims, and then kills inside the group. The
+daemon refuses an asker that is root, or any process in a zone's or a
+proxy's cgroup. A desktop the daemon cannot start runs as the session's
+own process, unbounded, and the session log says so. Each login gets a new
+group. Zones keep running when the desktop ends, and the pages of the pools
+they keep stay charged to the old group. Removing it moves those charges to
+the root, so they do not count against the next desktop's bound.
+
 **Closing it, not built yet.** The proxy would keep a duplicate of each
 pool's descriptor and punch the pool's range (`fallocate` with
 `FALLOC_FL_PUNCH_HOLE`) once the pool and its buffers are gone and no surface
 shows one, which frees what dwl faulted. It would refuse a pool it could not
 punch: a read-only descriptor, a write seal, a file that is not shared
 memory. What dwl holds for a zone is then bounded by the per-zone bound, and
-a `memory.max` on the session's cgroup contains the rest. Checking at a
+the desktop's bound contains the rest. Checking at a
 commit that a buffer's pages are resident is not enough, as the zone can
 punch them itself between the check and dwl's read. The measurement under
 Tests confirms the charge on the installed kernel.

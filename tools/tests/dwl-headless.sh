@@ -114,4 +114,47 @@ else
     dwlpid=""
     [[ "$rc" -eq 0 ]] && check ok "dwl stopped on SIGTERM" || check no "dwl stopped on SIGTERM with ${rc}: $(tail -5 "$W/dwl.log" | tr '\n' ' ')"
 fi
+
+# The session's split, wired as kryptik-launch --desktop wires it: the spawner (dwl -X) waits for
+# dwl's display and starts its command there on dwl's status; dwl (-S) names its display to it,
+# and dwl's end ends the spawner and the command.
+if grep -q 'spawnerloop' "$DWL/dwl.c"; then
+    python3 -I - "$DWL/dwl" "$W" > "$W/split.out" 2>&1 <<'EOF'
+import fcntl, os, signal, socket, subprocess, sys, time
+dwl, w = sys.argv[1], sys.argv[2]
+env = dict(os.environ, WLR_BACKENDS="headless", WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="1")
+a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+r, wr = os.pipe()
+# Above 9 first, so placing one at 3 or 4 cannot overwrite the other; bash, as dash takes no
+# descriptor above 9 in a redirection.
+hi = [fcntl.fcntl(fd, fcntl.F_DUPFD, 10) for fd in (a.fileno(), r, b.fileno())]
+cmd = ["/bin/sh", "-c", f'echo "$WAYLAND_DISPLAY" > {w}/split-display; exec cat > {w}/split-status']
+spawner = subprocess.Popen(["/bin/bash", "-c", 'exec "$@" 3<&"$A" 4<&"$R"', "bash", dwl, "-X", "3", "--"] + cmd,
+                           pass_fds=hi[:2], env=dict(env, A=str(hi[0]), R=str(hi[1])), stdout=subprocess.DEVNULL)
+comp = subprocess.Popen(["/bin/bash", "-c", 'exec "$@" 3<&"$B"', "bash", dwl, "-S", "3"],
+                        pass_fds=hi[2:], env=dict(env, B=str(hi[2])), stdout=wr, stderr=open(f"{w}/split-dwl.log", "w"))
+a.close()
+b.close()
+for fd in (r, wr, *hi):
+    os.close(fd)
+def waited(test, seconds):
+    end = time.time() + seconds
+    while time.time() < end and not test():
+        time.sleep(0.2)
+    return test()
+shown = waited(lambda: os.path.exists(f"{w}/split-status") and os.path.getsize(f"{w}/split-status") > 0, 20)
+named = open(f"{w}/split-display").read().strip() if os.path.exists(f"{w}/split-display") else ""
+comm = open(f"/proc/{spawner.pid}/comm").read().strip() if spawner.poll() is None else "gone"
+print("PASS" if shown and named.startswith("wayland-") else "FAIL",
+      f": the spawner started its command on dwl's display ({named or 'none'}) with dwl's status")
+print("PASS" if comm == "dwl-spawner" else "FAIL", f": the spawner names itself dwl-spawner ({comm})")
+comp.send_signal(signal.SIGTERM)
+dwl_rc = comp.wait(timeout=10)
+ended = waited(lambda: spawner.poll() is not None, 10)
+print("PASS" if dwl_rc == 0 and ended else "FAIL", f": dwl stopped ({dwl_rc}), and its spawner with it ({spawner.poll()})")
+EOF
+    sed 's/^\(PASS\|FAIL\) :/\1:/' "$W/split.out"
+    grep -q '^FAIL' "$W/split.out" && { fail=1; tail -5 "$W/split-dwl.log" 2>/dev/null; }
+    grep -q '^PASS' "$W/split.out" || { echo "FAIL: the split did not run: $(tail -3 "$W/split.out" | tr '\n' ' ')"; fail=1; }
+fi
 exit "$fail"

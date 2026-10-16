@@ -170,6 +170,13 @@ r="$(ask 'clipboard-move alpha alpha\n')"
 if [[ "$r" == "error: clipboard-move needs two different zone names"* ]]; then pass "S3f clipboard-move refuses the same zone twice"; else fail "S3f: $r"; fi
 r="$(ask 'clipboard-move alpha beta\n')"
 if [[ "$r" == "error:"* && "$r" == *"not running"* ]]; then pass "S3g clipboard-move of zones that are not running is refused: ${r%$'\n'}"; else fail "S3g: $r"; fi
+# The desktop is the installed system's: a root run would start dwl in its cgroup.
+if (( PRIVILEGED == 1 )); then
+    elsewhere "S3h desktop starts dwl in kryptik-desktop without group kryptik (gui-check's desktop-memory-bound, dwl-without-group)"
+else
+    r="$(ask 'desktop\nend\n')"
+    if [[ "$r" == "error: a developer instance starts no desktop"* ]]; then pass "S3h desktop needs a root daemon, and says why: ${r%$'\n'}"; else fail "S3h desktop: $r"; fi
+fi
 r="$(ask 'runtime\n')"
 if [[ "$r" == ok\ /* ]]; then
     d="${r#ok }"; d="${d%$'\n'}"
@@ -206,6 +213,13 @@ r="$(ask 'run alpha pass=fd\narg /bin/true\nend\n')"
 if [[ "$r" == "error: pass=fd needs exactly one descriptor, got 0"* ]]; then pass "S5c pass=fd without a descriptor is refused"; else fail "S5c: $r"; fi
 r="$(python3 "$WORK/client.py" "$SOCK" latefd 'run alpha pass=fd\narg /bin/true\n' "$WORK/f1")"
 if [[ "$r" == "error: a descriptor must accompany the first bytes"* ]]; then pass "S5d a descriptor arriving after the first bytes is refused"; else fail "S5d: $r"; fi
+r="$(ask 'status\n' "$WORK/f1" "$WORK/f2")"
+if [[ "$r" == "error: at most one descriptor"* ]]; then pass "S5f two descriptors are refused to any verb but desktop"; else fail "S5f: $r"; fi
+# The desktop takes three, each checked for its kind (a regular file is no spawner's socket).
+r="$(ask 'desktop\nend\n' "$WORK/f1" "$WORK/f2" "$WORK/f1")"
+if [[ "$r" == "error:"* && "$r" != "error: at most"* ]]; then pass "S5g the desktop's three descriptors reach its verb: ${r%$'\n'}"; else fail "S5g: $r"; fi
+r="$(ask 'desktop\nend\n' "$WORK/f1" "$WORK/f2" "$WORK/f1" "$WORK/f2")"
+if [[ "$r" == "error: at most 3 descriptors"* ]]; then pass "S5h four descriptors are refused"; else fail "S5h: $r"; fi
 if [[ "$(ask 'status\n')" == "end" ]]; then pass "S5e the daemon still answers after the refusals"; else fail "S5e daemon wedged"; fi
 
 # --- launches ----------------------------------------------------------------
