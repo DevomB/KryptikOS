@@ -138,3 +138,15 @@ fn a_mapping_is_found_by_its_name() {
     assert_eq!(dm_device(&s.join("block"), "kryptik-stick-personal"), None);
     let _ = fs::remove_dir_all(&s);
 }
+
+#[test]
+fn an_opened_device_must_still_be_the_zones_mapping() {
+    let s = sys("dm-opened");
+    let d = s.join("dev/block/253:4/dm");
+    fs::create_dir_all(&d).unwrap();
+    fs::write(d.join("name"), "kryptik-stick-work\n").unwrap();
+    assert!(mapping_at(&s, libc::makedev(253, 4), "kryptik-stick-work"));
+    assert!(!mapping_at(&s, libc::makedev(253, 4), "kryptik-stick-personal"), "another zone's mapping");
+    assert!(!mapping_at(&s, libc::makedev(253, 5), "kryptik-stick-work"), "another device, the number reused");
+    let _ = fs::remove_dir_all(&s);
+}

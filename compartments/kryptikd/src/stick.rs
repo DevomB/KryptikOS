@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -291,10 +291,23 @@ pub fn open_for(zone: &str) -> Result<(fs::File, Grant), String> {
     if !Path::new("/sys/class/block").join(&g.partition).exists() {
         return Err(format!("{} was pulled out", g.what));
     }
-    let dev = dm_device(Path::new("/sys/block"), &mapping_name(zone)).ok_or("the stick was ejected")?;
+    let name = mapping_name(zone);
+    let dev = dm_device(Path::new("/sys/block"), &name).ok_or("the stick was ejected")?;
     let f = fs::OpenOptions::new().read(true).write(g.writable).custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(format!("/dev/{dev}")).map_err(|e| format!("/dev/{dev}: {e}"))?;
+    // The name became a number before the open: an eject and a new mapping in between would give
+    // that number to another device, a zone's volume among them, so what opened must be this one.
+    let rdev = f.metadata().map_err(|e| format!("/dev/{dev}: {e}"))?.rdev();
+    if !mapping_at(Path::new("/sys"), rdev, &name) {
+        return Err("the stick was ejected".into());
+    }
     Ok((f, g))
+}
+
+/// Whether the block device numbered `rdev` is the device-mapper mapping called `name`, from `sys`.
+fn mapping_at(sys: &Path, rdev: u64, name: &str) -> bool {
+    let (major, minor) = (libc::major(rdev), libc::minor(rdev));
+    read_trim(&sys.join(format!("dev/block/{major}:{minor}/dm/name"))).as_deref() == Some(name)
 }
 
 #[cfg(test)]
