@@ -61,6 +61,8 @@ SYS_BLOCK=/sys/class/block
 # kryptikd's record of the camera's grant (camera.rs), and its note that the driver stayed loaded.
 CAMERA=/run/kryptik-camera/grant
 CAMERA_STAYED=/run/kryptik-camera/stayed
+# kryptikd's count of sleeps that failed after a zone volume's key went (suspend.rs).
+LEFT=/run/kryptik-launch/left-waiting
 
 die() { echo "kryptik-chrome: $*" >&2; exit 1; }
 
@@ -185,6 +187,7 @@ run_status() {
     # the state partition is back after a sleep, a window asks for each waiting zone's passphrase.
     (
         shown="" filming="" warned="" suspended="" blocks="" seen=""
+        left="$(cat "$LEFT" 2>/dev/null)"
         while :; do
             mic="$("$SOUND" --control status 2>/dev/null | sed -n 's/^zone \([^ ]*\) .* granted.*/\1/p' | head -1)"
             if [ -n "$mic" ] && [ "$mic" != "$shown" ]; then
@@ -203,11 +206,13 @@ run_status() {
             warned="$w"
             # Opened when the state partition comes back from a suspension seen here: kryptikd
             # suspends each zone's volume first, and a look in between would find a zone waiting
-            # with the state partition up and start a terminal that then stops on it.
+            # with the state partition up and start a terminal that then stops on it. A sleep that
+            # failed after a volume's key went, the state partition never suspended, counts itself.
+            l="$(cat "$LEFT" 2>/dev/null)"
             if dm_suspended kryptik-state; then
                 suspended=1
-            elif [ -n "$suspended" ]; then
-                suspended=""
+            elif [ -n "$suspended" ] || [ "$l" != "$left" ]; then
+                suspended="" left="$l"
                 [ -z "$(waiting_zones)" ] || "$TERMINAL" /usr/bin/kryptik-chrome --waiting &
             fi
             # A stick plugged in opens the window that asks which zone gets it.

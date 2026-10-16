@@ -278,7 +278,9 @@ to resume can run from the root while the state partition is suspended.
    `kryptikd volume resume` as root); the daemon's `info` says `waiting yes`
    meanwhile, and a launch into it is told why. Once the state partition is
    back the chrome opens a window that asks for each waiting zone's
-   passphrase in turn (`kryptik-launch --resume`, on its own terminal);
+   passphrase in turn (`kryptik-launch --resume`, on its own terminal), as
+   it does when a sleep fails after a zone volume's key went, which the
+   daemon counts in `/run/kryptik-launch/left-waiting`;
    the menu shows the zone WAITING and takes it with `p<N>`, and
    `kryptik-launch --ask`, as the zone keys run it, asks for it instead of
    starting the zone again. Stopped without its

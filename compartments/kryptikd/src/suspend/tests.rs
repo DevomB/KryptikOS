@@ -66,3 +66,22 @@ fn an_update_holding_its_lock_keeps_the_machine_awake() {
     assert!(!locked_out(&p), "released with its descriptor");
     let _ = fs::remove_file(&p);
 }
+
+#[test]
+fn a_seal_that_left_a_zone_waiting_counts_itself() {
+    let dir = std::env::temp_dir().join(format!("kryptikd-left-waiting-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("left-waiting");
+    count_left_waiting(&f);
+    assert_eq!(fs::read_to_string(&f).unwrap(), "1\n");
+    count_left_waiting(&f);
+    assert_eq!(fs::read_to_string(&f).unwrap(), "2\n", "each such seal counts once more");
+    fs::write(&f, "garbage").unwrap();
+    count_left_waiting(&f);
+    assert_eq!(fs::read_to_string(&f).unwrap(), "1\n", "a count it cannot read starts again");
+    assert!(!dir.join("left-waiting.new").exists(), "the count is renamed into place");
+    // No directory to write in: nothing, and no panic.
+    count_left_waiting(&dir.join("absent").join("left-waiting"));
+    let _ = fs::remove_dir_all(&dir);
+}
