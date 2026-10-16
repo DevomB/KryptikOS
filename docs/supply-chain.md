@@ -54,7 +54,12 @@ source is kept (its own host, the GNU fallback, its mirror rows, Gentoo's
 distfiles) whether it has the file, without downloading it, and fails on a
 source no place serves. A source a single place serves is named as a
 warning: it is one outage from failing, and the cue for a mirror row. CI
-runs the probe every week, and by hand.
+runs the probe every week, and by hand. The same job runs
+`./tools/fetch-sources.sh --check-mirrors`, which downloads each mirror
+row's file and holds it to the lock: a row serving other bytes, or a row
+for no source, fails it, and a row that no longer serves the pinned version
+is a warning. A new row is checked the same way, by a dispatch of CI on its
+branch, so no candidate needs downloading anywhere else.
 
 The lock alone is trust on first use: `--lock` records the hash of whatever
 was downloaded. Before committing a lock file or changing an entry, run

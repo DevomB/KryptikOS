@@ -9,6 +9,7 @@
 #   ./tools/fetch-sources.sh --list-image NAME  only those software image NAME is built from
 #   ./tools/fetch-sources.sh --crates CRATE     name, version and hash of the crates CRATE's lock names
 #   ./tools/fetch-sources.sh --probe            ask every place each source is kept for its file: no download
+#   ./tools/fetch-sources.sh --check-mirrors    download each mirror row's file and hold it to the lock
 #
 # The software images' sources are pinned in build/images/versions.env and locked in
 # build/images/sources.lock, so a change to them is no input of stage 04. They are kept in
@@ -29,8 +30,9 @@ case "${1:-}" in
     --list-image) MODE="list-image"; IMAGE="${2:?--list-image needs an image name}" ;;
     --crates) MODE="crates"; CRATE="${2:?--crates needs a .crate file}" ;;
     --probe) MODE="probe" ;;
+    --check-mirrors) MODE="check-mirrors" ;;
     "")     ;;
-    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, --crates CRATE, --probe, or nothing)" ;;
+    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, --crates CRATE, --probe, --check-mirrors, or nothing)" ;;
 esac
 
 # Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs, and crates.io.
@@ -239,7 +241,7 @@ case "$MODE" in
         exit 0 ;;
 esac
 
-[[ "$MODE" == probe ]] || mkdir -p "$KRYPTIK_SOURCES"
+[[ "$MODE" == probe || "$MODE" == check-mirrors ]] || mkdir -p "$KRYPTIK_SOURCES"
 
 # The last mirror for every source fetched over HTTPS, Gentoo's copies of upstream's own files,
 # kept while an ebuild names the version: a fallback for current pins, not an archive. Here, not in
@@ -415,6 +417,52 @@ lookup_hash() {   # lookup_hash FILE LOCK
     [[ -f "$2" ]] || return 1
     awk -v f="$1" '$2 == f { print $1; found=1 } END { exit !found }' "$2"
 }
+
+# Each mirror row's file, downloaded and held to the lock as a fetch holds it. A row serving other
+# bytes is wrong, and so is a row for no source here, which never applies: either fails. A row that
+# no longer serves the pinned version is a warning, as a distribution's copy lapses when the pin
+# moves past it. Nothing is kept.
+if [[ "$MODE" == check-mirrors ]]; then
+    # Read whole first: a manifest that fails part way stops the check, not just its count.
+    sources="$(all_sources)"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    rows=0 good=0 lapsed=0 wrong=0 names=" "
+    while IFS='|' read -r owner name ver url _; do
+        [[ -n "$name" ]] || continue
+        names+="${name} "
+        lock="$KRYPTIK_LOCK"; [[ "$owner" == . ]] || lock="$KRYPTIK_IMAGES_LOCK"
+        want="$(lookup_hash "$(basename "$url")" "$lock")" || want=""
+        while read -r m; do
+            rows=$((rows + 1))
+            rm -f "${tmp}/file"
+            if ! curl -fsSL --connect-timeout 15 --max-time 900 --max-filesize 4294967296 --retry 2 --retry-delay 3 \
+                    -o "${tmp}/file" "$m" 2>/dev/null; then
+                warn "${name} ${ver}: ${m} does not serve it"
+                lapsed=$((lapsed + 1))
+            elif [[ -z "$want" ]]; then
+                err "${name} ${ver}: no lock entry for $(basename "$url") to hold ${m} to"
+                wrong=$((wrong + 1))
+            elif [[ "$(sha256_of "${tmp}/file")" == "$want" ]]; then
+                ok "${name} ${ver}: ${m} has the lock's bytes"
+                good=$((good + 1))
+            else
+                err "${name} ${ver}: ${m} serves other bytes than the lock's, or answers a missing file with a page"
+                wrong=$((wrong + 1))
+            fi
+        done < <(mirrors_of "$name" "$ver")
+    done <<< "$sources"
+    if [[ -f "$MIRRORS" ]]; then
+        while read -r p; do
+            [[ "$names" == *" ${p} "* ]] && continue
+            err "a row for ${p}, which is no source here"
+            wrong=$((wrong + 1))
+        done < <(awk '!/^[[:space:]]*#/ && NF { print $1 }' "$MIRRORS" | sort -u)
+    fi
+    [[ "$wrong" -eq 0 ]] || die "${wrong} wrong mirror row(s) in ${MIRRORS#"$KRYPTIK_ROOT"/}: correct or remove them"
+    ok "${rows} mirror row(s): ${good} with the lock's bytes, ${lapsed} no longer serving the pin"
+    exit 0
+fi
 
 if [[ "$MODE" == "lock" ]]; then
     warn "Lock mode: recording checksums of whatever downloads."

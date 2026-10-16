@@ -11,7 +11,8 @@
 #   signature  the suffix of upstream's own signature kept beside it there, or - for none
 #
 # Each row was checked when added: the mirror's file has the lock's hash, and its signature was
-# made by the key upstream's own is made by.
+# made by the key upstream's own is made by. CI holds every row's file to the lock again each week
+# (fetch-sources.sh --check-mirrors), and a dispatch of CI checks a new row on its branch.
 file               https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/file-{VER}.tar.gz                                 -
 attr               https://mirror.csclub.uwaterloo.ca/nongnu/attr/attr-{VER}.tar.gz                                   -
 attr               https://sources.voidlinux.org/attr-{VER}/attr-{VER}.tar.gz                                         -
