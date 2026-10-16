@@ -107,17 +107,32 @@ names one. The toolchain is already pinned by hash (`build/config/rust.lock`).
 
 ### The update manifest
 
-`tools/release-manifest.sh` writes a `created:` line from the clock into
-every manifest, so the manifest's text differs in every build until it takes
-`SOURCE_DATE_EPOCH`.
+`tools/release-manifest.sh` writes a `created:` line into every manifest,
+from `SOURCE_DATE_EPOCH` where the build gives it and from the clock
+otherwise.
 
 ### The media
 
-`mkfs.vfat` picks a random volume ID, mtools stamps the ESP's files with the
-current time, sfdisk picks random disk and partition GUIDs for the USB
-image, and xorriso dates the ISO. All four take fixed values: IDs derived
-from the version, times from `SOURCE_DATE_EPOCH`. The media wrap everything
-above, so they are compared last.
+Left alone, `mkfs.vfat` takes each FAT's volume ID from the clock and dates
+its label, sfdisk draws the USB image's disk and partition GUIDs at random,
+mtools stamps what it writes with the clock in the local zone, and xorriso
+dates the ISO and records each file's owner and mode as the build left them.
+Stage 06 fixes each:
+
+- Each FAT's volume ID, and the USB image's GUIDs, are hashed from the
+  version, the root hash and what the filesystem or disk is.
+- `mkfs.vfat --invariant` gives the label a fixed time.
+- mtools and xorriso take `SOURCE_DATE_EPOCH`; stage 06 runs in UTC, since
+  FAT keeps local time.
+- The ISO's files are dated `SOURCE_DATE_EPOCH` and recorded owned by root
+  and read-only (`-r`).
+
+Stage 06 makes the USB medium's ESP, the USB image and the ISO twice each,
+two seconds apart (FAT keeps times to two seconds), and fails if a second
+copy differs from the first. The tools are the build machine's own
+(dosfstools, mtools, util-linux, and xorriso, which also writes its version
+into the ISO), so two builds' media match only where those versions do. The
+media wrap everything above, so they are compared last.
 
 ## The module key
 
@@ -214,10 +229,11 @@ diverse-double-compiling test.
 
 ## Recommendation
 
-1. **Reproducible root and kernels:** done for stage 06's root image and the
-   kernel's banner; left are a fixed randstruct seed, `--remap-path-prefix`
-   for the Rust binaries, the manifest's `created:` line, deterministic
-   static archives, and fixed IDs and times on the media.
+1. **Reproducible root and kernels:** done for stage 06's root image, the
+   kernel's banner, the Rust binaries' paths, the manifest's `created:`
+   line, the static archives that ship (stage 06 strips their members'
+   times and owners with `strip -D`), and the media's IDs and times; left is
+   a fixed randstruct seed.
 2. **CI compares** two builds weekly and for every tag, with one throwaway
    key medium, on two runner images.
 3. **Releases sign modules in two passes** and publish the module

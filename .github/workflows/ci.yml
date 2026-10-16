@@ -37,9 +37,10 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      # alsa-lib's headers for tools/tests/sound-tools.sh, which compiles the sound's C programs.
-      - name: Install shellcheck and alsa-lib's headers
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck libasound2-dev
+      # alsa-lib's headers for tools/tests/sound-tools.sh, which compiles the sound's C programs, and
+      # dosfstools, mtools and xorriso for media-same.sh, which stage 06's media functions need.
+      - name: Install shellcheck, alsa-lib's headers and the media tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck libasound2-dev dosfstools mtools xorriso
 
       - name: Syntax check every script
         run: |
