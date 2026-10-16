@@ -3,10 +3,13 @@
 # fixed numbers, so no account needs a line under /etc. Each zone with sound gets a directory
 # that root owns and the mixer's group writes; kryptikd binds it into the zone, and the mixer,
 # which cannot replace it, makes the zone's socket in it. The control socket's directory is
-# setgid kryptik, the session's group: no zone has a path to it.
+# setgid kryptik, the session's group: no zone has a path to it. The microphone's holder is
+# recorded in marks, which the mixer alone writes and anyone on the host reads, as the
+# compositor does without the session's group.
 d=/run/kryptik-sound
 install -d -m 0755 "$d" "$d/zones" || exit 1
 install -d -m 2750 -o 87 -g kryptik "$d/control" || exit 1
+install -d -m 0755 -o 87 "$d/marks" || exit 1
 /usr/bin/kryptikd sound zones --zones /usr/lib/kryptik/zones > "$d/zones.list" || exit 1
 while read -r name _; do
     install -d -m 0775 -g 11 "$d/zones/$name" || exit 1

@@ -42,7 +42,7 @@
 #define CONTROL_PATH RUN_DIR "/control/socket"
 /* Who may record, for the bar dwl draws over a fullscreen window, which covers the chrome's
  * window that says so: the zone's name, or nothing. */
-#define HOLDER_PATH RUN_DIR "/control/microphone"
+#define HOLDER_PATH RUN_DIR "/marks/microphone"
 #define RATE 48000
 #define CHANNELS 2
 #define FRAME 4                         /* bytes: two s16le samples */
@@ -382,14 +382,15 @@ static void status(struct conn *c)
  * dwl never reads half a name. */
 static void record_holder(void)
 {
-	static const char tmp[] = RUN_DIR "/control/.microphone";
-	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0640);
+	static const char tmp[] = RUN_DIR "/marks/.microphone";
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
 	if (fd < 0) {
 		say("%s: %s", tmp, strerror(errno));
 		return;
 	}
-	/* Group kryptik's to read, whatever the umask: the session's compositor reads it. */
-	if (fchmod(fd, 0640) < 0)
+	/* Anyone's to read on the host, whatever the umask: the compositor reads it without the
+	 * session's group, and it names only the zone the screen shows. */
+	if (fchmod(fd, 0644) < 0)
 		say("%s: %s", tmp, strerror(errno));
 	if (granted >= 0)
 		dprintf(fd, "%s\n", zones[granted].name);

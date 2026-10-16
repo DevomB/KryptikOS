@@ -71,7 +71,7 @@ static const unsigned char zonefont[128][7] = {
  * over a fullscreen window names: that window covers the chrome's own windows
  * that say so. Each comes from a file only its writer can leave, the mixer's
  * for the microphone and kryptikd's for the camera. */
-#define MICMARK "/run/kryptik-sound/control/microphone"
+#define MICMARK "/run/kryptik-sound/marks/microphone"
 #define CAMMARK "/run/kryptik-camera/grant"
 #define MARKEVENTS (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE)
 #define SOUNDUID 87 /* the mixer's, build/services/kryptik-sound/run */
@@ -166,7 +166,7 @@ marksupdate(void)
 \tClient *c;
 
 \tif (markfd >= 0) {
-\t\tinotify_add_watch(markfd, "/run/kryptik-sound/control", MARKEVENTS);
+\t\tinotify_add_watch(markfd, "/run/kryptik-sound/marks", MARKEVENTS);
 \t\tinotify_add_watch(markfd, "/run/kryptik-camera", MARKEVENTS);
 \t}
 \treadmark(MICMARK, SOUNDUID, "", mic, sizeof(mic));

@@ -616,12 +616,12 @@ sleep 6
 # opening on the grant, ends the fullscreen as any zone 0 window does; closed, Alt+e puts it back.
 # The mixer's directory is first made anew, as a restart that made it again would: the compositor's
 # watch stays with the old one, and the mark must come all the same.
-micdir=/run/kryptik-sound/control
+micdir=/run/kryptik-sound/marks
 micrec="$micdir/microphone"
 mic_record() {   # mic_record OWNER ZONE: a record of who may record, as OWNER writes it
-    printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0640 "$micrec.t" && mv -f "$micrec.t" "$micrec"
+    printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0644 "$micrec.t" && mv -f "$micrec.t" "$micrec"
 }
-mv "$micdir" "$micdir.before" && install -d -m 2750 -o 87 -g kryptik "$micdir"
+mv "$micdir" "$micdir.before" && install -d -m 0755 -o 87 "$micdir"
 mic_record 87 untrusted
 modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid-marks.err"
 marks_cam="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
