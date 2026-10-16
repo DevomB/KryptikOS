@@ -332,10 +332,12 @@ EOF
 
 # make_ext4 TREE IMAGE BYTES UUID [LABEL]: the sysroot's mke2fs (1.47.1), which clamps every time it
 # writes to SOURCE_DATE_EPOCH, in the chroot; TREE and IMAGE are under the work tree's images/.
+# Blocks of 4096 bytes, the size dm-verity reads every image in: ext4 refuses a smaller block on
+# that device (EINVAL), and mke2fs.conf gives a file system under 512 MiB blocks of 1024.
 make_ext4() {
     rm -f "$2"; truncate -s "$3" "$2"
     env KRYPTIK_ROOT="$KRYPTIK_ROOT" KRYPTIK_WORK="$KRYPTIK_WORK" KRYPTIK_SOURCES="$KRYPTIK_SOURCES" NO_COLOR=1 \
-        "$CHROOTD" run /usr/sbin/mke2fs -q -F -t ext4 -L "${5:-kryptik-root}" -O '^has_journal' -U "$4" \
+        "$CHROOTD" run /usr/sbin/mke2fs -q -F -t ext4 -b 4096 -L "${5:-kryptik-root}" -O '^has_journal' -U "$4" \
         -E "root_owner=0:0,hash_seed=$4" -d "/kryptik-work${1#"$KRYPTIK_WORK"}" "/kryptik-work${2#"$KRYPTIK_WORK"}" \
         > /dev/null
 }
@@ -386,6 +388,8 @@ pack_image() {
         cmp -s "$img" "${img}.again" || { echo "FAIL: two mke2fs runs over image ${name} wrote different images" >&2; return 1; }
         rm -f "${img}.again"
     fi
+    [[ "$(dumpe2fs -h "$img" 2>/dev/null | sed -n 's/^Block size: *//p')" == 4096 ]] \
+        || { echo "FAIL: image ${name} is not of 4096-byte blocks, which dm-verity reads it in" >&2; return 1; }
     local data_blocks=$(( fs_bytes / 4096 ))
     local salt; salt="$(sha256_of "$img")"
     local total=$(( fs_bytes + fs_bytes / 64 + 4 * 1024 * 1024 ))

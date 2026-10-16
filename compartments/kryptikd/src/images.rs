@@ -291,13 +291,7 @@ fn verified_list(base: &str) -> Result<Manifest, String> {
     let text = read_bounded(&list, LIST_MAX)
         .map_err(|e| format!("no software images are kept for this root ({}...): {e}", &base[..12]))?;
     let sig = read_bounded(&list.with_extension("manifest.sig"), SIG_MAX)?;
-    let dir = crate::update::make_scratch(Path::new("/run/kryptik"))?;
-    let checked = fs::write(dir.join("manifest"), &text)
-        .and_then(|_| fs::write(dir.join("manifest.sig"), &sig))
-        .map_err(|e| format!("{}: {e}", dir.display()))
-        .and_then(|_| crate::update::check_images(&dir));
-    let _ = fs::remove_dir_all(&dir);
-    checked.map_err(|e| format!("the image list for this root is refused: {e}"))?;
+    signed(&text, &sig).map_err(|e| format!("the image list for this root is refused: {e}"))?;
     let m = parse(std::str::from_utf8(&text).map_err(|_| "the image list is not text".to_string())?)?;
     if m.base != base {
         return Err(format!("the image list kept for this root is for another root ({})", m.release));
@@ -305,8 +299,70 @@ fn verified_list(base: &str) -> Result<Manifest, String> {
     Ok(m)
 }
 
+/// Whether `sig` signs `text` as an image list, checked as nobody on a copy of these bytes.
+fn signed(text: &[u8], sig: &[u8]) -> Result<(), String> {
+    let dir = crate::update::make_scratch(Path::new("/run/kryptik"))?;
+    let checked = fs::write(dir.join("manifest"), text)
+        .and_then(|_| fs::write(dir.join("manifest.sig"), sig))
+        .map_err(|e| format!("{}: {e}", dir.display()))
+        .and_then(|_| crate::update::check_images(&dir));
+    let _ = fs::remove_dir_all(&dir);
+    checked.map(|_| ())
+}
+
+/// A medium's images.manifest and images.manifest.sig in `dir`, checked as the installer has them
+/// before it writes anything: signed as an image list, read as a kept list is, for the root `base`
+/// it installs, and naming only images `dir` holds as NAME.img at the size the list signs. Each
+/// image's hash is checked as it is copied (image-store.sh). With `out`, the very bytes checked are
+/// written there for the installer to keep: a medium read a second time could answer otherwise.
+pub fn check_medium(dir: &Path, base: &str, out: Option<&Path>) -> Result<String, String> {
+    check_medium_with(dir, base, out, &signed)
+}
+
+fn check_medium_with(
+    dir: &Path,
+    base: &str,
+    out: Option<&Path>,
+    check: &dyn Fn(&[u8], &[u8]) -> Result<(), String>,
+) -> Result<String, String> {
+    let text = read_bounded(&dir.join("images.manifest"), LIST_MAX)?;
+    let sig = read_bounded(&dir.join("images.manifest.sig"), SIG_MAX)?;
+    check(&text, &sig).map_err(|e| format!("the medium's image list is refused: {e}"))?;
+    let m = parse(std::str::from_utf8(&text).map_err(|_| "the image list is not text".to_string())?)?;
+    if m.base != base {
+        return Err(format!("the medium's image list ({}) is for another root than the one it installs", m.release));
+    }
+    for img in &m.images {
+        let file = dir.join(format!("{}.img", img.name));
+        let md = fs::symlink_metadata(&file).map_err(|e| format!("image {}: {}: {e}", img.name, file.display()))?;
+        if !md.is_file() || md.len() != img.bytes {
+            return Err(format!("image {}: {} holds {} bytes, and the list signs {}", img.name, file.display(), md.len(), img.bytes));
+        }
+    }
+    if let Some(out) = out {
+        crate::files::write_atomic(&out.join("images.manifest"), &[&text[..]], 0o600, None)
+            .and_then(|_| crate::files::write_atomic(&out.join("images.manifest.sig"), &[&sig[..]], 0o600, None))
+            .map_err(|e| format!("{}: {e}", out.display()))?;
+    }
+    Ok(format!("{} images of release {} for this root\n", m.images.len(), m.release))
+}
+
 fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, String> {
-    let f = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    use std::os::unix::fs::OpenOptionsExt;
+    /* A regular file alone, looked at before it is opened: a medium's ISO can carry a link, a FIFO,
+     * which would block the read, or a device node, some of which act on an open. Checked again
+     * once open, should it have been swapped in between. */
+    if !fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if !f.metadata().map_err(|e| format!("{}: {e}", path.display()))?.is_file() {
+        return Err(format!("{} is not a regular file", path.display()));
+    }
     let mut bytes = Vec::new();
     f.take(max + 1).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     if bytes.len() as u64 > max {
@@ -330,9 +386,12 @@ fn open(img: &Image) -> Result<String, String> {
     let mapper = format!("kryptik-image-{}-{}", img.name, img.root_hash);
     let dev = format!("/dev/mapper/{mapper}");
     if Path::new(&dev).exists() {
-        // dm-verity marks a mapping corrupted at the first block that reads back other than signed.
         let status = crate::volume::run("veritysetup status", "veritysetup", &["status", mapper.as_str()], None).map_err(|e| e.1)?;
-        if status.lines().any(|l| l.split_whitespace().eq(["status:", "corrupted"])) {
+        let (its, corrupted) = status_of(&status, &img.root_hash);
+        if !its {
+            return Err(format!("image {}: {dev} is there, and is not this image's dm-verity mapping", img.name));
+        }
+        if corrupted {
             return Err(format!(
                 "image {} read back other than signed while in use, so it is not used again until this machine restarts",
                 img.name
@@ -354,10 +413,21 @@ fn open(img: &Image) -> Result<String, String> {
         // A journal is never replayed: the device under it is read-only.
         mount(&dev, &at, "ext4", Some("noload"))?;
     }
-    if !Path::new(&at).join("usr").is_dir() {
+    // Its own directory: a link there would stack whatever it names over /usr.
+    if !fs::symlink_metadata(Path::new(&at).join("usr")).is_ok_and(|m| m.is_dir()) {
         return Err(format!("image {} holds no usr directory to stack over /usr", img.name));
     }
     Ok(at)
+}
+
+/// What `veritysetup status` says of a mapping found under an image's name: whether it is that
+/// image's, dm-verity with the root hash its list signs as read from the active table, and whether
+/// dm-verity has marked it corrupted, at the first block that read back other than signed.
+fn status_of(status: &str, root_hash: &str) -> (bool, bool) {
+    let field = |key: &str| status.lines().find_map(|l| l.trim().strip_prefix(key)).map(str::trim);
+    let its = field("type:") == Some("VERITY") && field("root hash:") == Some(root_hash);
+    let corrupted = status.lines().any(|l| l.split_whitespace().eq(["status:", "corrupted"]));
+    (its, corrupted)
 }
 
 /// Read-only, with no set-id programs and no device files, whatever the image holds.

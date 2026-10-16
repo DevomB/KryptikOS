@@ -6,6 +6,7 @@
 #![cfg_attr(fuzzing, no_main, allow(dead_code))]
 
 mod broker;
+mod camera;
 mod caps;
 mod cgroup;
 mod consent;
@@ -24,6 +25,7 @@ mod seccomp;
 mod serve;
 mod sound;
 mod spawn;
+mod stick;
 mod supplicant;
 mod suspend;
 mod time;
@@ -111,9 +113,27 @@ USAGE:
     kryptikd sound zones              the zones zone 0's mixer serves, a line each,
                                       NAME and UID: the uid the zone's root maps to,
                                       the only peer its socket takes
+    kryptikd stick list               the USB stick partitions a zone may be given
+                                      now, a line each: NAME and how the chrome names it
+    kryptikd stick grant ZONE PART ro|rw
+                                      give ZONE the partition PART, read-only or to
+                                      write (root; the session asks the launch daemon)
+    kryptikd stick eject ZONE         take it back: every read and write on it fails
+    kryptikd camera grant ZONE        give ZONE the camera until it is taken back, the
+                                      zone stops or the screen locks (root; the
+                                      session asks the launch daemon)
+    kryptikd camera revoke            take it back: the zone's node goes, and every
+                                      descriptor on it fails
+    kryptikd camera status            the zone that holds it, or none
     kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
                                       checked as nobody on copies: how kryptik-update
                                       apply, which runs as root, has a release checked
+    kryptikd check-images DIR BASE [OUT]
+                                      a medium's images.manifest and its signature in
+                                      DIR, checked as a kept list is, for root BASE,
+                                      and each image it names there at its size: the
+                                      installer's check before it writes anything;
+                                      with OUT, the two files as checked, written there
 
     --rootfs DIR   base directory for zone data (default: /var/lib/kryptik/zones);
                    the zone sees its own directory as /home/NAME
@@ -294,7 +314,25 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        "stick" => cmd_stick(&zone_dir, &args),
+        "camera" => cmd_camera(&zone_dir, &args),
         "time" => cmd_time(&args),
+        "check-images" => match args.as_slice() {
+            [_, dir, base] | [_, dir, base, _] => match images::check_medium(Path::new(dir), base, args.get(3).map(Path::new)) {
+                Ok(said) => {
+                    print!("{said}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("kryptikd: check-images: {why}");
+                    ExitCode::FAILURE
+                }
+            },
+            _ => {
+                eprintln!("usage: kryptikd check-images DIR BASE [OUT]");
+                ExitCode::from(2)
+            }
+        },
         "check-release" => match args.as_slice() {
             [_, dir] => match update::check_release(Path::new(dir)) {
                 Ok(said) => {
@@ -822,6 +860,81 @@ fn cmd_sound_zones(dir: &Path) -> ExitCode {
         }
         Err(e) => {
             eprintln!("kryptikd: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_stick(dir: &Path, args: &[String]) -> ExitCode {
+    let word = |i: usize| args.get(i).map(String::as_str).filter(|a| !a.starts_with("--"));
+    let done = match (word(1), word(2), word(3), word(4)) {
+        (Some("list"), None, ..) => {
+            for p in stick::eligible() {
+                println!("{} {}", p.name, p.what);
+            }
+            return ExitCode::SUCCESS;
+        }
+        (Some("grant"), Some(name), Some(part), Some(mode @ ("ro" | "rw"))) => match load_zone(dir, name) {
+            Ok(zone) => stick::grant(&zone, part, mode == "rw").map(|g| format!("zone {name:?} given {}, {}", g.what, g.mode())),
+            Err(c) => return c,
+        },
+        (Some("eject"), Some(name), None, _) => match load_zone(dir, name) {
+            Ok(_) => match stick::eject(name) {
+                Ok(true) => Ok(format!("zone {name:?}: its stick taken back")),
+                Ok(false) => Err(format!("zone {name:?} holds no stick")),
+                Err(e) => Err(e),
+            },
+            Err(c) => return c,
+        },
+        _ => {
+            eprintln!("stick: usage: kryptikd stick list | grant ZONE PARTITION ro|rw | eject ZONE");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(said) => {
+            println!("{said}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: stick: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_camera(dir: &Path, args: &[String]) -> ExitCode {
+    let word = |i: usize| args.get(i).map(String::as_str).filter(|a| !a.starts_with("--"));
+    let done = match (word(1), word(2)) {
+        (Some("status"), None) => {
+            match camera::holder() {
+                Some(g) => println!("zone {} holds {} ({})", g.zone, g.name, g.node),
+                None => println!("none{}", if camera::stayed() { "; its driver stayed loaded" } else { "" }),
+            }
+            return ExitCode::SUCCESS;
+        }
+        (Some("grant"), Some(name)) => match load_zone(dir, name) {
+            Ok(zone) => camera::grant(&zone).map(|g| format!("zone {} holds {}", g.zone, g.name)),
+            Err(c) => return c,
+        },
+        (Some("revoke"), None) => match camera::revoke() {
+            Ok(Some(e)) if e.stayed => Ok(format!("taken back from zone {}; its driver stays loaded, still held", e.zone)),
+            Ok(Some(e)) => Ok(format!("taken back from zone {}", e.zone)),
+            Ok(None) => Ok("no zone held it".to_string()),
+            Err(e) => Err(e),
+        },
+        _ => {
+            eprintln!("camera: usage: kryptikd camera grant ZONE | revoke | status");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(said) => {
+            println!("{said}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("kryptikd: camera: {e}");
             ExitCode::FAILURE
         }
     }

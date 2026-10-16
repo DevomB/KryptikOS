@@ -52,6 +52,11 @@
  *                             each reader; says "copied" and "sent to a reader"
  *   wlprobe paste SECONDS     as oversize 0, and say each selection it is
  *                             offered: "pasted: TEXT", or "no selection"
+ *   wlprobe outputs           bind every wl_output offered, at version 4 at most,
+ *                             and print what each says, a line per event:
+ *                             "output ID geometry WxH mm make \"MAKE\" model
+ *                             \"MODEL\"", "mode WxH [current]", "scale N",
+ *                             "name \"NAME\"", "description \"TEXT\"", "done"
  *   wlprobe scale SECONDS     as oversize 0, and ask for the scale the window
  *                             is shown at (wp_fractional_scale_v1); says each
  *                             one the compositor sends, in 120ths
@@ -195,6 +200,22 @@ static int copy, paste, copied, offer_text;
 static const char *copy_text;
 static uint32_t ddm_id, dev_id, src_id, offer_id;
 static const char text_mime[] = "text/plain;charset=utf-8";
+
+/* outputs: the wl_output objects bound, ids out_first up to out_last. */
+static int outputs;
+static uint32_t out_first, out_last;
+
+/* A string argument at p within room bytes into out, empty if it does not fit; the bytes taken. */
+static size_t get_string(const unsigned char *p, size_t room, char *out, size_t size)
+{
+	out[0] = 0;
+	if (room < 4) return room;
+	uint32_t len = get32(p);
+	size_t total = 4 + (((size_t)len + 3) & ~(size_t)3);
+	if (total > room) return room;
+	if (len) snprintf(out, size, "%.*s", (int)(len - 1), (const char *)p + 4);
+	return total;
+}
 
 /* The window's colour, magenta, and a popup's, cyan: no zone's, and nothing else draws them. */
 static const uint32_t window_rgb = 0xff00ff, popup_rgb = 0x00ffff;
@@ -596,6 +617,26 @@ static int handle_one(void)
 			frame_wait = 0;
 			if (time(NULL) < anim_end) next_frame();
 		}
+	} else if (outputs && object >= out_first && object < out_last) {
+		/* wl_output: what the client is told of each monitor */
+		char a[128], m[128];
+		size_t room = (size_t)size - 8, at;
+		if (opcode == 0 && room >= 20) {      /* geometry(x, y, mm w, mm h, subpixel, make, model, transform) */
+			at = 20 + get_string(body + 20, room - 20, a, sizeof a);
+			get_string(body + at, room > at ? room - at : 0, m, sizeof m);
+			printf("output %u geometry %dx%d mm make \"%s\" model \"%s\"\n", object,
+				(int)get32(body + 8), (int)get32(body + 12), a, m);
+		} else if (opcode == 1 && room >= 16) { /* mode(flags, width, height, refresh) */
+			printf("output %u mode %ux%u%s\n", object, get32(body + 4), get32(body + 8), get32(body) & 1 ? " current" : "");
+		} else if (opcode == 2) {
+			printf("output %u done\n", object);
+		} else if (opcode == 3 && room >= 4) {
+			printf("output %u scale %d\n", object, (int)get32(body));
+		} else if (opcode == 4 || opcode == 5) {
+			get_string(body, room, a, sizeof a);
+			printf("output %u %s \"%s\"\n", object, opcode == 4 ? "name" : "description", a);
+		}
+		fflush(stdout);
 	} else if (scale && object == fscale_id && opcode == 0) {
 		/* wp_fractional_scale_v1.preferred_scale(scale), in 120ths */
 		printf("preferred scale %u/120\n", get32(body));
@@ -725,7 +766,8 @@ int main(int argc, char **argv)
 	if (argc < 2 || (strcmp(argv[1], "list") && strcmp(argv[1], "bind") && strcmp(argv[1], "oversize")
 	                 && strcmp(argv[1], "fullscreen") && strcmp(argv[1], "child") && strcmp(argv[1], "charge")
 	                 && strcmp(argv[1], "cursor") && strcmp(argv[1], "animate") && strcmp(argv[1], "popup")
-	                 && strcmp(argv[1], "copy") && strcmp(argv[1], "paste") && strcmp(argv[1], "scale"))
+	                 && strcmp(argv[1], "copy") && strcmp(argv[1], "paste") && strcmp(argv[1], "outputs")
+	                 && strcmp(argv[1], "scale"))
 	    || (!strcmp(argv[1], "bind") && (argc < 3 || argc > 4)) || (!strcmp(argv[1], "oversize") && argc < 4)
 	    || (!strcmp(argv[1], "oversize") && argc > 4 && strlen(argv[4]) > 255)
 	    || (!strcmp(argv[1], "fullscreen") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "late"))))
@@ -735,9 +777,9 @@ int main(int argc, char **argv)
 	    || (!strcmp(argv[1], "animate") && argc != 3)
 	    || (!strcmp(argv[1], "popup") && (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "grab"))))
 	    || (!strcmp(argv[1], "copy") && (argc != 4 || strlen(argv[3]) > 200))
-	    || (!strcmp(argv[1], "paste") && argc != 3)
+	    || (!strcmp(argv[1], "paste") && argc != 3) || (!strcmp(argv[1], "outputs") && argc != 2)
 	    || (!strcmp(argv[1], "scale") && argc != 3)) {
-		fprintf(stderr, "usage: wlprobe list | bind INTERFACE [NAME] | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS | scale SECONDS\n");
+		fprintf(stderr, "usage: wlprobe list | bind INTERFACE [NAME] | oversize EXTRA SECONDS [TITLE] | fullscreen SECONDS [late] | child SECONDS [late] | charge | cursor SECONDS [shape] | animate SECONDS | popup SECONDS [grab] | copy SECONDS TEXT | paste SECONDS | outputs | scale SECONDS\n");
 		return 2;
 	}
 	const char *own_id = getenv("WLPROBE_APP_ID");
@@ -769,6 +811,29 @@ int main(int argc, char **argv)
 	printf("globals %d\n", nglobals);
 
 	if (!strcmp(argv[1], "list")) return errored ? 3 : 0;
+	if (!strcmp(argv[1], "outputs")) {
+		/* Every one bound, then a sync: what they say comes before its answer. */
+		unsigned char b[128];
+		outputs = 1;
+		/* The first new id is 4, after the registry and its sync: one that skips is refused. */
+		next_id = COMPOSITOR;
+		out_first = next_id;
+		for (int i = 0; i < nglobals; i++) {
+			if (strcmp(globals[i].iface, "wl_output")) continue;
+			size_t n = 0;
+			put32(b + n, globals[i].name); n += 4;
+			n += put_string(b + n, "wl_output");
+			put32(b + n, globals[i].version < 4 ? globals[i].version : 4); n += 4;
+			put32(b + n, next_id++); n += 4;
+			if (send_msg(2, 0, b, n)) return 1;       /* wl_registry.bind */
+		}
+		out_last = next_id;
+		put32(body, next_id++);
+		if (send_msg(1, 0, body, 4)) return 1;       /* wl_display.sync */
+		if (drain(2000) < 0 && !errored) { printf("closed while the outputs spoke\n"); return 1; }
+		printf("outputs %u\n", out_last - out_first);
+		return errored ? 3 : 0;
+	}
 	if (!strcmp(argv[1], "oversize")) return hold_oversize(atoi(argv[2]), atoi(argv[3]), argc > 4 ? argv[4] : "oversize");
 	if (!strcmp(argv[1], "fullscreen")) { askfs = 1; late = argc == 4; return hold_oversize(0, atoi(argv[2]), "fullscreen"); }
 	if (!strcmp(argv[1], "child")) { child = argc == 4 ? 2 : 1; return hold_oversize(0, atoi(argv[2]), "child-parent"); }

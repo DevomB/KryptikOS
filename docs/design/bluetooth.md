@@ -2,10 +2,11 @@
 
 A call needs a headset as much as a camera, and many headsets speak only
 Bluetooth. Kryptik builds none: the kernel has no Bluetooth, no
-controller's firmware ships, and nothing pairs. [ADR-021](../decisions.md)
-put Bluetooth, when it comes, in a zone of its own, carrying audio only.
-This design weighs that against shipping without it, and against what the
-hand-off to zone 0's mixer would add there.
+controller's firmware ships, and nothing pairs. The
+[laptop design](laptop.md#bluetooth) put Bluetooth, when it comes, in a zone
+of its own, carrying audio only. This design weighs that against shipping
+without it, and against what the hand-off to zone 0's mixer would add
+there.
 [ADR-027](../decisions.md) decides it: none for 1.0, then a zone of its own.
 
 ## What a Bluetooth stack is
@@ -33,7 +34,7 @@ hand-off to zone 0's mixer would add there.
   every zone's kernel.
 - **A keyboard.** BlueZ took an unauthenticated device's HID connection and
   its keystrokes (CVE-2023-45866): a keyboard over Bluetooth types into
-  whatever has focus, the chrome included. ADR-021 rules keyboards out.
+  whatever has focus, the chrome included. ADR-027 leaves keyboards out.
 - **The namespaces.** The kernel refuses `AF_BLUETOOTH` sockets outside the
   initial network namespace (`bt_sock_create`), and asks the initial user
   namespace for what BlueZ needs: `CAP_NET_ADMIN` for a trusted management
@@ -49,7 +50,7 @@ hand-off to zone 0's mixer would add there.
   the dongle; those work as USB headsets do, the kernel's Bluetooth code is
   not built, and only the dongle hears the radio. Keyboards and mice with a
   USB receiver work as USB devices already do.
-- **A Bluetooth zone, with a kernel patch.** ADR-021's direction. A Kryptik
+- **A Bluetooth zone, with a kernel patch.** The laptop design's direction. A Kryptik
   patch lets one network namespace, the Bluetooth zone's, make Bluetooth
   sockets, and has each Bluetooth capability check ask that namespace's
   user namespace, so the zone's own root has what bluetoothd needs and no
@@ -71,7 +72,7 @@ hand-off to zone 0's mixer would add there.
   RFCOMM and SCO then never run for it. No free stack carries a headset's
   audio today: BTstack's licence allows only non-commercial use, and Bumble
   is built for testing.
-- **BlueZ in zone 0.** Rejected by ADR-021: a large daemon, root, on D-Bus,
+- **BlueZ in zone 0.** Rejected by ADR-027: a large daemon, root, on D-Bus,
   which zone 0 does not run, parsing what the radio brings.
 
 ## The hand-off to the mixer
@@ -126,6 +127,6 @@ plays a camera:
 
 ## Not covered
 
-- Keyboards and mice, which ADR-021 rules out.
+- Keyboards and mice, which ADR-027 leaves out.
 - File transfer, tethering, LE Audio and hearing aids.
 - Which USB devices are accepted at all, the dongles among them.
