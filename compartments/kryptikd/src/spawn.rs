@@ -1052,11 +1052,12 @@ pub fn run_in_zone(
         Ok(false) => {}
         Err(e) => eprintln!("kryptikd[zone {}]: taking its USB stick back: {e}", zone.name),
     }
-    // And the camera.
-    if crate::camera::holder().is_some_and(|g| g.zone == zone.name) {
-        match crate::camera::revoke() {
+    // And the camera, which only a root launch's zone can hold; others cannot take its lock.
+    if id.privileged {
+        match crate::camera::revoke_from(&zone.name) {
             Ok(Some(e)) if e.stayed => eprintln!("kryptikd: zone {:?}: the camera taken back; its driver stays loaded", zone.name),
-            Ok(_) => eprintln!("kryptikd: zone {:?}: the camera taken back", zone.name),
+            Ok(Some(_)) => eprintln!("kryptikd: zone {:?}: the camera taken back", zone.name),
+            Ok(None) => {}
             Err(e) => eprintln!("kryptikd[zone {}]: taking the camera back: {e}", zone.name),
         }
     }
