@@ -148,6 +148,14 @@ else
 fi
 
 granted="$(ctl grant untrusted 2>&1)"
+# The mixer's record of who may record, which dwl's bar over a fullscreen window shows: the
+# mixer's own file, which no one else may write, naming the zone.
+holder="$(stat -c '%u %a %F' /run/kryptik-sound/control/microphone 2>&1) $(cat /run/kryptik-sound/control/microphone 2>&1)"
+if [[ "$holder" == "87 640 regular file untrusted" ]]; then
+    pass "holder-recorded" "the mixer records the grant for the compositor's bar: ${holder}"
+else
+    fail "holder-recorded" "${holder}"
+fi
 ( zrun untrusted 30 -- "$PROBE" record 3 ) &
 shown() { ctl status | grep -q '^zone untrusted .* granted recording$'; }
 if [[ "$granted" == ok ]] && wait_for 15 shown; then
@@ -168,6 +176,11 @@ ungranted() { ! ctl status | grep -q ' granted'; }
 zrun untrusted 30 -- "$PROBE" record 1
 if wait_for 5 ungranted && [[ "$ZRC" -eq 1 && "$ZOUT" == *"not granted to this zone"* ]]; then
     pass "grant-ends-with-zone" "the grant went with the zone that held it"
+    if [[ -f /run/kryptik-sound/control/microphone && ! -s /run/kryptik-sound/control/microphone ]]; then
+        pass "holder-cleared" "the record names no zone once the grant is gone"
+    else
+        fail "holder-cleared" "$(stat -c '%u %a %s' /run/kryptik-sound/control/microphone 2>&1): $(cat /run/kryptik-sound/control/microphone 2>&1)"
+    fi
 else
     fail "grant-ends-with-zone" "status: $(ctl status | tr '\n' ' ') record: rc ${ZRC}: ${ZOUT}"
 fi
@@ -250,6 +263,46 @@ else
     fail "microphone-window" "$(tr '\n' '|' < "$watch")"
 fi
 
+# Taken back from the menu, the grant goes as it does with the zone: the window says so and
+# closes.
+watch="$LOG/microphone-taken.out"
+ctl grant untrusted > /dev/null
+su -s /bin/sh "$USER_NAME" -c "/usr/bin/kryptik-chrome --microphone untrusted" > "$watch" 2>&1 &
+wp=$!
+listening() { grep -qx 'not recording' "$watch"; }
+wait_for 15 listening
+menu c
+if wait_for 15 closed && grep -q '^The microphone is no longer zone untrusted' "$watch"; then
+    pass "microphone-window-taken-back" "c took the microphone back, and the window closed: $(grep -v '^=' "$watch" | tr '\n' '|')"
+else
+    kill "$wp" 2>/dev/null
+    fail "microphone-window-taken-back" "$(tr '\n' '|' < "$watch"); status: $(ctl status | tr '\n' ' ')"
+fi
+
+# One zone at a time: while untrusted records, the menu says so, and a grant to work moves the
+# microphone there and ends untrusted's record.
+ctl grant untrusted > /dev/null
+( zrun untrusted 60 -- "$PROBE" record 20 ) &
+rp=$!
+wait_for 15 shown
+menu r
+if grep -qx 'Sound: volume [0-9]*; the microphone: untrusted, RECORDING NOW' "$LOG/menu.out"; then
+    pass "chrome-says-recording" "$(grep '^Sound:' "$LOG/menu.out")"
+else
+    fail "chrome-says-recording" "$(grep '^Sound:' "$LOG/menu.out"); status: $(ctl status | tr '\n' ' ')"
+fi
+ctl grant work > /dev/null
+moved() { st "zone work" | grep -q ' granted$' && ! st "zone untrusted" | grep -q ' granted'; }
+ended() { ! kill -0 "$rp" 2>/dev/null; }
+if wait_for 5 moved && wait_for 15 ended && [[ "$(cat /run/kryptik-sound/control/microphone 2>&1)" == work ]]; then
+    pass "microphone-moves" "a grant to work took the microphone from untrusted, whose record ended: $(tr '\n' ' ' < "$LOG/untrusted.out")"
+else
+    fail "microphone-moves" "status: $(ctl status | tr '\n' ' '); holder: $(cat /run/kryptik-sound/control/microphone 2>&1); untrusted: $(tr '\n' ' ' < "$LOG/untrusted.out")"
+fi
+# A record that did not end keeps untrusted up, which the rounds below start again.
+kill "$rp" 2>/dev/null; "$KD" stop untrusted > /dev/null 2>&1; wait "$rp" 2>/dev/null
+ctl revoke > /dev/null
+
 # The keys' steps: dwl runs these for the volume keys.
 ctl volume -5 > /dev/null; ctl volume -5 > /dev/null; stepped="$(st master)"
 ctl volume +100 > /dev/null; top="$(st master)"
@@ -257,6 +310,46 @@ if [[ "$stepped" == "master 90" && "$top" == "master 100" ]]; then
     pass "volume-steps" "two steps down came to 90, and a step past the top stops at 100"
 else
     fail "volume-steps" "${stepped}; ${top}"
+fi
+
+# --- a USB sound card ----------------------------------------------------------------------
+# A USB card plugged in takes the sound: the mixer picks a card each time it opens one, a USB
+# device first, and closes it after 5 s with nothing to play. Pulled out mid-tone, the card is
+# closed and the rest of the tone goes to the built-in one, where the host hears it (550 Hz).
+ctl volume untrusted 100 > /dev/null
+pcm_running() { grep -q '^state: RUNNING' "/proc/asound/card$1/pcm0p/sub0/status" 2>/dev/null; }
+usb_card() { sed -n 's/^ *\([0-9][0-9]*\) \[[^]]*\]: USB-Audio - .*/\1/p' /proc/asound/cards | head -1; }
+usb_in() { [[ -n "$(usb_card)" ]]; }
+usb_out() { [[ -z "$(usb_card)" ]]; }
+echo "GT USB-SOUND-PLUG"
+if wait_for 30 usb_in; then
+    pass "usb-sound-card" "$(grep 'USB-Audio' /proc/asound/cards | tr -s ' ')"
+else
+    fail "usb-sound-card" "cards: $(tr '\n' ' ' < /proc/asound/cards) kernel: $(klog)"
+fi
+c="$(usb_card)"
+mpid="$(pgrep -xo kryptik-sound)"; stopped="$(mixer_said 'the card stopped')"
+sleep 6
+( zrun untrusted 60 -- "$PROBE" tone 550 12 ) &
+tp=$!
+if [[ -n "$c" ]] && wait_for 15 pcm_running "$c" && ! pcm_running 0; then
+    pass "plays-on-usb" "a zone's tone went to card ${c}, the USB one, and the built-in card stayed closed"
+else
+    fail "plays-on-usb" "USB card ${c:-none}: $(head -1 "/proc/asound/card${c:-9}/pcm0p/sub0/status" 2>&1); card 0: $(head -1 /proc/asound/card0/pcm0p/sub0/status 2>&1)"
+fi
+echo "GT USB-SOUND-PULL"
+if wait_for 30 usb_out && wait_for 10 pcm_running 0 && [[ "$(pgrep -xo kryptik-sound)" == "$mpid" ]] \
+   && [[ "$(mixer_said 'the card stopped')" -gt "$stopped" ]]; then
+    pass "usb-pull-moves-sound" "pulled out mid-tone, the USB card was closed and the tone went on on the built-in card, the mixer running on"
+else
+    fail "usb-pull-moves-sound" "cards: $(tr '\n' ' ' < /proc/asound/cards); card 0: $(head -1 /proc/asound/card0/pcm0p/sub0/status 2>&1); mixer ${mpid}, now $(pgrep -xo kryptik-sound); $(uncaught | grep -a 'kryptik-sound' | tail -2 | tr '\n' ' ')"
+fi
+wait "$tp"
+said="$(tr '\n' ' ' < "$LOG/untrusted.out")"
+if [[ "$said" == *"played 12 s of 550 Hz"* ]]; then
+    pass "usb-pull-zone-plays-on" "the zone played its tone to the end across the pull: ${said}"
+else
+    fail "usb-pull-zone-plays-on" "${said}"
 fi
 
 echo "GT SUMMARY passed=${PASS} failed=${FAIL}"

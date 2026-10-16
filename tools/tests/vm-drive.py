@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test what vm-drive.py's steps consume from the serial stream, against a stand-in shell."""
-import importlib.util, os, socket, sys, tempfile, threading, time
+import importlib.util, json, os, socket, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("vm_drive", os.path.join(HERE, "..", "image", "vm-drive.py"))
@@ -132,6 +132,61 @@ sock4 = os.path.join(T, "serial4")
 Pieces(sock4, [b"KRC1=1", b"27\r\n"]).start()
 d4 = vm.Drive(sock4, None, 2)
 check("a status cut across two reads is taken whole", d4.finish("KRC1", "cmd").group(1), b"127")
+
+print("-- plug: and unplug: ask QEMU for a stick, and pull it out")
+class Qmp(threading.Thread):
+    """A stand-in QMP socket: what it was asked, in order; blockdev-del refused while BUSY lasts."""
+    def __init__(self, path, busy):
+        super().__init__(daemon=True)
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(path); self.srv.listen(8)
+        self.asked = []; self.busy = busy
+
+    def run(self):
+        while True:
+            c, _ = self.srv.accept()
+            f = c.makefile("rwb", buffering=0)
+            f.write(b'{"QMP": {}}\n')
+            for line in f:
+                msg = json.loads(line)
+                if msg["execute"] != "qmp_capabilities":
+                    self.asked.append((msg["execute"], msg.get("arguments")))
+                if msg["execute"] == "blockdev-del" and self.busy > 0:
+                    self.busy -= 1
+                    f.write(b'{"error": {"class": "GenericError", "desc": "in use"}}\n')
+                else:
+                    f.write(b'{"return": {}}\n')
+            c.close()
+
+sock5 = os.path.join(T, "serial5"); qmp5 = os.path.join(T, "qmp5")
+Guest(sock5, {}).start()
+q = Qmp(qmp5, busy=1); q.start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock5, "--qmp", qmp5, "--timeout", "5",
+                            "plug:stick1:stick.img:ro", "unplug:stick1"]
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("plug: and unplug: succeed", rc, 0)
+want_file = {"driver": "file", "filename": os.path.abspath("stick.img"), "read-only": True}
+check("plug: adds the file read-only, then a USB stick on the xHCI port", q.asked[:2], [
+    ("blockdev-add", {"driver": "raw", "node-name": "stick1", "read-only": True, "file": want_file}),
+    ("device_add", {"driver": "usb-storage", "id": "stick1", "drive": "stick1", "bus": "xhci.0", "removable": True})])
+check("unplug: removes the device, then its drive once QEMU lets it go", q.asked[2:], [
+    ("device_del", {"id": "stick1"}), ("blockdev-del", {"node-name": "stick1"}), ("blockdev-del", {"node-name": "stick1"})])
+
+print("-- plug-sound: and unplug-sound: add a USB sound card on an audio backend, and pull it out")
+sock6 = os.path.join(T, "serial6"); qmp6 = os.path.join(T, "qmp6")
+Guest(sock6, {}).start()
+q6 = Qmp(qmp6, busy=0); q6.start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock6, "--qmp", qmp6, "--timeout", "5",
+                            "plug-sound:usbsound:snd2", "unplug-sound:usbsound"]
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("plug-sound: and unplug-sound: succeed", rc, 0)
+check("the card goes on the xHCI port with its backend, and comes off with no drive to remove", q6.asked, [
+    ("device_add", {"driver": "usb-audio", "id": "usbsound", "audiodev": "snd2", "bus": "xhci.0"}),
+    ("device_del", {"id": "usbsound"})])
 
 print()
 print(f"{PASS} passed, {FAIL} failed")

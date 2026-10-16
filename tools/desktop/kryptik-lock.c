@@ -255,6 +255,7 @@ static void cover(struct output *o)
 }
 
 static int request(const char *text, int fd);
+static int answer(int s, char *why, size_t n);
 
 /* Ask for the machine's sleep. Only a locked session is suspended, so before the compositor has
  * locked it is remembered for then; the answer comes once the machine has woken. */
@@ -294,12 +295,32 @@ static void write_pidfile(void)
 	close(fd);
 }
 
+/* No zone watches the room while the user is away: the camera goes back as the screen locks. */
+static void camera_back(void)
+{
+	char why[96], line[160];
+	int s = request("camera-revoke\n", -1);
+	if (s < 0 || !answer(s, why, sizeof why)) {
+		snprintf(line, sizeof line, "the camera was not taken back: %s", s < 0 ? "no launch daemon" : why);
+	} else if (strcmp(why, "ok none") == 0) {
+		return;
+	} else {
+		char *zone = why + 3, *stayed = strstr(zone, " stayed");
+		if (stayed)
+			*stayed = 0;
+		snprintf(line, sizeof line, "the camera was taken back from zone %s%s", zone,
+			 stayed ? "; its driver stays loaded" : "");
+	}
+	say(line);
+}
+
 static void lock_locked(void *data, struct ext_session_lock_v1 *l)
 {
 	(void)data; (void)l;
 	locked = 1;
 	say("locked");
 	write_pidfile();
+	camera_back();
 	if (suspend_wanted)
 		suspend_now();
 }

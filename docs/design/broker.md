@@ -38,6 +38,7 @@ version\n                              -> kryptik-broker 1 zone=NAME\n
 clipboard-set <mime> <len>\n<bytes>    -> ok\n
 clipboard-get\n                        -> ok <mime> <len>\n<bytes>  |  empty\n
 transfer <zone> <name>\n  (+1 fd)      -> ok <final name>\n
+stick\n                                -> ok ro|rw <what>\n (+1 fd)  |  error: <reason>\n
 clipboard-move ...                     -> error: clipboard-move is a zone 0 act, not a zone verb\n
 time-offset, update-latest,
 update-poll, update-put                   the net zone only; see the clock and update channel
