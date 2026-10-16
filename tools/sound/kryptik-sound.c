@@ -729,6 +729,7 @@ int main(int argc, char **argv)
 		if (control >= 0)
 			p[n] = (struct pollfd){ .fd = control, .events = POLLIN }, of[n++] = NULL;
 		long long now = now_ms();
+		int pending = 0;
 		for (int i = 0; i < MAX_CONNS; i++) {
 			struct conn *c = &conns[i];
 			if (!c->fd)
@@ -737,6 +738,7 @@ int main(int argc, char **argv)
 				end_conn(c);
 				continue;
 			}
+			pending |= c->kind == HELLO || c->kind == CONTROL;
 			/* A stream whose ring is full is not read: its zone waits. One that hung up is
 			 * not watched, only mixed until it ends. */
 			if (c->hup)
@@ -754,6 +756,10 @@ int main(int argc, char **argv)
 				of[n + i] = NULL;
 			n += m > 0 ? m : 0;
 		}
+		/* With the card closed and no connection that must say what it is in time, nothing is
+		 * due: the mixer sleeps until something connects, and a laptop's processor with it. */
+		if (!pending)
+			timeout = -1;
 		if (out || in || playing())
 			timeout = 10;
 		if (poll(p, (nfds_t)n, timeout) < 0 && errno != EINTR) {
