@@ -269,9 +269,9 @@ inputs() {
 # The machine's sound, sorted as docs/design/laptop-audio.md sorts laptops:
 # the audio controllers on PCI and what took them, AMD's coprocessor among
 # them, the HD Audio codecs, the endpoints the NHLT table describes for
-# Intel's DSP, the SoundWire parts ACPI describes, the speaker amplifiers ACPI
-# names, and the names AMD's drivers look for to find microphones. Model and
-# part IDs only, which no machine has alone.
+# Intel's DSP, the SoundWire parts ACPI describes under either, the speaker
+# amplifiers ACPI names, and the names AMD's drivers look for to find
+# microphones. Model and part IDs only, which no machine has alone.
 audio() {
     for d in "$SYS"/bus/pci/devices/*; do
         c="$(hex "$d/class")"; v="$(hex "$d/vendor")"
@@ -283,7 +283,7 @@ audio() {
         drv="$(target "$d/driver")"
         printf '%s %s class %s %s:%s rev %s driver %s\n' "$what" "${d##*/}" "$c" "$v" "$(hex "$d/device")" \
             "$(hex "$d/revision")" "${drv:--}"
-        [ "$what" = acp ] || soundwire "$d"
+        if [ "$what" = acp ]; then soundwire "$d" 0x00000005; else soundwire "$d" 0x40000000; fi
     done
     for c in "$SYS"/bus/hdaudio/devices/*; do
         [ -r "$c/vendor_id" ] && printf 'codec %s sub %s\n' "$(hex "$c/vendor_id")" "$(hex "$c/subsystem_id")"
@@ -309,13 +309,14 @@ audio() {
     [ -z "$names" ] || echo "acpi names:$names"
 }
 
-# soundwire DEVICE: the SoundWire controller ACPI describes under an HD Audio
-# controller, which the kernel finds at _ADR 0x40000000, and each part on its
+# soundwire DEVICE ADR: the SoundWire controller ACPI describes under a PCI
+# device at ADR, which the kernel finds there: Intel's at 0x40000000 under its
+# HD Audio controller, AMD's at 5 under its coprocessor. Then each part on its
 # links: MIPI's address holds the link in bits 51-48, the maker in 39-24 and
 # the part in 23-8.
 soundwire() {
     for s in "$1"/firmware_node/*/; do
-        [ "$(one "${s}adr")" = 0x40000000 ] || continue
+        [ "$(one "${s}adr")" = "$2" ] || continue
         found=""
         for p in "$s"*/; do
             x="$(one "${p}adr")"
