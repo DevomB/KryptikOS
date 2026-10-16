@@ -62,6 +62,7 @@ libglvnd           https://sources.voidlinux.org/libglvnd-{VER}/libglvnd-v{VER}.
 libdrm             https://ftp2.osuosl.org/pub/blfs/conglomeration/libdrm/libdrm-{VER}.tar.xz                         -
 # Void names its package after the series, so the row moves with a series change.
 wlroots            https://sources.voidlinux.org/wlroots0.19-{VER}/wlroots-{VER}.tar.gz                              -
+# kernel.org keeps each series in a directory of its own, so the row moves with a series change.
 linux              https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/linux-{VER}.tar.xz                           -
 xz                 https://deb.debian.org/debian/pool/main/x/xz-utils/xz-utils_{VER}.orig.tar.xz                      -
 zstd               https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/zstd-{VER}.tar.gz                                 -
