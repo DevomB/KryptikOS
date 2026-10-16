@@ -8,6 +8,7 @@
 #   ./tools/fetch-sources.sh --list-root        only the sources the root is built from
 #   ./tools/fetch-sources.sh --list-image NAME  only those software image NAME is built from
 #   ./tools/fetch-sources.sh --crates CRATE     name, version and hash of the crates CRATE's lock names
+#   ./tools/fetch-sources.sh --probe            ask every place each source is kept for its file: no download
 #
 # The software images' sources are pinned in build/images/versions.env and locked in
 # build/images/sources.lock, so a change to them is no input of stage 04. They are kept in
@@ -27,8 +28,9 @@ case "${1:-}" in
     --list-root) MODE="list-root" ;;
     --list-image) MODE="list-image"; IMAGE="${2:?--list-image needs an image name}" ;;
     --crates) MODE="crates"; CRATE="${2:?--crates needs a .crate file}" ;;
+    --probe) MODE="probe" ;;
     "")     ;;
-    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, --crates CRATE, or nothing)" ;;
+    *)      die "unknown argument: $1 (expected --root, --lock, --list, --list-root, --list-image NAME, --crates CRATE, --probe, or nothing)" ;;
 esac
 
 # Test hook: tools/tests/fetch-sources.sh substitutes a manifest of file:// URLs, and crates.io.
@@ -237,7 +239,7 @@ case "$MODE" in
         exit 0 ;;
 esac
 
-mkdir -p "$KRYPTIK_SOURCES"
+[[ "$MODE" == probe ]] || mkdir -p "$KRYPTIK_SOURCES"
 
 # The last mirror for every source fetched over HTTPS, Gentoo's copies of upstream's own files,
 # kept while an ebuild names the version: a fallback for current pins, not an archive. Here, not in
@@ -262,25 +264,30 @@ mirrors_of() {
     done < <(awk -v n="$1" '$1 == n { print $2 }' "$MIRRORS")
 }
 
-# fetch_one URL DEST [NAME VER]: try each mirror in order.
-fetch_one() {
-    local url="$1" dest="$2"
-    local -a urls=("$url")
-
+# locations_of URL [NAME VER]: every place the file may be had, in the order a fetch asks them.
+locations_of() {
+    local url="$1"
+    printf '%s\n' "$url"
     # GNU tarballs get a second mirror.
     if [[ -n "${MIRROR_GNU_FALLBACK:-}" && "$url" == "${MIRROR_GNU}/"* ]]; then
-        urls+=("${MIRROR_GNU_FALLBACK}/${url#"${MIRROR_GNU}/"}")
+        printf '%s\n' "${MIRROR_GNU_FALLBACK}/${url#"${MIRROR_GNU}/"}"
     fi
     # Then the source's own, where its host alone serves it.
-    local m
-    while read -r m; do urls+=("$m"); done < <(mirrors_of "${3:-}" "${4:-}")
+    mirrors_of "${2:-}" "${3:-}"
     # Every source has a last one: Gentoo's distfiles keep upstream's own files under a directory
     # named by the BLAKE2b of the file's name, and the lock holds the hash wherever the bytes came
     # from. www.freedesktop.org answers scripts with 418, which leaves libevdev's tarball there alone.
     if [[ -n "${MIRROR_DISTFILES:-}" && "$url" == https://* ]]; then
         local f="${url##*/}"
-        urls+=("${MIRROR_DISTFILES}/$(printf '%s' "$f" | b2sum | cut -c1-2)/${f}")
+        printf '%s\n' "${MIRROR_DISTFILES}/$(printf '%s' "$f" | b2sum | cut -c1-2)/${f}"
     fi
+}
+
+# fetch_one URL DEST [NAME VER]: try each mirror in order.
+fetch_one() {
+    local url="$1" dest="$2"
+    local -a urls
+    mapfile -t urls < <(locations_of "$url" "${3:-}" "${4:-}")
 
     # Resume, else start over: an over-long .part fails every resume (curl 33 or 36, HTTP 416).
     local u attempt=0
@@ -318,6 +325,47 @@ fetch_attempt() {
     fi
     return 1
 }
+
+# serves URL: whether URL answers for the file without sending it: HEAD, or a one-byte range where
+# a host refuses HEAD, as a presigned object store does for a release download. The last answer's
+# status decides, not curl's exit. --max-filesize stops a host that ignores the range and starts a
+# whole tarball; above a redirect's or an error page's body, as some curls apply it to each answer.
+# A timeout or a 5xx is asked twice more before the place counts as not serving.
+serves() {
+    curl -fsIL --connect-timeout 15 --max-time 45 -o /dev/null "$1" 2>/dev/null && return 0
+    local code
+    code="$(curl -sL -r 0-0 --max-filesize 65536 --connect-timeout 15 --max-time 45 --retry 2 --retry-delay 3 \
+        -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" || true
+    [[ "$code" == 200 || "$code" == 206 ]]
+}
+
+# Every place each source is kept, asked whether it has the file, nothing downloaded: a source no
+# place serves would stop a build from an empty cache, and one only a single place serves is one
+# outage away from that (docs/supply-chain.md).
+if [[ "$MODE" == probe ]]; then
+    total=0 lone=0 none=0
+    while IFS='|' read -r _ name ver url _; do
+        [[ -n "$name" ]] || continue
+        total=$((total + 1))
+        mapfile -t places < <(locations_of "$url" "$name" "$ver")
+        up=() down=()
+        for u in "${places[@]}"; do
+            if serves "$u"; then up+=("$u"); else down+=("$u"); fi
+        done
+        if [[ "${#up[@]}" -eq 0 ]]; then
+            err "${name} ${ver}: no place serves it (asked ${places[*]})"
+            none=$((none + 1))
+        elif [[ "${#up[@]}" -eq 1 ]]; then
+            warn "${name} ${ver}: only ${up[0]} serves it${down[*]:+; not ${down[*]}}"
+            lone=$((lone + 1))
+        else
+            ok "${name} ${ver}: ${#up[@]} of ${#places[@]} places${down[*]:+; not ${down[*]}}"
+        fi
+    done < <(all_sources)
+    [[ "$none" -eq 0 ]] || die "${none} of ${total} source(s) served by no place: a build from an empty cache stops at them"
+    ok "${total} source(s), each served somewhere; ${lone} by one place alone"
+    exit 0
+fi
 
 # crate_lock CRATE: name, version and hash of each crates.io package the crate's Cargo.lock names.
 crate_lock() {

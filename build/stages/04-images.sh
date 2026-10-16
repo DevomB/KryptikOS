@@ -123,7 +123,8 @@ build_image() {   # build_image NAME
     done
     MOUNTED="$top"
     mount -t overlay overlay -o "lowerdir=${lowers}${SYSROOT},upperdir=${top}/upper,workdir=${top}/overlay-work" "${top}/sysroot"
-    env KRYPTIK_WORK="$top" KRYPTIK_KRYPTIKD_BIN= KRYPTIK_WLPROXY_BIN= \
+    # The Rust binaries are the base system's; a mount point for one would be a file the image adds.
+    env KRYPTIK_WORK="$top" KRYPTIK_KRYPTIKD_BIN= KRYPTIK_WLPROXY_BIN= KRYPTIK_STICK_BIN= \
         "$CHROOTD" run /kryptik/build/stages/04-images.sh --inside "$name"
     unmount_image "$top"
     MOUNTED=""
