@@ -158,4 +158,21 @@ EOF
     grep -q '^FAIL' "$W/split.out" && { fail=1; tail -5 "$W/split-dwl.log" 2>/dev/null; }
     grep -q '^PASS' "$W/split.out" || { echo "FAIL: the split did not run: $(tail -3 "$W/split.out" | tr '\n' ' ')"; fail=1; }
 fi
+
+# The calls dwl makes once its filter is on, for that filter's list: dwl again under strace, a
+# client listing its globals and drawing a window, and each call named once (said, not required).
+if command -v strace > /dev/null 2>&1; then
+    WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1 \
+        strace -f -qq -o "$W/trace" "$DWL/dwl" -s "cat > /dev/null" > "$W/trace-dwl.log" 2>&1 &
+    tracer=$!
+    for _ in $(seq 40); do [[ -S "$RT/wayland-0" ]] && break; sleep 0.5; done
+    WAYLAND_DISPLAY=wayland-0 timeout 20 "$W/wlprobe" list > /dev/null 2>&1
+    WAYLAND_DISPLAY=wayland-0 timeout 20 "$W/wlprobe" oversize 0 3 kryptik-trace > /dev/null 2>&1
+    pkill -TERM -x -P "$tracer" dwl
+    wait "$tracer"
+    # dwl's own lines (the trace's first pid) after its seccomp call.
+    calls="$(awk 'NR == 1 { me = $1 } $1 == me && /seccomp\(SECCOMP_SET_MODE_FILTER/ { on = 1; next }
+                  on && $1 == me && match($2, /^[a-z_0-9]+\(/) { print substr($2, 1, RLENGTH - 1) }' "$W/trace" | sort -u)"
+    echo "INFO: dwl's calls once confined ($(wc -w <<<"$calls")): $(tr '\n' ' ' <<<"$calls")"
+fi
 exit "$fail"
