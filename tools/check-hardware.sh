@@ -190,6 +190,11 @@ examine() {
     [[ "$sb" == on ]] || lacks "Secure Boot is ${sb:-unknown}"
     [[ "$lock" == confidentiality ]] || lacks "lockdown is ${lock:-unknown}, not confidentiality"
     fact microcode "$(section cpu "$r" | field microcode)"
+    # Whether a program built for shadow stacks runs with one, which only a machine shows.
+    # No level asks for it.
+    local shstk
+    shstk="$(section cpu "$r" | field 'shadow stacks')"
+    fact shstk "${shstk:-not in this report}"
     # What confines a device's DMA, and Thunderbolt's level. No level asks for it.
     local iommu tb dma
     iommu="$(section firmware "$r" | field iommu)"

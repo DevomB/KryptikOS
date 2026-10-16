@@ -61,6 +61,12 @@ microphones sit on Intel's DSP or AMD's coprocessor, codecs on SoundWire or
 amplifiers in front of the speakers, each with what drives it. No level asks
 for any of it.
 
+Its `shstk` line says whether a program built for shadow stacks runs with
+one there: the kernel turns them on where the processor has them, Intel's
+from Tiger Lake and AMD's from Zen 3. The virtual machines that test each
+release have none, so only such a machine shows how a program built for
+them fares with a library built without. No level asks for it.
+
 ## Trying a laptop
 
 A listing's levels speak for installing, booting with Secure Boot, the display
@@ -79,6 +85,7 @@ let the row's note name what did not work:
 | a zone playing sound | the built-in speakers play it where the listing's `audio` line names an HD Audio codec and nothing beyond it |
 | unplug the mains, then plug it in | the menu's Power line follows, with the battery's charge |
 | `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
+| Firefox in `untrusted`: Alt+p, its number and `b` | a window opens; where the listing's `shstk` line says yes, this is the only test of Firefox starting with shadow stacks on, and a failure names SHSTK in what it prints |
 
 A laptop that wakes from the lid and from `kryptik suspend` is the proof that
 the idle sleep, `~/.config/kryptik/lock-sleep`, waits for ([the user

@@ -44,6 +44,7 @@ model: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
 vendor, family/model/stepping: GenuineIntel, 6/140/1
 microcode: 0xa4
 threads running: 4
+shadow stacks: yes
 present: 0-7, online: 0-3, smt: off
 microcode: Current revision: 0x000000a4
 memory: 15902 MiB
@@ -207,6 +208,11 @@ vary passthrough 's/^iommu: .*/iommu: dmar0; groups: 12 identity/; /^thunderbolt
 has passthrough "  dma        on, but in passthrough: no group translates a device's DMA (dmar0; groups: 12 identity)" "an IOMMU whose every group is identity, said so"
 vary olddma '/^iommu: /d; /^thunderbolt /d'
 has olddma "  dma        not in this report" "a report from before the line"
+has as-is "  shstk      yes" "whether a program built for shadow stacks runs with one"
+vary noshstk 's/^shadow stacks: yes$/shadow stacks: no/'
+has noshstk "  shstk      no" "and a machine where none does, said so"
+vary oldshstk '/^shadow stacks: /d'
+has oldshstk "  shstk      not in this report" "a report from before the line"
 
 echo "-- each thing a certified listing needs"
 short medium    's/^booted: .*/booted: the usb medium/'           "not taken on an installed system (booted: the usb medium)"
