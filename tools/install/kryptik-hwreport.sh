@@ -386,6 +386,16 @@ laptop() {
     ok="$(one "$st/success")"; ko="$(one "$st/fail")"; last="$(one "$st/last_hw_sleep")"; all="$(one "$st/total_hw_sleep")"
     printf 'sleep stats: %s successful, %s failed, hardware asleep %s us last, %s us in all\n' \
         "${ok:--}" "${ko:--}" "${last:--}" "${all:--}"
+    # Who counts that time: Intel's or AMD's power controller driver, bound to its device.
+    pmc=""
+    for d in "$SYS"/bus/platform/drivers/intel_pmc_core "$SYS"/bus/platform/drivers/amd_pmc; do
+        for l in "$d"/*; do
+            [ -L "$l" ] || continue
+            case "${l##*/}" in module) continue ;; esac
+            pmc="${pmc:+$pmc }${d##*/}"; break
+        done
+    done
+    printf 'power controller: %s\n' "${pmc:-none}"
     # Intel's image processing units by PCI ID: the IPU6 and IPU7 ones 6.18's drivers bind (ipu6.h,
     # staging ipu7.h), and IPU8's, which staging ipu7 names but does not bind yet.
     for d in "$SYS"/bus/pci/devices/*; do
