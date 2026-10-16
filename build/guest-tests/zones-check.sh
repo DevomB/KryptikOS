@@ -1497,27 +1497,28 @@ else
 fi
 
 # --- zones: resource limits and lifecycle -----------------------------------
-STORM='import os, time
+# Threads, which pids.max counts as it counts processes: as many forked Pythons as the browser's
+# limit would fill the VM's memory, which untrusted's memory_max does not bound below. Daemon
+# threads, so every one ends as the interpreter exits after its line.
+STORM='import threading, time
+threading.stack_size(65536)
 n = 0
-for i in range(3000):
+for i in range(10000):
     try:
-        p = os.fork()
-    except BlockingIOError:
+        threading.Thread(target=time.sleep, args=(300,), daemon=True).start()
+    except RuntimeError:
         break
-    if p == 0:
-        time.sleep(300); os._exit(0)
     n += 1
-print("FORKED=%d" % n)
+print("STARTED=%d" % n)
 print("LIMIT-SURVIVED")'
-# Python, as bash retries a failed fork for about 15 s and would not reach pids.max in time.
 zrun untrusted 60 -- /usr/bin/python3 -c "$STORM"
 if [[ "$ZOUT" == *LIMIT-SURVIVED* ]]; then
-    forked="$(grep -o 'FORKED=[0-9]*' "$LOG/untrusted.out" | cut -d= -f2)"
+    started="$(grep -o 'STARTED=[0-9]*' "$LOG/untrusted.out" | cut -d= -f2)"
     limit="$(sed -n 's/^pids_max *= *\([0-9]*\).*/\1/p' "$Z/untrusted.toml")"
     # At most the limit, and at least half of it, or the check proves nothing.
-    [[ -n "$forked" && "$forked" -le "${limit:-1024}" && "$forked" -ge $(( ${limit:-1024} / 2 )) ]] && pass "pids-limit" "bounded at pids_max=$limit (forked $forked before EAGAIN), zone survived" || fail "pids-limit" "forked=$forked limit=$limit"
+    [[ -n "$started" && "$started" -le "${limit:-1024}" && "$started" -ge $(( ${limit:-1024} / 2 )) ]] && pass "pids-limit" "bounded at pids_max=$limit (started $started threads before EAGAIN), zone survived" || fail "pids-limit" "started=$started limit=$limit"
 else
-    fail "pids-limit" "the zone did not survive the fork storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
+    fail "pids-limit" "the zone did not survive the thread storm: $(tail -2 "$LOG/untrusted.err" | tr '\n' ' ')"
 fi
 # dd's own status and words: a tmpfs that took all 3000 MiB is not bounded.
 zrun untrusted 60 -- sh -c 'out=$(dd if=/dev/zero of=$HOME/big bs=1M count=3000 2>&1); echo "DD-RC=$?"; echo "$out" | grep -o "No space left on device" | head -1; rm -f $HOME/big; echo TMPFS-SURVIVED'
