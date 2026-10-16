@@ -21,42 +21,14 @@ trap 'rm -rf "$W"' EXIT
 # shellcheck source=/dev/null
 . "$REPO/build/config/versions.env"
 
-# fetch NAME FILE VERSION: the pinned file, from the URL fetch-sources.sh resolves, then the source's
-# mirrors, then Gentoo's distfiles, as fetch-sources.sh tries them; kept only with the lock's hash.
-fetch() {
-    local name="$1" file="$2" url want u
-    url="$("$REPO/tools/fetch-sources.sh" --list-root 2>/dev/null | awk -v n="$name" '$1 == n { print $3; exit }')"
-    want="$(awk -v f="$file" '$2 == f { print $1 }' "$REPO/sources.lock")"
-    [[ -n "$url" && -n "$want" ]] || { echo "FAIL: no URL or no lock row for ${name} (${file})"; exit 1; }
-    local keep="${KRYPTIK_TEST_SOURCES:-}"
-    if [[ -n "$keep" && -f "$keep/$file" && "$(sha256sum "$keep/$file" | cut -c1-64)" == "$want" ]]; then
-        tar -xf "$keep/$file" -C "$W" || { echo "FAIL: cannot unpack ${file}"; exit 1; }
-        return 0
-    fi
-    local -a urls=("$url")
-    while read -r u; do urls+=("${u//"{VER}"/"$3"}"); done < <(awk -v n="$name" '$1 == n { print $2 }' "$REPO/tools/source-mirrors.tsv")
-    urls+=("https://distfiles.gentoo.org/distfiles/$(printf '%s' "$file" | b2sum | cut -c1-2)/${file}")
-    for u in "${urls[@]}"; do
-        if curl -fsSL --retry 2 --max-time 120 -o "$W/$file" "$u" \
-           && [[ "$(sha256sum "$W/$file" | cut -c1-64)" == "$want" ]]; then
-            tar -xf "$W/$file" -C "$W" || { echo "FAIL: cannot unpack ${file}"; exit 1; }
-            [[ -z "$keep" ]] || { mkdir -p "$keep" && cp "$W/$file" "$keep/$file"; }
-            return 0
-        fi
-        echo "note: ${file} not from ${u}"
-    done
-    echo "FAIL: no source of ${file} has the locked hash ${want}"
-    exit 1
-}
-fetch wlroots "wlroots-${V_WLROOTS}.tar.gz" "$V_WLROOTS"
-fetch wayland-protocols "wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz" "$V_WAYLAND_PROTOCOLS"
-fetch dwl "dwl-v${V_DWL}.tar.gz" "$V_DWL"
+# shellcheck source=tools/tests/lib/pinned.sh
+. "$HERE/lib/pinned.sh"
+WLR="$(fetch_pinned wlroots "wlroots-${V_WLROOTS}.tar.gz" "$V_WLROOTS")" || exit 1
+fetch_pinned wayland-protocols "wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz" "$V_WAYLAND_PROTOCOLS" > /dev/null || exit 1
+DWL="$(fetch_pinned dwl "dwl-v${V_DWL}.tar.gz" "$V_DWL")" || exit 1
 # The pinned libwayland's own headers, not the host's: Kryptik's edits call 1.23's
 # wl_client_{get,set}_user_data, which an older host's lack.
-fetch wayland "wayland-${V_WAYLAND}.tar.xz" "$V_WAYLAND"
-WLR="$W/wlroots-${V_WLROOTS}"
-DWL="$W/dwl-v${V_DWL}"
-WL="$W/wayland-${V_WAYLAND}"
+WL="$(fetch_pinned wayland "wayland-${V_WAYLAND}.tar.xz" "$V_WAYLAND")" || exit 1
 
 # The two headers meson writes for wlroots: the backends stage 04 builds (DRM, libinput, the
 # session), no Xwayland, GLES2 or Vulkan.
