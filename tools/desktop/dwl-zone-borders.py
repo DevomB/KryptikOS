@@ -961,6 +961,10 @@ static void endpopups(void);
 """,
      """static void createpointer(struct wlr_pointer *pointer);
 static void createswitch(struct wlr_switch *sw);
+/* Kryptik: the lid as its switch last told it, and the look that follows a screen gone while
+ * it is shut (undockcheck). */
+static int lidshut;
+static struct wl_event_source *undocktimer;
 """),
     ("""\tcase WLR_INPUT_DEVICE_POINTER:
 \t\tcreatepointer(wlr_pointer_from_input_device(device));
@@ -999,13 +1003,30 @@ docked(void)
 \treturn 0;
 }
 
+/* Kryptik: a lid shut with no screen left but the panel sleeps, as one closed undocked does: a
+ * dock unplugged while the lid is shut. Looked at a while after a screen goes, as a dock takes
+ * its screens away and back again around a sleep, and never at the end of the login, when the
+ * event loop has stopped. */
+static int
+undockcheck(void *data)
+{
+\tif (lidshut && !docked())
+\t\tspawn(&(Arg){.v = suspendcmd});
+\treturn 0;
+}
+
 static void
 switchtoggle(struct wl_listener *listener, void *data)
 {
 \tSwitch *s = wl_container_of(listener, s, toggle);
 \tstruct wlr_switch_toggle_event *event = data;
 \tstruct timespec now;
-\tif (event->switch_type != WLR_SWITCH_TYPE_LID || event->switch_state != WLR_SWITCH_STATE_ON)
+\tif (event->switch_type != WLR_SWITCH_TYPE_LID)
+\t\treturn;
+\t/* Both edges, before anything below returns: a lid shut at the start, or while docked, is
+\t * known when the last other screen goes. */
+\tlidshut = event->switch_state == WLR_SWITCH_STATE_ON;
+\tif (!lidshut)
 \t\treturn;
 \t/* libinput tells a lid closed already when the device comes, for a switch it trusts:
 \t * a session started with the lid shut must not sleep for it. */
@@ -1031,11 +1052,27 @@ createswitch(struct wlr_switch *sw)
 \tclock_gettime(CLOCK_MONOTONIC, &s->added);
 \tLISTEN(&sw->events.toggle, &s->toggle, switchtoggle);
 \tLISTEN(&sw->base.events.destroy, &s->destroy, switchdestroy);
+\tif (!undocktimer)
+\t\tundocktimer = wl_event_loop_add_timer(event_loop, undockcheck, NULL);
 }
 
 void
 inputdevice(struct wl_listener *listener, void *data)
 {
+"""),
+    # A screen gone with the lid shut may be an undock: undockcheck looks once the outputs settle.
+    ("""\tclosemon(m);
+\twlr_scene_node_destroy(&m->fullscreen_bg->node);
+\tfree(m);
+}
+""",
+     """\tclosemon(m);
+\twlr_scene_node_destroy(&m->fullscreen_bg->node);
+\tfree(m);
+\t/* Kryptik: a screen gone with the lid shut may be an undock, which undockcheck decides. */
+\tif (lidshut && undocktimer)
+\t\twl_event_source_timer_update(undocktimer, 5000);
+}
 """),
     # Locked, dwl heeds no key at all, so a laptop that starts to play aloud under the lock
     # is silenced only by unlocking. It heeds config.h's lockedkeys instead: the volume and

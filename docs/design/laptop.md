@@ -229,7 +229,12 @@ to resume can run from the root while the state partition is suspended.
    press that wakes it reaches the input layer as the power key, which
    would put it straight back to sleep. A lid that closes while an output
    other than the built-in panel is on, docked, is left alone, as is one
-   libinput says is closed as the switch appears. Idleness asks too, `kryptik-lock --idle --sleep`, but
+   libinput says is closed as the switch appears. dwl still knows either is
+   shut: when a screen goes and five seconds later none but the panel is
+   left, as when the dock is unplugged, the machine sleeps as a lid closed
+   undocked would. The wait covers a dock that takes its screens away and
+   back again around a sleep. Idleness asks too,
+   `kryptik-lock --idle --sleep`, but
    only as many minutes after the lock as `~/.config/kryptik/lock-sleep`
    holds: a sleep that does not wake would cost open work nobody chose to
    risk, so it stays off until resume is proven on physical hardware, and 20

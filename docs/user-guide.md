@@ -331,7 +331,8 @@ for each such zone's passphrase in turn; Enter alone leaves a zone waiting,
 and the menu (Alt+p) shows it WAITING and takes its passphrase later with
 `p` and its number, or a launch into it asks. Stopping such a zone closes
 its volume without the passphrase. The power key and
-closing the lid do the same as `kryptik suspend`, locked or not. In a virtual
+closing the lid do the same as `kryptik suspend`, locked or not, and so
+does unplugging the screen a laptop was closed and docked on. In a virtual
 machine whose display is virtio-gpu the machine does not sleep: the screen
 locks, and `kryptik suspend` says why. The machine
 can also sleep by itself, as many minutes after the screen locks for being
