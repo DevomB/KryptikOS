@@ -1794,7 +1794,10 @@ echo "GT KEY-BROWSER-BACK"
 # its clients and takes keys as before. Last, so a desktop that did not come back ends no round.
 vt_is() { [[ "$(fgconsole 2>/dev/null)" == "$1" ]]; }
 answers() { timeout 10 su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -q 'sync done'; }
-menus_vt="$(menu_windows)"
+# The input devices the seat handed dwl: it lets them go while tty2 is in front, and libinput takes
+# them back a moment after dwl answers clients again. A key pressed before that is lost.
+dwl_inputs() { ls -l "/proc/$(pgrep -u "$USER_NAME" -x dwl | head -1)/fd" 2>/dev/null | grep -c '/dev/input/event'; }
+menus_vt="$(menu_windows)"; inputs_vt="$(dwl_inputs)"
 echo "GT KEY-VT-ADMIN"
 if wait_for 15 vt_is 2; then
     pass "vt-admin-login" "Ctrl+Alt+F2 put tty2's login in front"
@@ -1807,12 +1810,14 @@ if wait_for 15 vt_is 1 && wait_for 15 answers; then
 else
     fail "vt-desktop-back" "console $(fgconsole 2>&1); dwl $(pgrep -u "$USER_NAME" -x dwl > /dev/null && echo running || echo gone); session.log: $(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
 fi
+inputs_back() { [[ "$(dwl_inputs)" -ge "$inputs_vt" ]]; }
+wait_for 15 inputs_back || info "dwl holds $(dwl_inputs) input devices after the switch back, ${inputs_vt} before"
 echo "GT KEY-MENU-AFTER-VT"
 more_menus() { [[ "$(menu_windows)" -gt "$menus_vt" ]]; }
 if wait_for 15 more_menus; then
     pass "vt-desktop-takes-keys" "Alt+p opened the menu after the switch back"
 else
-    fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after"
+    fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after; dwl's input devices: ${inputs_vt} before the switch, $(dwl_inputs) after"
 fi
 pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 
