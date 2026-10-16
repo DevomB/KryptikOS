@@ -281,11 +281,13 @@ static int named(snd_mixer_elem_t *e, const char *const *names)
 }
 
 /* The card's own controls at unity and on, so the mixer's volumes are the only ones that act:
- * a card can come up muted, and nothing else here sets it. */
+ * a card can come up muted, and nothing else here sets it. USB audio names a headset's controls
+ * Headset and a microphone's Mic where the device gives them no name. On HD Audio a Mic control
+ * is the loopback into the output, a playback one, which the capture side here leaves alone. */
 static void levels(int card)
 {
-	static const char *const play[] = { "Master", "PCM", "Speaker", "Headphone", "Front", "Line Out", NULL };
-	static const char *const rec[] = { "Capture", NULL };
+	static const char *const play[] = { "Master", "PCM", "Speaker", "Headphone", "Headset", "Front", "Line Out", NULL };
+	static const char *const rec[] = { "Capture", "Mic", "Headset", NULL };
 	char hw[16];
 	snprintf(hw, sizeof hw, "hw:%d", card);
 	snd_mixer_t *m;
