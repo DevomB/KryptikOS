@@ -627,6 +627,12 @@ shows each timer, its timeout and whether it is running.
   headset or sound card works on all of them
   ([laptop sound](design/laptop-audio.md)). Nothing plays through a
   monitor's speakers over HDMI or DisplayPort.
+- Nothing drives NVIDIA's graphics. On a laptop with NVIDIA's graphics
+  beside Intel's or AMD's, the built-in screen works through those, but a
+  monitor on a port wired to the NVIDIA chip stays dark, and the chip is
+  left powered on, which shortens the battery's time. A machine with
+  NVIDIA's graphics alone shows the desktop through the firmware's
+  framebuffer, at the resolution the firmware chose, on one monitor.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
