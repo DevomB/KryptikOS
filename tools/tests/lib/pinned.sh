@@ -29,5 +29,5 @@ fetch_pinned() {
         [[ -n "$got" ]] || { echo "FAIL: no source of ${file} has the locked hash ${want}" >&2; return 1; }
     fi
     tar -xf "$got" -C "$W" || { echo "FAIL: cannot unpack ${file}" >&2; return 1; }
-    printf '%s/%s\n' "$W" "$(tar -tf "$got" | head -1 | cut -d/ -f1)"
+    printf '%s/%s\n' "$W" "$(tar -tf "$got" 2>/dev/null | head -1 | cut -d/ -f1)"
 }

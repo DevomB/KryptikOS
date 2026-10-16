@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # dwl as stage 04 builds it, run headless. The pinned wayland, wayland-protocols, pixman, libdrm,
-# xkbcommon and wlroots (its headless backend alone) are built into a prefix, and dwl with Kryptik's
+# xkbcommon and wlroots (without its DRM backend) are built into a prefix, and dwl with Kryptik's
 # patches and edits over them. dwl starts on a headless output, a client lists its globals and maps
 # a window, and dwl stops on SIGTERM: a change that crashes or hangs dwl shows here, not in a Distro
 # run. Needs ninja, bison, gcc, pkg-config, curl, b2sum, python3, patch and sudo, and the headers of
-# libffi, expat and libinput, which CI installs; without them it exits 77. Meson is the pinned one,
+# libffi, expat, libinput, libudev and libseat, which CI installs; without them it exits 77. Meson is the pinned one,
 # run from its tree. KRYPTIK_TEST_SOURCES keeps the fetched tarballs between runs
 # (tools/tests/lib/pinned.sh).
 set -uo pipefail
@@ -14,7 +14,7 @@ REPO="$(cd "$HERE/../.." && pwd)"
 for t in ninja bison gcc pkg-config curl b2sum python3 patch; do
     command -v "$t" >/dev/null 2>&1 || { echo "dwl-headless.sh: no $t here (77)"; exit 77; }
 done
-for p in libffi expat libinput; do
+for p in libffi expat libinput libudev libseat; do
     pkg-config --exists "$p" || { echo "dwl-headless.sh: no $p headers here (77)"; exit 77; }
 done
 sudo -n true 2>/dev/null || { echo "dwl-headless.sh: no sudo here for the zones' socket directory (77)"; exit 77; }
@@ -55,9 +55,11 @@ build libdrm "libdrm-${V_LIBDRM}.tar.xz" "$V_LIBDRM" -Dintel=disabled -Dradeon=d
 build libxkbcommon "libxkbcommon-${V_LIBXKBCOMMON}.tar.gz" "$V_LIBXKBCOMMON" -Denable-x11=false \
     -Denable-wayland=false -Denable-docs=false -Denable-tools=false -Denable-xkbregistry=false \
     -Dxkb-config-root=/usr/share/X11/xkb -Dx-locale-root=/usr/share/X11/locale
-# stage 04's options (build/recipes/wlroots.sh) but the backends: headless alone, and no session.
+# stage 04's options (build/recipes/wlroots.sh) but DRM's backend: dwl's code includes libinput's
+# and the session's headers, and runs here on the headless backend, which every build has.
 build wlroots "wlroots-${V_WLROOTS}.tar.gz" "$V_WLROOTS" -Dxwayland=disabled -Dexamples=false \
-    -Drenderers=[] -Dallocators=[] -Dbackends=[] -Dsession=disabled -Dxcb-errors=disabled -Dlibliftoff=disabled
+    -Drenderers=[] -Dallocators=[] -Dbackends=libinput -Dsession=enabled -Dxcb-errors=disabled \
+    -Dlibliftoff=disabled
 
 # dwl with the patches, edits and config stage 04 applies (build/recipes/dwl.sh).
 DWL="$(fetch_pinned dwl "dwl-v${V_DWL}.tar.gz" "$V_DWL")" || exit 1
