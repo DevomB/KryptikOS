@@ -179,8 +179,9 @@ ${gaps}
 ## Source and licences
 
 The corresponding source of \`${rev:0:12}\` is \`source-${rev:0:12}.tar\`, published
-with this release: every upstream tarball with its signature, the vendored
-Rust crates and Kryptik's own tree, with a MANIFEST of their SHA-256. The
+with this release in parts of at most 1 GiB that \`cat\` joins (the downloads
+below give each part's hash): every upstream tarball with its signature, the
+vendored Rust crates and Kryptik's own tree, with a MANIFEST of their SHA-256. The
 licences of what the image holds are under \`/usr/share/licenses/\`, one
 directory per source, Kryptik's own in \`kryptik/LICENSE\`.
 
