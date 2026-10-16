@@ -12,6 +12,43 @@
 #
 # Each row was checked when added: the mirror's file has the lock's hash, and its signature was
 # made by the key upstream's own is made by.
+file               https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/file-{VER}.tar.gz                                 -
+attr               https://mirror.csclub.uwaterloo.ca/nongnu/attr/attr-{VER}.tar.gz                                   -
+attr               https://sources.voidlinux.org/attr-{VER}/attr-{VER}.tar.gz                                         -
+pkgconf            https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/pkgconf-{VER}.tar.xz                              -
+pkgconf            https://distfiles.alpinelinux.org/distfiles/v3.21/pkgconf-{VER}.tar.xz                             -
+util-linux         https://mirrors.mit.edu/kernel/linux/utils/util-linux/v2.42/util-linux-{VER}.tar.xz                -
+e2fsprogs          https://mirror.math.princeton.edu/pub/kernel/linux/kernel/people/tytso/e2fsprogs/v{VER}/e2fsprogs-{VER}.tar.gz  -
+procps-ng          https://master.dl.sourceforge.net/project/procps-ng/Production/procps-ng-{VER}.tar.xz              -
+procps-ng          https://distfiles.alpinelinux.org/distfiles/edge/procps-ng-{VER}.tar.xz                            -
+libpipeline        https://mirror.csclub.uwaterloo.ca/nongnu/libpipeline/libpipeline-{VER}.tar.gz                     -
+libpipeline        https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/libpipeline-{VER}.tar.gz                          -
+man-db             https://mirror.csclub.uwaterloo.ca/nongnu/man-db/man-db-{VER}.tar.xz                               -
+man-db             https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/man-db-{VER}.tar.xz                               -
+elfutils           https://mirrors.kernel.org/sourceware/elfutils/{VER}/elfutils-{VER}.tar.bz2                        -
+elfutils           https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/elfutils-{VER}.tar.bz2                            -
+perl               https://cpan.metacpan.org/src/5.0/perl-{VER}.tar.xz                                                -
+perl               https://ftp.osuosl.org/pub/CPAN/src/5.0/perl-{VER}.tar.xz                                          -
+skalibs            https://distfiles.alpinelinux.org/distfiles/edge/skalibs-{VER}.tar.gz                              -
+execline           https://distfiles.alpinelinux.org/distfiles/edge/execline-{VER}.tar.gz                             -
+s6                 https://distfiles.alpinelinux.org/distfiles/edge/s6-{VER}.tar.gz                                   -
+s6-rc              https://distfiles.alpinelinux.org/distfiles/edge/s6-rc-{VER}.tar.gz                                -
+s6-linux-init      https://distfiles.alpinelinux.org/distfiles/edge/s6-linux-init-{VER}.tar.gz                        -
+cmake              https://github.com/Kitware/CMake/releases/download/v{VER}/cmake-{VER}.tar.gz                       -
+cmake-bin          https://github.com/Kitware/CMake/releases/download/v{VER}/cmake-{VER}-linux-x86_64.tar.gz          -
+libaio             https://ftp2.osuosl.org/pub/blfs/conglomeration/libaio/libaio-{VER}.tar.gz                         -
+libaio             https://deb.debian.org/debian/pool/main/liba/libaio/libaio_{VER}.orig.tar.gz                       -
+lvm2               https://mirrors.kernel.org/sourceware/lvm2/LVM2.{VER}.tgz                                          -
+lvm2               https://ftp2.osuosl.org/pub/blfs/conglomeration/lvm2/LVM2.{VER}.tgz                                -
+seatd              https://ftp2.osuosl.org/pub/blfs/conglomeration/seatd/seatd-{VER}.tar.gz                           -
+seatd              https://deb.debian.org/debian/pool/main/s/seatd/seatd_{VER}.orig.tar.gz                            -
+dwl                https://distfiles.alpinelinux.org/distfiles/edge/dwl-v{VER}.tar.gz                                 -
+lynx               https://invisible-island.net/archives/lynx/tarballs/lynx{VER}.tar.bz2                              -
+lynx               https://ftp2.osuosl.org/pub/blfs/conglomeration/lynx/lynx{VER}.tar.bz2                             -
+glibc-fhs-patch    https://ftp.osuosl.org/pub/lfs/lfs-packages/12.2/glibc-{VER}-fhs-1.patch                           -
+glibc-fhs-patch    https://ftp.lfs-matrix.net/pub/lfs/lfs-packages/12.2/glibc-{VER}-fhs-1.patch                       -
+glib               https://ftp2.osuosl.org/pub/blfs/conglomeration/glib/glib-{VER}.tar.xz                             -
+at-spi2-core       https://ftp2.osuosl.org/pub/blfs/conglomeration/at-spi2-core/at-spi2-core-{VER}.tar.xz             -
 wayland            https://deb.debian.org/debian/pool/main/w/wayland/wayland_{VER}.orig.tar.xz                        .asc
 wayland            https://distfiles.alpinelinux.org/distfiles/edge/wayland-{VER}.tar.xz                              -
 wayland-protocols  https://deb.debian.org/debian/pool/main/w/wayland-protocols/wayland-protocols_{VER}.orig.tar.xz    .asc
