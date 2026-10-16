@@ -1053,12 +1053,11 @@ pub fn run_in_zone(
         Err(e) => eprintln!("kryptikd[zone {}]: taking its USB stick back: {e}", zone.name),
     }
     // And the camera.
-    if crate::camera::holder().is_some_and(|g| g.zone == zone.name) {
-        match crate::camera::revoke() {
-            Ok(Some(e)) if e.stayed => eprintln!("kryptikd: zone {:?}: the camera taken back; its driver stays loaded", zone.name),
-            Ok(_) => eprintln!("kryptikd: zone {:?}: the camera taken back", zone.name),
-            Err(e) => eprintln!("kryptikd[zone {}]: taking the camera back: {e}", zone.name),
-        }
+    match crate::camera::revoke_from(&zone.name) {
+        Ok(Some(e)) if e.stayed => eprintln!("kryptikd: zone {:?}: the camera taken back; its driver stays loaded", zone.name),
+        Ok(Some(_)) => eprintln!("kryptikd: zone {:?}: the camera taken back", zone.name),
+        Ok(None) => {}
+        Err(e) => eprintln!("kryptikd[zone {}]: taking the camera back: {e}", zone.name),
     }
     // dm-crypt frees the volume key on close: that is all "keys wiped on stop" means.
     if let Some(o) = opened_volume.take() {
