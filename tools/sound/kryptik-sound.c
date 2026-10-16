@@ -630,9 +630,29 @@ static int recovered(snd_pcm_t **p, int err)
 	return 0;
 }
 
+/* A device plugged in while a stream runs is meant to be used as much as one there when it
+ * began: once a second the stream moves to the card pick_card names now, if that card opens. */
+static int moved(snd_pcm_t **p, snd_pcm_stream_t dir, long long *next_look)
+{
+	long long now = now_ms();
+	if (now < *next_look)
+		return 0;
+	*next_look = now + 1000;
+	snd_pcm_info_t *pi;
+	snd_pcm_info_alloca(&pi);
+	if (snd_pcm_info(*p, pi) < 0 || pick_card(dir) == snd_pcm_info_get_card(pi))
+		return 0;
+	snd_pcm_t *q = open_pcm(dir);
+	if (!q)
+		return 0;
+	close_pcm(p);
+	*p = q;
+	return 1;
+}
+
 static void play_out(void)
 {
-	static long long next_try, next_drain;
+	static long long next_try, next_drain, next_look;
 	long long now = now_ms();
 	if (playing())
 		last_play = now;
@@ -657,6 +677,7 @@ static void play_out(void)
 		recovered(&out, -ENODEV);
 		return;
 	}
+	moved(&out, SND_PCM_STREAM_PLAYBACK, &next_look);
 	int16_t buf[PERIOD * CHANNELS];
 	for (;;) {
 		snd_pcm_sframes_t avail = snd_pcm_avail_update(out);
@@ -680,6 +701,7 @@ static void play_out(void)
  * not keep up loses what it did not take. */
 static void record_in(void)
 {
+	static long long next_look;
 	struct conn *rec = NULL;
 	for (int i = 0; i < MAX_CONNS; i++)
 		if (conns[i].fd && conns[i].kind == RECORD)
@@ -694,6 +716,8 @@ static void record_in(void)
 			end_conn(rec);
 			return;
 		}
+		snd_pcm_start(in);
+	} else if (moved(&in, SND_PCM_STREAM_CAPTURE, &next_look)) {
 		snd_pcm_start(in);
 	}
 	/* Captured periods go into the zone's ring whole, or not at all when it is full, so what
