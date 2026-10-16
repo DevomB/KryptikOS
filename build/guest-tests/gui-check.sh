@@ -1562,7 +1562,7 @@ ff_count() {
 ff_front() { ff_page && grep -qx 'tagset=4' "$RT/kryptik/focus"; }
 ff_away() { ! grep -q '^title=.*kryptik-page' "$RT/kryptik/focus"; }
 ff_record() { echo "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); browsers: $(tr '\n' ' ' < "$RT/kryptik/browsers" 2>/dev/null)"; }
-front="$RT/kryptik/browser-front"
+front="$RT/kryptik/front/browser-front"
 ff_before="$(ff_count)"
 echo "GT KEY-BROWSER-AWAY"
 wait_for 10 ff_away || info "browser: Alt+1 left the keyboard with Firefox: $(ff_record)"

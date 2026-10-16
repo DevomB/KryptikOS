@@ -56,9 +56,10 @@ FOCUS="$RT/kryptik/focus"
 # The last zone window, for the menu: once the menu has focus, the focus record names zone 0.
 FOCUS_ZONE="$RT/kryptik/focus.zone"
 # The zones whose Firefox has a window, from dwl's status, and the request that has dwl put one in
-# front (dwl-zone-borders.py: frontread), for the menu's b.
+# front (dwl-zone-borders.py: frontread), for the menu's b. The request has a directory of its own:
+# dwl may read and remove there and nowhere else here.
 BROWSERS="$RT/kryptik/browsers"
-FRONT="$RT/kryptik/browser-front"
+FRONT="$RT/kryptik/front/browser-front"
 CONSENT=/run/kryptik-consent
 # The power service's last look (power.sh): the source, the charge and its warning.
 POWER=/run/kryptik-power/state
@@ -149,7 +150,7 @@ waiting_zones() {
 
 run_status() {
     # The user's alone: dwl takes a request from it only while no one else may write there.
-    mkdir -p "$RT/kryptik" 2>/dev/null && chmod 0700 "$RT/kryptik"
+    mkdir -p "$RT/kryptik/front" 2>/dev/null && chmod 0700 "$RT/kryptik" "$RT/kryptik/front"
     # The monitors as the user chose them (`kryptik display`), or as they come: now, and again
     # whenever a monitor is plugged in, for as long as the session lasts.
     /usr/bin/kryptik-display --watch &

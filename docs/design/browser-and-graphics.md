@@ -123,13 +123,15 @@ window in front, and start Firefox only when the zone has none
     the chrome's status reader keeps in `browsers` in the session's runtime
     directory, `$XDG_RUNTIME_DIR/kryptik`.
   - When `browsers` names the zone, `b` writes a one-line request, the
-    zone's name, to `browser-front` there. dwl watches the directory with
-    inotify and looks each second besides. It takes the request only from
-    a regular file of the session user's own that no one else may write,
-    in a directory of the user's that no one else may write (the chrome
-    keeps it 0700), and removes it before acting on it, so it is acted on
-    once. The request only puts a window in front: with none, dwl does
-    nothing, and `b` launches whenever `browsers` does not name the zone.
+    zone's name, to `browser-front` in `front` there, a directory that
+    holds nothing else, so what dwl may read and remove there is the
+    request alone. dwl watches the directory with inotify and looks each
+    second besides. It takes the request only from a regular file of the
+    session user's own that no one else may write, in a directory of the
+    user's that no one else may write (the session and the chrome keep it
+    0700), and removes it before acting on it, so it is acted on once.
+    The request only puts a window in front: with none, dwl does nothing,
+    and `b` launches whenever `browsers` does not name the zone.
 - **On another tag or monitor.** dwl views the window's tag on the monitor
   it is on, and the keyboard follows it there. A window is never moved
   between tags, so the vault keeps its tag. Nothing moves while the screen
