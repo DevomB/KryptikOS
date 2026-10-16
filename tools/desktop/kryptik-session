@@ -49,14 +49,21 @@ log="$rt/kryptik/session.log"
 
 {
     echo "kryptik-session: $(id -un) uid $(id -u) on $(tty 2>/dev/null || echo '?') at $(date -Iseconds 2>/dev/null || date)"
-    for g in seat kryptik; do
-        if ! id -Gn | tr ' ' '\n' | grep -qx "$g"; then
-            echo "kryptik-session: WARNING: not in group $g - the desktop will not work fully"
-        fi
-    done
+    # Group kryptik asks the launch daemon for everything; seat is dwl's, which the daemon gives it.
+    if ! id -Gn | tr ' ' '\n' | grep -qx kryptik; then
+        echo "kryptik-session: WARNING: not in group kryptik - the desktop will not work fully"
+    fi
 } >> "$log"
 
-# dwl, which the launch daemon starts without group kryptik in the desktop's cgroup (its
-# memory.max bounds what a zone can make the compositor hold), and the chrome on dwl's status,
-# which this login's spawner starts with every group; when dwl exits, the login ends.
+# dwl takes its seat through seatd, which s6 starts once udev has settled after boot, the GPU's
+# driver bound: a login typed before then waits for it, up to settle's own 30 s.
+i=0
+[ -S /run/seatd.sock ] || echo "Waiting for the seat, up to 30 s: the devices are still settling after the boot."
+while [ ! -S /run/seatd.sock ] && [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done
+[ -S /run/seatd.sock ] || echo "kryptik-session: no seatd socket after ${i} s" >> "$log"
+
+# dwl, which the launch daemon starts in group seat and without group kryptik, in the desktop's
+# cgroup (its memory.max bounds what a zone can make the compositor hold), and the chrome on dwl's
+# status, which this login's spawner starts with every group of the login; when dwl exits, or
+# the daemon starts none, the login ends.
 exec /usr/bin/kryptik-launch --desktop -- /usr/bin/kryptik-chrome 2>> "$log"

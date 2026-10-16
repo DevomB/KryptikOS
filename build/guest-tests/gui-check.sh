@@ -130,11 +130,20 @@ kgid="$(awk -F: '$1 == "kryptik" { print $3 }' /etc/group)"
 spawner_pid="$(pgrep -u "$USER_NAME" -xo dwl-spawner)"
 dgroups="$(sed -n 's/^Groups:[[:space:]]*//p' "/proc/${dwl_pid:-0}/status" 2>/dev/null)"
 sgroups="$(sed -n 's/^Groups:[[:space:]]*//p' "/proc/${spawner_pid:-0}/status" 2>/dev/null)"
-if [[ -n "$kgid" && -r "/proc/${dwl_pid:-0}/status" ]] && ! grep -qw "$kgid" <<<"$dgroups" && grep -qw "$kgid" <<<"$sgroups" \
-   && ! grep -q 'dwl starts with group kryptik' "$RT/kryptik/session.log" 2>/dev/null; then
+if [[ -n "$kgid" && -r "/proc/${dwl_pid:-0}/status" ]] && ! grep -qw "$kgid" <<<"$dgroups" && grep -qw "$kgid" <<<"$sgroups"; then
     pass "dwl-without-group" "dwl ${dwl_pid} runs with groups ${dgroups:-none}, without kryptik (${kgid}); its spawner ${spawner_pid} keeps it"
 else
     fail "dwl-without-group" "dwl ${dwl_pid:-gone}: groups ${dgroups:-none}; spawner ${spawner_pid:-none}: groups ${sgroups:-none}; kryptik is ${kgid:-missing}; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+fi
+# The seat is dwl's alone: seatd answers group seat, which the launch daemon gives dwl and the
+# login lacks, so nothing else of the session can switch the console or take the screens and keys.
+seatgid="$(awk -F: '$1 == "seat" { print $3 }' /etc/group)"
+lgroups="$(id -G "$USER_NAME" 2>/dev/null)"
+if [[ -n "$seatgid" ]] && grep -qw "$seatgid" <<<"$dgroups" && ! grep -qw "$seatgid" <<<"$sgroups" \
+   && ! grep -qw "$seatgid" <<<"$lgroups"; then
+    pass "seat-is-dwls" "dwl ${dwl_pid} holds seat (${seatgid}); its spawner ${spawner_pid} and ${USER_NAME} do not"
+else
+    fail "seat-is-dwls" "seat is ${seatgid:-missing}; dwl: ${dgroups:-none}; spawner: ${sgroups:-none}; ${USER_NAME}: ${lgroups:-none}"
 fi
 dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
            | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"

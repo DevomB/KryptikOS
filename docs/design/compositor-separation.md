@@ -12,10 +12,11 @@ the first two, which are built; the third and fourth are later.
 
 ## What a compromise reaches today
 
-- **dwl and the chrome run as the login user.** `kryptik-session` execs dwl
-  as that user, who is in groups `seat` and `kryptik`; the chrome is dwl's
-  status reader, the same user again. The proxies do not: the launch daemon
-  starts each zone's as a user of its own (below).
+- **dwl and the chrome run as the login user.** The launch daemon starts
+  dwl as that user, with group `seat` and without `kryptik`; the chrome,
+  dwl's status reader, is the same user again, with the login's groups. The
+  proxies do not: the launch daemon starts each zone's as a user of its own
+  (below).
 - **dwl's own socket offers everything.** dwl 0.8 creates screencopy,
   export-dmabuf, data-control, primary selection, the virtual keyboard and
   pointer, layer-shell, session lock and the rest, and its own socket in the
@@ -30,9 +31,10 @@ the first two, which are built; the third and fourth are later.
   with the same globals and the same zone as before, and nothing else:
   not dwl's own socket, the consent directory, the launch daemon, the
   user's home or another zone's socket.
-- **A dwl bug gives the desktop:** screencopy, the virtual keyboard, the
-  consent directory, the launch daemon, the user's home, and every pixel
-  and every key.
+- **A dwl bug gives the desktop:** screencopy, the virtual keyboard, and
+  every pixel and every key, so what the chrome approves. What the third
+  step below has built keeps it from the consent directory, the launch
+  daemon and the user's home.
 
 The proxy parses every message a zone sends, so its parser is the first
 thing a zone attacks. It is Rust, bounded, and fuzzed with a corpus
@@ -212,10 +214,10 @@ session keeps the group, and dwl runs without it.
   session's log.
 - The daemon starts `/usr/bin/dwl -S 3` as one of its jobs, as it does a
   launch, so it serves other requests meanwhile. dwl moves itself into
-  `kryptik-desktop` while still root, then takes the login's uid and gid
-  and the asker's groups less `kryptik`, sets no-new-privileges and a
-  parent-death signal, and runs with an environment the daemon makes, plus
-  the session's keymap. The daemon answers `started <pid>` at once and
+  `kryptik-desktop` while still root, then takes the login's uid and gid,
+  the asker's groups less `kryptik`, and `seat`, sets no-new-privileges and
+  a parent-death signal, and runs with an environment the daemon makes,
+  plus the session's keymap. The daemon answers `started <pid>` at once and
   again when dwl ends, which ends the login. dwl also ends with the daemon,
   so a daemon that ends, as one s6 starts again after a crash, ends the
   login too.
@@ -227,17 +229,22 @@ session keeps the group, and dwl runs without it.
   already is; `control` keeps only the socket. The record names only the
   zone that holds the microphone, which the screen shows anyway, and no zone
   sees `/run/kryptik-sound`. dwl still takes it only as the mixer's own.
-- If the daemon does not start dwl, the session's process becomes dwl, with
-  the group and without the desktop's bound, and the session log says so.
-  The desktop suite's `dwl-without-group` fails then.
+- The seat is dwl's alone. seatd answers group `seat`, which the daemon
+  gives dwl and the login is no longer made in, so nothing else of the
+  session can open the screens or the input devices through seatd, or take
+  the seat while dwl has the console. A login made before keeps the group
+  until `gpasswd -d USER seat`; nothing of the session needs it.
+- If the daemon does not start dwl, there is no desktop, as the login has
+  no seat to start one on: the session log says why, and the login ends.
 
 With the chrome the spawner's, dwl sends no signal, so Landlock's signal
 scope (ABI 6) costs nothing, and it is built too. What is left is **a user
-of its own,** the end state above. Its sockets and directory then need an
-owner other than the session (dwl's socket reached through a group, the
-zones' socket directory made for that user), and seatd's group moves to it.
-It is the largest part, and it gains least once the rest is built, so it
-comes last.
+of its own,** the end state above, whose group `seat` is dwl's already. Its
+sockets and directory then need an owner other than the session (dwl's
+socket reached through a group, the zones' socket directory made for that
+user), and the chrome's request for a browser in front a directory both
+reach. It is the largest part, and it gains least once the rest is built,
+so it comes last.
 
 ### Only pixels and input cross
 
@@ -278,9 +285,10 @@ favour of moving the protocol into the zones, which does shrink it.
 3. **The compositor as its own user, confined,** with the spawner. Built
    so far: the spawner; a filter that refuses dwl exec, ptrace and
    `process_vm_writev`; Landlock, with its signal scope; dwl without group
-   `kryptik`; and a list of the calls it is traced making, outside which it
-   logs. Still to do: its own user, and refusing what is outside the list
-   once the desktop suite logs nothing.
+   `kryptik`, and with group `seat`, which the login no longer has; and a
+   list of the calls it is traced making, outside which it logs. Still to
+   do: its own user, and refusing what is outside the list once the desktop
+   suite logs nothing.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.
 
@@ -315,8 +323,9 @@ Of the third, it checks what is built:
   no file, has no TCP and signals nothing outside its domain, with one
   thread to bind (`dwl-confined-to-its-files`);
 - dwl's `Groups:` holds no `kryptik` while the spawner's does
-  (`dwl-without-group`), and dwl runs in `kryptik-desktop` under its bound
-  (`desktop-memory-bound`);
+  (`dwl-without-group`), and holds `seat` while neither the spawner's nor
+  the login's does (`seat-is-dwls`), and dwl runs in `kryptik-desktop`
+  under its bound (`desktop-memory-bound`);
 - the calls dwl made outside its filter's list, read back from the audit,
   are said, until the filter refuses them and the list is a check.
 

@@ -35,12 +35,13 @@ fn environment_is_the_daemons_but_the_keymap() {
 }
 
 #[test]
-fn groups_are_the_logins_less_kryptik() {
+fn groups_are_the_logins_less_kryptik_and_with_seat() {
     let status = "Name:\tkryptik-launch\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t990 991 1000 \n";
     let (uid, gid, groups) = ids_of(status).unwrap();
     assert_eq!((uid, gid), (1000, 1000));
     assert_eq!(groups, vec![990, 991, 1000]);
-    assert_eq!(groups_without(&groups, 991), vec![990, 1000]);
+    assert_eq!(groups_for_dwl(&groups, 991, 990), vec![1000, 990], "a login made before still in seat");
+    assert_eq!(groups_for_dwl(&[991, 1000], 991, 990), vec![1000, 990], "seat added, kryptik gone");
     assert!(ids_of("Uid:\t1000\nGid:\t1000\nGroups:\t\n").unwrap().2.is_empty());
     assert!(ids_of("Uid:\t1000\nGroups:\t1\n").is_none(), "no Gid");
 }

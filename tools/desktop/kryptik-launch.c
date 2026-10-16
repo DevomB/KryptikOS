@@ -6,8 +6,9 @@
  *   kryptik-launch --info ZONE          encrypted yes|no, running yes|no, the USB stick it holds
  *   kryptik-launch --runtime-dir        print the session's XDG_RUNTIME_DIR, creating it
  *   kryptik-launch --desktop -- COMMAND [ARG...]   the desktop: dwl as the daemon starts it,
- *                                      without group kryptik and under the desktop's memory
- *                                      bound, and COMMAND (the chrome) on dwl's status
+ *                                      with the seat, without group kryptik and under the
+ *                                      desktop's memory bound, and COMMAND (the chrome) on
+ *                                      dwl's status
  *   kryptik-launch --clipboard-move FROM TO   the zone 0 gesture: move what FROM's windows copied
  *                                      to TO's, or FROM's broker payload when they copied nothing
  *   kryptik-launch --wifi-list          the net zone's Wi-Fi SSIDs, one per line
@@ -606,10 +607,11 @@ static int ask_desktop(const char *req, const int fds[3], char *buf, size_t size
 
 /* The session's last step (compositor separation): dwl runs as the launch daemon starts it, in the
  * desktop's cgroup with this login's groups less kryptik, so it reaches neither the daemon nor the
- * mixer's control socket. What needs the group stays with the session: the spawner, dwl's own
- * binary serving the keys' commands from dwl's table (-X), which starts COMMAND, the chrome, on
- * dwl's status once dwl names its display. If the daemon does not start dwl, this process becomes
- * dwl, with the group, and says so. The login ends with dwl. */
+ * mixer's control socket, and with group seat, which the login lacks. What needs group kryptik
+ * stays with the session: the spawner, dwl's own binary serving the keys' commands from dwl's
+ * table (-X), which starts COMMAND, the chrome, on dwl's status once dwl names its display. If the
+ * daemon does not start dwl there is no desktop, as the login has no seat to start one on: this
+ * says why. The login ends with dwl. */
 static int desktop_main(int argc, char **argv)
 {
 	int sv[2], st[2], i, k = 0;
@@ -660,25 +662,26 @@ static int desktop_main(int argc, char **argv)
 	#undef PUT
 
 	int fds[3] = { sv[1], st[1], STDERR_FILENO };
-	if (ask_desktop(req, fds, said, sizeof said)) {
-		for (last = p = said; *p; p++)
-			if (*p == '\n' && p[1])
-				last = p + 1;
-		fprintf(stderr, "kryptik-launch: the desktop ended: %s",
-			strncmp(last, "started ", 8) == 0 ? "the launch daemon is gone\n" : last);
-		/* The spawner, told by its socket, ends the chrome, then itself. */
-		close(sv[1]);
-		close(st[1]);
-		while (waitpid(spawner, NULL, 0) < 0 && errno == EINTR)
-			;
-		return 0;
+	int ran = ask_desktop(req, fds, said, sizeof said);
+	for (last = p = said; *p; p++)
+		if (*p == '\n' && p[1])
+			last = p + 1;
+	const char *why = ran && strncmp(last, "started ", 8) == 0 ? "the launch daemon is gone\n" : last;
+	const char *nl = *why && why[strlen(why) - 1] == '\n' ? "" : "\n";
+	fprintf(stderr, "kryptik-launch: %s: %s%s", ran ? "the desktop ended" : "no desktop", why, nl);
+	/* The spawner, told by its socket, ends the chrome if it started one, then itself. */
+	close(sv[1]);
+	close(st[1]);
+	while (waitpid(spawner, NULL, 0) < 0 && errno == EINTR)
+		;
+	/* Said on the terminal too, which the login prompt clears once the login ends: a desktop that
+	 * did not start, or a dwl that ended any way but a logout. */
+	if ((!ran || strcmp(why, "ok dwl exited 0\n") != 0) && isatty(STDOUT_FILENO)) {
+		printf("%s: %s%s", ran ? "The desktop ended" : "No desktop", why, nl);
+		fflush(stdout);
+		sleep(5);
 	}
-	fprintf(stderr, "kryptik-launch: dwl starts with group kryptik, in the session's process: %s", said);
-	int a = fcntl(sv[1], F_DUPFD_CLOEXEC, 10);
-	if (a < 0 || dup2(a, 3) < 0 || dup2(st[1], STDOUT_FILENO) < 0)
-		die("dwl's descriptors: %s", strerror(errno));
-	execl(DWL_BIN, DWL_BIN, "-S", "3", (char *)NULL);
-	die("cannot run %s: %s", DWL_BIN, strerror(errno));
+	return ran ? 0 : 1;
 }
 
 int main(int argc, char **argv)
