@@ -708,8 +708,8 @@ impl Pending {
     }
 }
 
-/// A slow request (`stop`, `update-apply`), answered once `reap` sees its command end. Not a
-/// thread: `reap` collects every child and would take the status a thread waited for.
+/// A slow request (`stop`, `update-apply`, `stick-eject`), answered once `reap` sees its command
+/// end. Not a thread: `reap` collects every child and would take the status a thread waited for.
 struct Job {
     conn: UnixStream,
     pid: libc::pid_t,
@@ -728,6 +728,9 @@ enum JobKind {
     /// The machine's sleep, whose write returns once it has woken: the daemon answers the
     /// screen lock meanwhile.
     Sleep,
+    /// A stick taken back from a zone, which first writes out what the zone left unwritten: on a
+    /// slow stick that takes long, and every other request would wait on it.
+    StickEject { uid: u32, zone: String },
 }
 
 fn memfile(name: &str) -> Result<std::fs::File, String> {
@@ -756,10 +759,11 @@ fn start_job(conn: UnixStream, what: JobKind, cmd: &mut std::process::Command) -
     }
 }
 
-/// Start a job that is the daemon's own work, in a child of its own: kryptikd is static, so the
-/// child starts nothing and reads nothing under /etc while the state partition is suspended.
-/// Its status is left for `reap`; what `work` gives as an error is the job's reason.
-fn fork_job(conn: UnixStream, what: JobKind, work: fn() -> Result<(), String>) -> Result<Job, (UnixStream, String)> {
+/// Start a job that is the daemon's own work, in a child of its own: kryptikd is static, so work
+/// that starts nothing, as the sleep's, reads nothing under /etc while the state partition is
+/// suspended (a stick's eject runs dmsetup, and is never asked for then). Its status is left for
+/// `reap`; what `work` gives as an error is the job's reason.
+fn fork_job(conn: UnixStream, what: JobKind, work: impl FnOnce() -> Result<(), String>) -> Result<Job, (UnixStream, String)> {
     let files = memfile("kryptikd-job-out").and_then(|o| memfile("kryptikd-job-err").map(|e| (o, e)));
     let (out, err) = match files {
         Ok(f) => f,
@@ -853,6 +857,14 @@ fn finish_job(j: &mut Job, st: i32) {
             let why = why(j, "no reason given");
             eprintln!("kryptikd serve: the machine did not sleep: {why}");
             reply(&j.conn, &format!("error: the machine did not sleep: {why}; the state partition waits for its passphrase\n"));
+        }
+        JobKind::StickEject { uid, zone } if ok => {
+            eprintln!("kryptikd serve: uid {uid} took the stick back from zone {zone:?}");
+            reply(&j.conn, "ok\n");
+        }
+        JobKind::StickEject { .. } => {
+            let why = why(j, "the stick was not taken back");
+            reply(&j.conn, &format!("error: {why}\n"));
         }
     }
 }
@@ -1432,15 +1444,21 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 reply(&conn, "error: bad zone name\n");
                 return None;
             }
-            let said = match crate::stick::eject(zone) {
-                Ok(true) => {
-                    eprintln!("kryptikd serve: uid {uid} took the stick back from zone {zone:?}");
-                    "ok\n".to_string()
-                }
-                Ok(false) => format!("error: zone {zone:?} holds no stick\n"),
-                Err(e) => format!("error: {e}\n"),
+            if jobs.iter().any(|j| matches!(&j.what, JobKind::StickEject { zone: z, .. } if z == zone)) {
+                reply(&conn, &format!("error: zone {zone:?}'s stick is being taken back already\n"));
+                return None;
+            }
+            let z = zone.to_string();
+            let what = JobKind::StickEject { uid, zone: z.clone() };
+            let eject = move || match crate::stick::eject(&z) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(format!("zone {z:?} holds no stick")),
+                Err(e) => Err(e),
             };
-            reply(&conn, &said);
+            match fork_job(conn, what, eject) {
+                Ok(j) => jobs.push(j),
+                Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
+            }
         }
         // The chrome's k<N>, and k alone or the screen lock taking it back.
         "camera-grant" => {
