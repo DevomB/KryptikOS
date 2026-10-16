@@ -359,8 +359,8 @@ impl Drop for Cgroup {
     }
 }
 
-/// The desktop's cgroup: dwl, the chrome, the lock and what they start. Beside `kryptik/`, not in
-/// it, so nothing that takes a leaf there for a zone's or a proxy's counts the compositor as one.
+/// The desktop's cgroup: dwl, which the launch daemon starts there. Beside `kryptik/`, not in it,
+/// so nothing that takes a leaf there for a zone's or a proxy's counts the compositor as one.
 const DESKTOP_GROUP: &str = "kryptik-desktop";
 
 /// What the desktop may hold: a quarter of the memory, 1 GiB at least. The pages dwl faults in a
@@ -370,13 +370,14 @@ pub fn desktop_memory_max(mem_total: u64) -> u64 {
     (mem_total / 4).max(1 << 30)
 }
 
-/// Move `pid`, the asker, into the desktop's cgroup, bounded first: the cgroup and its bound.
-pub fn join_desktop(uid: u32, pid: i32) -> Result<(PathBuf, u64), CgroupError> {
-    join_desktop_under(Path::new(CGROUP2_ROOT), Path::new("/proc"), uid, pid)
+/// The desktop's cgroup for `uid`'s login, which `pid` asked for, made afresh and bounded: the
+/// cgroup and its bound. dwl moves itself in before it takes the user's ids.
+pub fn prepare_desktop(uid: u32, pid: i32) -> Result<(PathBuf, u64), CgroupError> {
+    prepare_desktop_under(Path::new(CGROUP2_ROOT), Path::new("/proc"), uid, pid)
 }
 
-/// `join_desktop` against any hierarchy root and process table, for tests.
-pub fn join_desktop_under(root: &Path, procfs: &Path, uid: u32, pid: i32) -> Result<(PathBuf, u64), CgroupError> {
+/// `prepare_desktop` against any hierarchy root and process table, for tests.
+pub fn prepare_desktop_under(root: &Path, procfs: &Path, uid: u32, pid: i32) -> Result<(PathBuf, u64), CgroupError> {
     if uid == 0 {
         return Err(CgroupError::Unavailable("the desktop is an ordinary user's, not root's".into()));
     }
@@ -388,7 +389,7 @@ pub fn join_desktop_under(root: &Path, procfs: &Path, uid: u32, pid: i32) -> Res
     if real != Some(want.as_str()) {
         return Err(CgroupError::Unavailable(format!("pid {pid} is not uid {uid}'s")));
     }
-    // A zone's or a proxy's process never leaves its cgroup for this one.
+    // A zone's or a proxy's process never asks for a desktop.
     let held = read_trim(&asker.join("cgroup"))?;
     let zoned = |p: &str| p == "/kryptik" || p.starts_with("/kryptik/");
     if held.lines().any(|l| l.strip_prefix("0::").is_some_and(zoned)) {
@@ -420,8 +421,6 @@ pub fn join_desktop_under(root: &Path, procfs: &Path, uid: u32, pid: i32) -> Res
     let max = desktop_memory_max(total_kb * 1024);
     let mem = group.join("memory.max");
     fs::write(&mem, max.to_string()).map_err(|e| io_err(&mem, e))?;
-    let procs = group.join("cgroup.procs");
-    fs::write(&procs, pid.to_string()).map_err(|e| io_err(&procs, e))?;
     Ok((group, max))
 }
 

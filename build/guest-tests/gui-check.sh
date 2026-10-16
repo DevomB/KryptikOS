@@ -124,6 +124,18 @@ if [[ "$(cat "/proc/${dwl_pid:-0}/cgroup" 2>/dev/null)" == "0::/kryptik-desktop"
 else
     fail "desktop-memory-bound" "dwl ${dwl_pid:-gone}: $(cat "/proc/${dwl_pid:-0}/cgroup" 2>&1); memory.max $(cat "$dcg/memory.max" 2>&1), want $want_max; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
 fi
+# dwl runs without group kryptik, which reaches the launch daemon and the mixer's control socket;
+# the session's spawner keeps it for the keys' commands (compositor-separation design).
+kgid="$(awk -F: '$1 == "kryptik" { print $3 }' /etc/group)"
+spawner_pid="$(pgrep -u "$USER_NAME" -xo dwl-spawner)"
+dgroups="$(sed -n 's/^Groups:[[:space:]]*//p' "/proc/${dwl_pid:-0}/status" 2>/dev/null)"
+sgroups="$(sed -n 's/^Groups:[[:space:]]*//p' "/proc/${spawner_pid:-0}/status" 2>/dev/null)"
+if [[ -n "$kgid" && -r "/proc/${dwl_pid:-0}/status" ]] && ! grep -qw "$kgid" <<<"$dgroups" && grep -qw "$kgid" <<<"$sgroups" \
+   && ! grep -q 'dwl starts with group kryptik' "$RT/kryptik/session.log" 2>/dev/null; then
+    pass "dwl-without-group" "dwl ${dwl_pid} runs with groups ${dgroups:-none}, without kryptik (${kgid}); its spawner ${spawner_pid} keeps it"
+else
+    fail "dwl-without-group" "dwl ${dwl_pid:-gone}: groups ${dgroups:-none}; spawner ${spawner_pid:-none}: groups ${sgroups:-none}; kryptik is ${kgid:-missing}; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+fi
 dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
            | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"
 if [[ "$dwl_env" == "KRYPTIK_LAYOUTS=us de XKB_DEFAULT_LAYOUT=us,de XKB_DEFAULT_OPTIONS=grp:win_space_toggle XKB_DEFAULT_VARIANT=, " ]]; then
@@ -894,10 +906,10 @@ for d in /proc/[0-9]*; do
     esac
 done
 [[ "${#foreign[@]}" -eq 0 ]] && pass "zone0-own-programs-only" "every process outside the zones' cgroups is one of zone 0's own" || fail "zone0-own-programs-only" "$(printf '%s; ' "${foreign[@]}")"
-# dwl starts no program itself: its spawner, forked before dwl confined itself, runs the keys'
-# commands from a fixed table, and dwl's own filter refuses exec (compositor-separation design).
+# dwl starts no program itself: the session's spawner runs the keys' commands from a fixed table,
+# and dwl's own filter refuses exec (compositor-separation design).
 dwl_pid="$(pgrep -u "$USER_NAME" -xo dwl)"
-spawner="$(pgrep -u "$USER_NAME" -x -P "${dwl_pid:-0}" dwl-spawner)"
+spawner="$(pgrep -u "$USER_NAME" -xo dwl-spawner)"
 # Every thread carries the filter, not the leader alone.
 unfiltered="$(for s in /proc/"${dwl_pid:-0}"/task/*/status; do grep -qE '^Seccomp:[[:space:]]+2$' "$s" 2>/dev/null || echo "${s%/status}"; done)"
 if [[ -z "$unfiltered" ]] && grep -qE '^Seccomp:[[:space:]]+2$' "/proc/${dwl_pid:-0}/status" 2>/dev/null \

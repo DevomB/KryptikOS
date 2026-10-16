@@ -156,16 +156,22 @@ confines itself as a zone is confined:
   leaves dwl as it was, and the session log says so;
 - no exec. dwl's `spawn` keys and its status command move to a small
   spawner, started before the sandbox, that runs only a fixed table of
-  commands. Built: dwl forks the spawner once the status command runs,
-  closes everything in it but one end of a socket, and sends it a key's
-  command as its index in `spawncmds` (`build/desktop/dwl-config.h`). Then
-  dwl sets no-new-privileges and a filter, on every thread, that refuses
-  exec, ptrace and `process_vm_writev`, and kills calls of another
-  architecture. `kernel.yama.ptrace_scope = 3` already refuses dwl
-  `/proc/PID/mem`, `pidfd_getfd` and `process_vm_readv` into the chrome and
-  the lock, forked before the filter, so the filter is a second wall there.
-  The spawner is not dumpable and ends with dwl. If it goes, dwl ends the
-  login rather than run on with keys and a lid that no longer lock.
+  commands. Built: the session starts the spawner, dwl's own binary with
+  `-X`, before it asks for dwl, and dwl takes its end of the socket (`-S`).
+  dwl names its display to the spawner, which then starts the chrome there
+  on dwl's status, as dwl's startup command was. dwl started on its own, as
+  in a test, forks the spawner once the status command runs instead. Either
+  way the spawner holds nothing of dwl's but one end of a socket, and dwl
+  sends it a key's command as its index in `spawncmds`
+  (`build/desktop/dwl-config.h`). Then dwl sets no-new-privileges and a
+  filter, on every thread, that refuses exec, ptrace and
+  `process_vm_writev`, and kills calls of another architecture.
+  `kernel.yama.ptrace_scope = 3` already refuses dwl `/proc/PID/mem`,
+  `pidfd_getfd` and `process_vm_readv` into the chrome and the lock, so the
+  filter is a second wall there. The spawner is not dumpable and ends with
+  dwl, taking the chrome's process group with it, as dwl's cleanup did. If
+  it goes, dwl ends the login rather than run on with keys and a lid that no
+  longer lock.
 
 seatd passes it its devices, including hotplugged ones, as descriptors, so
 dwl never opens `/dev`. Running it under `kryptikd run` as a zone of its own
@@ -182,45 +188,49 @@ not this document's.
   asks the launch daemon to start dwl as its user; the filter has to follow
   wlroots' calls at every update.
 
-#### What is left, and in what order
+#### dwl without group `kryptik`
 
-With the spawner, the no-exec filter and Landlock built, a compromised dwl
-can no longer exec, read the user's files or write any file. What it still
-reaches comes from the groups it runs with. In group `kryptik` it can
-connect to the launch daemon's socket and start programs in zones as the
-user. Landlock does not stop it, as connecting to a socket is not one of
-Landlock's accesses. It also runs as the login user, so it can signal the
-user's other processes.
+With the spawner, the no-exec filter and Landlock, a compromised dwl can no
+longer exec, read the user's files or write any file. What it still reached
+came from its groups: in group `kryptik` it could connect to the launch
+daemon's socket and to the mixer's control socket, and Landlock does not
+stop that, as connecting to a socket is not one of its accesses. Built: the
+session keeps the group, and dwl runs without it.
 
-The next part takes the group away first, and the uid after:
+- `kryptik-launch --desktop`, the session's last step, starts the spawner
+  with every group of the login, holding dwl's status for the chrome. It
+  then asks the launch daemon for the desktop, handing over three
+  descriptors: the spawner's socket, the status pipe's write end, and the
+  session's log.
+- The daemon starts `/usr/bin/dwl -S 3` as one of its jobs, as it does a
+  launch, so it serves other requests meanwhile. dwl moves itself into
+  `kryptik-desktop` while still root, then takes the login's uid and gid
+  and the asker's groups less `kryptik`, sets no-new-privileges and a
+  parent-death signal, and runs with an environment the daemon makes, plus
+  the session's keymap. The daemon answers `started <pid>` at once and
+  again when dwl ends, which ends the login.
+- Everything that asks the daemon for anything keeps the group: the chrome,
+  which the spawner starts once dwl names its display, the lock, and the
+  keys' commands.
+- If the daemon does not start dwl, the session's process becomes dwl, with
+  the group and without the desktop's bound, and the session log says so.
+  The desktop suite's `dwl-without-group` fails then.
 
-1. **dwl without group `kryptik`.** The session starts the spawner itself,
-   as the login user with every group, and starts the chrome on the read
-   end of a pipe. It then asks the launch daemon for the desktop: the verb
-   that today moves the asker into `kryptik-desktop` instead starts
-   `/usr/bin/dwl` there. It runs as the same uid with the user's groups less
-   `kryptik`, with no-new-privileges, and gets the spawner's socket and the
-   pipe's write end as descriptors. The daemon holds the request as one of
-   its jobs, as it does a launch, so it serves other requests meanwhile,
-   and answers when dwl exits, so the login still ends with it. dwl gains
-   an option to take its spawner's socket instead of forking one, and keeps
-   the rest of its confinement. The microphone's holder moves too: dwl
-   reads it through the group today, as `/run/kryptik-sound/control` is
-   the group's alone. The mixer writes the record in
-   `/run/kryptik-sound/marks` instead, readable by anyone on the host, as
-   the camera's grant already is, and `control` keeps only the socket. The
-   record names only the zone that holds the microphone, which the screen
-   shows anyway, and no zone sees `/run/kryptik-sound`. dwl still takes it
-   only as the mixer's own. A check reads dwl's `Groups:` and finds no
-   `kryptik`, and the microphone's mark still shows.
+What is left, in order:
+
+1. **The microphone's mark.** dwl reads the mixer's record of who holds the
+   microphone through the group, as `/run/kryptik-sound/control` is the
+   group's alone. The mixer writes the record in `/run/kryptik-sound/marks`
+   instead, readable by anyone on the host, as the camera's grant already
+   is, and `control` keeps only the socket. The record names only the zone
+   that holds the microphone, which the screen shows anyway, and no zone
+   sees `/run/kryptik-sound`. dwl still takes it only as the mixer's own.
+   This lands with the part above, or the mark stops showing.
 2. **Signals.** Landlock's signal scope (ABI 6) keeps dwl from signalling
    any process outside its own domain: the lock, the chrome, the user's
-   zones' launchers. It waits for the first part. dwl's one signal ends
-   its startup command's process group when it exits, and the chrome,
-   forked before dwl confines itself, is outside that domain, so with the
-   scope the chrome would outlive dwl. Once the session starts the chrome,
-   dwl sends no signal at all. A kernel without ABI 6 keeps the rest of the
-   ruleset.
+   zones' launchers. dwl's one signal ended its startup command's process
+   group; with the chrome the spawner's, dwl sends none, so the scope costs
+   nothing now. A kernel without ABI 6 keeps the rest of the ruleset.
 3. **A user of its own,** the end state above. Its sockets and directory
    then need an owner other than the session (dwl's socket reached through
    a group, the zones' socket directory made for that user), and seatd's
@@ -265,8 +275,9 @@ favour of moving the protocol into the zones, which does shrink it.
    proxy bug gives the zone nothing it did not have. Built.
 3. **The compositor as its own user, confined,** with the spawner. Built
    so far: the spawner; a filter that refuses dwl exec, ptrace and
-   `process_vm_writev`; and Landlock. Still to do: its own user, and a
-   filter of the calls it is traced making.
+   `process_vm_writev`; Landlock; and dwl without group `kryptik`. Still to
+   do: the microphone's mark outside the group's directory, Landlock's signal
+   scope, its own user, and a filter of the calls it is traced making.
 4. **Only pixels and input cross,** when the zone-side compositor and its
    protocol are designed on their own.
 

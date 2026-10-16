@@ -147,21 +147,22 @@ faulted, still charged to dwl, and can do it again with a new pool, a
 screen's worth of pages a frame. No bound on live pools closes that, at any
 size.
 
-**The desktop's bound.** dwl, the chrome and the lock run in a cgroup of
-their own, `kryptik-desktop`. It sits beside `kryptik/` rather than in it, so
-nothing that takes a leaf there for a zone's or a proxy's counts the
-compositor as one. Its `memory.max` is a quarter of the memory, and 1 GiB at
-least (`desktop_memory_max` in `cgroup.rs`). The session's last step asks the
-launch daemon to move it there (`kryptik-launch --desktop`), and then becomes
-dwl, so everything the desktop starts is inside. What dwl faults for a zone is
-charged there. A zone that pushes the compositor past the bound therefore ends
-the desktop, not the machine: the kernel reclaims, and then kills inside the
-group. The daemon moves only the asker. It refuses root, and any process in
-a zone's or a proxy's cgroup. A desktop the daemon cannot bound starts
-anyway, and the session log says so. Each login gets a new group. Zones
-keep running when the desktop ends, and the pages of the pools they keep
-stay charged to the old group. Removing it moves those charges to the root,
-so they do not count against the next desktop's bound.
+**The desktop's bound.** dwl runs in a cgroup of its own,
+`kryptik-desktop`. It sits beside `kryptik/` rather than in it, so nothing
+that takes a leaf there for a zone's or a proxy's counts the compositor as
+one. Its `memory.max` is a quarter of the memory, and 1 GiB at least
+(`desktop_memory_max` in `cgroup.rs`). The session's last step asks the
+launch daemon for the desktop (`kryptik-launch --desktop`), and the daemon
+starts dwl there: dwl moves itself in before it takes the user's ids
+(compositor-separation.md). What dwl faults for a zone is charged there. A
+zone that pushes the compositor past the bound therefore ends the desktop,
+not the machine: the kernel reclaims, and then kills inside the group. The
+daemon refuses an asker that is root, or any process in a zone's or a
+proxy's cgroup. A desktop the daemon cannot start runs as the session's
+own process, unbounded, and the session log says so. Each login gets a new
+group. Zones keep running when the desktop ends, and the pages of the pools
+they keep stay charged to the old group. Removing it moves those charges to
+the root, so they do not count against the next desktop's bound.
 
 **Closing it, not built yet.** The proxy would keep a duplicate of each
 pool's descriptor and punch the pool's range (`fallocate` with

@@ -30,10 +30,11 @@ fn availability_requires_creating_leaf() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// The asker alone joins the desktop's group, bounded first: never root, a pid another uid holds,
-/// or a process in a zone's or a proxy's cgroup.
+/// The desktop's group is made afresh and bounded for an asker that may have one: never root, a
+/// pid another uid holds, or a process in a zone's or a proxy's cgroup. Nothing is moved in: dwl
+/// moves itself.
 #[test]
-fn desktop_joins_its_bounded_group() {
+fn desktop_group_is_bounded() {
     assert_eq!(desktop_memory_max(2 << 30), 1 << 30);
     assert_eq!(desktop_memory_max(16 << 30), 4 << 30);
     let base = std::env::temp_dir().join(format!("kryptik-desk-{}", std::process::id()));
@@ -46,22 +47,22 @@ fn desktop_joins_its_bounded_group() {
     fs::write(procfs.join("42/status"), "Name:\tdwl\nUid:\t1000\t1000\t1000\t1000\n").unwrap();
     fs::write(procfs.join("42/cgroup"), "0::/\n").unwrap();
 
-    let (at, max) = join_desktop_under(&root, &procfs, 1000, 42).unwrap();
+    let (at, max) = prepare_desktop_under(&root, &procfs, 1000, 42).unwrap();
     assert_eq!(at, root.join(DESKTOP_GROUP));
     assert_eq!(max, 16384000 * 1024 / 4);
     assert_eq!(fs::read_to_string(at.join("memory.max")).unwrap(), max.to_string());
-    assert_eq!(fs::read_to_string(at.join("cgroup.procs")).unwrap(), "42");
+    assert!(!at.join("cgroup.procs").exists(), "the asker is not moved");
 
-    assert!(join_desktop_under(&root, &procfs, 0, 42).is_err(), "root");
-    assert!(join_desktop_under(&root, &procfs, 1001, 42).is_err(), "another uid's pid");
+    assert!(prepare_desktop_under(&root, &procfs, 0, 42).is_err(), "root");
+    assert!(prepare_desktop_under(&root, &procfs, 1001, 42).is_err(), "another uid's pid");
     for held in ["0::/kryptik/untrusted.7\n", "0::/kryptik/proxy.work.9\n", "0::/kryptik\n"] {
         fs::write(procfs.join("42/cgroup"), held).unwrap();
-        assert!(join_desktop_under(&root, &procfs, 1000, 42).is_err(), "{held}");
+        assert!(prepare_desktop_under(&root, &procfs, 1000, 42).is_err(), "{held}");
     }
-    // A second login's desktop, already in the group or beside it, joins again.
+    // A second login, asked from the group or beside it, has its own again.
     for held in ["0::/kryptik-desktop\n", "0::/kryptik-desktopx\n"] {
         fs::write(procfs.join("42/cgroup"), held).unwrap();
-        assert!(join_desktop_under(&root, &procfs, 1000, 42).is_ok(), "{held}");
+        assert!(prepare_desktop_under(&root, &procfs, 1000, 42).is_ok(), "{held}");
     }
     let _ = fs::remove_dir_all(&base);
 }
