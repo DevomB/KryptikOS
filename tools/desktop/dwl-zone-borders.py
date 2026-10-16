@@ -1093,6 +1093,19 @@ static void confineexec(void);
 """,
      """static pid_t child_pid = -1;
 static int spawnfd = -1;
+static pid_t spawnerpid = -1;
+"""),
+    # dwl's SIGCHLD loop ends the login when it reaps the spawner.
+    ("""\tif (signo == SIGCHLD)
+\t\twhile (waitpid(-1, NULL, WNOHANG) > 0);
+""",
+     """\tif (signo == SIGCHLD) {
+\t\tpid_t pid;
+\t\t/* Kryptik: with the spawner gone no key or lid could start the lock: end the login. */
+\t\twhile ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
+\t\t\tif (pid == spawnerpid)
+\t\t\t\tquit(NULL);
+\t}
 """),
     ("""void
 spawn(const Arg *arg)
@@ -1114,8 +1127,13 @@ spawn(const Arg *arg)
 \t\t\tbreak;
 \tif (i == LENGTH(spawncmds))
 \t\tfprintf(stderr, "dwl: %s is not in the spawner's table\\n", ((char **)arg->v)[0]);
-\telse if (send(spawnfd, &i, 1, MSG_NOSIGNAL) != 1)
-\t\tfprintf(stderr, "dwl: the spawner did not take %s: %s\\n", ((char **)arg->v)[0], strerror(errno));
+\telse if (send(spawnfd, &i, 1, MSG_NOSIGNAL) != 1) {
+\t\tint e = errno;
+\t\tfprintf(stderr, "dwl: the spawner did not take %s: %s\\n", ((char **)arg->v)[0], strerror(e));
+\t\t/* A desktop whose keys and lid no longer lock is worse than a new login. */
+\t\tif (e == EPIPE || e == ECONNRESET || e == ENOTCONN)
+\t\t\tquit(NULL);
+\t}
 }
 
 /* Kryptik: the spawner, forked before dwl confines itself. It runs only the table's commands, each
@@ -1127,9 +1145,10 @@ startspawner(void)
 \tlong fd, max = sysconf(_SC_OPEN_MAX);
 \tunsigned char i;
 \tssize_t n;
+\tpid_t pid;
 \tif (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
 \t\tdie("startup: the spawner's socket:");
-\tswitch (fork()) {
+\tswitch ((pid = fork())) {
 \tcase -1:
 \t\tdie("startup: the spawner's fork:");
 \tcase 0:
@@ -1137,6 +1156,7 @@ startspawner(void)
 \tdefault:
 \t\tclose(sv[1]);
 \t\tspawnfd = sv[0];
+\t\tspawnerpid = pid;
 \t\treturn;
 \t}
 \tif (max < 0 || max > 65536)
@@ -1169,7 +1189,9 @@ startspawner(void)
 }
 
 /* Kryptik: dwl execs nothing once the spawner runs, and reaches into no other process; calls of
- * another ABI are refused too. prctl's filter covers the calling thread, and dwl has one. */
+ * another ABI are refused too, on every thread dwl has (TSYNC). syscall() is glibc's, which
+ * _POSIX_C_SOURCE hides. */
+long syscall(long number, ...);
 static void
 confineexec(void)
 {
@@ -1187,7 +1209,8 @@ confineexec(void)
 \t\tBPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
 \t};
 \tstruct sock_fprog prog = { .len = (unsigned short)LENGTH(f), .filter = f };
-\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 || prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0)
+\tif (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0
+\t    || syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &prog) != 0)
 \t\tdie("startup: the no-exec filter:");
 }
 """),
