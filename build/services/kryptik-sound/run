@@ -11,4 +11,10 @@ install -d -m 2750 -o 87 -g kryptik "$d/control" || exit 1
 while read -r name _; do
     install -d -m 0775 -g 11 "$d/zones/$name" || exit 1
 done < "$d/zones.list"
+# The levels the last stop kept (finish), which the mixer starts at when /run holds no record of
+# its own, as after a boot. The state partition is looked at only while no sleep seals it, as the
+# look would wait for the passphrase.
+if ! /usr/libexec/kryptik/state-sealed.sh && [ -s /var/lib/kryptik-sound/levels ]; then
+    install -m 0644 /var/lib/kryptik-sound/levels "$d/levels" || :
+fi
 exec s6-applyuidgid -u 87 -g 11 -G 11 /usr/libexec/kryptik/kryptik-sound "$d/zones.list"

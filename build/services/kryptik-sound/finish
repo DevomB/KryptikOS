@@ -1,0 +1,16 @@
+#!/bin/sh
+# The mixer's levels, kept on the state partition for the next boot's run script: not while a
+# sleep seals the partition, as the copy would wait for the passphrase. The mixer's uid writes the
+# record, so root reads no more of it than 32 zones fill and keeps only volume and mute lines.
+src=/run/kryptik-sound/control/levels
+dir=/var/lib/kryptik-sound
+[ -f "$src" ] || exit 0
+/usr/libexec/kryptik/state-sealed.sh && exit 0
+umask 077
+mkdir -p "$dir" || exit 0
+if head -c 4096 < "$src" | grep -E '^(master|zone [a-z0-9_-]{1,32}) ([0-9]|[1-9][0-9]|100)( muted)?$' > "$dir/levels.new"; then
+    mv -f "$dir/levels.new" "$dir/levels"
+else
+    rm -f "$dir/levels.new"
+fi
+exit 0

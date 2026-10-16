@@ -105,7 +105,13 @@ laptop does without it, and the order they come in after 1.0.
   `volume -5`); the microphone key says `revoke`. The mixer applies the
   volumes, squared so the steps sound even, and
   sets the card's own controls to unity when it opens it, so a card that
-  came up muted plays.
+  came up muted plays. The volumes and mutes outlast the mixer: it keeps a
+  record of them in `/run`, where a restart starts from it, and its
+  service's finish script carries it to the state partition
+  (`/var/lib/kryptik-sound/levels`), keeping only the lines such a record
+  holds, for the run script to put back after a boot. The microphone's
+  grant is never kept, and neither script looks at the state partition
+  while a sleep seals it.
 - **The card** is a USB device when one is plugged in, as it is plugged in
   to be used, otherwise the first card with a device 0; an HDMI-only card
   has none. The mixer opens it only while something plays and closes it
