@@ -423,6 +423,8 @@ lookup_hash() {   # lookup_hash FILE LOCK
 # no longer serves the pinned version is a warning, as a distribution's copy lapses when the pin
 # moves past it. Nothing is kept.
 if [[ "$MODE" == check-mirrors ]]; then
+    # Read whole first: a manifest that fails part way stops the check, not just its count.
+    sources="$(all_sources)"
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     rows=0 good=0 lapsed=0 wrong=0 names=" "
@@ -445,11 +447,11 @@ if [[ "$MODE" == check-mirrors ]]; then
                 ok "${name} ${ver}: ${m} has the lock's bytes"
                 good=$((good + 1))
             else
-                err "${name} ${ver}: ${m} serves other bytes than the lock's"
+                err "${name} ${ver}: ${m} serves other bytes than the lock's, or answers a missing file with a page"
                 wrong=$((wrong + 1))
             fi
         done < <(mirrors_of "$name" "$ver")
-    done < <(all_sources)
+    done <<< "$sources"
     if [[ -f "$MIRRORS" ]]; then
         while read -r p; do
             [[ "$names" == *" ${p} "* ]] && continue
