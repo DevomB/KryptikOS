@@ -17,7 +17,8 @@ and whether one reset the boot before, the processor and its microcode, every
 PCI and USB device with the driver that took it, the
 disks and the drivers under them, the display and each graphics controller's
 power state, the sound hardware, a laptop's
-backlights, batteries, sleep states and camera parts, network and input
+backlights, batteries and what they draw, sleep states and camera parts,
+network and input
 devices, the loaded modules and the kernel log. Its `missing` section is
 the part to act on: the firmware the kernel asked for and did not find, each a
 line for `build/config/firmware.list`, and the devices and disks that want a
@@ -74,7 +75,8 @@ Its `gpu` lines give each graphics controller's power state. Nothing here
 drives NVIDIA's graphics, and the kernel lets a device nothing drives sleep
 only once runtime PM is allowed it (`control auto`), so beside Intel's or
 AMD's on a laptop an NVIDIA chip stays powered, in D0. Only such a laptop
-shows what that costs its battery. No level asks for it.
+shows what that costs its battery, which the report's `battery` lines give.
+No level asks for it.
 
 ## Trying a laptop
 
