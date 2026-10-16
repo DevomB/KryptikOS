@@ -216,6 +216,31 @@ grep -qF "big 1.0: only http://127.0.0.1:${port}/big-1.0.tar.gz serves it" "$OUT
     && green "there, a whole file stopped at the cap counts" || { red "--probe misread the file sent whole"; show; }
 kill "$NOHEAD" 2>/dev/null; wait "$NOHEAD" 2>/dev/null
 
+# --- mirror rows held to the lock ---------------------------------------------
+
+# Every row's file downloaded and compared, nothing kept.
+build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
+MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-all" run --check-mirrors
+expect_pass "--check-mirrors holds every row to the lock" "3 mirror row(s): 3 with the lock's bytes, 0 no longer serving the pin"
+if [[ -z "$(ls -A "${FAKE}/sources")" ]]; then
+    green "--check-mirrors keeps nothing in sources/"
+else
+    red "--check-mirrors left files in sources/: $(ls -A "${FAKE}/sources" | tr '\n' ' ')"
+fi
+
+# A row serving other bytes fails; one that no longer serves the pin is a warning.
+printf 'other bytes\n' > "${SECOND}/beta-2.0.tar.gz"
+rm -f "${SECOND}/gamma-3.0.tar.gz"
+MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-all" run --check-mirrors
+expect_fail "--check-mirrors fails a row that serves other bytes" "beta 2.0: file://${SECOND}/beta-2.0.tar.gz serves other bytes than the lock's"
+grep -qF "gamma 3.0: file://${SECOND}/gamma-3.0.tar.gz does not serve it" "$OUT" \
+    && green "and warns of a row that no longer serves the pin" || { red "--check-mirrors did not name the lapsed row"; show; }
+
+# A row for no source here never applies: refused.
+printf 'nosuch  file://%s/nosuch-{VER}.tar.gz  -\n' "$SECOND" > "${W}/mirrors-typo"
+MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-typo" run --check-mirrors
+expect_fail "--check-mirrors refuses a row for no source" "a row for nosuch, which is no source here"
+
 # --- checksum refusal -------------------------------------------------------
 
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
