@@ -44,8 +44,12 @@ fetch() {
 fetch wlroots "wlroots-${V_WLROOTS}.tar.gz" "$V_WLROOTS"
 fetch wayland-protocols "wayland-protocols-${V_WAYLAND_PROTOCOLS}.tar.xz" "$V_WAYLAND_PROTOCOLS"
 fetch dwl "dwl-v${V_DWL}.tar.gz" "$V_DWL"
+# The pinned libwayland's own headers, not the host's: Kryptik's edits call 1.23's
+# wl_client_{get,set}_user_data, which an older host's lack.
+fetch wayland "wayland-${V_WAYLAND}.tar.xz" "$V_WAYLAND"
 WLR="$W/wlroots-${V_WLROOTS}"
 DWL="$W/dwl-v${V_DWL}"
+WL="$W/wayland-${V_WAYLAND}"
 
 # The two headers meson writes for wlroots: the backends stage 04 builds (DRM, libinput, the
 # session), no Xwayland, GLES2 or Vulkan.
@@ -60,9 +64,18 @@ sed -e "s/^#mesondefine WLR_VERSION_STR$/#define WLR_VERSION_STR \"${V_WLROOTS}\
     -e "s/^#mesondefine WLR_VERSION_MINOR$/#define WLR_VERSION_MINOR ${minor}/" \
     -e "s/^#mesondefine WLR_VERSION_MICRO$/#define WLR_VERSION_MICRO ${micro}/" \
     "$WLR/include/wlr/version.h.in" > "$GEN/wlr/version.h"
-if grep -q '@\|#mesondefine' "$GEN/wlr/config.h" "$GEN/wlr/version.h"; then
-    echo "FAIL: wlroots ${V_WLROOTS}'s config.h.in or version.h.in has a placeholder this check does not fill:"
-    grep -n '@\|#mesondefine' "$GEN/wlr/config.h" "$GEN/wlr/version.h"
+IFS=. read -r wmajor wminor wmicro <<<"$V_WAYLAND"
+sed -e "s/@WAYLAND_VERSION_MAJOR@/${wmajor}/; s/@WAYLAND_VERSION_MINOR@/${wminor}/; s/@WAYLAND_VERSION_MICRO@/${wmicro}/; s/@WAYLAND_VERSION@/${V_WAYLAND}/" \
+    -e "s/^#mesondefine WAYLAND_VERSION_MAJOR$/#define WAYLAND_VERSION_MAJOR ${wmajor}/" \
+    -e "s/^#mesondefine WAYLAND_VERSION_MINOR$/#define WAYLAND_VERSION_MINOR ${wminor}/" \
+    -e "s/^#mesondefine WAYLAND_VERSION_MICRO$/#define WAYLAND_VERSION_MICRO ${wmicro}/" \
+    -e "s/^#mesondefine WAYLAND_VERSION$/#define WAYLAND_VERSION \"${V_WAYLAND}\"/" \
+    "$WL/src/wayland-version.h.in" > "$GEN/wayland-version.h"
+wayland-scanner server-header "$WL/protocol/wayland.xml" "$GEN/wayland-server-protocol.h" \
+    || { echo "FAIL: wayland-scanner refused wayland ${V_WAYLAND}'s own protocol"; exit 1; }
+if grep -q '@\|#mesondefine' "$GEN/wlr/config.h" "$GEN/wlr/version.h" "$GEN/wayland-version.h"; then
+    echo "FAIL: a header template of wlroots ${V_WLROOTS} or wayland ${V_WAYLAND} has a placeholder this check does not fill:"
+    grep -n '@\|#mesondefine' "$GEN/wlr/config.h" "$GEN/wlr/version.h" "$GEN/wayland-version.h"
     exit 1
 fi
 # Every protocol's server header, by the name dwl's Makefile and wlroots' headers include. One this
@@ -92,7 +105,7 @@ compile() {   # compile FILE...: gcc -fsyntax-only, as stage 04 would build them
         -Wshadow -Wunused-macros -Werror=strict-prototypes -Werror=implicit -Werror=return-type \
         -Werror=incompatible-pointer-types -Wfloat-conversion \
         -DWLR_USE_UNSTABLE -D_POSIX_C_SOURCE=200809L -DVERSION='"'"${V_DWL}"'"' \
-        -I"$DWL" -I"$GEN" -I"$WLR/include" $(pkg-config --cflags "${PKGS[@]}") "$@"
+        -I"$DWL" -I"$GEN" -I"$WL/src" -I"$WLR/include" $(pkg-config --cflags "${PKGS[@]}") "$@"
 }
 fail=0
 if compile "$DWL/dwl.c" "$DWL/util.c" 2> "$W/errors"; then
