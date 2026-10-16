@@ -53,9 +53,10 @@ firmware version, or for the same model sold with another network card: the
 report names the firmware version and every device, so a reader can compare.
 
 A listing also says what confines a device's DMA: the IOMMUs in use, and
-how a Thunderbolt port lets a device in. The kernel turns the IOMMU on and
-strict, but a machine whose firmware hides it boots all the same, with every
-device able to reach all of memory.
+how a Thunderbolt port lets a device in, on a build with a Thunderbolt
+driver, which 1.0 is not. The kernel turns the IOMMU on and strict, but a
+machine whose firmware hides it boots all the same, with every device able
+to reach all of memory.
 
 A listing also names the machine's sound: its HD Audio codecs, and whether
 microphones sit on Intel's DSP or AMD's coprocessor, codecs on SoundWire
@@ -90,6 +91,8 @@ let the row's note name what did not work:
 | an SD card in the laptop's own reader | the window that asks which zone gets a stick opens, as for a USB stick |
 | a USB headset, and `c` and a zone's number in the menu | it plays what the zone plays, and records there once granted |
 | an external monitor on a laptop with two GPUs, an AMD one beside the built-in | it shows the desktop, whose frames wlroots copies to the second GPU's ports; dark, the row's note names both, as the listing's `display` line does |
+| a USB-C or Thunderbolt dock: its monitor, its USB ports and its Ethernet | the monitor shows where the laptop drives USB-C itself; a Thunderbolt or USB4 dock's own USB ports and Ethernet stay dark, as 1.0 builds no Thunderbolt driver, and the row's note says which worked |
+| the state passphrase at boot, typed on the built-in keyboard | it unlocks; a built-in keyboard that types nothing there is one on I2C, and a USB keyboard is the way through |
 | `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
 | Firefox in `untrusted`: Alt+p, its number and `b` | a window opens; where the listing's `shstk` line says yes, this is the only test of Firefox starting with shadow stacks on, and a failure names SHSTK in what it prints |
 
