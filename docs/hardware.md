@@ -84,6 +84,10 @@ let the row's note name what did not work:
 | the volume, mute and microphone keys | the volume steps, mutes, and the microphone is taken back, under the lock too |
 | a zone playing sound | the built-in speakers play it where the listing's `audio` line names an HD Audio codec and nothing beyond it |
 | unplug the mains, then plug it in | the menu's Power line follows, with the battery's charge |
+| a charger too weak for the machine, such as a phone's USB-C one | the Power line says on battery though plugged in, and the warnings at 10% and 5% come as they do unplugged |
+| on an AMD laptop whose `sleep` line says s2idle, a sleep of two minutes | it wakes to the lock, not to a fresh boot: the watchdog does not feed AMD's TCO timer there, as it would count through the sleep |
+| an SD card in the laptop's own reader | the window that asks which zone gets a stick opens, as for a USB stick |
+| a USB headset, and `c` and a zone's number in the menu | it plays what the zone plays, and records there once granted |
 | `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
 | Firefox in `untrusted`: Alt+p, its number and `b` | a window opens; where the listing's `shstk` line says yes, this is the only test of Firefox starting with shadow stacks on, and a failure names SHSTK in what it prints |
 
