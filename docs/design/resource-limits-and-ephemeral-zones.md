@@ -94,19 +94,23 @@ are delegated and as root on the installed system (the zones suite).
 there; `cgroup.rs` and `zone.rs` unit-test the sweep, the limits and
 `storage.size`.
 
-Whether a zone's Wayland shared memory is charged to its cgroup is not
-confirmed; it takes a measurement on the installed image. Record
-`memory.current` and `memory.stat` for the zone's and dwl's cgroups, then run
-`wlprobe charge` through `kryptik-launch` in that zone, which commits one
-unwritten 4 MiB buffer for ten seconds. Confirm the window was rendered and
-compare both cgroups while the buffer is held; if dwl's cgroup is an ancestor
-of the zone's, subtract the zone's change. A rise outside the zone with no
-matching charge to the zone would mean a zone can make dwl hold memory
-outside the zone's limit. The proxy's pool limits apply either way, and a
-pool stays charged while the compositor may still hold it: until it and its
-buffers are deleted and no surface shows one of them, counting each buffer a
-synchronized subsurface committed until wlroots applies that subsurface's
-cache.
+Whether a zone's Wayland shared memory is charged to its cgroup takes a
+measurement on the installed image, and the desktop suite takes it: it runs
+`wlprobe charge keep` in `untrusted`, which commits one unwritten 4 MiB buffer
+and then, four seconds after it is drawn, drops the buffer and its pool while
+keeping the pool's descriptor. Its `desktop-charge` line gives the desktop's
+`memory.current` rise while dwl shows the buffer and once the pool is gone. By
+hand: record `memory.current` and `memory.stat` for the zone's and dwl's
+cgroups, then run `wlprobe charge` through `kryptik-launch` in that zone,
+which commits one unwritten 4 MiB buffer for ten seconds. Confirm the window
+was rendered and compare both cgroups while the buffer is held; if dwl's
+cgroup is an ancestor of the zone's, subtract the zone's change. A rise
+outside the zone with no matching charge to the zone would mean a zone can
+make dwl hold memory outside the zone's limit. The proxy's pool limits apply
+either way, and a pool stays charged while the compositor may still hold it:
+until it and its buffers are deleted and no surface shows one of them,
+counting each buffer a synchronized subsurface committed until wlroots applies
+that subsurface's cache.
 
 ## Wayland shared memory
 

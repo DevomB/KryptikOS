@@ -163,6 +163,31 @@ for g in zwlr_screencopy_manager_v1 zwlr_data_control_manager_v1 zwp_primary_sel
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
 done
 [[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, data-control, primary-selection, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
+# Where a zone's unwritten pool is charged (resource-limits design, Tests). dwl reads it first, so
+# its pages are the desktop's, inside the desktop's bound and outside the zone's. The probe then
+# drops the pool and keeps its descriptor, as a zone may: the pages stay the desktop's until the
+# proxy punches the range.
+desk_mem() { cat /sys/fs/cgroup/kryptik-desktop/memory.current 2>/dev/null || echo 0; }
+# Its shmem alone, which the zone's pool is and dwl's own allocations are not.
+desk_shmem() { awk '$1 == "shmem" { print $2; f = 1 } END { if (!f) print 0 }' /sys/fs/cgroup/kryptik-desktop/memory.stat 2>/dev/null; }
+charge_said() { since_mark charge untrusted | grep -q "$1"; }
+mark charge untrusted
+before="$(desk_mem)"; sbefore="$(desk_shmem)"
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe charge keep" > "$LOG/launch-charge.out" 2>&1 &
+charge_job=$!
+if wait_for 30 charge_said 'sample memory.current now'; then
+    sleep 1
+    held="$(desk_mem)"; kept="$held"; sheld="$(desk_shmem)"; skept="$sheld"
+    wait_for 15 charge_said 'pool gone' && { sleep 1; kept="$(desk_mem)"; skept="$(desk_shmem)"; }
+    unfreed="$(grep -h 'pages were not freed' "/run/kryptik-proxy/$UID_/untrusted.log" 2>/dev/null | tail -1)"
+    info "desktop-charge: a zone's unwritten 4 MiB pool raised the desktop's memory.current by $(( (held - before) / 1024 )) KiB and its shmem by $(( (sheld - sbefore) / 1024 )) KiB while dwl showed it; once the pool was gone and the zone kept its descriptor, by $(( (kept - before) / 1024 )) KiB and $(( (skept - sbefore) / 1024 )) KiB; the proxy: ${unfreed:-no unfreed pages logged}"
+else
+    info "desktop-charge: the probe drew nothing: $(since_mark charge untrusted | tail -3 | tr '\n' ' ')"
+fi
+wait "$charge_job" 2>/dev/null
+# The launch returns once the zone runs; the probe keeps its window 10 s, and the next checks
+# start untrusted themselves.
+wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
 # No zone reaches dwl's sockets: of every socket untrusted's user can find, none
 # is dwl's own or one of its zones' sockets, and its own is the proxy's. Each file is
 # stat'ed, which sees through a socket bound in over a file. The launcher marks
