@@ -171,6 +171,35 @@ grep -qF "alpha 1.0: only file://${ROWM}/alpha_1.0.orig.tar.gz serves it; not ht
 MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" run --probe
 expect_fail "--probe fails on a source no place serves" "alpha 1.0: no place serves it (asked https://127.0.0.1:9/alpha-1.0.tar.gz)"
 
+# A host that refuses HEAD: the probe asks for one byte, and the answer's status decides. Python's
+# server ignores the range and starts the whole file, and answers a missing one with a page; the
+# first is served and the second not, whatever exit the curl at hand gives for each.
+cat > "${W}/nohead.py" <<'PY'
+import functools, http.server, sys
+class NoHead(http.server.SimpleHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_error(405)
+    def log_message(self, *args):
+        pass
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(NoHead, directory=sys.argv[1]))
+print(srv.server_address[1], flush=True)
+srv.serve_forever()
+PY
+python3 -I "${W}/nohead.py" "$UPSTREAM" > "${W}/nohead.port" 2>/dev/null &
+NOHEAD=$!
+trap 'kill "$NOHEAD" 2>/dev/null; rm -rf "$W"' EXIT
+for _ in $(seq 1 50); do [[ -s "${W}/nohead.port" ]] && break; sleep 0.1; done
+port="$(head -1 "${W}/nohead.port")"
+{
+    printf 'alpha|1.0|http://127.0.0.1:%s/alpha-1.0.tar.gz|probe|listing\n' "$port"
+    printf 'omega|9.0|http://127.0.0.1:%s/omega-9.0.tar.gz|probe|listing\n' "$port"
+} > "${W}/manifest-nohead"
+MANIFEST="${W}/manifest-nohead" MIRROR_DISTFILES="" run --probe
+expect_fail "--probe asks a host that refuses HEAD for one byte, and a missing file fails" "omega 9.0: no place serves it"
+grep -qF "alpha 1.0: only http://127.0.0.1:${port}/alpha-1.0.tar.gz serves it" "$OUT" \
+    && green "there, a file the host has counts and an error page does not" || { red "--probe misread the host that refuses HEAD"; show; }
+kill "$NOHEAD" 2>/dev/null; wait "$NOHEAD" 2>/dev/null
+
 # --- checksum refusal -------------------------------------------------------
 
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good

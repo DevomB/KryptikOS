@@ -327,13 +327,15 @@ fetch_attempt() {
 }
 
 # serves URL: whether URL answers for the file without sending it: HEAD, or a one-byte range where
-# a host refuses HEAD. curl stops with 63 when a host ignores the range and starts the whole file,
-# which shows it has it.
+# a host refuses HEAD. The range's status decides, not curl's exit: --max-filesize stops a host
+# that ignores the range and starts the whole file, and some curls stop an error page's body the
+# same way, before -f would.
 serves() {
     curl -fsIL --connect-timeout 15 --max-time 45 -o /dev/null "$1" 2>/dev/null && return 0
-    local rc=0
-    curl -fsL -r 0-0 --max-filesize 1 --connect-timeout 15 --max-time 45 -o /dev/null "$1" 2>/dev/null || rc=$?
-    [[ "$rc" -eq 0 || "$rc" -eq 63 ]]
+    local code
+    code="$(curl -sL -r 0-0 --max-filesize 1 --connect-timeout 15 --max-time 45 -o /dev/null \
+        -w '%{http_code}' "$1" 2>/dev/null)" || true
+    [[ "$code" == 200 || "$code" == 206 ]]
 }
 
 # Every place each source is kept, asked whether it has the file, nothing downloaded: a source no
