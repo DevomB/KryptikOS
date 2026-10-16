@@ -53,11 +53,12 @@ usb_part() {
 }
 # The USB disk with no partition table, waited for: the host plugs it in alone just before.
 usb_whole() {
-    local d
+    local d parts
     for _ in $(seq 1 30); do
         for d in /sys/class/block/sd*; do
             [[ -e "$d" && ! -e "$d/partition" ]] || continue
-            ls "$d" | grep -q "^$(basename "$d")[0-9]" && continue
+            parts=("$d/${d##*/}"[0-9]*)
+            [[ -e "${parts[0]}" ]] && continue
             [[ "$(cat "$d/size" 2>/dev/null)" -gt 0 ]] && { basename "$d"; return 0; }
         done
         sleep 1
