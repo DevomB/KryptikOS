@@ -355,6 +355,10 @@ put sys/class/power_supply/hidpp_battery_0/scope Device
 put sys/class/power_supply/hidpp_battery_0/capacity 40
 put sys/power/state 'freeze mem disk'
 put sys/power/mem_sleep 's2idle [deep]'
+put sys/power/suspend_stats/success 3
+put sys/power/suspend_stats/fail 1
+put sys/power/suspend_stats/last_hw_sleep 3480000000
+put sys/power/suspend_stats/total_hw_sleep 9000000000
 pci 0000:00:05.0 0x048000 8086 a75d
 put sys/bus/acpi/devices/OVTI01A0:00/status 15
 put sys/bus/acpi/devices/INT3472:01/status 15
@@ -369,6 +373,7 @@ lap "a device's battery, named as the device's" '^power_supply hidpp_battery_0 t
 nolap "never a battery's serial number"     'BAT-SECRET-7'
 lap "the sleep states the kernel offers"     '^sleep states: freeze mem disk$'
 lap "and which one mem is"                   '^sleep mem: s2idle \[deep\]$'
+lap "the sleeps, and the hardware's time asleep" '^sleep stats: 3 successful, 1 failed, hardware asleep 3480000000 us last, 9000000000 us in all$'
 lap "an IPU6 by its PCI ID"                  '^camera ipu6 0000:00:05\.0 8086:a75d driver -$'
 lap "its sensor, by its ACPI ID"             '^camera acpi OVTI01A0:00 sensor$'
 lap "the sensor's power controller"          '^camera acpi INT3472:01 sensor power$'
