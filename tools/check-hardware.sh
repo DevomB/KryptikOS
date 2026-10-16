@@ -179,6 +179,16 @@ examine() {
     [[ "$sb" == on ]] || lacks "Secure Boot is ${sb:-unknown}"
     [[ "$lock" == confidentiality ]] || lacks "lockdown is ${lock:-unknown}, not confidentiality"
     fact microcode "$(section cpu "$r" | field microcode)"
+    # What confines a device's DMA, and Thunderbolt's level. No level asks for it.
+    local iommu tb dma
+    iommu="$(section firmware "$r" | field iommu)"
+    tb="$(section firmware "$r" | sed -n 's/^thunderbolt //p' | paste -sd';' -)"
+    case "$iommu" in
+        "") dma="not in this report" ;;
+        none) dma="none: nothing confines a device's DMA" ;;
+        *) dma="on: ${iommu}" ;;
+    esac
+    fact dma "${dma}${tb:+; thunderbolt ${tb//;/; thunderbolt }}"
 
     # The three lists under `missing`, each "  (none)" or its entries.
     lacking="$(section missing "$r" | awk '

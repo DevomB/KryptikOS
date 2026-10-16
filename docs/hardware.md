@@ -51,6 +51,11 @@ suspend, a camera), for Bluetooth, which 1.0 does not drive, for another
 firmware version, or for the same model sold with another network card: the
 report names the firmware version and every device, so a reader can compare.
 
+A listing also says what confines a device's DMA: the IOMMUs in use, and
+how a Thunderbolt port lets a device in. The kernel turns the IOMMU on and
+strict, but a machine whose firmware hides it boots all the same, with every
+device able to reach all of memory.
+
 A listing also names the machine's sound: its HD Audio codecs, and whether
 microphones sit on Intel's DSP or AMD's coprocessor, codecs on SoundWire or
 amplifiers in front of the speakers, each with what drives it. No level asks
@@ -107,9 +112,9 @@ a new report and a new row.
 
 `tools/check-hardware.sh REPORT` prints what a report shows and the level it
 carries, with each reason it falls short of `certified`. One line each says
-what the machine's sound, laptop parts, sleep, camera and Bluetooth are, and
-what drives them; no level asks for any of them, as 1.0 drives few of them on
-a laptop. `--list` checks the
+what confines a device's DMA, and what the machine's sound, laptop parts,
+sleep, camera and Bluetooth are and what drives them; no level asks for any
+of them yet. `--list` checks the
 whole list: every row's report is there and carries the level the row claims,
 was taken on the row's day and not in a virtual machine, no report holds a
 hardware address, a UUID or a serial number, and no report is without a row.

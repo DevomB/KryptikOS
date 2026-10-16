@@ -36,6 +36,8 @@ secure boot: on
 setup mode: 0
 lockdown: confidentiality
 tpm: version 2
+iommu: dmar0 dmar1; groups: 17 DMA
+thunderbolt domain0: security user, iommu protection 1
 
 == cpu ==
 model: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
@@ -189,6 +191,12 @@ if [[ "$(grep -cE '^  (laptop|sleep|camera) +not in this report$' <<<"$OUT")" -e
 else
     red "a report with no laptop section: $(grep -E '^  (laptop|sleep|camera|carries) ' <<<"$OUT" | tr '\n' '|')"
 fi
+
+has as-is "  dma        on: dmar0 dmar1; groups: 17 DMA; thunderbolt domain0: security user, iommu protection 1" "what confines a device's DMA, and Thunderbolt's level"
+vary nodma 's/^iommu: .*/iommu: none/; /^thunderbolt /d'
+has nodma "  dma        none: nothing confines a device's DMA" "a machine whose IOMMU is off, said so"
+vary olddma '/^iommu: /d; /^thunderbolt /d'
+has olddma "  dma        not in this report" "a report from before the line"
 
 echo "-- each thing a certified listing needs"
 short medium    's/^booted: .*/booted: the usb medium/'           "not taken on an installed system (booted: the usb medium)"
