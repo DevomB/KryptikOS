@@ -1190,12 +1190,14 @@ startspawner(void)
 }
 
 /* Kryptik: the calls dwl makes once it runs: what the headless suite traces it making
- * (dwl-headless.sh), and what screens, input devices, the seat, cursors and keymaps add. The
- * hottest come first, as the filter tries them in turn. */
+ * (dwl-headless.sh), and what screens, input devices, the seat, cursors, keymaps and the keys'
+ * commands add (send() to the spawner is sendto). The hottest come first, as the filter tries
+ * them in turn. */
 static const int dwlcalls[] = {
 \tSYS_epoll_wait, SYS_epoll_pwait, SYS_epoll_pwait2, SYS_recvmsg, SYS_sendmsg, SYS_ioctl, SYS_read,
 \tSYS_write, SYS_clock_gettime, SYS_timerfd_settime, SYS_close, SYS_fcntl, SYS_mmap, SYS_munmap,
-\tSYS_futex, SYS_accept4, SYS_epoll_ctl, SYS_getsockopt, SYS_openat, SYS_fstat, SYS_newfstatat,
+\tSYS_futex, SYS_accept4, SYS_epoll_ctl, SYS_getsockopt, SYS_sendto, SYS_openat, SYS_fstat,
+\tSYS_newfstatat,
 \tSYS_statx, SYS_stat, SYS_lstat, SYS_lseek, SYS_pread64, SYS_getdents64, SYS_readlinkat,
 \tSYS_readlink, SYS_access, SYS_faccessat, SYS_faccessat2, SYS_inotify_add_watch,
 \tSYS_inotify_rm_watch, SYS_brk, SYS_mremap, SYS_madvise, SYS_mprotect, SYS_memfd_create,
