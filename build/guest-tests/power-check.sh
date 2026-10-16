@@ -54,6 +54,17 @@ if [[ -z "$missing" ]]; then
 else
     fail "sleep-drivers" "not in ${kmods}:${missing}"
 fi
+# The power key's drivers on Intel laptops that send it to the HID event filter or the virtual
+# button device: eudev loads them by the device's ACPI ID, which QEMU has neither of.
+unresolved=""
+for id in INT33D5:intel_hid INTC1078:intel_hid INT33D6:intel_vbtn; do
+    [[ "$(modprobe -R "acpi:${id%%:*}:" 2>&1)" == "${id#*:}" ]] || unresolved="${unresolved} ${id%%:*}"
+done
+if [[ -z "$unresolved" ]]; then
+    pass "power-key-drivers" "acpi:INT33D5: and acpi:INTC1078: resolve to intel_hid, acpi:INT33D6: to intel_vbtn"
+else
+    fail "power-key-drivers" "no module for:${unresolved}"
+fi
 
 # --- a battery ---------------------------------------------------------------------------
 if modprobe test_power && wait_for 10 test -d /sys/class/power_supply/test_battery; then

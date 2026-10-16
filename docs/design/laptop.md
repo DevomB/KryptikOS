@@ -434,7 +434,11 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 - **The lid and the power key** are dwl's, as input devices: the power key
   is a key, which dwl binds to `kryptik-lock --suspend`, and the lid a
   switch, which Kryptik's dwl patch turns into the same command when it
-  closes (above). Nothing in zone 0 runs as root for them.
+  closes (above). Nothing in zone 0 runs as root for them. Many Intel
+  laptops send the power key, and the wake from s2idle by it, to Intel's
+  HID event filter or virtual button device instead of ACPI's power
+  button; `intel-hid` and `intel-vbtn`, modules eudev loads by those
+  devices' ACPI IDs, make it a key there too.
 - **The power service** (`build/service-scripts/power.sh`, the `power`
   service), in zone 0, reads the battery and the mains adapter or USB
   charger from `/sys/class/power_supply` every 30 s; a mouse's battery
