@@ -922,6 +922,45 @@ if [[ "$RC" -ne 0 ]] && grep -qF "published copy at file://${PROV}/missing.asc n
 else
     red "and --strict counts its source unverifiable (exit ${RC})"; show
 fi
+# A pull request's gate: the host's silence is a warning, and the key held still decides.
+fresh_root
+runprov --strict --unread-warns --report="${W}/r9.tsv"
+if [[ "$RC" -eq 0 && "$(klass_of "${W}/r9.tsv" good)" == "signature-keyring-key" ]] \
+   && grep -qF "as its published copy did not answer (--unread-warns)" "$OUT" \
+   && grep -qF "  - good (file://${PROV}/missing.asc)" "$OUT"; then
+    green "--strict --unread-warns checks it against the key held, and names it"
+else
+    red "--strict --unread-warns checks it against the key held (exit ${RC}, got $(klass_of "${W}/r9.tsv" good))"; show
+fi
+fresh_root
+runprov --unread-warns
+if [[ "$RC" -ne 0 ]] && grep -qF -- "--unread-warns eases --strict; give both" "$OUT"; then
+    green "--unread-warns alone is refused"
+else
+    red "--unread-warns alone is refused (exit ${RC})"; show
+fi
+# It eases nothing else: a copy that answers with another key still fails,
+fresh_root
+write_manifest unknown
+prov_table "${UNKFPR}  korg  file://${PROV}/good.asc  2026-09-11  unknown  deliberately the wrong key"
+runprov --strict --unread-warns --report="${W}/r10.tsv"
+if [[ "$RC" -ne 0 && "$(klass_of "${W}/r10.tsv" unknown)" == "published-key-changed" ]]; then
+    green "--unread-warns still fails a locator that serves another key"
+else
+    red "--unread-warns still fails a locator that serves another key (exit ${RC}, got $(klass_of "${W}/r10.tsv" unknown))"; show
+fi
+# and a key held but unaudited stays unaudited when its copy does not answer.
+fresh_root
+write_manifest unknown
+run --fetch-unknown-keys
+prov_table "${UNKFPR}  korg  file://${PROV}/missing.asc  2026-09-11  unknown  its published copy gone"
+runprov --strict --unread-warns
+if [[ "$RC" -ne 0 ]] && grep -qF "signed by unaudited keys" "$OUT"; then
+    green "--unread-warns still fails an unaudited key whose copy did not answer"
+else
+    red "--unread-warns still fails an unaudited key whose copy did not answer (exit ${RC})"; show
+fi
+rm -f "${FAKE}/keys.manifest"
 
 # --- malformed provenance rows ----------------------------------------------
 
