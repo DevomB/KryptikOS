@@ -420,3 +420,10 @@ jobs:
       # is, would stop at; a source one place alone serves is a warning, a mirror row's cue.
       - name: Every place each source is kept, asked for its file
         run: ./tools/fetch-sources.sh --probe
+
+      # Each mirror row's file, downloaded and held to the lock: a row serving other bytes, or one
+      # for no source, fails; one that no longer serves the pin is a warning. Its downloads stay
+      # on the runner.
+      - name: Every mirror row has the lock's bytes
+        if: ${{ !cancelled() }}
+        run: ./tools/fetch-sources.sh --check-mirrors
