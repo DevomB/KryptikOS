@@ -316,6 +316,52 @@ aud "the amplifiers, and that nothing drives them" '^amplifier CSC3551:00 driver
 noaud "not those the firmware calls absent" '^amplifier CSC3551:01'
 listed "the listing: the amplifiers, by their ACPI name" "HD Audio codec 10ec0287; amplifiers CSC3551, not driven"
 
+echo "-- what a laptop has that the others lack"
+want "the laptop has its place"             '^== laptop ==$'
+L="$W/laptop.txt"
+laptop_now() {
+    KRYPTIK_HWREPORT_ROOT="$W" sh "$TOOL" > "$W/report-laptop.txt" 2>&1
+    awk '$0 == "== laptop ==" { on = 1; next } on && /^== .* ==$/ { exit } on' "$W/report-laptop.txt" > "$L"
+}
+lap()   { if grep -qE -- "$2" "$L"; then green "$1"; else red "$1: $(paste -sd'|' "$L")"; fi; }
+nolap() { if grep -qE -- "$2" "$W/report-laptop.txt"; then red "$1"; else green "$1"; fi; }
+put sys/class/backlight/intel_backlight/type raw
+put sys/class/backlight/intel_backlight/max_brightness 19200
+put sys/class/backlight/acpi_video0/type firmware
+put sys/class/backlight/acpi_video0/max_brightness 100
+put sys/class/power_supply/BAT0/type Battery
+put sys/class/power_supply/BAT0/status Discharging
+put sys/class/power_supply/BAT0/capacity 87
+put sys/class/power_supply/BAT0/technology Li-ion
+put sys/class/power_supply/BAT0/serial_number BAT-SECRET-7
+put sys/class/power_supply/AC/type Mains
+put sys/class/power_supply/AC/online 1
+# A mouse's battery, which is the device's and not the machine's.
+put sys/class/power_supply/hidpp_battery_0/type Battery
+put sys/class/power_supply/hidpp_battery_0/scope Device
+put sys/class/power_supply/hidpp_battery_0/capacity 40
+put sys/power/state 'freeze mem disk'
+put sys/power/mem_sleep 's2idle [deep]'
+pci 0000:00:05.0 0x048000 8086 a75d
+put sys/bus/acpi/devices/OVTI01A0:00/status 15
+put sys/bus/acpi/devices/INT3472:01/status 15
+put sys/bus/acpi/devices/INTC1009:00/status 15
+put sys/bus/acpi/devices/OVTI02C1:00/status 0
+laptop_now
+lap "each backlight with its kind and range" '^backlight intel_backlight type raw max 19200$'
+lap "the firmware's as well"                 '^backlight acpi_video0 type firmware max 100$'
+lap "the battery's charge and kind"          '^power_supply BAT0 type Battery scope System status Discharging capacity 87 technology Li-ion$'
+lap "mains, and whether they are on"         '^power_supply AC type Mains online 1$'
+lap "a device's battery, named as the device's" '^power_supply hidpp_battery_0 type Battery scope Device '
+nolap "never a battery's serial number"     'BAT-SECRET-7'
+lap "the sleep states the kernel offers"     '^sleep states: freeze mem disk$'
+lap "and which one mem is"                   '^sleep mem: s2idle \[deep\]$'
+lap "an IPU6 by its PCI ID"                  '^camera ipu6 0000:00:05\.0 8086:a75d driver -$'
+lap "its sensor, by its ACPI ID"             '^camera acpi OVTI01A0:00 sensor$'
+lap "the sensor's power controller"          '^camera acpi INT3472:01 sensor power$'
+lap "and the Visual Sensing Controller"      '^camera acpi INTC1009:00 visual sensing controller$'
+nolap "not a sensor the firmware calls absent" 'OVTI02C1'
+
 echo
 echo "${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" -eq 0 ]]

@@ -98,6 +98,9 @@ want "$R1" 'Linux version .*hardened'                         "from its first li
 # QEMU here has no sound device and its firmware no NHLT: the section is there, and says so.
 want "$R1" '^== audio ==$'                                    "the sound has its place"
 want "$R1" '^nhlt: none$'                                     "and no DSP microphones, as QEMU's firmware describes none"
+# QEMU has no backlight, battery or camera; the section is there with the kernel's sleep states.
+want "$R1" '^== laptop ==$'                                   "a laptop's parts have their place"
+want "$R1" '^sleep states: '                                  "with the sleep states the kernel offers"
 deny "$R1" '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}'               "no hardware address"
 deny "$R1" '[Ss]erial ?[Nn]umber[:=] ?[^< ]'                  "no serial number"
 deny "$R1" '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "no UUID"

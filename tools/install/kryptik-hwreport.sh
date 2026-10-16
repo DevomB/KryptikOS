@@ -343,6 +343,57 @@ nhlt() {
         }'
 }
 
+# What a laptop has that a desktop and a virtual machine lack, for the parts the image drives or
+# names as a gap (docs/design/laptop.md, camera.md): each backlight and its kind, which
+# brightness.sh chooses among; each power supply, a battery's charge and kind but never its
+# serial number; the sleep states the kernel offers; and a camera's parts behind Intel's image
+# processing unit and in ACPI: its sensors, their power controller and the Visual Sensing
+# Controller between the two. A USB camera, the lid and a Bluetooth controller show under usb and
+# input.
+laptop() {
+    for b in "$SYS"/class/backlight/*; do
+        [ -e "$b" ] && printf 'backlight %s type %s max %s\n' "${b##*/}" "$(one "$b/type")" "$(one "$b/max_brightness")"
+    done
+    for p in "$SYS"/class/power_supply/*; do
+        [ -e "$p" ] || continue
+        t="$(one "$p/type")"
+        if [ "$t" = Battery ]; then
+            s="$(one "$p/scope")"; c="$(one "$p/capacity")"; k="$(one "$p/technology")"; st="$(one "$p/status")"
+            printf 'power_supply %s type Battery scope %s status %s capacity %s technology %s\n' "${p##*/}" \
+                "${s:-System}" "${st:--}" "${c:--}" "${k:--}"
+        else
+            o="$(one "$p/online")"
+            printf 'power_supply %s type %s online %s\n' "${p##*/}" "${t:--}" "${o:--}"
+        fi
+    done
+    printf 'sleep states: %s\n' "$(one "$SYS/power/state")"
+    printf 'sleep mem: %s\n' "$(one "$SYS/power/mem_sleep")"
+    # Intel's image processing units by PCI ID: the IPU6 and IPU7 ones 6.18's drivers bind (ipu6.h,
+    # staging ipu7.h), and IPU8's, which staging ipu7 names but does not bind yet.
+    for d in "$SYS"/bus/pci/devices/*; do
+        [ "$(hex "$d/vendor")" = 8086 ] || continue
+        case "$(hex "$d/device")" in
+            9a19|4e19|465d|462e|a75d|7d19) k=ipu6 ;;
+            645d|b05d) k=ipu7 ;;
+            d719) k=ipu8 ;;
+            *) continue ;;
+        esac
+        drv="$(target "$d/driver")"
+        printf 'camera %s %s 8086:%s driver %s\n' "$k" "${d##*/}" "$(hex "$d/device")" "${drv:--}"
+    done
+    # Sensors by the IDs ipu-bridge knows, OmniVision's and Himax's whole ranges with them.
+    for a in "$SYS"/bus/acpi/devices/*; do
+        case "${a##*/}" in
+            OVTI*:*|HIMX*:*|INT0310:*|INT33BE:*|INT33F0:*|INT3474:*|INT3479:*|INT347A:*|INT347E:*|INT3537:*|INTC10C5:*|XMCC0003:*) w=sensor ;;
+            INT3472:*) w="sensor power" ;;
+            INTC1009:*|INTC1058:*|INTC1094:*|INTC10D0:*) w="visual sensing controller" ;;
+            *) continue ;;
+        esac
+        [ "$(one "$a/status")" != 0 ] || continue
+        printf 'camera acpi %s %s\n' "${a##*/}" "$w"
+    done
+}
+
 missing_firmware() {
     kmsg | sed -n \
         -e 's/.*Direct firmware load for \(.*\) failed with error.*/\1/p' \
@@ -379,6 +430,7 @@ report() {
     sec storage;  cat "$T/disks"
     sec display;  display
     sec audio;    audio
+    sec laptop;   laptop
     sec network;  network
     sec input;    inputs
     sec modules;  awk '{ print $1 }' "$R/proc/modules" 2>/dev/null | sort | tr '\n' ' ' | fold -s -w 78; echo
