@@ -73,6 +73,7 @@ let the row's note name what did not work:
 | --- | --- |
 | close the lid, then open it | the screen locks and the machine sleeps; it wakes to the lock asking for the state passphrase, and the zones carry on once it is typed |
 | the power key, and `kryptik suspend` | the same; the listing's `sleep` line says whether that sleep is deep or s2idle |
+| the touchpad | the pointer moves, a tap clicks, two fingers scroll, and typing stills it for a moment |
 | the brightness keys | the backlight steps up and down and never goes dark; of several, the kind the kernel prefers (firmware, then platform, then raw) |
 | the volume, mute and microphone keys | the volume steps, mutes, and the microphone is taken back, under the lock too |
 | a zone playing sound | the built-in speakers play it where the listing's `audio` line names an HD Audio codec and nothing beyond it |
