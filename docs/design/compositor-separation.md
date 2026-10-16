@@ -226,9 +226,10 @@ session keeps the group, and dwl runs without it.
   keys' commands.
 - The mixer records who holds the microphone in `/run/kryptik-sound/marks`,
   which it alone writes and anyone on the host reads, as the camera's grant
-  already is; `control` keeps only the socket. The record names only the
-  zone that holds the microphone, which the screen shows anyway, and no zone
-  sees `/run/kryptik-sound`. dwl still takes it only as the mixer's own.
+  already is; `control` keeps the socket and the levels. The record names
+  only the zone that holds the microphone, which the screen shows anyway,
+  and no zone sees `/run/kryptik-sound`. dwl still takes it only as the
+  mixer's own.
 - The seat is dwl's alone. seatd answers group `seat`, which the daemon
   gives dwl and the login is no longer made in, so nothing else of the
   session can open the screens or the input devices through seatd, or take
