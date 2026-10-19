@@ -81,6 +81,22 @@ glibc's unwinder and every C++ program load) carry IBT and SHSTK and `gcc`
 itself is PIE with `BIND_NOW`. No program stage 02 built for the chroot is
 left in the image.
 
+At run time, where the CPU and the kernel have shadow stacks, glibc turns a
+process's on when the program and every library it starts with carry the
+note, and then refuses to load a library without it ("rebuild shared object
+with SHSTK support enabled"). Zone 0 keeps that rule: its objects without the
+note (`artifact-accepted.txt`) are static programs or libraries others start
+with (libgmp, under gcc, `expr`, `factor` and gawk), which leave a process
+without a shadow stack, and none of its programs loads one later. A zone's
+command runs with `GLIBC_TUNABLES=glibc.cpu.x86_shstk=permissive`
+(`zone_environment` in `spawn.rs`): a program that loads a library without
+the note while it has one thread, as Firefox loads libxul and NSPR, runs on
+without its shadow stack instead of failing, and a program whose libraries
+all carry it keeps its own. One that loads such a library once it has more
+threads still fails. The zone filter allows `map_shadow_stack`, which
+glibc's `makecontext` calls for a context's own shadow stack. No virtual
+machine in CI has shadow stacks, so only a machine with them shows this.
+
 ## Allocator
 
 ADR-005 makes hardened_malloc the system allocator. Stage 04 builds it without
