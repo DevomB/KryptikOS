@@ -628,9 +628,9 @@ shows each timer, its timeout and whether it is running.
   that may be the infrared one, which shows no picture.
 - Laptop sound goes through the HD Audio driver and USB audio. On many
   recent laptops part of it does not work: built-in microphones on Intel's
-  or AMD's audio processor, all built-in sound on Intel laptops whose audio
-  chips sit on SoundWire, and speakers behind a smart amplifier. A USB
-  headset or sound card works on all of them
+  or AMD's audio processor, all built-in sound on Intel and AMD laptops
+  whose audio chips sit on SoundWire, and speakers behind a smart
+  amplifier. A USB headset or sound card works on all of them
   ([laptop sound](design/laptop-audio.md)). Nothing plays through a
   monitor's speakers over HDMI or DisplayPort.
 - The laptop makers' own drivers (for ThinkPads, IdeaPads and ASUS, Dell
