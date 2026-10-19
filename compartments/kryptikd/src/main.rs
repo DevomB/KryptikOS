@@ -10,6 +10,7 @@ mod camera;
 mod caps;
 mod cgroup;
 mod consent;
+mod desktop;
 mod files;
 mod images;
 mod isolate;
@@ -125,6 +126,9 @@ USAGE:
     kryptikd camera revoke            take it back: the zone's node goes, and every
                                       descriptor on it fails
     kryptikd camera status            the zone that holds it, or none
+    kryptikd camera gone DEVPATH SEQNUM
+                                      udev's removal of a video4linux node: the grant
+                                      ends if it was this camera's, taken away after it
     kryptikd check-release DIR        whether DIR's manifest and manifest.sig verify,
                                       checked as nobody on copies: how kryptik-update
                                       apply, which runs as root, has a release checked
@@ -923,8 +927,16 @@ fn cmd_camera(dir: &Path, args: &[String]) -> ExitCode {
             Ok(None) => Ok("no zone held it".to_string()),
             Err(e) => Err(e),
         },
+        (Some("gone"), Some(devpath)) if word(3).and_then(|n| n.parse::<u64>().ok()).is_some() => {
+            let seqnum = word(3).and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+            match camera::gone(devpath, seqnum) {
+                Ok(Some(e)) => Ok(format!("zone {}'s camera was taken away, and its grant ended with it", e.zone)),
+                Ok(None) => Ok("no grant was this camera's".to_string()),
+                Err(e) => Err(e),
+            }
+        }
         _ => {
-            eprintln!("camera: usage: kryptikd camera grant ZONE | revoke | status");
+            eprintln!("camera: usage: kryptikd camera grant ZONE | revoke | status | gone DEVPATH SEQNUM");
             return ExitCode::from(2);
         }
     };

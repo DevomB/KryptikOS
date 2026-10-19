@@ -11,8 +11,9 @@ cd "$ROOT" || exit 1
 STRICT=0
 [[ "${1:-}" == "--strict" ]] && STRICT=1
 
-# Not here: the first two need the built system, the last two run with the compartment suites.
-ELSEWHERE=" libc-unwind.sh userspace-smoke.sh desktop-identity.sh compositor.sh "
+# Not here: the first two need the built system, the next two run with the compartment suites, and
+# the dwl suites in CI's Compositor build job, which installs what they build wlroots and dwl with.
+ELSEWHERE=" libc-unwind.sh userspace-smoke.sh desktop-identity.sh compositor.sh dwl-compile.sh dwl-headless.sh "
 SUITES=()
 for t in tools/tests/*.sh tools/tests/*.py; do
     [[ "$ELSEWHERE" == *" ${t##*/} "* ]] && continue

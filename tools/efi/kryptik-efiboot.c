@@ -200,7 +200,9 @@ static size_t put_ucs2(unsigned char *p, const char *s) { size_t n = 0; for (; *
 /* EFI_LOAD_OPTION: attributes, FilePathListLength, Description, FilePathList, OptionalData(none) */
 static size_t build_load_option(unsigned char *buf, const struct part *esp, const char *desc, const char *file) {
     unsigned char dp[512]; size_t d = 0;
-    /* HD(part, GPT, sig, start, size): type 4 (media), subtype 1, length 42 */
+    /* HD(part, GPT, sig, start, size): type 4 (media), subtype 1, length 42. start and size are
+     * the disk's logical blocks, given as sysfs's 512-byte sectors: the same only because
+     * kryptik-install refuses a disk whose logical blocks are 4096 bytes. */
     dp[d++] = 0x04; dp[d++] = 0x01; d += put_u16(dp + d, 42);
     d += put_u32(dp + d, esp->number);
     d += put_u64(dp + d, esp->start);

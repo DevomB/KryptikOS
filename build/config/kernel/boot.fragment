@@ -158,6 +158,13 @@ CONFIG_MMC_SDHCI_ACPI=y
 CONFIG_USB_UAS=y
 CONFIG_SCSI_HPSA=y
 CONFIG_SCSI_SMARTPQI=y
+# The SD card readers many laptops build in, Realtek's on PCIe and on USB, which SDHCI does not
+# drive: modules eudev loads by the reader's id, and the SD interface's by the cell the reader's
+# driver makes. A card in one is an SD card as one under SDHCI is. No firmware; no Memory Stick.
+CONFIG_MISC_RTSX_PCI=m
+CONFIG_MMC_REALTEK_PCI=m
+CONFIG_MISC_RTSX_USB=m
+CONFIG_MMC_REALTEK_USB=m
 # USB 1.1 companions: without xHCI, EHCI hands a USB keyboard or mouse to them.
 CONFIG_USB_UHCI_HCD=y
 CONFIG_USB_OHCI_HCD=y
@@ -187,6 +194,12 @@ CONFIG_PINCTRL_METEORPOINT=m
 CONFIG_PINCTRL_INTEL_PLATFORM=m
 CONFIG_I2C_HID_ACPI=m
 CONFIG_HID_MULTITOUCH=m
+# From Lunar Lake on, a touchpad or touch screen may sit behind the Touch Host Controller rather
+# than an LPSS I2C controller: QuickI2C for its I2C mode, QuickSPI for its SPI mode, which Meteor
+# Lake's touch screens use too. Modules eudev loads by the THC's PCI id; no firmware.
+CONFIG_INTEL_THC_HID=m
+CONFIG_INTEL_QUICKI2C=m
+CONFIG_INTEL_QUICKSPI=m
 # Sleep on laptops that offer only s2idle, as most made since about 2020 do: the
 # platform's power controller takes the SoC to its deepest state (S0i3 on AMD,
 # S0ix on Intel), and without its driver a sleeping laptop never gets there and
@@ -197,6 +210,13 @@ CONFIG_AMD_PMC=m
 CONFIG_INTEL_VSEC=m
 CONFIG_INTEL_PMT_TELEMETRY=m
 CONFIG_INTEL_PMC_CORE=m
+# The power key on Intel laptops whose firmware sends it, and the wake from
+# s2idle by it, to the HID event filter (INT33D5, INTC1051 and later) or the
+# virtual button device (INT33D6) instead of ACPI's power button: without these
+# the key sends nothing there, and dwl's binding for it never runs. Each reports
+# a tablet switch only on a convertible or detachable chassis or a model it lists.
+CONFIG_INTEL_HID_EVENT=m
+CONFIG_INTEL_VBTN=m
 # AQtion (5 and 10 GbE on desktop boards and Thunderbolt docks) and Mellanox
 # ConnectX-4 and later (servers); neither needs firmware.
 CONFIG_AQTION=m

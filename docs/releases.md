@@ -60,7 +60,7 @@ the release key made offline. The dated builds CI makes of every push to main
 | `kryptik-sb.crt`, `kryptik-sb.der` | the Secure Boot certificate that signed the kernels |
 | `root.json`, `manifest-VERSION`, `.sig` | the root's dm-verity record and the signed release manifest |
 | `manifest`, `manifest.sig`, the root image, `kryptik-a.efi`, `kryptik-b.efi` | the update payload under the names its manifest gives: a channel's base, and with `root.json` the directory a release brought by hand holds ([user guide](user-guide.md), section 4) |
-| `source-REVISION.tar` | the corresponding source: every tarball with its signatures, the crates the Rust binaries link, and the tree |
+| `source-REVISION.tar.000`, `.001`, … | the corresponding source, in parts of at most 1 GiB as a release file must be under 2 GiB: `cat` joins them into `source-REVISION.tar`, with every tarball and its signatures, the crates the Rust binaries link, and the tree |
 | `RELEASE.txt`, `REVISION.txt`, `RELEASE-NOTES.md`, `INSTRUCTIONS.md`, `ACCEPTANCE-REPORT.md`, `SHA256SUMS`, `kryptik-VERSION-acceptance-logs.tar.zst` | the record: the verdict, the revision, the notes, the instructions, and every item's result and log |
 
 The page's text ends with the size and hash of each file as uploaded. Check

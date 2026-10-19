@@ -3,9 +3,9 @@
 //! the user grants the camera in the chrome. kryptikd then loads the driver, finds the camera's
 //! node in sysfs and makes it, the zone's root's alone, in the zone's directory here, which the
 //! zone has had bound at `IN_ZONE` since it started, /dev/video0 a link into it. The grant ends
-//! with the user's gesture, the screen lock or the zone's stop: the node goes, the driver lets
-//! go of the device, so a descriptor the zone kept fails from then on, and the module is
-//! unloaded unless something still holds it.
+//! with the user's gesture, the screen lock, the zone's stop or the camera taken away (`gone`,
+//! from udev): the node goes, the driver lets go of the device, so a descriptor the zone kept
+//! fails from then on, and the module is unloaded unless something still holds it.
 
 use std::ffi::CString;
 use std::fs;
@@ -29,33 +29,55 @@ const RECORD: &str = "grant";
 const LET_GO: &str = "unbound";
 /// Written when the driver could not be unloaded: something still holds it.
 const STAYED: &str = "stayed";
+/// Held while a grant is made or ends: the camera taken away (`gone`) meets a grant the daemon
+/// makes, and a zone's end meets a grant made to another. Not `mounted`'s lock, which a grant
+/// takes too.
+const GRANT_LOCK: &str = "/run/kryptik-camera.grant.lock";
 
-/// Who holds the camera: the zone, the video4linux node, and the camera's name for the chrome.
+/// Who holds the camera: the zone, the video4linux node, the camera's name for the chrome, the
+/// node's path as udev names it, and the kernel's event number once the node was there.
 #[derive(Debug, PartialEq)]
 pub struct Grant {
     pub zone: String,
     pub node: String,
     pub name: String,
+    pub device: String,
+    pub seqnum: u64,
 }
 
 impl Grant {
     fn render(&self) -> String {
-        format!("zone {}\nnode {}\nname {}\n", self.zone, self.node, self.name)
+        format!("zone {}\nnode {}\nname {}\ndevice {}\nseqnum {}\n", self.zone, self.node, self.name, self.device, self.seqnum)
     }
 
     /// A record as `render` wrote it; anything else is no grant.
     pub fn parse(text: &str) -> Option<Grant> {
-        let (mut zone, mut node, mut name) = (None, None, None);
+        let (mut zone, mut node, mut name, mut device, mut seqnum) = (None, None, None, None, None);
         for line in text.lines() {
             match line.split_once(' ') {
                 Some(("zone", z)) if is_zone_name(z) => zone = Some(z.to_string()),
                 Some(("node", n)) if is_node(n) => node = Some(n.to_string()),
                 Some(("name", n)) => name = Some(n.to_string()),
+                Some(("device", d)) if is_devpath(d) => device = Some(d.to_string()),
+                Some(("seqnum", n)) => seqnum = Some(n.parse().ok()?),
                 _ => return None,
             }
         }
-        Some(Grant { zone: zone?, node: node?, name: name? })
+        Some(Grant { zone: zone?, node: node?, name: name?, device: device?, seqnum: seqnum? })
     }
+
+    /// Whether udev's removal of the node at `devpath`, numbered `seqnum`, ends this grant: this
+    /// camera's node, taken away after the grant. A removal from before it, as a grant moving to
+    /// another zone lets the camera go and takes it again at the same path, ends nothing.
+    fn ended_by(&self, devpath: &str, seqnum: u64) -> bool {
+        self.device == devpath && seqnum > self.seqnum
+    }
+}
+
+/// A device's path as udev names it: under /devices, one component at a time.
+fn is_devpath(s: &str) -> bool {
+    s.starts_with("/devices/") && s.len() <= 512 && s.bytes().all(|b| b.is_ascii_graphic())
+        && !s.split('/').any(|c| c == "..")
 }
 
 /// A zone's name as zone.rs allows it: lower-case letters, digits and '-', up to 12.
@@ -102,6 +124,13 @@ pub fn camera_in(sys: &Path) -> Option<(String, u32, u32, String)> {
         .chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(48).collect();
     let name = if name.trim().is_empty() { "a camera".to_string() } else { name.trim().to_string() };
     Some((node, major.parse().ok()?, minor.parse().ok()?, name))
+}
+
+/// A video4linux node's path as udev names it in an event (`%p`): its place in `sys`, under /sys.
+fn devpath_of(sys: &Path, node: &str) -> Option<String> {
+    let at = fs::canonicalize(sys.join("class/video4linux").join(node)).ok()?;
+    let root = fs::canonicalize(sys).ok()?;
+    Some(format!("/{}", at.strip_prefix(&root).ok()?.to_str()?))
 }
 
 /// The device behind a video4linux node and the bus it is on, as /sys names them, from `sys`:
@@ -158,6 +187,17 @@ fn c(s: &str) -> CString {
     CString::new(s).expect("no NUL in a constant")
 }
 
+/// The grant's lock, held until the file it returns drops.
+fn locked() -> Result<fs::File, String> {
+    let lock = fs::OpenOptions::new().write(true).create(true).mode(0o600).custom_flags(libc::O_CLOEXEC)
+        .open(GRANT_LOCK).map_err(|e| format!("{GRANT_LOCK}: {e}"))?;
+    // SAFETY: flock on a descriptor we own; the lock goes with it.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(format!("{GRANT_LOCK}: {}", io::Error::last_os_error()));
+    }
+    Ok(lock)
+}
+
 /// RUN_DIR mounted now: the compositor watches it for the grant's record, and a watch made
 /// before the mount would be on the directory beneath.
 pub fn mount_run_dir() -> io::Result<()> {
@@ -192,11 +232,12 @@ pub fn grant(zone: &crate::zone::Zone) -> Result<Grant, String> {
         return Err(format!("zone {}'s file refuses the camera", zone.name));
     }
     let uid = zone.uid_base.ok_or_else(|| format!("zone {} has no fixed uid_base to own the camera's node", zone.name))?;
+    let _held = locked()?;
     if let Some(g) = holder() {
         if g.zone == zone.name {
             return Ok(g);
         }
-        revoke()?;
+        end(g)?;
     }
     let dir = zone_dir(&zone.name).map_err(|e| format!("{RUN_DIR}/{}: {e}", zone.name))?;
     modprobe(&[DRIVER])?;
@@ -234,7 +275,15 @@ pub fn grant(zone: &crate::zone::Zone) -> Result<Grant, String> {
             return Err(format!("{}: {e}", path.display()));
         }
     }
-    let g = Grant { zone: zone.name.clone(), node, name };
+    // Its path, and the kernel's event number now: a removal numbered after it is this camera
+    // taken away, one before it the same camera let go of by an earlier grant's end.
+    let device = devpath_of(Path::new("/sys"), &node);
+    let seqnum = read_trim(Path::new("/sys/kernel/uevent_seqnum")).and_then(|n| n.parse().ok());
+    let (Some(device), Some(seqnum)) = (device, seqnum) else {
+        let _ = fs::remove_file(&path);
+        return Err("the camera's node is not where sysfs said it was".into());
+    };
+    let g = Grant { zone: zone.name.clone(), node, name, device, seqnum };
     let tmp = Path::new(RUN_DIR).join(".grant");
     let written = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&tmp)
         .and_then(|mut f| f.write_all(g.render().as_bytes()))
@@ -252,10 +301,35 @@ pub struct Ended {
     pub stayed: bool,
 }
 
-/// Take the camera back from whoever holds it: the node gone, the driver made to let go of the
-/// device, so a descriptor kept on it fails, and unloaded unless something still holds it.
+/// Take the camera back from whoever holds it.
 pub fn revoke() -> Result<Option<Ended>, String> {
-    let Some(g) = holder() else { return Ok(None) };
+    let _held = locked()?;
+    holder().map(end).transpose()
+}
+
+/// Take the camera back from `zone` alone, as its end does: a grant that moved to another zone
+/// meanwhile stays.
+pub fn revoke_from(zone: &str) -> Result<Option<Ended>, String> {
+    let _held = locked()?;
+    match holder() {
+        Some(g) if g.zone == zone => end(g).map(Some),
+        _ => Ok(None),
+    }
+}
+
+/// udev's removal of the video4linux node at `devpath`, numbered `seqnum`: the grant ends if it
+/// was this camera's, at once, before another camera plugged in can take the node's number.
+pub fn gone(devpath: &str, seqnum: u64) -> Result<Option<Ended>, String> {
+    let _held = locked()?;
+    match holder() {
+        Some(g) if g.ended_by(devpath, seqnum) => end(g).map(Some),
+        _ => Ok(None),
+    }
+}
+
+/// End grant `g`: the node gone, the driver made to let go of the device, so a descriptor kept
+/// on it fails, and unloaded unless something still holds it. The caller holds the lock.
+fn end(g: Grant) -> Result<Ended, String> {
     match fs::remove_file(Path::new(RUN_DIR).join(&g.zone).join(NODE)) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -275,7 +349,7 @@ pub fn revoke() -> Result<Option<Ended>, String> {
         let _ = fs::File::create(Path::new(RUN_DIR).join(STAYED));
     }
     fs::remove_file(Path::new(RUN_DIR).join(RECORD)).map_err(|e| format!("{RUN_DIR}/{RECORD}: {e}"))?;
-    Ok(Some(Ended { zone: g.zone, stayed }))
+    Ok(Ended { zone: g.zone, stayed })
 }
 
 #[cfg(test)]
