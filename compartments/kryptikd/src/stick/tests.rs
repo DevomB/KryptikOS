@@ -73,6 +73,14 @@ fn a_stick_with_no_partition_table_is_given_whole() {
 }
 
 #[test]
+fn a_mapping_is_two_targets_so_no_ioctl_reaches_the_stick() {
+    let p = Partition { name: "sdc".into(), sectors: 2_097_152, what: String::new() };
+    assert_eq!(table(&p).unwrap(), "0 2097024 linear /dev/sdc 0\n2097024 128 linear /dev/sdc 2097024");
+    let tiny = Partition { name: "sdd".into(), sectors: 128, what: String::new() };
+    assert!(table(&tiny).unwrap_err().contains("too small"));
+}
+
+#[test]
 fn an_sd_card_may_be_given_and_an_internal_disk_never() {
     let s = sys("sd");
     let card = disk(&s, "platform/rtsx_pci_sdmmc.0/mmc_host/mmc0/mmc0:aaaa", "mmcblk0", 61_067_264, &[("type", "SD"), ("name", "SD32G")]);
@@ -136,5 +144,17 @@ fn a_mapping_is_found_by_its_name() {
     dm(&s, "dm-4", "kryptik-stick-work", &[]);
     assert_eq!(dm_device(&s.join("block"), "kryptik-stick-work"), Some("dm-4".to_string()));
     assert_eq!(dm_device(&s.join("block"), "kryptik-stick-personal"), None);
+    let _ = fs::remove_dir_all(&s);
+}
+
+#[test]
+fn an_opened_device_must_still_be_the_zones_mapping() {
+    let s = sys("dm-opened");
+    let d = s.join("dev/block/253:4/dm");
+    fs::create_dir_all(&d).unwrap();
+    fs::write(d.join("name"), "kryptik-stick-work\n").unwrap();
+    assert!(mapping_at(&s, libc::makedev(253, 4), "kryptik-stick-work"));
+    assert!(!mapping_at(&s, libc::makedev(253, 4), "kryptik-stick-personal"), "another zone's mapping");
+    assert!(!mapping_at(&s, libc::makedev(253, 5), "kryptik-stick-work"), "another device, the number reused");
     let _ = fs::remove_dir_all(&s);
 }

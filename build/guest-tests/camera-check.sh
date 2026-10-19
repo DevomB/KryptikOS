@@ -142,5 +142,22 @@ for _ in $(seq 1 60); do kill -0 "$wp" 2>/dev/null || break; sleep 1; done
 kill "$wp" 2>/dev/null; wait "$wp" 2>/dev/null
 if [[ "$(holder)" == none* ]]; then pass "camera-ends-with-zone-again" "$(holder)"; else fail "camera-ends-with-zone-again" "$(holder)"; fi
 
+# Taken away while granted, as a USB camera pulled out: udev's removal of its node ends the grant
+# at once, before another camera plugged in could take the node's number.
+said="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"; rc=$?
+ended() { [[ "$(holder)" == none* && ! -e "$node" ]]; }
+if [[ "$rc" -eq 0 && -e "$node" ]]; then
+    modprobe -r vivid > "$LOG/vivid-gone.out" 2>&1
+    ok=no
+    for _ in $(seq 1 15); do ended && { ok=yes; break; }; sleep 1; done
+    if [[ "$ok" == yes ]]; then
+        pass "camera-gone-ends-grant" "vivid taken away while untrusted held it: the grant ended and the node went"
+    else
+        fail "camera-gone-ends-grant" "status: $(holder); node $(ls -l "$node" 2>&1); $(oneline < "$LOG/vivid-gone.out")"
+    fi
+else
+    fail "camera-gone-ends-grant" "the grant: rc ${rc}: ${said}"
+fi
+
 modprobe -r vivid uvcvideo 2>/dev/null
 echo "CT END"

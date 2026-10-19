@@ -75,9 +75,14 @@ loaded only for a grant.
   must grant reading, writing and device ioctls beneath it, as it does for
   `/dev`, since the ruleset is checked on the path the link leads to.
 - **The end.** `k` alone, the zone's stop, or the screen locking takes the
-  camera back: no zone watches the room while the user is away. kryptikd
-  removes the node, unbinds the driver from the device so that every
-  descriptor open on it fails from then on, and unloads `uvcvideo`
+  camera back: no zone watches the room while the user is away. So does
+  the camera taken away: udev's removal of its node runs `kryptikd camera
+  gone`, which ends the grant at once, before another camera plugged in
+  could take the node's number. Only the granted camera's node counts, and
+  only a removal the kernel numbered after the grant, as a grant moving to
+  another zone lets the camera go and takes it again at the same path.
+  kryptikd removes the node, unbinds the driver from the device so that
+  every descriptor open on it fails from then on, and unloads `uvcvideo`
   (`modprobe -r`, which takes the V4L2 core and videobuf2 with it once
   nothing uses them). Should the module not unload, something still
   holding it, the grant ends all the same, the node gone and the driver
@@ -98,6 +103,8 @@ itself waits for the tests on physical hardware.
   (`modprobe -b` with a video-class alias);
 - granted to `personal`, a probe there captures a frame from the stand-in;
   `work` finds no camera; the chrome's window names `personal`;
+- taken away while granted (`vivid` unloaded), the grant ends and the node
+  goes;
 - `k` alone takes it back, and so does the screen locking: the probe's open
   descriptor fails at its next read, and the node is gone;
 - a zone whose file refuses the camera is never offered it.

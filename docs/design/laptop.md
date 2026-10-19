@@ -119,7 +119,9 @@ laptop does without it, and the order they come in after 1.0.
 - **The card** is a USB device when one is plugged in, as it is plugged in
   to be used, otherwise the first card with a device 0; an HDMI-only card
   has none. The mixer opens it only while something plays and closes it
-  five seconds after, so the codec can power down.
+  five seconds after, so the codec can power down. While a stream runs it
+  looks again each second, so a headset plugged in during a call takes the
+  call, and the recording too.
 - **In the zone,** alsa-lib with a small PCM plugin as the default device
   writes to `/run/kryptik/sound/socket` (`/usr/etc/alsa/conf.d`, on the
   verified root, which every zone reads). Firefox built with

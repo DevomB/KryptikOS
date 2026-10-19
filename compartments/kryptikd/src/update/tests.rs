@@ -34,6 +34,9 @@ fn parse_pointer_rejects_malformed() {
         ("a short hash", good.replace(SHA, &SHA[..63])),
         ("an uppercase hash", good.replace(SHA, &SHA.to_uppercase())),
         ("a version with a space", good.replace("version: 1.0.3", "version: 1.0 3")),
+        ("the version .., incoming/'s parent", good.replace("version: 1.0.3", "version: ..")),
+        ("the version .", good.replace("version: 1.0.3", "version: .")),
+        ("a version starting with a dot", good.replace("version: 1.0.3", "version: .1.0")),
         ("a base with a space", good.replace("base: 1.0.3/", "base: 1.0.3/ x")),
     ] {
         assert!(parse_pointer(&bad).is_err(), "{what} was accepted");
@@ -415,6 +418,23 @@ fn forget_waits_for_a_put_in_flight() {
     assert!(!forgetting.is_finished() && wanted(&d).is_some(), "forget went ahead while a put held the stage");
     drop(held);
     assert_eq!(forgetting.join().unwrap().unwrap(), "1.0.3");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_stage_is_not_cleared_while_an_apply_holds_its_lock() {
+    let d = scratch("apply-lock");
+    std::fs::create_dir_all(&d).unwrap();
+    let path = d.join("update.lock");
+    assert!(no_apply_at(&path).unwrap().is_none(), "no lock file is no apply");
+    // Held as kryptik-update's apply holds it, exclusive, from another descriptor.
+    let applying = lock(&path).unwrap();
+    assert!(no_apply_at(&path).unwrap_err().contains("being applied"));
+    drop(applying);
+    let held = no_apply_at(&path).unwrap().expect("the lock is free");
+    // Shared, as `kryptik-update status` takes it: the two do not refuse each other.
+    assert!(no_apply_at(&path).unwrap().is_some());
+    drop(held);
     let _ = std::fs::remove_dir_all(&d);
 }
 
