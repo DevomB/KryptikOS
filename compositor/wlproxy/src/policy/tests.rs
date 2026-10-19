@@ -15,10 +15,11 @@ fn capture_and_clipboard_are_hidden() {
         "zwp_input_inhibit_manager_v1",
         "ext_image_copy_capture_manager_v1",
     ] {
-        assert!(allowed_version(hidden).is_none(), "{hidden} must not reach a zone");
+        assert!(allowed_version(hidden, false).is_none(), "{hidden} must not reach a zone");
+        assert!(allowed_version(hidden, true).is_none(), "{hidden} must not reach a zone that holds the screen awake");
     }
     for shown in ["wl_compositor", "wl_shm", "wl_seat", "xdg_wm_base"] {
-        assert!(allowed_version(shown).is_some(), "{shown} is what a window needs");
+        assert!(allowed_version(shown, false).is_some(), "{shown} is what a window needs");
     }
     // The data device a zone binds is the proxy's own, never the compositor's.
     assert!(own_version("wl_data_device_manager").is_some() && served("wl_data_device_manager"));
@@ -52,6 +53,22 @@ fn dwl_zone_sockets_offer_the_same_list() {
     dwl.sort_unstable();
     proxy.sort_unstable();
     assert_eq!(dwl, proxy);
+    // The idle inhibitor is on neither list: each gives it only to a zone allowed to hold.
+    let (hold, _) = HOLD_AWAKE;
+    let filter = patch.find("zoneglobal(const struct wl_client").expect("dwl's global filter");
+    let filter = &patch[filter..filter + patch[filter..].find("\n}\n").expect("its end")];
+    let at = filter.find(&format!("strcmp(name, \"{hold}\") == 0)")).expect("dwl's filter names the idle inhibitor");
+    let then = filter[at..].lines().nth(1).unwrap_or("").trim().trim_start_matches("\\t");
+    assert_eq!(then, "return z->hold;", "{filter}");
+}
+
+/// The idle inhibitor reaches only a proxy started with --hold-awake.
+#[test]
+fn the_idle_inhibitor_is_the_hold_awake_zones_alone() {
+    let (hold, v) = HOLD_AWAKE;
+    assert_eq!(allowed_version(hold, false), None);
+    assert_eq!(allowed_version(hold, true), Some(v));
+    assert!(!ALLOWED.iter().any(|(n, _)| *n == hold));
 }
 
 /// Only delete_id frees objects, and only client-created ones: no event the compositor can send
@@ -60,7 +77,7 @@ fn dwl_zone_sockets_offer_the_same_list() {
 #[test]
 fn no_compositor_created_objects() {
     use crate::protocol::{find, Arg};
-    let mut reach: Vec<&str> = ALLOWED.iter().map(|(n, _)| *n).chain(["wl_display", "wl_registry"]).collect();
+    let mut reach: Vec<&str> = ALLOWED.iter().chain([&HOLD_AWAKE]).map(|(n, _)| *n).chain(["wl_display", "wl_registry"]).collect();
     let mut i = 0;
     while i < reach.len() {
         let iface = find(reach[i]).unwrap();
@@ -78,12 +95,12 @@ fn no_compositor_created_objects() {
         }
         i += 1;
     }
-    assert!(reach.len() > ALLOWED.len() + 2, "the walk reached the objects the globals create");
+    assert!(reach.len() > ALLOWED.len() + 3, "the walk reached the objects the globals create");
 }
 
 #[test]
 fn allowed_interfaces_are_in_tables() {
-    for (n, v) in ALLOWED {
+    for (n, v) in ALLOWED.iter().chain([&HOLD_AWAKE]) {
         let i = crate::protocol::find(n).unwrap_or_else(|| panic!("{n} missing from the generated tables"));
         assert!(i.version >= *v, "{n}: tables know v{}, policy allows v{v}", i.version);
     }

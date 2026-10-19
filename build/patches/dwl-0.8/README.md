@@ -1,4 +1,4 @@
-# dwl 0.8: a window closing with its decoration alive does not crash dwl
+# dwl 0.8: a window closing does not leave dwl reading what it freed
 
 Applied by `s_dwl` in stage 04 through `apply_repo_patches`, before
 `tools/desktop/dwl-zone-borders.py`; `SHA256SUMS` is verified before anything
@@ -13,8 +13,8 @@ in freed memory, so nothing shows. hardened_malloc, which the image preloads,
 does not: dwl dies the first time a zone's window closes, and every later
 window, in any zone, finds no display.
 
-Both patches are upstream's, generated with `git format-patch` and unchanged;
-they apply to the 0.8 tarball with a one-line offset:
+The first two are upstream's, generated with `git format-patch` and
+unchanged; they apply to the 0.8 tarball with a one-line offset:
 
 - `0001`: f4dfdabd0bdd632d0b137ede22ff1beb73122efb, "NULL out decoration on
   destroy"
@@ -25,13 +25,17 @@ they apply to the 0.8 tarball with a one-line offset:
 Checked on headless dwl 0.8 with wlroots 0.19.3 and hardened_malloc 14
 preloaded: without the patches dwl dies of SIGSEGV when a havoc window's
 client disconnects; with them it carries on. The desktop suite's
-`compositor-survives-close` checks the same on the image. Delete this
-directory when the dwl pin moves to a release that contains both commits.
+`compositor-survives-close` checks the same on the image.
 
-Not carried: upstream 4847f97 ("Clear surface->data on unmap to fix
-idle-inhibitor use-after-free"). No zone can create an idle inhibitor, since
-the proxy does not offer the protocol, and under hardened_malloc the freed
-scene tree `checkidleinhibitor` reads is zeroed, so its parent is NULL and the
-read is harmless; a zone 0 client that inhibits, drops its toplevel and keeps
-the surface does not crash dwl with or without it. It comes with the next dwl
-release.
+- `0003`: 4847f97678f705352a8ffa3995c69b5bb2226207, "Clear surface->data on
+  unmap to fix idle-inhibitor use-after-free", as Codeberg serves the commit
+  (its `.patch`, without format-patch's version line); it applies after the
+  other two with a two-line offset. `unmapnotify` frees a window's scene tree
+  and leaves the surface pointing at it, and `checkidleinhibitor` reads that
+  tree for every inhibitor at the next arrange. A zone whose file lets it hold
+  the screen awake is offered the inhibitor (docs/design/laptop.md), so it can
+  keep one on a surface whose window it unmaps; Kryptik's check of a hold
+  (`dwl-zone-borders.py`) skips a surface whose pointer this clears.
+
+Delete this directory when the dwl pin moves to a release that contains all
+three commits.
