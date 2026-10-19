@@ -16,7 +16,7 @@ permissions:
 jobs:
   identity:
     name: Commit identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -33,7 +33,7 @@ jobs:
 
   lint:
     name: Shell lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -116,7 +116,7 @@ jobs:
 
   manifest:
     name: Source manifest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The Distro workflow's path: a cache's version hashes its path, so any other misses main's copy.
     env:
       KRYPTIK_SOURCES: /mnt/kryptik/sources
@@ -250,7 +250,7 @@ jobs:
 
   compartments:
     name: Compartment layer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -400,7 +400,7 @@ jobs:
 
   kernel:
     name: Kernel currency
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -452,7 +452,7 @@ jobs:
     name: Source reachability
     # Weekly, or by hand: no push of ours moves a host, and a pull request should not fail for one.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
