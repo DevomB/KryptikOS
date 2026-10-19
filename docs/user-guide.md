@@ -642,6 +642,15 @@ shows each timer, its timeout and whether it is running.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
+- Thunderbolt and USB4 are not built, so nothing lets in what a Thunderbolt
+  or USB4 dock carries over PCIe or USB 3: its Ethernet may stay dark, and
+  its USB ports work at USB 2's speed, which USB-C carries by itself, or not
+  at all. A monitor over USB-C works where the laptop's own USB-C controller
+  drives it, as on most, and many docks fall back to plain USB-C.
+- The state passphrase at boot is asked before any driver module loads, so
+  it is typed on a built-in keyboard on the laptop's PS/2 controller, as
+  most are, or on a USB keyboard. A built-in keyboard on I2C, which a few
+  laptops have, types nothing there: plug in a USB keyboard.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - A program in a zone cannot make its window fullscreen; Alt+e does, and
