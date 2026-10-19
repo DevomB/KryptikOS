@@ -644,6 +644,12 @@ shows each timer, its timeout and whether it is running.
   take the microphone back from the menu (`c`) instead. A mute light, a
   key for the keyboard's backlight, or on some ASUS laptops the screen's
   brightness keys, may do nothing there too.
+- Nothing drives NVIDIA's graphics. On a laptop with NVIDIA's graphics
+  beside Intel's or AMD's, the built-in screen works through those, but a
+  monitor on a port wired to the NVIDIA chip stays dark, and the chip is
+  left powered on, which shortens the battery's time. A machine with
+  NVIDIA's graphics alone shows the desktop through the firmware's
+  framebuffer, at the resolution the firmware chose, on one monitor.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.

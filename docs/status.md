@@ -74,6 +74,12 @@ media it tested.
   detectors. AMD's timer is not fed on a machine that sleeps to idle, as it
   would count through each sleep, so there the lockup detectors alone catch
   a hung kernel.
+- NVIDIA's graphics have no driver: nouveau needs tens of megabytes of GSP
+  firmware for each generation. Beside Intel's or AMD's on a laptop, the
+  built-in screen works through those, a port the NVIDIA chip drives stays
+  dark, and the chip is left powered on, as the kernel lets a device no
+  driver holds sleep only once runtime PM is allowed it. Alone, NVIDIA's
+  graphics show the desktop through the firmware's framebuffer.
 - glibc is 2.40 with upstream's maintained release branch applied as of
   2026-09-10 (`build/patches/glibc-2.40/`). Nothing moves the pin along the
   branch automatically, though `tools/check-source-currency.sh` reports when
