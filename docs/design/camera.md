@@ -111,7 +111,13 @@ itself waits for the tests on physical hardware.
 
 ## Not covered
 
-- MIPI cameras behind the IPU6 (below), and infrared cameras.
+- MIPI cameras behind the IPU6 (below), and infrared cameras. Of several
+  cameras, a grant gives the zone the lowest numbered node that is its
+  device's first (`index` 0), which a camera's metadata node is not
+  (`camera_in` in `camera.rs`). On a laptop whose infrared face-login camera
+  is a USB device of its own, that node may be the infrared camera's, which
+  gives a call no picture. Preferring a node that offers a colour format
+  waits until a laptop shows it.
 - Which USB devices are accepted at all.
 - Screen sharing, which is the compositor's question, not the camera's.
 

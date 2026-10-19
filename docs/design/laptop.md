@@ -27,10 +27,13 @@ recommendation below has it. The chrome's menu grants the microphone
 (`v<D>`, `v<N><D>`) and mutes (`x`), and names the zone that may record and
 whether it does; the keyboard's volume keys step the volume, its mute key
 mutes, and its microphone key takes the microphone back, under the screen
-lock too. While a zone holds the microphone, a window of the chrome's says
-so, and says when it records; it opens on the grant, so it takes the
-keyboard from the menu the gesture was typed in, not from a zone, and
-closes when the grant ends.
+lock too. Some laptops, ThinkPads among them, send the microphone key only
+through their maker's platform driver (`thinkpad_acpi`, `ideapad-laptop`,
+`asus-nb-wmi`, `dell-wmi`, `hp-wmi`), which the kernel does not build, so
+there it does nothing. While a zone holds the microphone, a window of the
+chrome's says so, and says when it records; it opens on the grant, so it
+takes the keyboard from the menu the gesture was typed in, not from a
+zone, and closes when the grant ends.
 
 ### The kernel side
 
