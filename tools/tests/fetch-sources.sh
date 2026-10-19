@@ -143,7 +143,17 @@ grep -qF "trying fallback mirror: file://${ROWM}/alpha_1.0.orig.tar.gz" "$OUT" \
 printf 'other bytes\n' > "${ROWM}/alpha_1.0.orig.tar.gz"
 build_root alpha-1.0:good
 MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors" run
-expect_fail "a mirror's other bytes are refused by the lock" "CHECKSUM MISMATCH for alpha-1.0.tar.gz"
+expect_fail "a mirror's other bytes are refused by the lock" "download failed: alpha 1.0"
+grep -qF "file://${ROWM}/alpha_1.0.orig.tar.gz serves other bytes than the lock's" "$OUT" \
+    && green "the refusal names the place that served them" || { red "the place with other bytes was not named"; show; }
+[[ ! -e "${FAKE}/sources/alpha-1.0.tar.gz" ]] && green "and its bytes are not kept" || red "the other bytes were kept"
+# A row with the lock's bytes after the drifted one: the fetch passes over the first.
+ROWM2="${W}/rowmirror2"
+mkdir -p "$ROWM2" && cp "${UPSTREAM}/alpha-1.0.tar.gz" "${ROWM2}/alpha-1.0.tar.gz"
+{ cat "${W}/mirrors"; printf 'alpha  file://%s/alpha-{VER}.tar.gz  -\n' "$ROWM2"; } > "${W}/mirrors-two"
+build_root alpha-1.0:good
+MANIFEST="${W}/manifest-down" MIRROR_DISTFILES="" KRYPTIK_FETCH_MIRRORS="${W}/mirrors-two" run
+expect_pass "a drifted mirror is passed over for the next place with the lock's bytes" "1 downloaded"
 
 # --- the probe: every place asked, nothing downloaded -------------------------
 
@@ -342,17 +352,18 @@ else
     red "the restarted download produced wrong bytes"
 fi
 
-# A short .part of wrong bytes resumes into a corrupt file that only the checksum catches.
+# A short .part of wrong bytes resumes into a corrupt file that only the lock's hash catches; the
+# file is then fetched again whole.
 build_root alpha-1.0:good beta-2.0:good gamma-3.0:good
 place beta-2.0; place gamma-3.0
 head -c 1500 /dev/zero > "$(part alpha-1.0)"
 run
-expect_fail "a poisoned partial is caught by the checksum, not by the resume" \
-    "CHECKSUM MISMATCH for alpha-1.0.tar.gz"
-if grep -qF "downloaded just now" "$OUT" && grep -qF ".part" "$OUT"; then
-    green "a fresh download's mismatch blames the download and names the .part"
+expect_pass "a poisoned partial is caught by the lock's hash and fetched again whole" "3 package(s) verified"
+if grep -qF "resumed from an earlier partial file has other bytes" "$OUT" \
+    && [[ "$(sha_of "${FAKE}/sources/alpha-1.0.tar.gz")" == "$(sha_of "${UPSTREAM}/alpha-1.0.tar.gz")" ]]; then
+    green "the restart says why, and ends with the lock's bytes"
 else
-    red "the fresh-download mismatch did not diagnose itself"; show
+    red "the poisoned partial went unexplained, or ended with other bytes"; show
 fi
 
 # The same mismatch on a file already on disk: it changed after locking.
@@ -497,7 +508,9 @@ expect_pass "a crate's Cargo.lock brings the crates it names, each verified" "th
 
 crate_with 0000000000000000000000000000000000000000000000000000000000000000; crates_root
 run_crates
-expect_fail "a crate whose bytes are not what the Cargo.lock says is refused" "CHECKSUM MISMATCH for crate dep 0.1.0"
+expect_fail "a crate whose bytes are not what the Cargo.lock says is refused" "download failed: crate dep 0.1.0"
+grep -qF "file://${CR}/dep/dep-0.1.0.crate serves other bytes than the lock's" "$OUT" \
+    && green "the refusal names where the crate's other bytes came from" || { red "the crate's place was not named"; show; }
 
 KRYPTIK_ROOT="$FAKE" NO_COLOR=1 bash "$TOOL" --crates "${UPSTREAM}/tool-1.0.crate" > "$OUT" 2>&1
 [[ "$(cat "$OUT")" == "dep 0.1.0 0000000000000000000000000000000000000000000000000000000000000000" ]] \

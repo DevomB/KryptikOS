@@ -16,7 +16,7 @@ permissions:
 jobs:
   identity:
     name: Commit identity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -33,13 +33,14 @@ jobs:
 
   lint:
     name: Shell lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      # alsa-lib's headers for tools/tests/sound-tools.sh, which compiles the sound's C programs.
-      - name: Install shellcheck and alsa-lib's headers
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck libasound2-dev
+      # alsa-lib's headers for tools/tests/sound-tools.sh, which compiles the sound's C programs, and
+      # dosfstools, mtools and xorriso for media-same.sh, which stage 06's media functions need.
+      - name: Install shellcheck, alsa-lib's headers and the media tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck libasound2-dev dosfstools mtools xorriso
 
       - name: Syntax check every script
         run: |
@@ -116,7 +117,7 @@ jobs:
 
   manifest:
     name: Source manifest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The Distro workflow's path: a cache's version hashes its path, so any other misses main's copy.
     env:
       KRYPTIK_SOURCES: /mnt/kryptik/sources
@@ -250,7 +251,7 @@ jobs:
 
   compartments:
     name: Compartment layer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -400,7 +401,7 @@ jobs:
 
   kernel:
     name: Kernel currency
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -452,7 +453,7 @@ jobs:
     name: Source reachability
     # Weekly, or by hand: no push of ours moves a host, and a pull request should not fail for one.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

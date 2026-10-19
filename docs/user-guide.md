@@ -199,7 +199,10 @@ image; the refusal names the exact minimum). A disk that already holds a
 Kryptik installation or medium is refused too, since it may hold the only
 copy of someone's encrypted state. To reinstall over one, add
 `--replace-kryptik`: the installer names the Kryptik partitions it is about
-to destroy and then asks for `ERASE` as usual.
+to destroy and then asks for `ERASE` as usual. Another disk in the machine
+that carries a Kryptik installation is left alone, but the installer warns:
+with both there, the boot may take that disk's system, and its state. Take
+it out, or install to it instead.
 
 Each root slot is sized for the image and half again, so that a later, larger
 release still fits. `--slot-size MIB` makes both slots larger than that,
@@ -377,8 +380,8 @@ record and says when it is recording, and while a zone may record, a window
 of its own says so, and when it does; it closes when the zone stops or the
 microphone is taken back. `v` and a digit sets the volume, 0 to 9, `v`, a
 zone's number and a digit sets that zone's own, and `x` mutes or unmutes
-everything. A USB sound device that is plugged in takes the sound once
-nothing has played for a few seconds; pulled out, it gives the sound back to
+everything. A USB sound device that is plugged in takes the sound within a
+second, in the middle of a call too; pulled out, it gives the sound back to
 the built-in one at once. This release has no Bluetooth: for calls, use a
 USB or wired headset, or a Bluetooth headset that comes with a USB dongle,
 which works as a USB sound card.
@@ -579,7 +582,9 @@ firmware an entry for the slot it commits, which a firmware that boots a
 fixed disk only from such an entry needs.
 
 `--backup-state-header FILE` and `--restore-state-header FILE` save and put
-back the state partition's LUKS2 header. FILE is on a disk mounted for it, as
+back the state partition's LUKS2 header. Over a header that still opens, the
+restore takes only a backup of the same volume, and names both when they
+differ. FILE is on a disk mounted for it, as
 in section 2: the medium keeps nothing of its own. Keep the backup somewhere
 that is not the installed disk: a damaged header with no backup is a lost
 state partition.
@@ -623,16 +628,34 @@ shows each timer, its timeout and whether it is running.
   planned for October 2026. QEMU has no lid, no microphone or brightness
   keys, no backlight, no built-in panel and no camera of the USB Video
   Class, so those parts wait for it.
+- Of a laptop's cameras, `k` gives the zone the first the kernel lists. On
+  a laptop whose infrared face-login camera is a USB device of its own,
+  that may be the infrared one, which shows no picture.
 - Laptop sound goes through the HD Audio driver and USB audio. On many
   recent laptops part of it does not work: built-in microphones on Intel's
-  or AMD's audio processor, all built-in sound on Intel laptops whose audio
-  chips sit on SoundWire, and speakers behind a smart amplifier. A USB
-  headset or sound card works on all of them
+  or AMD's audio processor, all built-in sound on Intel and AMD laptops
+  whose audio chips sit on SoundWire, and speakers behind a smart
+  amplifier. A USB headset or sound card works on all of them
   ([laptop sound](design/laptop-audio.md)). Nothing plays through a
   monitor's speakers over HDMI or DisplayPort.
+- The laptop makers' own drivers (for ThinkPads, IdeaPads and ASUS, Dell
+  and HP laptops) are not built. Some laptops, ThinkPads among them, send
+  the microphone key only through one, so there that key does nothing;
+  take the microphone back from the menu (`c`) instead. A mute light, a
+  key for the keyboard's backlight, or on some ASUS laptops the screen's
+  brightness keys, may do nothing there too.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
+- Thunderbolt and USB4 are not built, so nothing lets in what a Thunderbolt
+  or USB4 dock carries over PCIe or USB 3: its Ethernet may stay dark, and
+  its USB ports work at USB 2's speed, which USB-C carries by itself, or not
+  at all. A monitor over USB-C works where the laptop's own USB-C controller
+  drives it, as on most, and many docks fall back to plain USB-C.
+- The state passphrase at boot is asked before any driver module loads, so
+  it is typed on a built-in keyboard on the laptop's PS/2 controller, as
+  most are, or on a USB keyboard. A built-in keyboard on I2C, which a few
+  laptops have, types nothing there: plug in a USB keyboard.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - A program in a zone cannot make its window fullscreen; Alt+e does, and

@@ -192,10 +192,12 @@ for s in "${SCRIPTS}"/*.sh; do
     # or by the installer or the update tools, or bound to a key of dwl's.
     if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null; then
         green "${n}: referenced by a service"
+    # The loop reads every name before it answers: one that stopped at the first would close the
+    # pipe on xargs, which pipefail then counts as a failure.
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh 2>/dev/null \
          && grep -lE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh \
-            | xargs -r -n1 basename | while read -r u; do
-                  grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null && exit 0; done; then
+            | xargs -r -n1 basename | { f=1; while read -r u; do
+                  grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null && f=0; done; exit "$f"; }; then
         green "${n}: sourced by a script a service runs"
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "$ROOT"/tools/install/*.sh "$ROOT"/tools/update/kryptik-* 2>/dev/null; then
         green "${n}: sourced by the installer or the update tools"

@@ -10,7 +10,7 @@ command -v git >/dev/null || { echo "git required"; exit 1; }
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 R="$T/repo"; S="$T/sources"
 mkdir -p "$R/tools" "$R/build/lib" "$R/build/config" "$R/build/patches/demo" \
-         "$R/compartments/kryptikd" "$R/compositor" "$S/.signatures" "$T/bin"
+         "$R/compartments/kryptikd" "$R/compositor" "$R/tools/stick" "$S/.signatures" "$T/bin"
 cp "$ROOT/tools/source-bundle.sh" "$R/tools/"
 cp "$ROOT/build/lib/common.sh" "$R/build/lib/"
 : > "$R/build/config/versions.env"
@@ -63,8 +63,9 @@ out="$(bundle "$T/b1")"; rc=$?
     && ok "and a signed checksum list the manifest names, with its signature" || bad "the signed checksum list is missing"
 [[ -f "$T/b1/kryptik-${commit:0:12}.tar.gz" ]] && tar -tzf "$T/b1/kryptik-${commit:0:12}.tar.gz" | grep -q 'build/patches/demo/0001.patch' \
     && ok "and the repository at the commit, patches included" || bad "the repository archive is missing or incomplete"
-[[ -f "$T/b1/crates/kryptikd/demo-crate-0.1.0/lib.rs" && -f "$T/b1/crates/compositor/demo-crate-0.1.0/lib.rs" ]] \
-    && ok "and the crates of both Rust workspaces" || bad "crates missing"
+[[ -f "$T/b1/crates/kryptikd/demo-crate-0.1.0/lib.rs" && -f "$T/b1/crates/compositor/demo-crate-0.1.0/lib.rs" \
+   && -f "$T/b1/crates/stick/demo-crate-0.1.0/lib.rs" ]] \
+    && ok "and the crates of the three Rust workspaces, kryptik-stick's among them" || bad "crates missing"
 { head -1 "$T/b1/MANIFEST" | grep -q "$commit" && (cd "$T/b1" && tail -n +2 MANIFEST | sha256sum --quiet -c); } \
     && ok "its MANIFEST names the commit and every file verifies" || bad "MANIFEST does not verify"
 [[ -f "$T/b1.tar" ]] && ok "and the whole is one tar" || bad "no ${T}/b1.tar"

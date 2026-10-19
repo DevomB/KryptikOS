@@ -58,8 +58,12 @@ zone gets a file descriptor. The descriptor is on a device-mapper linear
 mapping of the partition, made for the grant. On eject kryptikd swaps that
 mapping's table for the `error` target, so a zone that kept the descriptor
 reads only I/O errors after. The mapping covers one partition, so the
-partition table and SCSI pass-through stay out of reach without
-`CAP_SYS_RAWIO`.
+partition table stays out of reach, and it is two linear targets, the
+last 64 KiB the second. Device-mapper passes a lone target's ioctls on to
+a disk it maps whole, so a stick with no partition table, given whole,
+would let its zone send the stick SCSI commands (`SG_IO`): ask its serial
+number, stop it, or under a writable grant change its mode pages. For two
+targets it passes none.
 
 The zone then needs a reader that works on the descriptor itself. Opening
 `/dev/fd/N` again does not help: for a device that reopens the node, whose
@@ -150,7 +154,10 @@ the xHCI bus, a FAT32 image the host made), in `make zones-test`:
 - a stick pulled out without eject leaves the reader with I/O errors, and
   the kernel log with no oops;
 - a stick holding the install medium offers its ESP, and the reader
-  refuses its other partitions.
+  refuses its other partitions;
+- the kernel polls card readers for new media every two seconds;
+- a stick with no partition table is given whole and read, and no ioctl
+  on the zone's descriptor reaches the stick.
 
 ## Not covered
 
