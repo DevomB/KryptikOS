@@ -333,7 +333,10 @@ and Firefox alone takes several), then `make acceptance` under KVM,
 uploading the acceptance report and the tested images. A tag `v<version>`
 builds that version from nothing, tests it and drafts it on the Releases
 page; from `v1` on, the build signs with the release keys once the
-maintainer approves it. To build locally, on Linux:
+maintainer approves it. Other runs resume from cached stages, so once a
+week main is built from nothing as a tag would be, and a step that only an
+empty cache breaks shows then, not at the next release; a dispatch with
+`cold` does the same for any branch. To build locally, on Linux:
 
 ```sh
 make check      # what the host is missing
