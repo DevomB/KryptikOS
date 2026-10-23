@@ -53,8 +53,9 @@ instead, so one run lists them all. A call that a zone gets an errno for, not
 a kill, is printed with `soft` after its name and gets the same errno here:
 
 - `inotify_init` and `inotify_init1` fail with ENOSYS: a watch on the `/usr`
-  every zone shares would see each program started anywhere, and programs
-  fall back to polling.
+  every zone shares would see each program started anywhere, and most
+  programs fall back to polling. Firefox's list of cameras does not, so it
+  never hears of a camera given or taken back.
 - The id and capability calls (the `set*id` family, `setgroups`, `capset`)
   fail with EPERM: ncurses brackets every terminfo open with `setfsuid` and
   `setfsgid`, and `sudo`, `su` and daemons that drop privilege as root call
