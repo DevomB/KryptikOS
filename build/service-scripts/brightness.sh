@@ -2,7 +2,8 @@
 # The screen's backlight a step up or down (docs/design/laptop.md), as dwl's brightness keys run
 # it for the session's user, whose group udev lets write it (70-kryptik-backlight.rules).
 #
-#   brightness.sh up|down     a twentieth of the range, and never dark; the level is kept
+#   brightness.sh up|down     a quarter of the level up, a fifth down, and never dark; the level
+#                             is kept
 #   brightness.sh restore     the level kept by the last step, as the session starts
 #   KRYPTIK_SYSFS names another /sys, for the tests
 set -u
@@ -58,7 +59,10 @@ if [ "$1" = restore ]; then
     # Decimal whatever its zeros: a record edited by hand may lead with one.
     new=$(( 10#$level * max / 10#$was ))
 else
-    step=$(( max / 20 )); [ "$step" -gt 0 ] || step=1
+    # The eye sees brightness by ratio, so the steps are a share of the level: a quarter up and
+    # a fifth down, which undo each other, and never less than the floor, so the dim end moves.
+    if [ "$1" = up ]; then step=$(( now / 4 )); else step=$(( now / 5 )); fi
+    [ "$step" -ge "$floor" ] || step=$floor
     if [ "$1" = up ]; then new=$(( now + step )); else new=$(( now - step )); fi
 fi
 [ "$new" -gt "$max" ] && new="$max"
