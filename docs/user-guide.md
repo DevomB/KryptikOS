@@ -113,11 +113,16 @@ older EPYC models: they keep the firmware's own microcode, the kernel log
 says `No sha256 digest for patch ID`, and every login prompt says to update
 the firmware.
 
-Leave the firmware's IOMMU, its DMA protection and Pluton on.
+Leave the firmware's IOMMU, its DMA protection and Pluton on, as they come.
 - Without the IOMMU, every device can reach all of memory, and nothing at
   the login prompt says so.
-- AMD's Ryzen AI 300 processors sleep with the IOMMU on only where the
-  firmware keeps Pluton's device and its pre-boot DMA protection.
+- With the IOMMU on, AMD's own sleep checker holds the Ryzen AI 300 and
+  Ryzen AI Max processors to two things:
+  - the firmware's ACPI device `MSFT0201`;
+  - pre-boot DMA protection, or `MSFT0201` named in the firmware's IVRS
+    table.
+
+  A firmware setting can take either away.
 
 A firmware that also keeps Microsoft's certificates in `db` boots whatever
 Microsoft signs, so someone with the machine in hand can start such a system
