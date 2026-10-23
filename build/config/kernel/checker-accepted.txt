@@ -28,3 +28,6 @@ kconfig  CONFIG_VIDEO_VIVID       # a module no device or alias loads: the zones
 
 # --- the IOMMU is already on and strict by default -------------------------------
 cmdline  iommu                    # INTEL_IOMMU_DEFAULT_ON, AMD_IOMMU and IOMMU_DEFAULT_DMA_STRICT already turn it on, strict, wherever there is one
+
+# --- a diagnostic medium, never merged ---------------------------------------------
+cmdline  efi                      # efi=no_disable_early_pci_dma, for a machine the EFI stub's PCI DMA disable leaves blank after its logo; this branch only
