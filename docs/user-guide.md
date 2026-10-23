@@ -287,7 +287,10 @@ The menu shows the zone's glyph and label and the window's title, which the
 zone's proxy prefixes with the zone's name, as `[untrusted] ...`. A zone's
 window that opens while another window has the keyboard does not take it,
 nor does it get it when that window closes: Alt+j, Alt+k, a click or the
-pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
+pointer moving onto it moves the keyboard there. A touchscreen works as the
+pointer, on the built-in screen when there is one: a tap is a click and a
+drag drags with one finger, and zones are given pointer events only, not
+touch. Keys (Alt is the modifier):
 
 | keys | what |
 | --- | --- |

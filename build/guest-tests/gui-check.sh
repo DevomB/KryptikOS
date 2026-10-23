@@ -21,6 +21,7 @@
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
+#   GT TOUCH-UNTRUSTED                              tap the screen's left half (the newest window)
 #   GT SCREENSHOT-POPUP                             take a screenshot
 #   GT KEY-MENU-POPUP                               press Alt+p (the chrome menu)
 #   GT KEY-FOCUS-POPUP                              press Alt+j
@@ -1184,6 +1185,33 @@ if since_mark cursor untrusted | grep -q 'asked for the text cursor by name' && 
 else
     fail "zone-cursor-by-name" "$(since_mark cursor untrusted | tail -4 | tr '\n' ' ')"
 fi
+# --- a touchscreen drives the pointer -------------------------------------------------------
+# dwl takes a touchscreen as the pointer, so a tap is a click: it gives a window the keyboard as
+# a click does, and zones are offered no touch. The VM's touchscreen is QEMU's virtio-multitouch
+# (run-ovmf.sh --touch). untrusted's window maps beside zone 0's, unasked, where dwl puts the
+# newest: the screen's left half, which the host taps.
+stop_zone untrusted
+as_user "/usr/libexec/kryptik/wlprobe cursor 40" > "$LOG/touch-zone0.out" 2>&1 &
+touch0=$!
+wait_for 20 grep -q committed "$LOG/touch-zone0.out"
+wait_for 10 grep -qx 'zone=0' "$RT/kryptik/focus"
+mark touch untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 30" > "$LOG/launch-touch.out" 2>&1
+wait_for 20 probe_committed touch
+sleep 2
+touch_before="$(grep '^zone=' "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT TOUCH-UNTRUSTED"
+if ! grep -q 'Name="QEMU Virtio MultiTouch"' /proc/bus/input/devices; then
+    fail "touch-picks-window" "no touchscreen in this guest: $(grep '^N: ' /proc/bus/input/devices | tr '\n' ' ')"
+elif [[ "$touch_before" != "zone=0" ]]; then
+    fail "touch-picks-window" "zone 0's window did not have the keyboard before the tap: ${touch_before:-no focus record}"
+elif wait_for 10 grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
+    pass "touch-picks-window" "a tap on untrusted's window gave it the keyboard, as a click does"
+else
+    fail "touch-picks-window" "after the tap: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark touch untrusted | tail -2 | tr '\n' ' ')"
+fi
+pkill -u "$USER_NAME" -f 'wlprobe cursor 40' 2>/dev/null; wait "$touch0" 2>/dev/null
+
 # --- a zone's window hears the scale it is shown at ------------------------------------------
 # wp_fractional_scale_v1 through the proxy: the compositor tells each window its output's scale,
 # in 120ths, so a browser draws text sharp at 1.5 instead of being scaled down from 2. This
