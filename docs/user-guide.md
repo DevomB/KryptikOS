@@ -397,6 +397,15 @@ most do; the cameras of recent Intel laptops that need Intel's image
 processing in userspace (MIPI cameras behind the IPU6) and infrared
 face-login cameras do not. `vault` and the net zone never get the camera.
 
+Firefox in a zone is not told when the camera is given or taken back.
+- Give the camera before opening the call. A page that looked for a camera
+  before goes on hearing there is none, even after a reload. Turning the
+  camera on in the call finds it, and so does starting Firefox again.
+- Turn the camera off in the call, or leave the call, before `k` takes the
+  camera back or the screen locks, or as soon as you can after. A call still
+  showing a camera that was taken back keeps a processor core busy and
+  keeps hold of the camera, and until then `k` cannot give it to any zone.
+
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
 `passwd` for root's own. There `kryptik list`, `kryptik status [ZONE]`,
