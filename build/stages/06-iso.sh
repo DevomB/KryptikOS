@@ -511,8 +511,11 @@ verity_table() {   # verity_table <dev>: the root image's dm-verity table
 # rest is in build/config/kernel/hardening.fragment). SMT off with every CPU
 # mitigation on is ADR-011; nosmt repeats it under the name the checker wants.
 # pti=on covers every CPU; hash_pointers=always keeps %p hashed under debug
-# options. tools/check-kernel-hardening.sh reads this line.
-COMMON_ARGS="ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt"
+# options. tools/check-kernel-hardening.sh reads this line. Last, the console's
+# palette: plain text (index 7) is green, #33ff55, on black; the other fifteen
+# colours are the kernel's own (drivers/tty/vt/vt.c). Not the lock's #33ff66,
+# which gui-test takes as the lock's word on a screenshot.
+COMMON_ARGS="ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt vt.default_red=0,170,0,170,0,170,0,51,85,255,85,255,85,255,85,255 vt.default_grn=0,0,170,85,0,0,170,255,85,85,255,255,85,85,255,255 vt.default_blu=0,0,0,0,170,170,170,85,85,85,85,85,255,255,255,255"
 
 s_cmdlines() {
     local h="$1"; echo "root.json sha256: ${h}"
