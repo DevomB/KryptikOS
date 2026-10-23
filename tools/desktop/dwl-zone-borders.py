@@ -1972,6 +1972,13 @@ spawnergone(int fd, uint32_t mask, void *data)
 \t\twl_event_loop_add_fd(event_loop, spawnfd, 0, spawnergone, NULL);
 \t\treturn;
 """),
+    # The backdrop under the lock, where it has not drawn yet or while it starts again, in the
+    # root colour rather than a grey of its own.
+    ("""\tlocked_bg = wlr_scene_rect_create(layers[LyrBlock], sgeom.width, sgeom.height,
+\t\t\t(float [4]){0.1f, 0.1f, 0.1f, 1.0f});
+""",
+     """\tlocked_bg = wlr_scene_rect_create(layers[LyrBlock], sgeom.width, sgeom.height, rootcolor);
+"""),
 ]
 
 

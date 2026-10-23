@@ -10,7 +10,7 @@ s_etc() {
 NAME="Kryptik"
 PRETTY_NAME="Kryptik"
 ID=kryptik
-ANSI_COLOR="0;36"
+ANSI_COLOR="1;32"
 EOF
 
     echo "kryptik" > /etc/hostname
