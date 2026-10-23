@@ -22,7 +22,10 @@ every machine, and verified. It uses the dm-crypt and XTS support the
   most on every console the kernel writes to, the screen and a serial port
   alike, and taking the first answer (`ask.sh`). It uses its own prompt (echo
   off with `stty`, the line passed to cryptsetup on a descriptor) because
-  cryptsetup's prompt discards input typed as it appears. `kryptik-console`,
+  cryptsetup's prompt discards input typed as it appears. A minute with
+  nothing typed brings one line on every console, and the prompt keeps
+  waiting: a keyboard whose driver is a module types nothing before eudev
+  runs, and a plain USB keyboard types it. `kryptik-console`,
   the early getty, leaves the serial console to `sysinit` and then `firstboot`
   until each finishes, waiting at most 30 s for each to start.
 - **Anything else is the degraded state**: three wrong passphrases, a damaged

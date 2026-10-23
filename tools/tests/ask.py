@@ -101,6 +101,28 @@ check(rc == 1 and out == b"", "it fails when nothing is typed within the time (r
 check(time.monotonic() - t0 < 5, "and it does so when the time is up")
 check(all(echo_on(s) for _, s, _ in ttys), "echo is back on after a timeout")
 
+print("-- a hint after its time, the answer still whole")
+ttys = consoles()
+p = start('-s -h 1 "HINT" 0 "Q: "', ttys, run)
+for m, _, _ in ttys:
+    read_until(m, b"Q: ")
+os.write(ttys[0][0], b"half")
+check(all(b"HINT" in read_until(m, b"HINT", 4) for m, _, _ in ttys), "the hint comes on both consoles once its time is up")
+os.write(ttys[0][0], b" typed\n")
+rc, out = finish(p)
+check(rc == 0 and out == b"half typed", "what was typed before the hint is kept in the answer (rc %s, %r)" % (rc, out))
+check(all(b"HINT" not in read_until(m, b"HINT", 2) for m, _, _ in ttys), "and it is told once")
+
+print("-- no hint for an answer in time")
+ttys = consoles()
+p = start('-s -h 2 "HINT" 0 "Q: "', ttys, run)
+for m, _, _ in ttys:
+    read_until(m, b"Q: ")
+os.write(ttys[1][0], b"quick\n")
+rc, out = finish(p)
+check(rc == 0 and out == b"quick", "the answer comes back (rc %s, %r)" % (rc, out))
+check(all(b"HINT" not in read_until(m, b"HINT", 3) for m, _, _ in ttys), "and no hint follows it")
+
 print("-- every console gone")
 ttys = consoles()
 p = start('-s 0 "Q: "', ttys, run)

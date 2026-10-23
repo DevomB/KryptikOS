@@ -39,10 +39,12 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
 }
 
 . /usr/libexec/kryptik/ask.sh
+# Told after a minute with nothing typed: a keyboard whose driver is a module types nothing here.
+NO_KEY="sysinit: if no key reaches this prompt, a plain USB keyboard will: some keyboards' drivers load only after it."
 unlock_state() {   # unlock_state DEVICE -> /dev/mapper/kryptik-state
     try=1
     while [ "$try" -le 3 ] && [ ! -b /dev/mapper/kryptik-state ]; do
-        pass=$(ask -s 0 "sysinit: passphrase for the state partition (try $try of 3): ") || pass=""
+        pass=$(ask -s -h 60 "$NO_KEY" 0 "sysinit: passphrase for the state partition (try $try of 3): ") || pass=""
         # printf is a builtin: the passphrase never appears as an argument.
         printf '%s' "$pass" | cryptsetup open --type luks2 --key-file=- "$1" kryptik-state 2>/dev/null || true
         try=$((try + 1))
