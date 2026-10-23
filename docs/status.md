@@ -57,9 +57,10 @@ media it tested.
   or Thunderbolt 4 dock's USB devices run at USB 2's speed, which needs no
   tunnel. A monitor over USB-C works where the laptop's controller drives
   it. Building them comes with a policy for which plugged devices are let in.
-- The state passphrase is asked in sysinit, before eudev loads any module,
-  so only built-in keyboard drivers type it: PS/2 (atkbd) and USB. A laptop
-  whose built-in keyboard is on I2C needs a USB keyboard there.
+- The state passphrase is asked in sysinit, before eudev runs. sysinit
+  first loads, from the verified root, the modules a keyboard there needs:
+  HID over I2C with its controller, or a USB keyboard's vendor driver. The
+  test VMs have no keyboard on I2C, so only the fixture test checks that.
 - The keys that sign a release from 1.0.0 on are held on GitHub, in the
   repository's protected release environment: a release tag's build uses
   them once the maintainer approves it, so a release is as trustworthy as

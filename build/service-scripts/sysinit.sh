@@ -109,6 +109,11 @@ for word in $(cat /proc/cmdline 2>/dev/null); do
         kryptik.media=*) media="${word#kryptik.media=}" ;;
     esac
 done
+# Whatever keyboard the machine has types the first question, or the medium's shell (keyboard.sh).
+if ! mountpoint -q /var; then
+    kd=$(kb_drivers)
+    echo "sysinit: keyboard drivers before the first question:${kd:- none needed}"
+fi
 # A medium keeps the kernel's layout; a second run of this script asks nothing.
 [ -n "$media" ] || mountpoint -q /var || keyboard_at_boot
 

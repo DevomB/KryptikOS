@@ -14,11 +14,14 @@
 #   kb_export_desktop FILE
 #                   those layouts for the desktop in place of the machine's, Super+Space to
 #                   switch among them, and KRYPTIK_LAYOUTS naming them for the screen lock
+#   kb_drivers      the modules a keyboard there may need, loaded before eudev runs; prints
+#                   the names it asked for
 
 KB_TABLE="${KB_TABLE:-/usr/share/kryptik/keyboard-layouts}"
 KB_VAR="${KB_VAR:-/sys/firmware/efi/efivars/KryptikKeyboard-ec0aed97-b78d-446f-997d-10d0c35f5fb6}"
 KB_RUN="${KB_RUN:-/run/kryptik-keyboard}"
 KB_KEYMAPS="${KB_KEYMAPS:-/usr/share/keymaps}"
+KB_SYS="${KB_SYS:-/sys}"
 
 kb_names() { awk '!/^#/ && NF >= 4 { print $1 }' "$KB_TABLE"; }
 
@@ -106,4 +109,34 @@ kb_export_desktop() {
     export XKB_DEFAULT_LAYOUT="$_kb_ls" XKB_DEFAULT_VARIANT="$_kb_vs" KRYPTIK_LAYOUTS="$_kb_names"
     # Super+Space: dwl's own keys are Alt's, and the toggle reaches no window as a character.
     if [ "$_kb_i" -gt 1 ]; then export XKB_DEFAULT_OPTIONS=grp:win_space_toggle; else unset XKB_DEFAULT_OPTIONS; fi
+}
+
+# Until eudev runs only built-in drivers type, and some keyboards need a module: one on HID
+# over I2C (i2c-hid, and on Intel the serial-IO controller and pin controller before it), or a
+# USB one the generic HID driver leaves to its vendor's driver. So the devices there get their
+# modules from the HID, keyboard, serio, I2C, pin-control and multi-function directories, by
+# the aliases eudev would use; -b keeps the blacklist. A controller's devices appear only once
+# it binds, hence the rounds.
+kb_drivers() {
+    _kb_dir="${KB_MODULES:-/lib/modules/$(uname -r)}"
+    [ -r "$_kb_dir/modules.dep" ] || return 0
+    _kb_done=" "
+    for _ in 1 2 3 4; do
+        _kb_want=$(cat "$KB_SYS"/bus/*/devices/*/modalias 2>/dev/null | sort -u \
+            | xargs -r modprobe -qaR 2>/dev/null \
+            | awk -F: -v done="$_kb_done" '
+                FNR == NR {
+                    if ($1 ~ /^kernel\/drivers\/(hid|input\/keyboard|input\/serio|i2c|pinctrl|mfd)\//) {
+                        n = $1; sub(/.*\//, "", n); sub(/\.ko.*/, "", n); gsub(/-/, "_", n); ok[n] = 1
+                    }
+                    next
+                }
+                ok[$1] && !index(done, " " $1 " ") && !seen[$1]++ { printf " %s", $1 }' "$_kb_dir/modules.dep" -)
+        [ -n "$_kb_want" ] || break
+        printf '%s' "$_kb_want"
+        _kb_done="$_kb_done${_kb_want# } "
+        # shellcheck disable=SC2086  # module names
+        modprobe -qab $_kb_want 2>/dev/null || true
+    done
+    return 0
 }
