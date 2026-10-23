@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # keyboard.sh against a stand-in variable, run file and loadkeys: which names
 # the table takes, what a variable may hold, what a load records and what a
-# store writes. The shipped table is checked for form.
+# store writes. The shipped table is checked for form. Against a stand-in sysfs
+# and modprobe: which drivers load before eudev runs.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB="$ROOT/build/service-scripts/keyboard.sh"
@@ -101,6 +102,93 @@ desk() {   # desk CONTENT: what kb_export_desktop exports for a list holding CON
 rm -f "$T/desktop"
 [[ "$(sh -c '. "$1"; kb_export_desktop "$2"; echo "${KRYPTIK_LAYOUTS:-none}"' sh "$LIB" "$T/desktop")" == none ]] \
     && ok "no list, nothing changed" || bad "no list changed something"
+
+echo "-- a keyboard's drivers, before eudev runs"
+# A laptop whose keyboard is HID over I2C behind an Intel serial-IO controller, a USB keyboard
+# whose vendor's driver is a module, a generic one, and a GPU, Wi-Fi, camera and PS/2 mouse.
+S="$T/sys"; M="$T/modules"
+mkdir -p "$M"
+cat > "$M/modules.dep" <<'EOF'
+kernel/drivers/mfd/intel-lpss-pci.ko.zst: kernel/drivers/mfd/intel-lpss.ko.zst
+kernel/drivers/mfd/intel-lpss.ko.zst:
+kernel/drivers/pinctrl/intel/pinctrl-tigerlake.ko.zst: kernel/drivers/pinctrl/intel/pinctrl-intel.ko.zst
+kernel/drivers/pinctrl/intel/pinctrl-intel.ko.zst:
+kernel/drivers/hid/i2c-hid/i2c-hid-acpi.ko.zst: kernel/drivers/hid/i2c-hid/i2c-hid.ko.zst
+kernel/drivers/hid/i2c-hid/i2c-hid.ko.zst:
+kernel/drivers/hid/hid-multitouch.ko.zst:
+kernel/drivers/hid/hid-apple.ko.zst:
+kernel/drivers/gpu/drm/i915/i915.ko.zst:
+kernel/drivers/net/wireless/intel/iwlwifi/iwlwifi.ko.zst:
+kernel/drivers/media/usb/uvc/uvcvideo.ko.zst:
+kernel/drivers/input/mouse/psmouse.ko.zst:
+EOF
+# What modprobe -R gives for each alias; hid-generic is built in, so modules.dep lacks it.
+cat > "$T/aliases" <<'EOF'
+pci:v00008086d0000A0E8sv0000103Csd00008A3Dbc0Csc80i00 intel_lpss_pci
+acpi:INT34C5: pinctrl_tigerlake
+acpi:ELAN0001:PNP0C50: i2c_hid_acpi
+hid:b0018g0004v000004F3p00003195 hid_multitouch
+hid:b0003g0001v000005ACp0000024F hid_apple
+hid:b0003g0001v0000046Dp0000C31C hid_generic
+pci:v00008086d00009A49sv0000103Csd00008A3Dbc03sc00i00 i915
+pci:v00008086d0000A0F0sv00008086sd00000074bc02sc80i00 iwlwifi
+usb:v04F2pB7E0d0001dcEFdsc02dp01ic0Eisc01ip00in00 uvcvideo
+serio:ty01pr00id00ex00 psmouse
+EOF
+# What a module's binding adds: the controller's I2C client, then i2c-hid's HID device.
+cat > "$T/adds" <<'EOF'
+intel_lpss_pci i2c i2c-ELAN0001:00 acpi:ELAN0001:PNP0C50:
+i2c_hid_acpi hid 0018:04F3:3195.0001 hid:b0018g0004v000004F3p00003195
+EOF
+# modprobe -qaR prints names, -qab records one line per call and adds what binding adds;
+# any other flags fail, so a load without the blacklist is no load.
+cat > "$T/bin/modprobe" <<'EOF'
+#!/bin/sh
+mode=$1; shift
+case "$mode" in
+    -qaR) for a in "$@"; do awk -v a="$a" '$1 == a { print $2 }' "$KB_TEST/aliases"; done ;;
+    -qab) echo "$*" >> "$KB_TEST/probed"
+          for m in "$@"; do
+              awk -v m="$m" '$1 == m { print $2, $3, $4 }' "$KB_TEST/adds" | while read -r bus name alias; do
+                  mkdir -p "$KB_SYS/bus/$bus/devices/$name"
+                  printf '%s\n' "$alias" > "$KB_SYS/bus/$bus/devices/$name/modalias"
+              done
+          done ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/bin/modprobe"
+dev() { mkdir -p "$S/bus/$1/devices/$2"; printf '%s\n' "$3" > "$S/bus/$1/devices/$2/modalias"; }   # dev BUS NAME MODALIAS
+dev pci 0000:00:15.0 pci:v00008086d0000A0E8sv0000103Csd00008A3Dbc0Csc80i00
+dev platform INT34C5:00 acpi:INT34C5:
+dev hid 0003:05AC:024F.0002 hid:b0003g0001v000005ACp0000024F
+dev hid 0003:046D:C31C.0003 hid:b0003g0001v0000046Dp0000C31C
+dev pci 0000:00:02.0 pci:v00008086d00009A49sv0000103Csd00008A3Dbc03sc00i00
+dev pci 0000:00:14.3 pci:v00008086d0000A0F0sv00008086sd00000074bc02sc80i00
+dev usb 3-6:1.0 usb:v04F2pB7E0d0001dcEFdsc02dp01ic0Eisc01ip00in00
+dev serio serio1 serio:ty01pr00id00ex00
+words() { tr -s ' ' '\n' <<<"$1" | sed '/^$/d' | sort | paste -sd' ' -; }   # words LIST: sorted, one space apart
+drivers() { KB_SYS="$S" KB_MODULES="$1" sh -c '. "$1"; kb_drivers' sh "$LIB"; }   # drivers MODULES_DIR
+rm -f "$T/probed"; out="$(drivers "$M")"; rc=$?
+[[ "$rc" -eq 0 && "$(words "$out")" == "hid_apple hid_multitouch i2c_hid_acpi intel_lpss_pci pinctrl_tigerlake" ]] \
+    && ok "the keyboard path's modules are loaded, and named" || bad "rc=${rc}, named '${out}'"
+[[ "$(words "$(sed -n 1p "$T/probed")")" == "hid_apple intel_lpss_pci pinctrl_tigerlake" ]] \
+    && ok "first the controller, its pin controller and the USB keyboard's vendor driver" || bad "first round: '$(sed -n 1p "$T/probed")'"
+[[ "$(sed -n 2p "$T/probed")" == i2c_hid_acpi && "$(sed -n 3p "$T/probed")" == hid_multitouch && "$(wc -l < "$T/probed")" -eq 3 ]] \
+    && ok "then i2c-hid for the client the controller added, then the HID device's driver, and no more" \
+    || bad "later rounds: $(tail -n +2 "$T/probed" | tr '\n' '|')"
+for m in i915 iwlwifi uvcvideo psmouse hid_generic; do
+    if grep -qw "$m" "$T/probed"; then bad "${m} was loaded before eudev"; else ok "${m} is left to eudev"; fi
+done
+rm -f "$T/probed"; out="$(drivers "$T/no-modules")"; rc=$?
+[[ "$rc" -eq 0 && -z "$out" && ! -e "$T/probed" ]] && ok "with no module tree nothing is asked" || bad "no tree: rc=${rc}, '${out}'"
+SYSINIT="$ROOT/build/service-scripts/sysinit.sh"
+d="$(grep -n '=$(kb_drivers)' "$SYSINIT" | head -1 | cut -d: -f1)"
+k="$(grep -n '|| keyboard_at_boot$' "$SYSINIT" | head -1 | cut -d: -f1)"
+u="$(grep -n 'unlock_state "$state_dev"' "$SYSINIT" | head -1 | cut -d: -f1)"
+[[ -n "$d" && -n "$k" && -n "$u" && "$d" -lt "$k" && "$d" -lt "$u" ]] \
+    && ok "sysinit loads them before the layout is named and the passphrase asked" \
+    || bad "kb_drivers at line '${d}', the layout at '${k}', the passphrase at '${u}'"
 
 echo "-- the installer asks under the layout it installs"
 INST="$ROOT/tools/install/kryptik-install.sh"

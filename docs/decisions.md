@@ -219,7 +219,9 @@ verifies or mounts the root; gives a console and keyboard before the root is
 mounted; or cannot work as a module (netfilter for the `net` zone, microcode,
 the watchdog, a few platform drivers that misbehave when loaded late).
 Everything else, including every network card, GPU and pointing device, is a
-signed module that eudev loads at coldplug. What Kryptik never uses (network
+signed module that eudev loads at coldplug. The state passphrase is asked
+after the root is mounted but before eudev runs, so `sysinit` loads the
+keyboard's modules itself first. What Kryptik never uses (network
 filesystems, CardBus, AGP, software RAID, conntrack helpers) is not built.
 The rule heads `build/config/kernel/boot.fragment`, and stage 05 fails
 a kernel larger than `build/config/kernel/size-budget`.

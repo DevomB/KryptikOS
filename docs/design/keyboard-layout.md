@@ -83,12 +83,15 @@ variant in xkeyboard-config: a row that fails either fails the build.
 ASCII: at most 32 bytes of lower-case letters, digits and `-`. No variable
 means `us`.
 
-**At boot.** `sysinit`, on an installed system and before its first
-question, reads the variable, loads the row's keymap and says
-`sysinit: keyboard layout NAME` on every console. It records the row in
-`/run/kryptik-keyboard`, which a session's user can read. A medium does none
-of this and keeps the kernel's keymap: it is the same medium on every
-machine, and its shell is where a wrong name gets repaired.
+**At boot.** eudev has not run yet, so `sysinit` first loads, from the
+verified root, the modules a keyboard there needs (`kb_drivers`): HID over
+I2C and its controller, or a USB keyboard's vendor driver. Then, on an
+installed system and before its first question, it reads the variable,
+loads the row's keymap and says `sysinit: keyboard layout NAME` on every
+console. It records the row in `/run/kryptik-keyboard`, which a session's
+user can read. A medium loads the drivers but no layout, and keeps the
+kernel's keymap: it is the same medium on every machine, and its shell is
+where a wrong name gets repaired.
 
 **Installing.** `kryptik-install --keyboard NAME` loads the layout before
 anything is typed, so `ERASE` and the new passphrase are typed under the
