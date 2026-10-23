@@ -87,7 +87,10 @@ loaded only for a grant.
   (`modprobe -r`, which takes the V4L2 core and videobuf2 with it once
   nothing uses them). Should the module not unload, something still
   holding it, the grant ends all the same, the node gone and the driver
-  unbound; the module stays until the next grant, and the chrome says so.
+  unbound; the module stays, and the chrome says so. A program that keeps
+  its descriptor also keeps the driver's hold on the camera's streaming
+  interface, which the camera probed again could not take. So a grant is
+  refused, with the reason, until that program lets go.
 - **What the user sees.** While a zone holds the camera, a window of the
   chrome's names the zone, as the microphone's does. The camera's light, on
   machines that tie it to the sensor in hardware, says when it captures.
