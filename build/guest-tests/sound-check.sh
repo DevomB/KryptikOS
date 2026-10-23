@@ -312,6 +312,27 @@ else
     fail "volume-steps" "${stepped}; ${top}"
 fi
 
+# The card's switches follow the master's mute and the microphone's grant, as a laptop's mute
+# lights do through them: outputs off while muted, inputs off while no zone holds the microphone.
+sw() { "$PROBE" switches 0 2>&1; }
+outs='^(Master|PCM|Speaker|Headphone|Headset|Front|Line Out) playback'
+ins='^(Capture|Mic|Headset) capture'
+ctl revoke > /dev/null; ctl mute on > /dev/null; muted="$(sw)"
+ctl mute off > /dev/null; unmuted="$(sw)"
+ctl grant untrusted > /dev/null; given="$(sw)"
+ctl revoke > /dev/null; taken="$(sw)"
+follows() {   # follows PATTERN OFF ON: every switch PATTERN names is off in OFF and on in ON
+    grep -qE "$1 off$" <<<"$2" && ! grep -qE "$1 on$" <<<"$2" && grep -qE "$1 on$" <<<"$3" && ! grep -qE "$1 off$" <<<"$3"
+}
+# Every card has an output switch the generic parser names Master or PCM; QEMU's codec may have
+# no input one, and then only the outputs are checked.
+if follows "$outs" "$muted" "$unmuted" && { ! grep -qE "$ins" <<<"$given" || follows "$ins" "$taken" "$given"; }; then
+    in_said="$(grep -E "$ins" <<<"$given" | paste -sd, -)"
+    pass "switches-follow" "muted: $(grep -E "$outs" <<<"$muted" | paste -sd, -); granted: ${in_said:-no input switch on this card}"
+else
+    fail "switches-follow" "muted: $(paste -sd, - <<<"$muted"); unmuted: $(paste -sd, - <<<"$unmuted"); granted: $(paste -sd, - <<<"$given"); taken back: $(paste -sd, - <<<"$taken")"
+fi
+
 # The levels outlast the mixer, never the microphone's grant. A restart starts from the last
 # mixer's record in /run; a boot, with /run empty, from what the finish script kept on the state
 # partition. Removing the record stands in for the boot here.

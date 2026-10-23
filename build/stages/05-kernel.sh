@@ -301,6 +301,10 @@ s_install() {
         return 1
     fi
     echo "HDA codec drivers loaded ahead of snd-hda-intel: $(wc -l <<<"$built")"
+    # The mute lights' layer, which sound.conf loads ahead of the controller too.
+    if [[ -z "$(find "${MODDIR}/${krel}" -name 'snd-ctl-led.ko*')" ]]; then
+        echo "FAIL: snd-ctl-led was not built, and modprobe.d/sound.conf loads it (SND_CTL_LED, which SND_HDA_GENERIC_LEDS brings)"; return 1
+    fi
     # The camera's driver loads only for a grant: built, and kept from loading by alias.
     if [[ -z "$(find "${MODDIR}/${krel}" -name 'uvcvideo.ko*')" ]]; then
         echo "FAIL: uvcvideo was not built (CONFIG_USB_VIDEO_CLASS=m, boot.fragment)"; return 1
