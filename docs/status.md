@@ -85,9 +85,10 @@ media it tested.
   stopping the feeder). A crashed service or a frozen desktop is not
   detected, because a false reboot is worse than the hang. A hung kernel is
   reset only by a hardware timer (Intel TCO, AMD SP5100) or the lockup
-  detectors. AMD's timer is not fed on a machine that sleeps to idle, as it
-  would count through each sleep, so there the lockup detectors alone catch
-  a hung kernel.
+  detectors. On a machine that sleeps to idle, AMD's timer and the software
+  watchdog are not fed, as both would count through each sleep. There
+  Intel's timer, where there is one, still catches a stopped machine, and
+  on an AMD laptop the lockup detectors alone catch a hung kernel.
 - NVIDIA's graphics have no driver: nouveau needs tens of megabytes of GSP
   firmware for each generation. Beside Intel's or AMD's on a laptop, the
   built-in screen works through those, a port the NVIDIA chip drives stays

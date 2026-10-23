@@ -376,8 +376,18 @@ The lock's check, in `make gui-test`:
   next 8 s once unlocked.
 
 **The watchdog** must not reset a sleeping machine, nor one waiting at the
-state prompt. The drivers stop their timers across suspend, and the feeder
-starts no program, so it goes on feeding while the partition is suspended.
+state prompt. Intel's timer stops across every sleep, and in ACPI's own
+sleep states the firmware stops the rest.
+
+On a machine that sleeps to idle, two timers would go on counting through
+it, so the feeder leaves both unopened:
+- AMD's timer, whose driver does not stop it;
+- the software watchdog, whose clock runs while the s2idle loop handles an
+  event that wakes nothing, amd_pmc's 2.5 s pause after each deepest sleep
+  included.
+
+The feeder starts no program, so it goes on feeding while the partition is
+suspended.
 
 ### In the threat model
 
