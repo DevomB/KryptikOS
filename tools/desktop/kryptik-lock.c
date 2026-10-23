@@ -55,8 +55,9 @@
  * loader would look in /etc, whose upper layer is on that partition. */
 #define LAUNCH_SOCKET "/run/kryptik-launch/launch.sock"
 
-/* dwl's root colour behind, a grey no zone has for the marks, and a red for a refusal. */
-static const uint32_t bg = 0x101418, ink = 0xe6e6e6, warn = 0xd04040;
+/* dwl's root colour behind, the terminals' green, which no zone's border has, for the marks, and
+ * a red for a refusal; both read at 6:1 or more on the black. */
+static const uint32_t bg = 0x000000, ink = 0x33ff66, warn = 0xff4d4d;
 
 /* The words the lock shows, 5x7, bit 4 leftmost: dwl's zone bar font. */
 static const struct { char c; unsigned char rows[7]; } font[] = {
