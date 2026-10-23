@@ -106,3 +106,20 @@ fn names_from_sysfs_are_one_component() {
         assert!(!is_sys_name(bad), "{bad:?}");
     }
 }
+
+#[test]
+fn a_camera_still_held_is_not_taken_again() {
+    let s = sys("kept");
+    let run = s.join("run");
+    fs::create_dir_all(&run).unwrap();
+    fs::create_dir_all(s.join("module").join(DRIVER)).unwrap();
+    fs::write(s.join("module").join(DRIVER).join("refcnt"), "1\n").unwrap();
+    assert!(!kept(&s, &run), "held, but nothing to take again");
+    fs::write(run.join(LET_GO), "usb 3-6:1.0\n").unwrap();
+    assert!(kept(&s, &run), "held, with an interface to take again");
+    fs::write(s.join("module").join(DRIVER).join("refcnt"), "0\n").unwrap();
+    assert!(!kept(&s, &run), "let go of");
+    fs::remove_dir_all(s.join("module").join(DRIVER)).unwrap();
+    assert!(!kept(&s, &run), "unloaded");
+    let _ = fs::remove_dir_all(&s);
+}

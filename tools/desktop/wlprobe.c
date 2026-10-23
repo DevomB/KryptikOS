@@ -35,7 +35,8 @@
  *                             its middle: drawn, it covers the whole screen.
  *                             Says when the window, and when the cursor image,
  *                             enters an output: the second only if the
- *                             compositor took the image. With shape, also ask
+ *                             compositor took the image, and each pointer
+ *                             button it is sent. With shape, also ask
  *                             for the text cursor by name (wp_cursor_shape_v1)
  *   wlprobe animate SECONDS   as oversize 0, and once drawn commit again on
  *                             every frame callback for SECONDS; then say how
@@ -616,6 +617,10 @@ static int handle_one(void)
 		draw_popup();
 	} else if (cursor && object == pointer_id && opcode == 0) {
 		set_cursor(get32(body));                /* wl_pointer.enter(serial, surface, x, y) */
+	} else if (cursor && object == pointer_id && opcode == 3) {
+		/* wl_pointer.button(serial, time, button, state) */
+		printf("pointer button %u %s\n", get32(body + 8), get32(body + 12) ? "pressed" : "released");
+		fflush(stdout);
 	} else if (cursor && opcode == 0 && (object == SURFACE || (cursor_surf && object == cursor_surf))) {
 		/* wl_surface.enter(output) */
 		printf("%s entered an output\n", object == SURFACE ? "the window" : "the cursor image");

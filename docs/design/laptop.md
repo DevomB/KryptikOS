@@ -376,8 +376,18 @@ The lock's check, in `make gui-test`:
   next 8 s once unlocked.
 
 **The watchdog** must not reset a sleeping machine, nor one waiting at the
-state prompt. The drivers stop their timers across suspend, and the feeder
-starts no program, so it goes on feeding while the partition is suspended.
+state prompt. Intel's timer stops across every sleep, and in ACPI's own
+sleep states the firmware stops the rest.
+
+On a machine that sleeps to idle, two timers would go on counting through
+it, so the feeder leaves both unopened:
+- AMD's timer, whose driver does not stop it;
+- the software watchdog, whose clock runs while the s2idle loop handles an
+  event that wakes nothing, amd_pmc's 2.5 s pause after each deepest sleep
+  included.
+
+The feeder starts no program, so it goes on feeding while the partition is
+suspended.
 
 ### In the threat model
 
@@ -467,6 +477,20 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   since there is no hibernation. Each look is written to
   `/run/kryptik-power/state`, which the chrome reads, so the menu says what
   the service acts on.
+- **The battery while the state partition waits.** From a wake until the
+  passphrase is given, the power service waits on the partition, as every
+  program started then does. A battery reaching its alarm level wakes an
+  s2idle laptop, so a laptop asleep in a bag would wake to the prompt,
+  lid still shut, and run flat there. kryptikd keeps the 3% rule
+  meanwhile, from `/sys` alone (`critical` in `suspend.rs`, held to
+  power.sh's cases): seen twice 30 s apart, it powers the machine off at
+  once (`reboot(2)`). The count carries across a sleep, so a machine put
+  back to sleep soon after each wake still powers off. The zones are frozen
+  and their volumes and the partition have no key, so they are not stopped
+  first: everything was written out before the seal, nothing can be
+  written now, and a sync would wait for good. The power service, should
+  its programs run then, leaves the power-off to kryptikd: its shutdown
+  would stop the zones and sync, and neither could finish.
 - **A gauge that reads too low.** A worn battery whose gauge says 3% or less
   while it still holds charge powers the machine off a minute after every
   boot on battery. Requiring a reading above 3% earlier in the boot would
@@ -640,9 +664,12 @@ stops listing until it is on again, is never turned on by it. A monitor no
 line names gets 2 if it is a built-in panel (eDP, LVDS, DSI) of 192 dpi or
 more and 1200 lines or more, as GNOME decides, and 1 otherwise: a
 television's EDID may give its aspect ratio as its size, so only built-in
-panels are measured. Zones are told the scale through `wl_output`, rounded
-up to a whole number, and draw that much larger; the compositor scales them
-down to a fraction such as 1.5. dwl and the proxy needed no change.
+panels are measured. A zone's window is told the exact scale through
+`wp_fractional_scale_v1`, which the proxy passes on (`policy.rs`), and a
+client that reads only `wl_output`'s whole number draws at that, which the
+compositor scales down to the fraction. havoc and kryptik-lock draw at 1 at
+every scale, so the compositor enlarges them, and they look soft at any scale
+but 1.
 
 Check: `make gui-test` writes the user's line for the first monitor at 1 and
 `* 2`, plugs a second monitor in, and finds it at scale 2 and the first at 1;
