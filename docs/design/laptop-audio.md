@@ -192,10 +192,10 @@ so: no built-in microphones on Intel laptops with a DSP or on AMD laptops,
 no built-in sound on SoundWire laptops, and no speakers behind smart
 amplifiers other than Cirrus's CS35L54, CS35L56 and CS35L57 on I2C.
 
-Those three come first in the order below, and they are built a step ahead
-of its rule. The laptop of the first tests on physical hardware is expected
-to have them, so that it runs them. Testing on physical hardware is planned
-for October 2026.
+Those three are built ahead of the rule below, that each comes only once a
+machine that has it has run it: the laptop of the first tests on physical
+hardware is expected to have them, and it will run them. Testing on
+physical hardware is planned for October 2026.
 
 - **None of it can be tested first.** QEMU emulates no DSP, coprocessor,
   SoundWire link or amplifier, and every check runs in QEMU.

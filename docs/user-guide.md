@@ -639,9 +639,9 @@ shows each timer, its timeout and whether it is running.
   ([laptop sound](design/laptop-audio.md)). Nothing plays through a
   monitor's speakers over HDMI or DisplayPort.
 
-  Cirrus's CS35L54, CS35L56 and CS35L57 amplifiers are the exception: their
-  drivers are built, but they have not yet been tried on a laptop that has
-  them.
+  Cirrus's CS35L54, CS35L56 and CS35L57 amplifiers on I2C are the
+  exception: their drivers are built, but they have not yet been tried on a
+  laptop that has them.
 - The laptop makers' own drivers (for ThinkPads, IdeaPads and ASUS, Dell
   and HP laptops) are not built. Some laptops, ThinkPads among them, send
   the microphone key only through one, so there that key does nothing;
