@@ -45,7 +45,9 @@ other codec, and `snd-usb-audio`; none of them needs firmware. The kernel
 loads no module by itself (`STATIC_USERMODEHELPER`), and a codec binds only
 to a driver loaded when the controller probes it, so modprobe loads every
 codec driver ahead of `snd-hda-intel` (`build/config/modprobe.d/sound.conf`,
-which stage 05 holds to the drivers built).
+which stage 05 holds to the drivers built). `snd-ctl-led` loads with them:
+a codec's parser asks for it by `request_module`, and without it a laptop's
+mute and microphone-mute lights never follow the mixer.
 
 Not yet: Intel's Sound Open Firmware drivers for laptops with digital
 microphones or SoundWire codecs, AMD's audio coprocessor drivers, and the
