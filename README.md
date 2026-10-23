@@ -133,7 +133,8 @@ Microsoft's keys, so run Kryptik there with Secure Boot off.
 
 A machine outside that list boots a kernel that cannot find its disk or its
 network. Adding a driver is one line in the fragment, a firmware file one line
-in the list.
+in the list. Which machines Kryptik has been run on, and what each run showed,
+is in the [hardware list](docs/hardware.md).
 
 ## How it fits together
 

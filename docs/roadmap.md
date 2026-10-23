@@ -30,7 +30,7 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [ ] **Physical hardware.** Installed and booted with Secure Boot on at least
       three machines: a wired desktop, an Intel laptop on Wi-Fi alone, an AMD
       laptop. What each lacked becomes a line in `boot.fragment` or
-      `firmware.list`, and the machines start a hardware list in the README.
+      `firmware.list`, and the machines start the [hardware list](hardware.md).
       The laptops also try what no virtual machine has: the lid, the
       microphone and brightness keys, the backlight, a built-in panel and a
       USB Video Class camera.
