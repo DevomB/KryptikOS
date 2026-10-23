@@ -21,6 +21,31 @@ if ! have_nic; then
     sleep 3
     echo "net-zone: an interface has appeared"
 fi
+# A radio's driver may still be loading its firmware once the wire is up: MediaTek's register
+# the radio from a work item after their probe, so the coldplug's settle can come first, and a
+# radio the zone does not take at its start stays in zone 0 for the boot. So, ten seconds at
+# most, until every network controller a driver has taken has its interface: under the device,
+# or one level down, where a virtio card keeps it (virtio0/net).
+pending() {
+    for d in "${NET_SYS:-/sys}"/bus/pci/devices/*; do
+        case "$(cat "$d/class" 2>/dev/null)" in 0x02*) ;; *) continue ;; esac
+        [ -e "$d/driver" ] || continue
+        for n in "$d/net" "$d/ieee80211" "$d"/*/net "$d"/*/ieee80211; do
+            [ -d "$n" ] && continue 2
+        done
+        return 0
+    done
+    return 1
+}
+waited=0
+while [ "$waited" -lt 10 ] && pending; do
+    [ "$waited" -gt 0 ] || echo "net-zone: waiting for a network device whose driver is still starting it"
+    sleep 1
+    waited=$((waited + 1))
+done
+if [ "$waited" -ge 10 ] && pending; then
+    echo "net-zone: a network device has no interface after ten seconds; the zone starts without it"
+fi
 # --ready-fd: nobody waits to hear that the zone is up, but with it the launcher
 # keeps this service's log and hands the zone a pipe. Each line the zone
 # writes is then marked as its own and cannot pass for the launcher's or a
