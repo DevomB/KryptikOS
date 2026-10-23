@@ -172,7 +172,7 @@ normal_boot state-p5b
 txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: iTCO_wdt state=active' \
     && txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: Software Watchdog state=inactive' \
     && green "state-p5b: sleeping to idle, the software watchdog is not fed" \
-    || red "state-p5b: the software watchdog is fed on a machine that sleeps to idle"
+    || red "state-p5b: the boot report does not show Intel's timer fed and the software watchdog unfed"
 
 # ----------------------------------------------------------------- step 6 --
 step "step 6: nothing feeds the watchdog: the machine resets itself and comes back with its data"
