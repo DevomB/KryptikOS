@@ -23,7 +23,8 @@
  * check. It says "kryptik-lock: locked", "kryptik-lock: refused: WHY" and
  * "kryptik-lock: unlocked" on stderr, the session log.
  * With --idle it waits on the compositor's idle notification (ext-idle-notify-v1), which no
- * zone can bind, and runs itself as the lock when it comes, until the session ends.
+ * zone can bind and which a zone's hold on the screen pauses, as dwl counts one
+ * (docs/design/laptop.md), and runs itself as the lock when it comes, until the session ends.
  * Exit: 0 unlocked; 1 the compositor would not lock, or there is no display; 2 usage.
  */
 #define _GNU_SOURCE
@@ -863,10 +864,11 @@ static void take_power(struct screen *sc)
 static void watch_global(void *data, struct wl_registry *r, uint32_t name, const char *iface, uint32_t version)
 {
 	(void)data;
+	(void)version;
 	if (!strcmp(iface, wl_seat_interface.name) && !seat) {
 		seat = wl_registry_bind(r, name, &wl_seat_interface, 1);
-	} else if (!strcmp(iface, ext_idle_notifier_v1_interface.name) && version >= 2) {
-		notifier = wl_registry_bind(r, name, &ext_idle_notifier_v1_interface, 2);
+	} else if (!strcmp(iface, ext_idle_notifier_v1_interface.name)) {
+		notifier = wl_registry_bind(r, name, &ext_idle_notifier_v1_interface, 1);
 	} else if (!strcmp(iface, zwlr_output_power_manager_v1_interface.name)) {
 		powermgr = wl_registry_bind(r, name, &zwlr_output_power_manager_v1_interface, 1);
 	} else if (!strcmp(iface, wl_output_interface.name)) {
@@ -983,12 +985,13 @@ static int watch_idle(long secs, long blank, long nap)
 	wl_registry_add_listener(registry, &watch_registry_listener, NULL);
 	wl_display_roundtrip(display);
 	if (!seat || !notifier) {
-		say("the compositor offers no idle notification that counts input alone");
+		say("the compositor offers no idle notification");
 		return 1;
 	}
-	/* Input alone counts, not idle inhibitors: what may hold the screen awake, a video in a
-	 * zone say, must never hold the session unlocked. */
-	struct ext_idle_notification_v1 *n = ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)secs * 1000, seat);
+	/* Idle inhibitors count as dwl counts them: a hold a zone's file allows, while its window is
+	 * shown and has the keyboard, for four hours from the last key or button press
+	 * (docs/design/laptop.md). A zone 0 program's inhibitor holds nothing. */
+	struct ext_idle_notification_v1 *n = ext_idle_notifier_v1_get_idle_notification(notifier, (uint32_t)secs * 1000, seat);
 	ext_idle_notification_v1_add_listener(n, &idle_listener, NULL);
 	/* The screens go off `blank` after the lock, and on again at the first input, which the
 	 * lock also takes. */
@@ -1000,14 +1003,14 @@ static int watch_idle(long secs, long blank, long nap)
 			if (!sc->power)
 				take_power(sc);
 		struct ext_idle_notification_v1 *b =
-			ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)(secs + blank) * 1000, seat);
+			ext_idle_notifier_v1_get_idle_notification(notifier, (uint32_t)(secs + blank) * 1000, seat);
 		ext_idle_notification_v1_add_listener(b, &blank_listener, NULL);
 	}
 	/* Asleep `nap` after the lock: the lock this watcher started is asked to have the machine
 	 * sleep, as the power key would. */
 	if (nap > 0) {
 		struct ext_idle_notification_v1 *z =
-			ext_idle_notifier_v1_get_input_idle_notification(notifier, (uint32_t)(secs + nap) * 1000, seat);
+			ext_idle_notifier_v1_get_idle_notification(notifier, (uint32_t)(secs + nap) * 1000, seat);
 		ext_idle_notification_v1_add_listener(z, &nap_listener, NULL);
 	}
 	while (wl_display_dispatch(display) != -1) {

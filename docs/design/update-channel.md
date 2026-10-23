@@ -158,7 +158,10 @@ the download private; authenticity does not rest on it. A redirect from https
 is followed only to https, so a server cannot move a production image's
 download into the clear. Each piece of at
 most 1 MiB is one request the launcher answers between looks at its zone,
-under the 5 s deadline, so supervision is never more than a piece away.
+under the 5 s deadline, so supervision is never more than a piece away. Two
+requests also wait on a check of the release, which a hung check holds for
+at most 60 s: the piece that completes the list and its signature, and the
+newest pointer, which comes once an hour.
 
 ## What the user sees
 
@@ -168,11 +171,14 @@ version and age, whether fetching is automatic, and what has arrived. `fetch`
 asks for the release the newest pointer names. `forget` drops the release
 asked for and what has arrived of it, and automatic fetching then passes that
 version over until a newer statement names another or `fetch` asks for it
-again; it is refused while an apply runs. `apply` runs `kryptik-update apply`
-on the complete stage, with the usual trial boot and fallback; the stage goes
-once the machine runs that release and no trial is pending or failed, so after
-a failed trial the `--retry` the refusal prints names a stage that is still
-there.
+again. Both are refused while an apply runs, as the apply reads the stage
+they clear (`fetch` when it asks for another release): the launch service
+refuses them while its apply job runs, and they refuse themselves while
+`kryptik-update` holds its lock, whoever started it. `apply` runs
+`kryptik-update apply` on the complete stage, with the usual trial boot and
+fallback; the stage goes once the machine runs that release and no trial is
+pending or failed, so after a failed trial the `--retry` the refusal prints
+names a stage that is still there.
 Nothing is installed unless the user asks, and nothing is fetched unless the
 user asks or has turned automatic fetching on.
 
@@ -186,7 +192,8 @@ the one asked for, as `fetch` would ask for it; what `fetch` would refuse
 (nothing newer, or a base this image does not fetch from) stays unasked, and
 the poll answers `idle`. A release is asked for at the first poll after its
 statement is accepted, so within a day of being published, and a newer one
-replaces it, stage and all. `auto off` asks for nothing more; a release
+replaces it, stage and all, though not while an apply reads the stage: the
+poll then asks again next time. `auto off` asks for nothing more; a release
 already asked for keeps arriving, as one asked for by hand does.
 
 - **Where it lives.** `/var/lib/kryptik/update/auto`, beside `wanted`: on the

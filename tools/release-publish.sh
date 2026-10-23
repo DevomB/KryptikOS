@@ -13,13 +13,16 @@
 # uploaded files' hashes; the signed checksums stay the authority for what
 # zstd -d restores. The update payload in EXPORT/payload goes up as it is,
 # under the names its manifest gives, so the page can be a channel's base
-# (tools/channel-host.sh). A development release is marked a pre-release. The
-# release is a draft until --publish. --stage DIR writes the assets and the
+# (tools/channel-host.sh). The corresponding source goes up in parts of at most
+# 1 GiB, which cat joins again. A development release is marked a pre-release.
+# The release is a draft until --publish. --stage DIR writes the assets and the
 # notes there and calls GitHub not at all.
 set -Eeuo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../build/lib/common.sh"
 
-usage() { sed -n '2,16p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,18p' "${BASH_SOURCE[0]}"; }
+# The source bundle's part size; the tests ask for smaller ones.
+PART="${KRYPTIK_RELEASE_PART:-1073741824}"
 
 EXPORT="" BUNDLE="" REPO="" PUBLISH=0 STAGE=""
 while [[ "$#" -gt 0 ]]; do
@@ -35,7 +38,8 @@ while [[ "$#" -gt 0 ]]; do
 done
 [[ -n "$EXPORT" ]] || { usage; exit 1; }
 [[ -d "$EXPORT" ]] || die "${EXPORT} is not a directory"
-for t in ssh-keygen sha256sum zstd git numfmt tar; do have "$t" || die "${t} is required"; done
+for t in ssh-keygen sha256sum zstd git numfmt tar split; do have "$t" || die "${t} is required"; done
+[[ "$PART" =~ ^[1-9][0-9]*$ && "$PART" -lt 2147483648 ]] || die "KRYPTIK_RELEASE_PART is ${PART}: a part is a number of bytes under 2 GiB"
 [[ -n "$STAGE" ]] || have gh || die "gh (GitHub's command line) creates the release; --stage DIR does without it"
 [[ -z "$BUNDLE" || -f "$BUNDLE" ]] || die "no source bundle at ${BUNDLE}"
 
@@ -99,10 +103,12 @@ for f in "$USB" "$ISO"; do
     ASSETS+=("${f}.zst")
 done
 for f in "${RECORD[@]}"; do cp "${EXPORT}/${f}" "${OUT}/"; ASSETS+=("$f"); done
+SRC="source-${REV:0:12}.tar"; PARTS=0
 if [[ -n "$BUNDLE" ]]; then
-    # Under the name the notes give it.
-    ln "$BUNDLE" "${OUT}/source-${REV:0:12}.tar" 2>/dev/null || cp "$BUNDLE" "${OUT}/source-${REV:0:12}.tar"
-    ASSETS+=("source-${REV:0:12}.tar")
+    # With every tarball the images are built from, the bundle is several GiB: it goes up as
+    # SRC.000, SRC.001 and on, under the names the notes give them.
+    split -b "$PART" -d -a 3 "$BUNDLE" "${OUT}/${SRC}."
+    for f in "${OUT}/${SRC}."[0-9][0-9][0-9]; do ASSETS+=("${f##*/}"); PARTS=$((PARTS + 1)); done
 fi
 if [[ -d "${EXPORT}/acceptance-logs" ]]; then
     tar -C "$EXPORT" -I 'zstd -q -T0 -19' -cf "${OUT}/kryptik-${VERSION}-acceptance-logs.tar.zst" acceptance-logs
@@ -114,7 +120,7 @@ if [[ -d "${EXPORT}/payload" ]]; then
     for f in "${EXPORT}/payload"/*; do
         [[ -f "$f" ]] || continue
         b="$(basename "$f")"
-        (( $(stat -c %s "$f") <= 2147483648 )) || die "payload/${b} is over the 2 GiB a release file may be"
+        (( $(stat -c %s "$f") < 2147483648 )) || die "payload/${b} is 2 GiB or more, and a release file must be under it"
         if [[ -e "${OUT}/${b}" ]]; then
             cmp -s "$f" "${OUT}/${b}" || die "payload/${b} differs from the record's ${b}"
             continue
@@ -122,6 +128,11 @@ if [[ -d "${EXPORT}/payload" ]]; then
         cp --sparse=always "$f" "${OUT}/"; ASSETS+=("$b")
     done
 fi
+# The page takes no file of 2 GiB or more: refused here, before a long upload fails on it.
+for f in "${ASSETS[@]}"; do
+    s="$(stat -c %s "${OUT}/${f}")"
+    (( s < 2147483648 )) || die "${f} is $(numfmt --to=iec-i --suffix=B "$s"), and a release file must be under 2 GiB"
+done
 {
     cat "${EXPORT}/RELEASE-NOTES.md"
     printf '\n## Downloads\n\n'
@@ -132,6 +143,10 @@ fi
     done
     printf '\nAfter `zstd -d kryptik-%s-usb.img.zst`, check it as `INSTRUCTIONS.md` says:\n\n' "$VERSION"
     printf '```sh\nssh-keygen -Y verify -f release-signers -I kryptik-release -n kryptik-media \\\n    -s kryptik-%s.SHA256SUMS.sig < kryptik-%s.SHA256SUMS\nsha256sum -c --ignore-missing kryptik-%s.SHA256SUMS\n```\n' "$VERSION" "$VERSION" "$VERSION"
+    if [[ "$PARTS" -gt 0 ]]; then
+        printf '\nThe corresponding source is `%s`, in %s part(s) of at most %s. `cat %s.[0-9][0-9][0-9] > %s` joins them, and the MANIFEST inside names every file with its hash.\n' \
+            "$SRC" "$PARTS" "$(numfmt --to=iec-i --suffix=B "$PART")" "$SRC" "$SRC"
+    fi
 } > "${OUT}/NOTES.md"
 if [[ -n "$STAGE" ]]; then
     ok "staged ${TAG}, a ${KIND}, in ${OUT}: ${#ASSETS[@]} files and NOTES.md"

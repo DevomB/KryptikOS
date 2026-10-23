@@ -1052,11 +1052,12 @@ pub fn run_in_zone(
         Ok(false) => {}
         Err(e) => eprintln!("kryptikd[zone {}]: taking its USB stick back: {e}", zone.name),
     }
-    // And the camera.
-    if crate::camera::holder().is_some_and(|g| g.zone == zone.name) {
-        match crate::camera::revoke() {
+    // And the camera, which only a root launch's zone can hold; others cannot take its lock.
+    if id.privileged {
+        match crate::camera::revoke_from(&zone.name) {
             Ok(Some(e)) if e.stayed => eprintln!("kryptikd: zone {:?}: the camera taken back; its driver stays loaded", zone.name),
-            Ok(_) => eprintln!("kryptikd: zone {:?}: the camera taken back", zone.name),
+            Ok(Some(_)) => eprintln!("kryptikd: zone {:?}: the camera taken back", zone.name),
+            Ok(None) => {}
             Err(e) => eprintln!("kryptikd[zone {}]: taking the camera back: {e}", zone.name),
         }
     }
@@ -1510,6 +1511,10 @@ pub fn zone_environment(zone: &Zone, home: &str, caller: &[(String, String)], wa
         ("LOGNAME".into(), "root".into()),
         ("SHELL".into(), "/bin/sh".into()),
         ("KRYPTIK_ZONE".into(), zone.name.clone()),
+        /* glibc (--enable-cet) refuses, in a process with a shadow stack, a library without the
+         * CET note, which an image may hold (Firefox's libxul and NSPR). Lenient, such a program
+         * runs on without its shadow stack where the CPU has one, rather than fail to load it. */
+        ("GLIBC_TUNABLES".into(), "glibc.cpu.x86_shstk=permissive".into()),
     ];
     for (k, v) in caller {
         if ENV_PASSTHROUGH.contains(&k.as_str()) && env_value_is_sane(v) {

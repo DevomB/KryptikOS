@@ -130,6 +130,13 @@ if [ -n "$HDR_OUT" ]; then   # cryptsetup refuses to overwrite an existing file
     exit 0
 fi
 if [ -n "$HDR_IN" ]; then
+    # Over a header that still opens, only the same volume's: -q skips the question cryptsetup asks
+    # there, and another volume's backup would lose this state for good.
+    if cryptsetup isLuks "$ST" 2>/dev/null; then
+        now="$(cryptsetup luksUUID "$ST" 2>/dev/null)" || now=""
+        was="$(cryptsetup luksUUID "$HDR_IN" 2>/dev/null)" || was=""
+        [ -n "$now" ] && [ "$now" = "$was" ] || die "${ST} holds a working header, of LUKS volume ${now:-unknown}, and ${HDR_IN} is ${was:-no volume this can read}'s: restoring it would lose this state. Back it up first (--backup-state-header); to put another volume's header there all the same, wipe this one first (wipefs -a ${ST})"
+    fi
     cryptsetup -q luksHeaderRestore "$ST" --header-backup-file "$HDR_IN" || die "could not restore the header of ${ST} from ${HDR_IN}"
     say "the header of ${ST} is restored from ${HDR_IN}"
     exit 0
@@ -164,7 +171,8 @@ if [ -n "$RESTORE" ]; then
             mount -t vfat -o ro "$mesp" /run/kryptik-recover-media || die "cannot mount the medium's ESP"
             rj=/run/kryptik-recover-media/kryptik/root.json; kdir=/run/kryptik-recover-media/EFI/kryptik ;;
         iso)
-            mount -t iso9660 -o ro /dev/sr0 /run/kryptik-recover-media || die "cannot mount the medium"
+            # As kryptik-install mounts it: Rock Ridge can carry device nodes and set-id files.
+            mount -t iso9660 -o ro,nosuid,nodev,noexec /dev/sr0 /run/kryptik-recover-media || die "cannot mount the medium"
             src=/dev/sr0; off="$(sed -n 's/.*linear \/dev\/sr0 \([0-9]*\).*/\1/p' /proc/cmdline | head -1)"; off=$(( off * 512 ))
             rj=/run/kryptik-recover-media/root.json
             mkdir -p /run/kryptik-recover-esp && mount -t vfat -o ro,loop /run/kryptik-recover-media/esp.img /run/kryptik-recover-esp || die "cannot mount the medium's ESP image"

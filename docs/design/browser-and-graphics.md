@@ -14,12 +14,15 @@ root. The decision is ADR-016 in [decisions](../decisions.md).
   with no GPU renderer and no Xwayland (`-Drenderers=[] -Dxwayland=disabled`
   in `build/recipes/wlroots.sh`); its DRM backend scans out dumb buffers, and
   `kryptik-session` sets `WLR_RENDERER=pixman`.
-- **The proxy offers ten globals.** `kryptik-wlproxy` advertises
+- **The proxy offers eleven globals.** `kryptik-wlproxy` advertises
   `wl_compositor`, `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`,
-  `xdg_wm_base`, `zxdg_decoration_manager_v1`, `wp_viewporter` and
-  `wp_cursor_shape_manager_v1`, and `wl_data_device_manager` as a global of
+  `xdg_wm_base`, `zxdg_decoration_manager_v1`, `wp_viewporter`,
+  `wp_cursor_shape_manager_v1` and `wp_fractional_scale_manager_v1`, and
+  `wl_data_device_manager` as a global of
   its own, which it serves itself while the compositor's stays hidden
-  (below). A cursor named through `wp_cursor_shape_manager_v1` is drawn by
+  (below), and `zwp_idle_inhibit_manager_v1` to a zone whose file lets it
+  hold the screen awake (below). A cursor named through
+  `wp_cursor_shape_manager_v1` is drawn by
   the compositor from its own theme, while an image a zone draws is never
   taken. It disconnects a client
   that binds anything else, and bounds shared-memory pools at 128 MiB each
@@ -94,40 +97,51 @@ root. The decision is ADR-016 in [decisions](../decisions.md).
 
 With no remote, a second `firefox` in a zone whose browser is open finds
 its profile locked and says that Firefox is already running. The browser
-key (Alt+Shift+u) and the menu's `b` should instead put that zone's open
-Firefox window in front, and start Firefox only when the zone has none. A
-design, not yet built:
+key (Alt+Shift+u) and the menu's `b` instead put that zone's open Firefox
+window in front, and start Firefox only when the zone has none
+(`tools/desktop/dwl-zone-borders.py`, `build/desktop/dwl-config.h`,
+`tools/desktop/kryptik-chrome`).
 
 - **Who knows the window.** dwl alone. For every window it holds the zone,
   taken from the socket the client came through and never from the client,
-  the `app_id` Firefox sets, its tags and monitor, and the focus order. The
-  `app_id` is the client's own word, but a match is only sought among one
-  zone's windows, so a zone that claims it can bring forward only its own
-  window. The chrome sees only the focused window of each output, from
-  dwl's status. The launch daemon sees the zone's processes, not its
-  windows.
-- **The key.** A dwl action in place of `spawn`, focus-or-launch, given the
-  zone, the `app_id` and the launch command. It takes the first window in
-  the focus order whose zone and `app_id` match, so the one used last. If
-  that window is not shown, dwl first views its first tag on its monitor,
-  as Alt and the tag's number would, then gives it the keyboard. With no
-  such window, it starts the command as the key does now. No channel to
-  dwl is needed.
-- **The menu.** The chrome keeps the launch, as the zone's passphrase is
-  asked on its terminal. It needs two things from dwl:
-  - dwl's status gains a line naming each zone's open `app_id`s. The
-    chrome's status reader records it beside the focus record, in the
-    session's runtime directory, and `b` looks there first.
-  - When the browser is open, the chrome writes a one-line request, the
-    zone and that `app_id`, to a file in that directory. dwl watches it the
-    way it watches the microphone and camera marks: inotify on the
-    directory, and a file that must be the session user's own and not
-    writable by group or others. dwl reads it, removes it and acts on it as
-    the key does. The runtime directory is the session user's alone, mode
-    0700, so no zone can make the request.
+  the `app_id`, its tags and monitor, and the focus order. The proxy stamps
+  each zone window's `app_id` `kryptik.<zone>.<claimed>`, and dwl matches
+  that whole string together with the socket's zone, so a window that
+  claims another zone's browser, or a zone 0 client that claims a zone's,
+  is never taken. Firefox claims its remoting name, which it gives GTK as
+  the program name: `firefox-default` on the default update channel, which
+  `dwl-config.h` names once (`browserappid`). The chrome sees only the
+  focused window of each output, from dwl's status. The launch daemon sees
+  the zone's processes, not its windows.
+- **The key.** A dwl action in place of `spawn`, `focusorlaunch`, given the
+  zone, the claimed `app_id` and the launch command. It takes the first
+  window in the focus order whose zone and `app_id` match, so the one used
+  last. If that window is not shown, dwl first views its first tag on its
+  monitor, as Alt and the tag's number would, then gives it the keyboard.
+  With no such window, it starts the command, as the key did before.
+- **The menu.** The chrome keeps every launch, as a persistent zone's
+  passphrase is asked on its terminal. It needs two things from dwl:
+  - dwl's status names the zones whose browser has a window, a line
+    `<output> browsers <zone>...` among the selected output's lines, which
+    the chrome's status reader keeps in `browsers` in the session's runtime
+    directory, `$XDG_RUNTIME_DIR/kryptik`.
+  - When `browsers` names the zone, `b` writes a one-line request, the
+    zone's name, to `browser-front` in `front` there, a directory that
+    holds nothing else, so what dwl may read and remove there is the
+    request alone. dwl watches the directory with inotify and looks each
+    second besides. It takes the request only from a regular file of the
+    session user's own that no one else may write, in a directory of the
+    user's that no one else may write (the session and the chrome keep it
+    0700), and removes it before acting on it, so it is acted on once.
+    The request only puts a window in front: with none, dwl does nothing,
+    and `b` launches whenever `browsers` does not name the zone.
 - **On another tag or monitor.** dwl views the window's tag on the monitor
   it is on, and the keyboard follows it there. A window is never moved
-  between tags, so the vault keeps its tag.
+  between tags, so the vault keeps its tag. Nothing moves while the screen
+  is locked.
+- **Still left.** The key or `b` while the zone's Firefox is starting,
+  before its window shows, starts a second one, which says that the
+  first is running.
 - **A waiting zone.** The window of a zone frozen after a sleep, its volume
   waiting for the passphrase, comes forward all the same and does not
   answer. The menu already says the zone is waiting and asks with `p`.
@@ -138,6 +152,11 @@ design, not yet built:
   or one of Kryptik's own, is more code than a status line and a watched
   file, and foreign-toplevel management carries no zone: the chrome would
   have to trust the titles.
+- **The check.** `make gui-test` leaves Firefox open on tag 3 for tag 1
+  and presses the key: tag 3 is viewed, Firefox has the keyboard, and no
+  second Firefox starts. A request root wrote is removed and moves nothing,
+  the user's puts Firefox in front, and with the zone stopped the key starts
+  Firefox.
 
 ### Chromium
 
@@ -241,7 +260,8 @@ floors are given with each layer.
     `--disable-updater` (updates are the image's) and `--disable-eme`.
     With neither D-Bus nor X11 Firefox has no remote: a second launch in a
     zone whose browser is open is not handed to it, and says that Firefox is
-    already running (`0004` in the patch set).
+    already running (`0004` in the patch set). The key and the menu put the
+    open window in front instead (above).
   - `--disable-jemalloc`, as the image preloads hardened_malloc for every
     process.
   - `--enable-audio-backends=alsa`: a zone's default ALSA device is zone
@@ -405,7 +425,7 @@ yet; ADR-004's cost text says so.
 
 ## What the proxy must offer for a usable browser
 
-Four things are needed, each with its own review. The first two are built.
+Four things are needed, each with its own review. The first three are built.
 
 - **Popups.** Every GTK menu, dropdown and tooltip is one, a surface with
   no border of its own, so a zone's is held to its window. The proxy lets
@@ -435,12 +455,23 @@ Four things are needed, each with its own review. The first two are built.
   window nor zone 0's is offered it. Between zones the zone 0 move gesture
   carries it: one zone's proxy hands what its windows copied to another's
   ([broker](broker.md#clipboard)).
-- **`wp_fractional_scale_v1`**, for sharp text on high-density screens.
-- **`zwp_idle_inhibit_manager_v1`**, so video keeps the screen awake; the
-  chrome shows which zone holds it. It comes with the browser image, under
-  the conditions the [laptop design](laptop.md#power-management-without-logind)
-  sets for holding the screen awake; until then nothing a zone does holds
-  off the lock or the blanking.
+- **Fractional scale.** The proxy lets `wp_fractional_scale_manager_v1`
+  through: the compositor tells each of a zone's windows the scale of the
+  output it is shown on, in 120ths, and Firefox draws at that scale through
+  `wp_viewporter`, so text is sharp at 1.5 instead of drawn at 2 and scaled
+  down. It tells a zone only its output's scale, which `wl_output` gives it
+  already, rounded up to a whole number. `make gui-test` has a zone's window
+  hear its scale through its proxy.
+- **Holding the screen awake.** For a zone whose file says `[desktop]
+  hold_awake = true`, `personal` and `work`, the proxy lets
+  `zwp_idle_inhibit_manager_v1` through, and dwl offers it on that zone's
+  socket alone: kryptikd reads the file for the proxy's `--hold-awake`, and
+  dwl through `zone-colours.h`. dwl counts a hold under the conditions the
+  [laptop design](laptop.md#power-management-without-logind) sets, and its
+  status names the zone holding the screen awake, for the chrome to show.
+  `make gui-test` has personal's window keep zone 0's idle timer from
+  running out while it has the keyboard, and lose its hold to a zone 0
+  window and to the lock; `untrusted` is offered no inhibitor.
 
 `xdg_activation_v1` stays hidden: it lets a client take focus, and a zone
 must not raise a window over another zone's. Input methods are in the

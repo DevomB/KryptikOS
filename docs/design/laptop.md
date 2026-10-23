@@ -27,10 +27,13 @@ recommendation below has it. The chrome's menu grants the microphone
 (`v<D>`, `v<N><D>`) and mutes (`x`), and names the zone that may record and
 whether it does; the keyboard's volume keys step the volume, its mute key
 mutes, and its microphone key takes the microphone back, under the screen
-lock too. While a zone holds the microphone, a window of the chrome's says
-so, and says when it records; it opens on the grant, so it takes the
-keyboard from the menu the gesture was typed in, not from a zone, and
-closes when the grant ends.
+lock too. Some laptops, ThinkPads among them, send the microphone key only
+through their maker's platform driver (`thinkpad_acpi`, `ideapad-laptop`,
+`asus-nb-wmi`, `dell-wmi`, `hp-wmi`), which the kernel does not build, so
+there it does nothing. While a zone holds the microphone, a window of the
+chrome's says so, and says when it records; it opens on the grant, so it
+takes the keyboard from the menu the gesture was typed in, not from a
+zone, and closes when the grant ends.
 
 ### The kernel side
 
@@ -105,11 +108,20 @@ laptop does without it, and the order they come in after 1.0.
   `volume -5`); the microphone key says `revoke`. The mixer applies the
   volumes, squared so the steps sound even, and
   sets the card's own controls to unity when it opens it, so a card that
-  came up muted plays.
+  came up muted plays. The volumes and mutes outlast the mixer: it keeps a
+  record of them in `/run`, where a restart starts from it, and its
+  service's finish script carries it to the state partition
+  (`/var/lib/kryptik-sound/levels`), reading it with the mixer's rights and
+  keeping only the lines such a record holds, for the run script to put
+  back after a boot. The microphone's
+  grant is never kept, and neither script looks at the state partition
+  while a sleep seals it.
 - **The card** is a USB device when one is plugged in, as it is plugged in
   to be used, otherwise the first card with a device 0; an HDMI-only card
   has none. The mixer opens it only while something plays and closes it
-  five seconds after, so the codec can power down.
+  five seconds after, so the codec can power down. While a stream runs it
+  looks again each second, so a headset plugged in during a call takes the
+  call, and the recording too.
 - **In the zone,** alsa-lib with a small PCM plugin as the default device
   writes to `/run/kryptik/sound/socket` (`/usr/etc/alsa/conf.d`, on the
   verified root, which every zone reads). Firefox built with
@@ -229,7 +241,12 @@ to resume can run from the root while the state partition is suspended.
    press that wakes it reaches the input layer as the power key, which
    would put it straight back to sleep. A lid that closes while an output
    other than the built-in panel is on, docked, is left alone, as is one
-   libinput says is closed as the switch appears. Idleness asks too, `kryptik-lock --idle --sleep`, but
+   libinput says is closed as the switch appears. dwl still knows either is
+   shut: when a screen goes and five seconds later none but the panel is
+   left, as when the dock is unplugged, the machine sleeps as a lid closed
+   undocked would. The wait covers a dock that takes its screens away and
+   back again around a sleep. Idleness asks too,
+   `kryptik-lock --idle --sleep`, but
    only as many minutes after the lock as `~/.config/kryptik/lock-sleep`
    holds: a sleep that does not wake would cost open work nobody chose to
    risk, so it stays off until resume is proven on physical hardware, and 20
@@ -333,10 +350,10 @@ minutes without input, or the minutes in `~/.config/kryptik/lock-idle` (0
 never). A minute after the lock it turns the screens off through dwl's
 `zwlr_output_power_manager_v1`, and the first key or movement turns them on
 again; an unlock turns them on as well, should the watcher be gone. It
-counts input alone (the protocol's version 2), so an idle inhibitor, which
-the browser design would let a zone hold to keep the screen awake, never
-keeps the session unlocked or the screens lit. No zone can bind the
-notifier, which would tell it when the user is away.
+counts input, and a hold dwl counts for a zone under the conditions in
+Holding the screen awake, below; an inhibitor of any other zone, or of
+zone 0, never keeps the session unlocked or the screens lit. No zone can
+bind the notifier, which would tell it when the user is away.
 
 The lock's check, in `make gui-test`:
 
@@ -427,26 +444,37 @@ and the power key, idle and inhibitors, suspend, and runtime directories
 - **The lid and the power key** are dwl's, as input devices: the power key
   is a key, which dwl binds to `kryptik-lock --suspend`, and the lid a
   switch, which Kryptik's dwl patch turns into the same command when it
-  closes (above). Nothing in zone 0 runs as root for them.
+  closes (above). Nothing in zone 0 runs as root for them. Many Intel
+  laptops send the power key, and the wake from s2idle by it, to Intel's
+  HID event filter or virtual button device instead of ACPI's power
+  button; `intel-hid` and `intel-vbtn`, modules eudev loads by those
+  devices' ACPI IDs, make it a key there too.
 - **The power service** (`build/service-scripts/power.sh`, the `power`
   service), in zone 0, reads the battery and the mains adapter or USB
   charger from `/sys/class/power_supply` every 30 s; a mouse's battery
-  (scope `Device`) does not count, and of two batteries the fuller does. On
-  battery at 10% and again at 5% it warns, once each a discharge: the
-  chrome's status loop opens a window that says what comes at 3% and
-  follows the charge until the machine is on mains. At 3% or under, seen
-  twice running, it stops every zone as `kryptikd stop` does, each launcher
-  closing its volume, and powers the machine off, since there is no
-  hibernation. Each look is written to `/run/kryptik-power/state`, which the
-  chrome reads, so the menu says what the service acts on.
+  (scope `Device`) does not count, of two batteries the fuller does, and a
+  battery whose capacity does not read counts by the energy or the charge
+  it holds against full. A battery that says it discharges runs down
+  whatever the adapter says, as on a charger that gives less than the
+  machine uses, so the machine counts as on battery, and the chrome says
+  it is plugged in. On battery at 10% and again at 5% it warns, once each
+  a discharge: the chrome's status loop opens a window that says what
+  comes at 3% and follows the charge until the machine is on mains. At 3%
+  or under, seen twice running, it stops every zone as `kryptikd stop`
+  does, each launcher closing its volume, and powers the machine off,
+  since there is no hibernation. Each look is written to
+  `/run/kryptik-power/state`, which the chrome reads, so the menu says what
+  the service acts on.
 - **A gauge that reads too low.** A worn battery whose gauge says 3% or less
   while it still holds charge powers the machine off a minute after every
   boot on battery. Requiring a reading above 3% earlier in the boot would
   stop that, at the cost of an unclean death for a boot that starts at 2%.
   Which to take is for the tests on physical hardware.
 - **The energy preference.** The same service sets
-  `energy_performance_preference` to `balance_power` on battery and
-  `balance_performance` on mains whenever the source changes, on each
+  `energy_performance_preference` to `balance_power` without a charger and
+  `balance_performance` with one whenever that changes, by the charger
+  rather than the battery's running down, so a machine that outdraws its
+  charger under load does not swing between the two, on each
   processor policy that offers it (amd-pstate and intel_pstate both do).
   PCIe link power and NVMe power states keep the kernel's defaults, and no
   rule turns on USB autosuspend for input devices, which too often
@@ -457,7 +485,11 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   dwl's brightness keys run `brightness.sh up|down`, a twentieth of the
   range a step and never down to dark, on the backlight the kernel's
   documentation prefers when a panel has several (firmware, then platform,
-  then raw).
+  then raw). The level a step leaves is kept in the user's configuration
+  (`~/.config/kryptik/brightness`: the panel, the level and its range), and
+  the session sets it again as the next login starts, as a share of the
+  panel's range. A step taken under the lock that follows a sleep is not
+  kept, as the home directory waits with the state partition.
 - **Idle.** dwl's idle notifier (`ext-idle-notify-v1`, in dwl 0.8) tells a
   zone 0 tool to blank the screen, then lock, then suspend. All three are
   built (`kryptik-lock --idle`, above), lock first: a screen turned off
@@ -465,18 +497,29 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   Suspending when idle is off unless the user asks for it (above).
 - **Holding the screen awake.** A zone playing a video may hold off both the
   lock and the blanking, through the proxy's idle inhibition (the browser
-  design), under these conditions. They come with the browser image, the
-  first thing that needs them; until then no zone can, and both count input
-  alone.
+  design), under these conditions. dwl counts a hold under them and tells its
+  idle notifier so, and `kryptik-lock` waits on the notification that counts
+  inhibitors: the lock, the blanking and a sleep after them all heed it.
   - The zone's file on the verified root opts in (`[desktop] hold_awake =
-    true`). It is off by default, and never set for `untrusted`, where
-    unknown links open.
-  - A hold counts only while the inhibiting surface is mapped and visible on
-    a lit output and its zone's window has the keyboard; losing either ends
-    it.
-  - It is capped at four hours, after which the lock comes as usual, and any
-    zone 0 action, a lid close or a suspend ends it. The chrome shows which
-    zone holds the screen awake for as long as it does.
+    true`): `personal` and `work`, where the browser plays video. It is off
+    by default, and set false for `untrusted`, where unknown links open.
+    kryptikd starts the zone's proxy with `--hold-awake` from that file, and
+    dwl reads the same file through `zone-colours.h`, for the sockets it
+    offers the inhibitor on and the holds it counts.
+  - A hold counts only while the inhibiting window is mapped and visible on
+    a lit output, a window of its zone has the keyboard and the session is
+    unlocked; losing any of these ends it. A zone 0 window taking the
+    keyboard ends it, and so do a lid close and a suspend, each of which
+    locks first. A hold that ended begins again, with the four hours anew,
+    once its window is back with the keyboard: after an unlock, the user is
+    there.
+  - It lasts four hours from when it began or a key or button was last
+    pressed, whatever window took the press (`holdawakesecs` in dwl's
+    configuration); then the lock comes as usual. dwl's status names the
+    zone holding the screen awake (`<output> holdawake <zone>`), for the
+    chrome to show for as long as it does, and the bar over a fullscreen
+    window names it beside the microphone's and the camera's holders: a
+    video in front covers the chrome.
   - The moment no hold qualifies, the lock and the blanking count input
     alone again.
 - The chrome's menu has a Power line, from the power service's state: on
@@ -493,14 +536,17 @@ machine down with every volume closed.
 `make power-test` does the battery's part with `test_power`: the service
 follows the adapter both ways, the menu's Power line names the source and
 the charge, a window warns at 10% and again at 5%, follows the charge and
-closes on mains, and with the battery at 2% unplugged the service stops the
-zones and powers off; the host then finds on the state partition that it
-said so and that a running zone's volume was closed first. The guest also
-finds the power controllers' drivers among the kernel's modules. The energy
-preference, which QEMU's processors do not offer, is checked against
-stand-in `/sys` trees (`tools/tests/power.sh`). QEMU has no backlight:
-the brightness steps are checked the same way (`tools/tests/brightness.sh`),
-and the rule and the keys wait for physical hardware.
+closes on mains, a battery that runs down with the adapter on is on
+battery and the line says the machine is plugged in, and with the battery
+at 2% unplugged the service stops the zones and powers off; the host then
+finds on the state partition that it said so and that a running zone's
+volume was closed first. The guest also finds the power controllers'
+drivers among the kernel's modules. The energy preference, which QEMU's
+processors do not offer, and a battery whose capacity does not read are
+checked against stand-in `/sys` trees (`tools/tests/power.sh`). QEMU has
+no backlight: the brightness steps are checked the same way
+(`tools/tests/brightness.sh`), and the rule and the keys wait for physical
+hardware.
 
 ## Keyboard layouts and input methods
 

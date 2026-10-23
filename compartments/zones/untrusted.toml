@@ -41,3 +41,7 @@ label          = "UNTRUSTED"
 # The browser, and the toolkit it is built over (docs/design/software-delivery.md); the call its
 # content sandbox needs is granted in the zone's policy.
 images = "browser toolkit"
+
+[desktop]
+# Never here, where unknown links open: no page may keep the session unlocked (docs/design/laptop.md).
+hold_awake = false

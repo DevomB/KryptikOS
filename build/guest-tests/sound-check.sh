@@ -150,8 +150,8 @@ fi
 granted="$(ctl grant untrusted 2>&1)"
 # The mixer's record of who may record, which dwl's bar over a fullscreen window shows: the
 # mixer's own file, which no one else may write, naming the zone.
-holder="$(stat -c '%u %a %F' /run/kryptik-sound/control/microphone 2>&1) $(cat /run/kryptik-sound/control/microphone 2>&1)"
-if [[ "$holder" == "87 640 regular file untrusted" ]]; then
+holder="$(stat -c '%u %a %F' /run/kryptik-sound/marks/microphone 2>&1) $(cat /run/kryptik-sound/marks/microphone 2>&1)"
+if [[ "$holder" == "87 644 regular file untrusted" ]]; then
     pass "holder-recorded" "the mixer records the grant for the compositor's bar: ${holder}"
 else
     fail "holder-recorded" "${holder}"
@@ -176,10 +176,10 @@ ungranted() { ! ctl status | grep -q ' granted'; }
 zrun untrusted 30 -- "$PROBE" record 1
 if wait_for 5 ungranted && [[ "$ZRC" -eq 1 && "$ZOUT" == *"not granted to this zone"* ]]; then
     pass "grant-ends-with-zone" "the grant went with the zone that held it"
-    if [[ -f /run/kryptik-sound/control/microphone && ! -s /run/kryptik-sound/control/microphone ]]; then
+    if [[ -f /run/kryptik-sound/marks/microphone && ! -s /run/kryptik-sound/marks/microphone ]]; then
         pass "holder-cleared" "the record names no zone once the grant is gone"
     else
-        fail "holder-cleared" "$(stat -c '%u %a %s' /run/kryptik-sound/control/microphone 2>&1): $(cat /run/kryptik-sound/control/microphone 2>&1)"
+        fail "holder-cleared" "$(stat -c '%u %a %s' /run/kryptik-sound/marks/microphone 2>&1): $(cat /run/kryptik-sound/marks/microphone 2>&1)"
     fi
 else
     fail "grant-ends-with-zone" "status: $(ctl status | tr '\n' ' ') record: rc ${ZRC}: ${ZOUT}"
@@ -294,10 +294,10 @@ fi
 ctl grant work > /dev/null
 moved() { st "zone work" | grep -q ' granted$' && ! st "zone untrusted" | grep -q ' granted'; }
 ended() { ! kill -0 "$rp" 2>/dev/null; }
-if wait_for 5 moved && wait_for 15 ended && [[ "$(cat /run/kryptik-sound/control/microphone 2>&1)" == work ]]; then
+if wait_for 5 moved && wait_for 15 ended && [[ "$(cat /run/kryptik-sound/marks/microphone 2>&1)" == work ]]; then
     pass "microphone-moves" "a grant to work took the microphone from untrusted, whose record ended: $(tr '\n' ' ' < "$LOG/untrusted.out")"
 else
-    fail "microphone-moves" "status: $(ctl status | tr '\n' ' '); holder: $(cat /run/kryptik-sound/control/microphone 2>&1); untrusted: $(tr '\n' ' ' < "$LOG/untrusted.out")"
+    fail "microphone-moves" "status: $(ctl status | tr '\n' ' '); holder: $(cat /run/kryptik-sound/marks/microphone 2>&1); untrusted: $(tr '\n' ' ' < "$LOG/untrusted.out")"
 fi
 # A record that did not end keeps untrusted up, which the rounds below start again.
 kill "$rp" 2>/dev/null; "$KD" stop untrusted > /dev/null 2>&1; wait "$rp" 2>/dev/null
@@ -312,15 +312,60 @@ else
     fail "volume-steps" "${stepped}; ${top}"
 fi
 
+# The levels outlast the mixer, never the microphone's grant. A restart starts from the last
+# mixer's record in /run; a boot, with /run empty, from what the finish script kept on the state
+# partition. Removing the record stands in for the boot here.
+REC=/run/kryptik-sound/control/levels KEPT=/var/lib/kryptik-sound/levels
+restarted() { local p; p="$(pgrep -xo kryptik-sound)"; [[ -n "$p" && "$p" != "$was" ]] && running; }
+restart_mixer() { was="$(pgrep -xo kryptik-sound)"; s6-svc -r /run/service/kryptik-sound; wait_for 20 restarted; }
+ctl volume 35 > /dev/null; ctl mute on > /dev/null; ctl volume work 40 > /dev/null; ctl mute work on > /dev/null
+ctl grant untrusted > /dev/null
+if restart_mixer && [[ "$(st master)" == "master 35 muted" && "$(st "zone work")" == "zone work 40 muted" ]] \
+   && ! ctl status | grep -q ' granted' && [[ "$(stat -c '%a %u' "$KEPT" 2>&1)" == "600 0" ]] \
+   && grep -qx 'master 35 muted' "$KEPT" && grep -qx 'zone work 40 muted' "$KEPT"; then
+    pass "levels-kept" "restarted at master 35 muted and work 40 muted, without the grant, and kept in ${KEPT}"
+else
+    fail "levels-kept" "mixer ${was}, now $(pgrep -xo kryptik-sound); status: $(ctl status 2>&1 | tr '\n' ' '); kept: $(stat -c '%a %u' "$KEPT" 2>&1) $(tr '\n' ' ' < "$KEPT" 2>&1)"
+fi
+ctl volume 45 > /dev/null; rm -f "$REC"
+if restart_mixer && [[ "$(st master)" == "master 35 muted" && "$(st "zone work")" == "zone work 40 muted" ]]; then
+    pass "levels-kept-boot" "with no record in /run, the mixer started at the kept levels, not at the 45 that never reached them"
+else
+    fail "levels-kept-boot" "status: $(ctl status 2>&1 | tr '\n' ' '); kept: $(tr '\n' ' ' < "$KEPT" 2>&1)"
+fi
+# The mixer's uid writes the record: root keeps only the lines a record holds.
+printf 'master 20\nzone work 30 muted granted\nroot:x:0:0::/root:/bin/sh\nzone dev 101\n' > "$REC"
+if restart_mixer && [[ "$(cat "$KEPT" 2>&1)" == "master 20" && "$(st master)" == "master 20" ]] && ! ctl status | grep -q ' granted'; then
+    pass "levels-kept-filtered" "of a record with other lines, root kept only master 20, and the mixer granted nothing"
+else
+    fail "levels-kept-filtered" "kept: $(tr '\n' ' ' < "$KEPT" 2>&1); status: $(ctl status 2>&1 | tr '\n' ' ')"
+fi
+# And it is read with the mixer's rights: a record linked to a file only root may read keeps nothing.
+( umask 077; echo 'master 7' > /run/sound-check-root-only )
+ln -sfn /run/sound-check-root-only "$REC"
+if restart_mixer && [[ "$(cat "$KEPT" 2>&1)" == "master 20" && "$(st master)" == "master 20" && ! -L "$REC" ]]; then
+    pass "levels-kept-unread" "of a record linked to a file only root may read, nothing was kept or started from"
+else
+    fail "levels-kept-unread" "kept: $(tr '\n' ' ' < "$KEPT" 2>&1); record: $(ls -l "$REC" 2>&1); status: $(ctl status 2>&1 | tr '\n' ' ')"
+fi
+rm -f /run/sound-check-root-only
+ctl mute off > /dev/null; ctl volume 100 > /dev/null; ctl mute work off > /dev/null; ctl volume work 100 > /dev/null
+
 # --- a USB sound card ----------------------------------------------------------------------
 # A USB card plugged in takes the sound: the mixer picks a card each time it opens one, a USB
-# device first, and closes it after 5 s with nothing to play. Pulled out mid-tone, the card is
-# closed and the rest of the tone goes to the built-in one, where the host hears it (550 Hz).
+# device first, and looks again each second while a stream runs, so a tone already playing
+# moves to it (770 Hz, which the host does not listen for). The card closes after 5 s with
+# nothing to play. Pulled out mid-tone, the card is closed and the rest of the tone goes to the
+# built-in one, where the host hears it (550 Hz).
 ctl volume untrusted 100 > /dev/null
 pcm_running() { grep -q '^state: RUNNING' "/proc/asound/card$1/pcm0p/sub0/status" 2>/dev/null; }
 usb_card() { sed -n 's/^ *\([0-9][0-9]*\) \[[^]]*\]: USB-Audio - .*/\1/p' /proc/asound/cards | head -1; }
 usb_in() { [[ -n "$(usb_card)" ]]; }
 usb_out() { [[ -z "$(usb_card)" ]]; }
+( zrun untrusted 60 -- "$PROBE" tone 770 15 ) &
+tp=$!
+before=no
+wait_for 15 pcm_running 0 && before=yes
 echo "GT USB-SOUND-PLUG"
 if wait_for 30 usb_in; then
     pass "usb-sound-card" "$(grep 'USB-Audio' /proc/asound/cards | tr -s ' ')"
@@ -328,6 +373,12 @@ else
     fail "usb-sound-card" "cards: $(tr '\n' ' ' < /proc/asound/cards) kernel: $(klog)"
 fi
 c="$(usb_card)"
+if [[ "$before" == yes && -n "$c" ]] && wait_for 15 pcm_running "$c" && ! pcm_running 0; then
+    pass "plug-moves-sound" "plugged in mid-tone, card ${c}, the USB one, took the tone from the built-in card, which closed"
+else
+    fail "plug-moves-sound" "built-in playing before the plug: ${before}; USB card ${c:-none}: $(head -1 "/proc/asound/card${c:-9}/pcm0p/sub0/status" 2>&1); card 0: $(head -1 /proc/asound/card0/pcm0p/sub0/status 2>&1)"
+fi
+wait "$tp"
 mpid="$(pgrep -xo kryptik-sound)"; stopped="$(mixer_said 'the card stopped')"
 sleep 6
 ( zrun untrusted 60 -- "$PROBE" tone 550 12 ) &
