@@ -168,7 +168,9 @@ degraded_boot state-p5 'no partition labelled kryptik-state on /dev/vda'
 sfdisk --part-label "$DISK" 4 kryptik-state >/dev/null 2>&1 || die "relabel back"
 normal_boot state-p5b
 # QEMU without --s3 sleeps only to idle, where the software watchdog is not fed (watchdog.sh).
-txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: Software Watchdog state=inactive' \
+# Intel's timer, fed either way, shows the feeder had run when the report was written.
+txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: iTCO_wdt state=active' \
+    && txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: Software Watchdog state=inactive' \
     && green "state-p5b: sleeping to idle, the software watchdog is not fed" \
     || red "state-p5b: the software watchdog is fed on a machine that sleeps to idle"
 
