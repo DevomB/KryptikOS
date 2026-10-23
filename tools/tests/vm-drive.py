@@ -188,6 +188,30 @@ check("the card goes on the xHCI port with its backend, and comes off with no dr
     ("device_add", {"driver": "usb-audio", "id": "usbsound", "audiodev": "snd2", "bus": "xhci.0"}),
     ("device_del", {"id": "usbsound"})])
 
+print("-- touch: taps the touchscreen on the GPU's first head: a finger down, then lifted")
+sock7 = os.path.join(T, "serial7"); qmp7 = os.path.join(T, "qmp7")
+Guest(sock7, {}).start()
+q7 = Qmp(qmp7, busy=0); q7.start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock7, "--qmp", qmp7, "--timeout", "5", "touch:250,500"]
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("touch: succeeds", rc, 0)
+mt = lambda kind, tracking, axis="x", value=0: {"type": "mtt", "data": {"type": kind, "slot": 0, "tracking-id": tracking, "axis": axis, "value": value}}
+check("the finger goes down at a quarter across and half down, then lifts, both bound to head 0", q7.asked, [
+    ("input-send-event", {"device": "gpu0", "head": 0, "events": [
+        mt("begin", 1), mt("data", 1, "x", 8191), mt("data", 1, "y", 16383),
+        {"type": "btn", "data": {"down": True, "button": "touch"}}]}),
+    ("input-send-event", {"device": "gpu0", "head": 0, "events": [
+        mt("end", -1), {"type": "btn", "data": {"down": False, "button": "touch"}}]})])
+sock8 = os.path.join(T, "serial8")
+Guest(sock8, {}).start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock8, "--qmp", qmp7, "--timeout", "5", "touch:1200,500"]
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("a tap off the screen is refused before QEMU is asked", (rc != 0, len(q7.asked)), (True, 2))
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(0 if FAIL == 0 else 1)
