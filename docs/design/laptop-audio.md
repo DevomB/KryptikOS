@@ -56,8 +56,8 @@ any of these drivers: the audio controller's PCI class (0x040100 or
 `/sys/firmware/acpi/tables`, and whether its ACPI tables describe SoundWire
 links or amplifiers, which `ls /sys/bus/acpi/devices` lists: `CSC3551`,
 `CLSA0100` and `CLSA0101` for Cirrus's CS35L41; `CSC3554`, `CSC3556` and
-`CSC3557` for its CS35L54,
-CS35L56 and CS35L57; `TIAS2781` and `TXNW2781` for TI's. On AMD, the codec
+`CSC3557` for its CS35L54, CS35L56 and CS35L57; `TIAS2781` and `TXNW2781`
+for TI's. On AMD, the codec
 shows whether it has the microphones: the kernel's autoconfig line for a
 Realtek codec lists `Internal Mic=0x12`, and pin 0x12 in
 `/proc/asound/card*/codec#0` has an internal-microphone default rather than
