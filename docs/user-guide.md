@@ -289,8 +289,10 @@ passwords. Over a serial line, answer the setup's questions there: the
 serial console shows its login prompt only once setup has ended.
 
 Log in as the user on tty1. The desktop session starts from the profile:
-dwl with the Kryptik chrome as its startup command. Every application
-window belongs to a zone and carries that zone's border colour. The window
+dwl with the Kryptik chrome as its startup command. The desktop is black,
+and the terminals, the menu and the screen lock write in green. Every
+application window belongs to a zone and carries that zone's border colour,
+which the green never stands in for. The window
 with focus has the full-width border; the others' borders are narrower, in
 the same colour. Nothing else on screen names a window's zone, since dwl
 draws no titlebar: to name it in words, press Alt+p, then type f and Enter.
