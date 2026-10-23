@@ -312,6 +312,8 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | brightness keys | the screen's backlight up or down a step |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
+| Ctrl+Shift+c / Ctrl+Shift+v | in a terminal: copy the selection, paste; through the terminal's own zone's clipboard |
+| Ctrl+Shift+Page Up / Page Down | in a terminal: scroll back through the last 2000 lines, and forward again; typing returns to the bottom |
 | Alt+j / Alt+k | focus next / previous |
 | Alt+, / Alt+. | the monitor to the left / right; with Shift, the focused window moves there |
 | Alt+1 … Alt+9 / Alt+Shift+1 … 9 | show a tag / move the focused window to it; vault windows keep to tag 9 |
