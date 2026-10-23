@@ -76,8 +76,9 @@ USAGE:
                                     everything half as large again), its top
                                     left corner at X,Y if given; kept for every
                                     login; NAME * is any monitor no line names
-    $PROG display NAME auto         that monitor as it comes: 2 for a built-in
-                                    panel of 192 dpi or more, else 1
+    $PROG display NAME auto         drop that monitor's line: the * line then,
+                                    if any, else 2 for a built-in panel of 192
+                                    dpi and 1200 lines or more, else 1
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
