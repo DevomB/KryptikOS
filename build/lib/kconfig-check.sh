@@ -14,9 +14,11 @@ _kconfig_load() {   # <.config>
 
 # Options Kryptik's guarantees rest on, so deleting one from a fragment is noticed: a bare entry
 # passes =y or =m, one written OPTION=y passes only built in. The =y entries are the keyboards
-# sysinit's state passphrase prompt reads, before eudev loads any module: PS/2, USB, and HID over
-# I2C behind Intel's LPSS or AMD's DesignWare controller, with the pin controllers its interrupt
-# comes through. SERIO_I8042, I2C_HID_CORE and PINCTRL_INTEL come only by select.
+# sysinit's state passphrase prompt reads, before eudev loads any module: PS/2, USB through xHCI,
+# and HID over I2C behind Intel's LPSS or AMD's DesignWare controller, with the pin controllers its
+# interrupt comes through. SERIO_I8042, I2C_HID_CORE, PINCTRL_INTEL and USB_XHCI_PCI are not
+# boot.fragment lines: ATKBD, I2C_HID_ACPI and the pin controllers select the first three, and
+# xHCI brings the last by default.
 KCONFIG_CRITICAL="CONFIG_SECURITY_LANDLOCK CONFIG_SECCOMP_FILTER CONFIG_USER_NS
 CONFIG_NET_NS CONFIG_EFI_STUB CONFIG_CMDLINE_BOOL CONFIG_CMDLINE_OVERRIDE
 CONFIG_DM_INIT CONFIG_EFIVAR_FS CONFIG_OVERLAY_FS CONFIG_DRM_VIRTIO_GPU
@@ -25,6 +27,7 @@ CONFIG_MODULE_SIG_FORCE CONFIG_SECURITY_LOCKDOWN_LSM
 CONFIG_INIT_ON_ALLOC_DEFAULT_ON CONFIG_SLAB_CANARY
 CONFIG_MITIGATION_PAGE_TABLE_ISOLATION
 CONFIG_KEYBOARD_ATKBD=y CONFIG_SERIO_I8042=y CONFIG_USB_HID=y CONFIG_HID_GENERIC=y
+CONFIG_USB_XHCI_HCD=y CONFIG_USB_XHCI_PCI=y
 CONFIG_I2C_HID_ACPI=y CONFIG_I2C_HID_CORE=y CONFIG_I2C_DESIGNWARE_PLATFORM=y
 CONFIG_X86_AMD_PLATFORM_DEVICE=y CONFIG_PINCTRL_AMD=y
 CONFIG_MFD_INTEL_LPSS_PCI=y CONFIG_MFD_INTEL_LPSS_ACPI=y CONFIG_PINCTRL_INTEL=y
@@ -41,6 +44,8 @@ kconfig_critical_check() {
         opt="${entry%=y}"; got="${KCONFIG_HAVE[$opt]:-}"
         if [[ "$got" == y || ( "$got" == m && "$entry" == "$opt" ) ]]; then
             echo "  ok   ${opt}"
+        elif [[ "$got" == m ]]; then
+            echo "  MODULE  ${opt}, which must be built in"; missing=$((missing + 1))
         else
             echo "  MISSING ${entry}${got:+, got =${got}}"; missing=$((missing + 1))
         fi

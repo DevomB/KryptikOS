@@ -63,12 +63,17 @@ media it tested.
   USB keyboard the generic HID driver takes, and HID over I2C behind
   Intel's LPSS (Skylake on) or AMD's DesignWare controller, which stage 05
   and CI hold built in (`build/lib/kconfig-check.sh`). No machine with an
-  I2C keyboard has typed it in a test yet. A USB keyboard its vendor's HID
-  driver claims (some Apple, Microsoft and Cherry models) types only once
-  eudev has loaded that driver. These type nothing there: an I2C keyboard
-  on Apollo Lake, Gemini Lake, Haswell or Broadwell, whose pin controllers
-  are not built, or behind AMD's MP2 host, and a Surface or MacBook SPI
-  keyboard.
+  I2C keyboard has typed it in a test yet. Two kinds type only once eudev
+  has loaded their module, so not at the prompt: a USB keyboard its
+  vendor's HID driver claims (some Apple, Microsoft and Cherry models), and
+  one behind Intel's Touch Host Controller (Lunar Lake on; QuickI2C and
+  QuickSPI are modules). These have no driver in the image, not even a
+  module, and type nothing anywhere: an I2C keyboard on Bay Trail, Braswell
+  and Cherry Trail, Apollo Lake, Gemini Lake, Haswell or Broadwell, whose
+  pin controllers are not built; one behind AMD's MP2 I2C host; a Surface
+  keyboard that goes through the Surface Aggregator (Surface Laptop, Laptop
+  Studio, Book 3, Pro 8 and later; a Type Cover on USB types); and the
+  2015-2017 MacBooks' keyboard on SPI.
 - The keys that sign a release from 1.0.0 on are held on GitHub, in the
   repository's protected release environment: a release tag's build uses
   them once the maintainer approves it, so a release is as trustworthy as
