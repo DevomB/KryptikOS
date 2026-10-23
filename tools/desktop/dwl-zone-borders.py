@@ -1303,6 +1303,15 @@ static struct wl_listener cursor_touch_frame = {.notify = cursorframe};
 \twl_signal_add(&cursor->events.touch_cancel, &cursor_touch_cancel);
 \twl_signal_add(&cursor->events.touch_frame, &cursor_touch_frame);
 """),
+    ("""\twl_list_remove(&cursor_motion_absolute.link);
+""",
+     """\twl_list_remove(&cursor_motion_absolute.link);
+\twl_list_remove(&cursor_touch_down.link);
+\twl_list_remove(&cursor_touch_motion.link);
+\twl_list_remove(&cursor_touch_up.link);
+\twl_list_remove(&cursor_touch_cancel.link);
+\twl_list_remove(&cursor_touch_frame.link);
+"""),
     ("""\tcase WLR_INPUT_DEVICE_SWITCH:
 \t\tcreateswitch(wlr_switch_from_input_device(device));
 \t\tbreak;
@@ -1322,19 +1331,27 @@ cursorframe(struct wl_listener *listener, void *data)
 static int32_t touchid = -1;
 
 /* Kryptik: the pointer to where a touch is: on the built-in panel when there is one, as a
- * laptop's touchscreen is its own, and over every screen otherwise. */
-static void
+ * laptop's touchscreen is its own, and over every screen otherwise. One touchscreen is taken
+ * to be the laptop's, so a touch monitor on a desk drives the panel too. 0, the touch dropped,
+ * while the panel is there but off: dark, or shut away, a touch on it lands where no one sees. */
+static int
 touchpoint(struct wlr_input_device *device, uint32_t time, double x, double y)
 {
 \tstruct wlr_box box = {0};
 \tdouble lx, ly;
+\tint panel = 0;
 \tMonitor *m;
 
 \twl_list_for_each(m, &mons, link) {
 \t\tconst char *n = m->wlr_output->name;
-\t\tif (m->wlr_output->enabled && (!strncmp(n, "eDP", 3) || !strncmp(n, "LVDS", 4) || !strncmp(n, "DSI", 3)))
+\t\tif (strncmp(n, "eDP", 3) && strncmp(n, "LVDS", 4) && strncmp(n, "DSI", 3))
+\t\t\tcontinue;
+\t\tpanel = 1;
+\t\tif (m->wlr_output->enabled)
 \t\t\tbox = m->m;
 \t}
+\tif (panel && wlr_box_empty(&box))
+\t\treturn 0;
 \tif (!wlr_box_empty(&box)) {
 \t\tlx = box.x + x * box.width;
 \t\tly = box.y + y * box.height;
@@ -1346,6 +1363,7 @@ touchpoint(struct wlr_input_device *device, uint32_t time, double x, double y)
 \t * never show. A touch jumps, so the surface is picked again where it landed, or the press
 \t * would go to whatever the pointer rested on, another zone's window as likely as not. */
 \tmotionnotify(0, NULL, 0, 0, 0, 0);
+\treturn 1;
 }
 
 /* Kryptik: the left button, as buttonpress takes it from a pointer. */
@@ -1360,10 +1378,13 @@ void
 touchdown(struct wl_listener *listener, void *data)
 {
 \tstruct wlr_touch_down_event *event = data;
-\tif (touchid != -1)
+\t/* Through a lid shut on a dock, a touch is no one's: it would click, and take the keyboard,
+\t * on a screen no one sees, and hold off the idle lock. */
+\tif (touchid != -1 || lidshut)
+\t\treturn;
+\tif (!touchpoint(&event->touch->base, event->time_msec, event->x, event->y))
 \t\treturn;
 \ttouchid = event->touch_id;
-\ttouchpoint(&event->touch->base, event->time_msec, event->x, event->y);
 \ttouchbutton(event->time_msec, WL_POINTER_BUTTON_STATE_PRESSED);
 }
 
