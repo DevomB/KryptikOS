@@ -236,11 +236,11 @@ s_build() {
     # The banner (/proc/version) records which compiler built the image.
     echo "--- linux_banner ---"
     strings vmlinux 2>/dev/null | grep -m1 "Linux version" || true
-    # The built-in firmware table names each blob; check one per vendor.
+    # The built-in firmware table names each blob; check Intel's first and AMD's Zen 3/4 and Zen 5.
     echo "--- built-in microcode ---"
     local blob
     for blob in "$(tr ' ' '\n' < "${KSRC}/kryptik-microcode/list" | grep -m1 '^intel-ucode/')" \
-                amd-ucode/microcode_amd_fam19h.bin; do
+                amd-ucode/microcode_amd_fam19h.bin amd-ucode/microcode_amd_fam1ah.bin; do
         grep -a -q -F "$blob" vmlinux || { echo "FAIL: ${blob} is not built into vmlinux"; return 1; }
         echo "  ok   ${blob}"
     done
