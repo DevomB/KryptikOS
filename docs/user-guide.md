@@ -423,7 +423,8 @@ as well. A window in full screen covers those windows, so the bar above it
 names the zone that may use the microphone (`MIC`) and the zone that has the
 camera (`CAM`), whichever zones they are. Built-in and USB cameras that speak the USB Video Class work, as
 most do; the cameras of recent Intel laptops that need Intel's image
-processing in userspace (MIPI cameras behind the IPU6) and infrared
+processing in userspace (MIPI cameras behind the IPU6), those behind the
+image processor of AMD's Ryzen AI Max (HP's ZBook Ultra G1a), and infrared
 face-login cameras do not. `vault` and the net zone never get the camera.
 
 Firefox in a zone is not told when the camera is given or taken back.
