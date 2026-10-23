@@ -92,9 +92,10 @@ the ESP, a medium, or anywhere else.
 
 **What it costs, from the tree.**
 
-- **Enrolment.** Today the user puts `kryptik-sb` in `db`, "and, on most
-  machines, PK/KEK" (`docs/user-guide.md:84-92`). Beside Windows it sits in
-  `db` alone, under the OEM's and Microsoft's `KEK`. A `dbx` write needs a
+- **Enrolment.** Today the user adds `kryptik-sb` to `db` beside the keys
+  already there, and replaces no `PK` or `KEK` where another system lives
+  (the user guide's Secure Boot paragraph). Beside Windows it sits in `db`
+  alone, under the OEM's and Microsoft's `KEK`. A `dbx` write needs a
   `KEK` the machine trusts, so every machine would need a Kryptik
   certificate in `KEK` as well. Most firmware setup screens can append a
   certificate to `KEK` from a file; on others it means clearing the keys and

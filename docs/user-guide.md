@@ -97,13 +97,24 @@ newer machine's RST (Intel VMD) needs no change.
 **Secure Boot.** The kernel is signed with the build's Secure Boot key: a
 release's, from 1.0.0 on, is the project's ([release keys](release-keys.md)),
 enrolled once for every release after it; a development build's is made by
-that build and is its own. A firmware that carries only Microsoft's keys
-refuses either (the acceptance run proves the refusal:
-`media-refused-foreign-keys`). To boot with Secure Boot on, enrol
-`kryptik-sb.der` in the firmware's `db` (and, on most machines, PK/KEK) from
-the firmware setup menu; or turn Secure Boot off. The medium says which it
-got above its shell (`Secure Boot is on` or `off`), and as
-`KRYPTIK_SMOKE: secureboot=1` or `=0` on a serial console.
+that build, is its own, and is never enrolled in a real machine's firmware.
+A firmware that carries only Microsoft's keys refuses either (the
+acceptance run proves the refusal: `media-refused-foreign-keys`). To boot a
+release with Secure Boot on, add `kryptik-sb.der` to the firmware's `db`
+from its setup menu, beside the certificates already there.
+
+On a machine that keeps another operating system, never replace the
+platform key (PK) or the key-exchange keys (KEK), and never clear the
+firmware's keys to enrol new ones. That system boots by those keys, and some
+setup menus take a certificate only by clearing them.
+
+Turn Secure Boot off instead where the menu cannot add a single certificate
+to `db`, and for a development build. Either change can make Windows with
+BitLocker ask for its recovery key at its next start, unless BitLocker is
+suspended first.
+
+The medium says which it got above its shell (`Secure Boot is on` or
+`off`), and as `KRYPTIK_SMOKE: secureboot=1` or `=0` on a serial console.
 
 **AMD processors.** Update the machine's firmware (BIOS) first. With a
 firmware older than AMD's 2025 fix for microcode signatures, the kernel loads
