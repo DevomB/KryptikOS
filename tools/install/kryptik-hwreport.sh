@@ -422,6 +422,12 @@ laptop() {
             printf 'power_supply %s type %s online %s\n' "${p##*/}" "${t:--}" "${o:--}"
         fi
     done
+    sleeping
+    cameras
+}
+
+# The sleep states the kernel offers, how the last sleeps went, and what woke the machine.
+sleeping() {
     printf 'sleep states: %s\n' "$(one "$SYS/power/state")"
     printf 'sleep mem: %s\n' "$(one "$SYS/power/mem_sleep")"
     # The sleeps since boot, and how long the last kept the hardware in its deepest state: an
@@ -460,8 +466,11 @@ laptop() {
         named=no; LC_ALL=C grep -aq MSFT0201 "$SYS/firmware/acpi/tables/IVRS" && named=yes
         printf 'amd iommu: msft0201 %s, pre-boot dma protection %s, msft0201 in ivrs %s\n' "$msft" "$dp" "$named"
     fi
-    # Intel's image processing units by PCI ID: the IPU6 and IPU7 ones 6.18's drivers bind (ipu6.h,
-    # staging ipu7.h), and IPU8's, which staging ipu7 names but does not bind yet.
+}
+
+# Intel's image processing units by PCI ID: the IPU6 and IPU7 ones 6.18's drivers bind (ipu6.h,
+# staging ipu7.h), and IPU8's, which staging ipu7 names but does not bind yet.
+cameras() {
     for d in "$SYS"/bus/pci/devices/*; do
         [ "$(hex "$d/vendor")" = 8086 ] || continue
         case "$(hex "$d/device")" in
