@@ -30,7 +30,8 @@ sed -e "s|/dev/watchdog|$T/dev/watchdog|g" \
     -e 's|exec sleep infinity|exit 0|' \
     "$SCRIPT" > "$T/watchdog.sh"
 grep -q 'for _ in 1; do' "$T/watchdog.sh" && grep -q '\[ -e "\$dev" \]' "$T/watchdog.sh" \
-    || { echo "watchdog.sh changed shape: its loop or its device test was not found"; exit 1; }
+    && grep -q "$T/mem_sleep" "$T/watchdog.sh" \
+    || { echo "watchdog.sh changed shape: its loop, its device test or its mem_sleep read was not found"; exit 1; }
 feeds() {   # feeds MEM_SLEEP: what the feeder says
     echo "$1" > "$T/mem_sleep"
     timeout 20 bash "$T/watchdog.sh" 2>&1

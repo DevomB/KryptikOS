@@ -167,10 +167,15 @@ sfdisk --part-label "$DISK" 4 not-kryptik >/dev/null 2>&1 || die "relabel"
 degraded_boot state-p5 'no partition labelled kryptik-state on /dev/vda'
 sfdisk --part-label "$DISK" 4 kryptik-state >/dev/null 2>&1 || die "relabel back"
 normal_boot state-p5b
+# QEMU without --s3 sleeps only to idle, where the software watchdog is not fed (watchdog.sh).
+txt | grep -qE 'KRYPTIK_SMOKE: watchdog watchdog[0-9]+: Software Watchdog state=inactive' \
+    && green "state-p5b: sleeping to idle, the software watchdog is not fed" \
+    || red "state-p5b: the software watchdog is fed on a machine that sleeps to idle"
 
 # ----------------------------------------------------------------- step 6 --
 step "step 6: nothing feeds the watchdog: the machine resets itself and comes back with its data"
-start_vm state-p6
+# With S3 offered the guest sleeps deep, so the feeder arms the software watchdog this step resets by.
+start_vm state-p6 --s3
 # The feeder stopped, not killed (s6 would restart it): a hung userspace only the watchdog resets.
 p6=( "expect:KRYPTIK_SMOKE: END" "login:${TUSER}:${TPASS}"
      "$(ROOTSH 's6-svc -p /run/service/watchdog && echo FEEDER-STOPPED')" "expect:FEEDER-STOPPED"
