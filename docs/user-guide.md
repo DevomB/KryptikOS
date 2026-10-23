@@ -460,12 +460,17 @@ world's rules:
 The rules go back to the world's at every disconnect. For your own country's
 rules until the next boot:
 1. At the administration login, run `su`.
-2. Run `iw reg set XX`, where `XX` is your country's two letters (`US`,
-   `DE`).
-3. `iw reg get` shows the rules in force.
+2. Run `/usr/sbin/iw reg set XX`, where `XX` is your country's two letters
+   (`US`, `DE`). The full path is needed, as `su` leaves `/usr/sbin` off
+   root's path.
+3. `/usr/sbin/iw reg get` shows the rules in force.
 
-A Wi-Fi 7 network that offers only SAE-EXT-KEY, its multi-link security, is
-not joined. Have the router offer WPA3 (SAE) or WPA2 beside it.
+A radio whose firmware keeps its own rules, as Intel's do, follows those
+instead, and `iw reg get` names it as self-managed.
+
+A Wi-Fi 7 network that offers only SAE-EXT-KEY, the WPA3 mode Wi-Fi 7's
+multi-link operation uses, is not joined. Have the router offer WPA3 (SAE)
+or WPA2 beside it.
 
 **The local network.** Every zone with a network reaches the internet through
 the net zone. The network the machine itself is on, with its router, its
