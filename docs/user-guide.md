@@ -673,9 +673,11 @@ shows each timer, its timeout and whether it is running.
   it is typed on a keyboard whose driver is in the kernel itself: a laptop's
   built-in keyboard on its PS/2 controller, as most are, or on I2C behind
   Intel's or AMD's usual controller, or a plain USB keyboard. A USB keyboard
-  its maker's own driver claims (some Apple, Microsoft and Cherry models),
-  and an I2C one on an older Atom, Haswell or Broadwell laptop, type nothing
-  there: plug in a plain USB keyboard.
+  its maker's own driver claims (some Apple, Microsoft and Cherry models) and
+  one behind Intel's Touch Host Controller type nothing there, though they
+  work once the system is up: plug in a plain USB keyboard. An I2C keyboard
+  on an older Atom, Haswell or Broadwell laptop, and the few others in
+  [status](status.md#known-gaps), type nothing at all.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - No time zone database is shipped yet, so every clock reads UTC, zone 0's
