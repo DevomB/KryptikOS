@@ -477,6 +477,20 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   since there is no hibernation. Each look is written to
   `/run/kryptik-power/state`, which the chrome reads, so the menu says what
   the service acts on.
+- **The battery while the state partition waits.** From a wake until the
+  passphrase is given, the power service waits on the partition, as every
+  program started then does. A battery reaching its alarm level wakes an
+  s2idle laptop, so a laptop asleep in a bag would wake to the prompt,
+  lid still shut, and run flat there. kryptikd keeps the 3% rule
+  meanwhile, from `/sys` alone (`critical` in `suspend.rs`, held to
+  power.sh's cases): seen twice 30 s apart, it powers the machine off at
+  once (`reboot(2)`). The count carries across a sleep, so a machine put
+  back to sleep soon after each wake still powers off. The zones are frozen
+  and their volumes and the partition have no key, so they are not stopped
+  first: everything was written out before the seal, nothing can be
+  written now, and a sync would wait for good. The power service, should
+  its programs run then, leaves the power-off to kryptikd: its shutdown
+  would stop the zones and sync, and neither could finish.
 - **A gauge that reads too low.** A worn battery whose gauge says 3% or less
   while it still holds charge powers the machine off a minute after every
   boot on battery. Requiring a reading above 3% earlier in the boot would
