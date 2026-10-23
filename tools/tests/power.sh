@@ -117,5 +117,22 @@ set_attr AC online 1; echo Discharging > "$T/sys/class/power_supply/BAT0/status"
 once > /dev/null
 check "plugged in, it follows the charger even while the battery runs down" "$(pref 0)" balance_performance
 
+echo "-- the state partition waiting for its passphrase"
+# sealed() alone, from the service: it decides whether the 3% power-off is the service's or kryptikd's.
+eval "$(sed -n '/^sealed() {/,/^}/p' "$P")"
+dm() {   # dm N NAME SUSPENDED: a device-mapper device in the stand-in /sys/block
+    mkdir -p "$T/sys/block/dm-$1/dm"
+    echo "$2" > "$T/sys/block/dm-$1/dm/name"; echo "$3" > "$T/sys/block/dm-$1/dm/suspended"
+}
+is_sealed() { if SYS="$T/sys" sealed; then echo yes; else echo no; fi; }
+fresh
+check "no device-mapper device" "$(is_sealed)" no
+dm 0 kryptik-zone-work 1; dm 1 kryptik-state 0
+check "the state partition up, a zone's volume waiting" "$(is_sealed)" no
+dm 1 kryptik-state 1
+check "the state partition waiting for its passphrase" "$(is_sealed)" yes
+if grep -qF '[ "$low" -ge 2 ] && ! sealed; then' "$P"; then r=yes; else r=no; fi
+check "then the 3% power-off is kryptikd's, not the service's" "$r" yes
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

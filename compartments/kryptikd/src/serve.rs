@@ -1987,10 +1987,11 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     loop {
         if sealed_due.is_some_and(|due| Instant::now() >= due) {
             sealed_due = None;
-            // A sleep under way ends with a wake, which looks afresh.
-            if jobs.iter().any(|j| j.what == JobKind::Sleep) || !crate::suspend::state_suspended() {
+            // A sleep under way looks again when it ends, the count carried across it: a machine
+            // put back to sleep within 30 s of each wake still powers off.
+            if !crate::suspend::state_suspended() {
                 sealed_low = 0;
-            } else {
+            } else if !jobs.iter().any(|j| j.what == JobKind::Sleep) {
                 let (low, off) = crate::suspend::sealed_look(sealed_low, crate::suspend::critical());
                 sealed_low = low;
                 sealed_due = Some(Instant::now() + SEALED_EVERY);
@@ -2029,7 +2030,6 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
         // Woken or refused, a sleep leaves the state partition suspended.
         if slept && !cfg.developer {
             sealed_due = Some(Instant::now());
-            sealed_low = 0;
         }
 
         // fds[0] is the listener, then one per launch awaiting readiness; timeout: nearest deadline.
