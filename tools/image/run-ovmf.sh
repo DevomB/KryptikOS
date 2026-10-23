@@ -6,7 +6,7 @@
 #        [--disk FILE]... [--testctl FILE] [--vars clean|enrolled|ms|FILE]
 #        [--vars-file FILE] [--mode console|smoke|serve] [--timeout N]
 #        [--log FILE] [--net none|user] [--mem MB] [--cpus N] [--gpu]
-#        [--second-head] [--s3] [--sound WAV] [--usb-port] [--allow-reboot]
+#        [--second-head] [--touch] [--s3] [--sound WAV] [--usb-port] [--allow-reboot]
 #        [--until REGEX] [--name TAG]
 #
 #   --usb IMG      the medium as a USB mass-storage device (removable),
@@ -38,6 +38,8 @@
 #   --second-head  with --gpu in serve mode: a second output on the GPU, off
 #                  until a VNC client on the printed socket asks for a size
 #                  (vm-drive.py's head: step), which plugs a monitor in
+#   --touch        with --gpu: a touchscreen over the first output, QEMU's
+#                  virtio-multitouch (8.1 on), which vm-drive.py's touch: step taps
 #   --s3           offer suspend to RAM, which QEMU otherwise hides: the guest
 #                  sleeps until vm-drive.py's wakeup step
 #   --sound WAV    two HD Audio cards: the first only plays, into the file WAV
@@ -54,7 +56,7 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SELF}/../../build/lib/common.sh"
 
 USB=""; ISO=""; NOMEDIA=0; DISKS=(); TESTCTL=""; VARS="clean"; VARS_FILE=""
-MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; HEAD2=0; S3=0; SOUND=""; ALLOW_REBOOT=0; NAME="vm"
+MODE="smoke"; TIMEOUT=300; LOG=""; NET="none"; MEM=2048; CPUS=2; GPU=0; HEAD2=0; TOUCH=0; S3=0; SOUND=""; ALLOW_REBOOT=0; NAME="vm"
 DISK_RO=0; DISK_4K=0; BLKDEBUG=""; UNTIL=""; USB_PORT=0; USB_RO=on
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -77,13 +79,14 @@ while [[ "$#" -gt 0 ]]; do
         --cpus)      CPUS="${2:?}"; shift 2 ;;
         --gpu)       GPU=1; shift ;;
         --second-head) HEAD2=1; shift ;;
+        --touch)     TOUCH=1; shift ;;
         --s3)        S3=1; shift ;;
         --sound)     SOUND="${2:?}"; shift 2 ;;
         --usb-port)  USB_PORT=1; shift ;;
         --allow-reboot) ALLOW_REBOOT=1; shift ;;
         --until)     UNTIL="${2:?}"; shift 2 ;;
         --name)      NAME="${2:?}"; shift 2 ;;
-        -h|--help)   sed -n '2,49p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '2,51p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -93,6 +96,7 @@ done
 [[ "$NOMEDIA" -eq 1 && "${#DISKS[@]}" -eq 0 ]] && die "--no-media needs at least one --disk"
 [[ -n "$UNTIL" && "$MODE" != smoke ]] && die "--until is for --mode smoke"
 [[ "$HEAD2" -eq 1 && ( "$GPU" -ne 1 || "$MODE" != serve ) ]] && die "--second-head is for --gpu in --mode serve"
+[[ "$TOUCH" -eq 1 && "$GPU" -ne 1 ]] && die "--touch is for --gpu: the touchscreen covers its first output"
 [[ "$HEAD2" -eq 1 && "$S3" -eq 1 ]] && die "--second-head needs virtio-gpu, which --s3 gives up for std VGA's framebuffer"
 
 # Files only. This hands paths to a process that writes to them.
@@ -171,6 +175,13 @@ elif [[ "$GPU" -eq 1 ]]; then
         ARGS+=( -display none -vga none -device virtio-vga,id=gpu0 )
     fi
     ARGS+=( -device virtio-keyboard-pci -device virtio-mouse-pci )
+    if [[ "$TOUCH" -eq 1 ]]; then
+        "$QEMU" -device help 2>/dev/null | grep -q '"virtio-multitouch-pci"' \
+            || die "--touch: this QEMU has no virtio-multitouch-pci (QEMU 8.1 or later has)"
+        # Bound to the GPU's first head, so an input-send-event naming that head reaches it
+        # before the mouse, which takes button events too.
+        ARGS+=( -device virtio-multitouch-pci,id=touch0,display=gpu0,head=0 )
+    fi
 else
     ARGS+=( -display none -vga none )
 fi

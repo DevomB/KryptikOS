@@ -32,6 +32,9 @@ Steps (each one argument):
     pointer:DX,DY           move the guest's mouse by DX,DY through QMP; it is
                             relative and accelerated, so a large move ends at
                             the screen's edge
+    touch:X,Y               tap the touchscreen (run-ovmf.sh --touch) at X,Y,
+                            thousandths of the first output's width and height:
+                            one finger down, then lifted
     type-from:REGEX         wait for REGEX on a line that has ended (REGEX
                             names no line end), then type what its first
                             group matched (digits and letters) and Enter
@@ -258,6 +261,15 @@ def vnc_size(s, w, h):
     if n: msg += struct.pack(">IHHHHI", 0, 0, 0, w, h, 0)
     s.sendall(msg)
 
+def touch_events(x, y):
+    """A tap at X,Y (0..0x7fff) as two input-send-event batches: the finger down, then lifted."""
+    def mtt(kind, tracking, axis="x", value=0):
+        return {"type": "mtt", "data": {"type": kind, "slot": 0, "tracking-id": tracking, "axis": axis, "value": value}}
+    down = [mtt("begin", 1), mtt("data", 1, "x", x), mtt("data", 1, "y", y),
+            {"type": "btn", "data": {"down": True, "button": "touch"}}]
+    up = [mtt("end", -1), {"type": "btn", "data": {"down": False, "button": "touch"}}]
+    return [down, up]
+
 def qmp(path, cmd, args=None):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(path)
@@ -351,6 +363,17 @@ def main():
                           {"type": "rel", "data": {"axis": "y", "value": dy}}]
                 r = qmp(qmpsock, "input-send-event", {"events": events})
                 if "error" in r: raise RuntimeError(f"input-send-event {rest}: {r['error']}")
+                time.sleep(0.3)
+            elif kind == "touch":
+                if not qmpsock: raise RuntimeError("touch needs --qmp")
+                px, py = (int(v) for v in rest.split(","))
+                if not (0 <= px <= 1000 and 0 <= py <= 1000): raise RuntimeError(f"touch:{rest}: not in 0..1000")
+                tap = touch_events(px * 0x7fff // 1000, py * 0x7fff // 1000)
+                for events in tap:
+                    # The head binds the events to run-ovmf.sh's touchscreen, not the mouse.
+                    r = qmp(qmpsock, "input-send-event", {"device": "gpu0", "head": 0, "events": events})
+                    if "error" in r: raise RuntimeError(f"input-send-event touch:{rest}: {r['error']}")
+                    time.sleep(0.15)
                 time.sleep(0.3)
             elif kind == "type-from":
                 if not qmpsock: raise RuntimeError("type-from needs --qmp")
