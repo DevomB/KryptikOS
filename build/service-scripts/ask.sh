@@ -3,8 +3,10 @@
 # POSIX sh, sourced by sysinit and firstboot.
 #   consoles           the console devices, one per line
 #   tell LINE...       each LINE on every console
-#   ask [-s] SECS Q    Q on every console; the first line typed on any goes to stdout.
-#                      -s keeps echo off; SECS 0 waits forever; fails if nothing comes in time.
+#   ask [-s] [-h HSECS HINT] SECS Q
+#                      Q on every console; the first line typed on any goes to stdout.
+#                      -s keeps echo off; -h tells HINT once when HSECS pass with no answer;
+#                      SECS 0 waits forever; fails if nothing comes in time.
 
 ask_dir=/run/kryptik
 
@@ -24,8 +26,14 @@ tell() {
 
 # One reader per console, first line wins; stty never discards input, so an early answer is kept.
 ask() {
-    _a_quiet=''
-    [ "$1" = -s ] && { _a_quiet=1; shift; }
+    _a_quiet='' _a_hsecs=0 _a_hint=''
+    while :; do
+        case "$1" in
+            -s) _a_quiet=1; shift ;;
+            -h) _a_hsecs=$2 _a_hint=$3; shift 3 ;;
+            *) break ;;
+        esac
+    done
     _a_secs=$1 _a_q=$2
     _a_devs=$(consoles)
     rm -f "$ask_dir/ask"
@@ -51,6 +59,15 @@ ask() {
             trap 'kill "$!" 2>/dev/null; exit 0' TERM
             sleep "$_a_secs" & wait "$!"
             echo T >&3
+        ) < /dev/null > /dev/null 2>&1 &
+        _a_pids="$_a_pids $!"
+    fi
+    # The hint is only told: the readers keep reading, and what was typed before it stays theirs.
+    if [ -n "$_a_hint" ] && [ "$_a_hsecs" -gt 0 ]; then
+        (
+            trap 'kill "$!" 2>/dev/null; exit 0' TERM
+            sleep "$_a_hsecs" & wait "$!"
+            tell "" "$_a_hint"
         ) < /dev/null > /dev/null 2>&1 &
         _a_pids="$_a_pids $!"
     fi
