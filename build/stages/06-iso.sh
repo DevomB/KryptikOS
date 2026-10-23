@@ -512,7 +512,10 @@ verity_table() {   # verity_table <dev>: the root image's dm-verity table
 # mitigation on is ADR-011; nosmt repeats it under the name the checker wants.
 # pti=on covers every CPU; hash_pointers=always keeps %p hashed under debug
 # options. tools/check-kernel-hardening.sh reads this line.
-COMMON_ARGS="ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt"
+# A diagnostic medium, never merged: efi=no_disable_early_pci_dma lets the EFI
+# stub leave the firmware's drivers and bus mastering alone, for a machine the
+# stub's PCI DMA disable (EFI_DISABLE_PCI_DMA) leaves blank after its logo.
+COMMON_ARGS="ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt efi=no_disable_early_pci_dma"
 
 s_cmdlines() {
     local h="$1"; echo "root.json sha256: ${h}"
