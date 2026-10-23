@@ -21,11 +21,14 @@ kept() { cat "$T/config/kryptik/brightness" 2>/dev/null; }
 
 echo "-- steps"
 fresh; light intel_backlight raw 1000 500
-run up; check "up a twentieth" "$(level intel_backlight)" 550
-run down; run down; check "down two" "$(level intel_backlight)" 450
+run up; check "up a quarter of the level" "$(level intel_backlight)" 625
+run down; run down; check "down a fifth, twice" "$(level intel_backlight)" 400
+run up; run down; check "a step up and one down undo each other" "$(level intel_backlight)" 400
 light intel_backlight raw 1000 980; run up
 check "up stops at the top" "$(level intel_backlight)" 1000
-light intel_backlight raw 1000 30; run down
+light intel_backlight raw 1000 20; run up
+check "the dim end steps by the floor, a hundredth" "$(level intel_backlight)" 30
+light intel_backlight raw 1000 12; run down
 check "down stops short of dark" "$(level intel_backlight)" 10
 light intel_backlight raw 7 1; run down
 check "a short range steps by one and keeps one" "$(level intel_backlight)" 1
@@ -33,15 +36,15 @@ check "a short range steps by one and keeps one" "$(level intel_backlight)" 1
 echo "-- which backlight"
 fresh; light intel_backlight raw 1000 500; light acpi_video0 firmware 100 50
 run up
-check "firmware over raw, as the kernel's documentation asks" "$(level acpi_video0)/$(level intel_backlight)" 55/500
+check "firmware over raw, as the kernel's documentation asks" "$(level acpi_video0)/$(level intel_backlight)" 62/500
 
 echo "-- kept for the next login"
 fresh; rm -rf "$T/config"; light intel_backlight raw 1000 500
-run up; check "a step keeps the level, the panel and its range" "$(kept)" "intel_backlight 550 1000"
+run up; check "a step keeps the level, the panel and its range" "$(kept)" "intel_backlight 625 1000"
 light intel_backlight raw 1000 1000; run restore
-check "restore puts the kept level back" "$(level intel_backlight)" 550
+check "restore puts the kept level back" "$(level intel_backlight)" 625
 light intel_backlight raw 2000 2000; run restore
-check "a panel whose range changed takes the same share" "$(level intel_backlight)" 1100
+check "a panel whose range changed takes the same share" "$(level intel_backlight)" 1250
 echo "intel_backlight 0550 01000" > "$T/config/kryptik/brightness"; light intel_backlight raw 1000 1000; run restore
 check "a record with leading zeros reads as decimal" "$(level intel_backlight)" 550
 light intel_backlight raw 2000 2000
@@ -55,10 +58,10 @@ light intel_backlight raw 1000 700
 echo "-- not kept while a sleep seals the state partition"
 mkdir -p "$T/sys/class/block/dm-1/dm"; echo kryptik-state > "$T/sys/class/block/dm-1/dm/name"
 echo 1 > "$T/sys/class/block/dm-1/dm/suspended"; rm -rf "$T/config"
-run up; check "the step is taken" "$(level intel_backlight)" 750
+run up; check "the step is taken" "$(level intel_backlight)" 875
 check "and not written where it would wait" "$(kept)" ""
-echo 0 > "$T/sys/class/block/dm-1/dm/suspended"; run up
-check "kept again once the partition is back" "$(kept)" "intel_backlight 800 1000"
+echo 0 > "$T/sys/class/block/dm-1/dm/suspended"; run down
+check "kept again once the partition is back" "$(kept)" "intel_backlight 700 1000"
 rm -rf "$T/sys/class/block"
 
 echo "-- refusals"
