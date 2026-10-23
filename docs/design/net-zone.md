@@ -554,7 +554,15 @@ namespace, for which the kernel does not autoload modules.
 kernel code the nic zone reaches through its netfilter netlink socket for no
 use. For radios, `CFG80211`, `MAC80211`, `RFKILL` and
 the drivers are signed modules that eudev loads, with firmware under
-`/lib/firmware` (see `build/config/kernel/`).
+`/lib/firmware` (see `build/config/kernel/`). What some of them would load
+later by `request_module`, which the kernel cannot run here
+(`STATIC_USERMODEHELPER` with no helper), `build/config/modprobe.d/wifi.conf`
+loads with them:
+- Intel's op modes, `iwlmvm` and `iwlmld`;
+- `qrtr`, the socket family Qualcomm's QMI opens for `ath11k` and `ath12k`;
+- Broadcom's vendor code.
+
+Stage 05 fails a build that leaves out a module a softdep names.
 
 ## Non-goals
 

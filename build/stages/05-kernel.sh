@@ -301,6 +301,19 @@ s_install() {
         return 1
     fi
     echo "HDA codec drivers loaded ahead of snd-hda-intel: $(wc -l <<<"$built")"
+    # modprobe passes over a softdep it cannot find without a word, and the driver it was there
+    # for goes without: every module a softdep names is built, as a module or into the kernel.
+    local want pat missing=""
+    for want in $(sed -e ':a' -e '/\\$/N; s/\\\n/ /; ta' "${KRYPTIK_ROOT}"/build/config/modprobe.d/*.conf \
+            | awk '$1 == "softdep" { for (i = 3; i <= NF; i++) if ($i !~ /:$/) print $i }' | sort -u); do
+        pat="$(sed 's/[-_]/[-_]/g' <<<"$want")"
+        [[ -n "$(find "${MODDIR}/${krel}" -name "${pat}.ko*" -print -quit)" ]] && continue
+        grep -qE "/${pat}\.ko$" "${MODDIR}/${krel}/modules.builtin" 2>/dev/null && continue
+        missing="${missing} ${want}"
+    done
+    if [[ -n "$missing" ]]; then
+        echo "FAIL: modprobe.d's softdeps name modules this kernel does not build:${missing}"; return 1
+    fi
     # The camera's driver loads only for a grant: built, and kept from loading by alias.
     if [[ -z "$(find "${MODDIR}/${krel}" -name 'uvcvideo.ko*')" ]]; then
         echo "FAIL: uvcvideo was not built (CONFIG_USB_VIDEO_CLASS=m, boot.fragment)"; return 1
