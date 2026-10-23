@@ -48,8 +48,10 @@ codec driver ahead of `snd-hda-intel` (`build/config/modprobe.d/sound.conf`,
 which stage 05 holds to the drivers built).
 
 Not yet: Intel's Sound Open Firmware drivers for laptops with digital
-microphones or SoundWire codecs, AMD's audio coprocessor drivers, and the
-smart-amplifier codecs (Cirrus, TI) many laptops put on their speakers.
+microphones or SoundWire codecs, and AMD's audio coprocessor drivers. Of the
+smart-amplifier codecs many laptops put on their speakers, only Cirrus's
+CS35L54, CS35L56 and CS35L57 on I2C are built so far, and they are untested;
+CS35L41, TI's TAS2781 and those on SPI are not.
 [Laptop sound past HD Audio](laptop-audio.md) says what each needs, what a
 laptop does without it, and the order they come in after 1.0.
 
