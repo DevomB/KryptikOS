@@ -29,9 +29,12 @@ platform's SOF driver is built, so with none built it finds no row and
   carries only the graphics' HDMI codec, so the speakers, the jack and the
   microphones are all silent, and as that card has no device 0 the mixer
   plays to none of it, a monitor's speakers included.
-- **AMD laptops:** the codec is on HD Audio, so the speakers and the jack
-  work. The built-in microphones are on the audio coprocessor (ACP)
-  and do not.
+- **AMD laptops:** on most the codec is on HD Audio, so the speakers and
+  the jack work. The built-in microphones are on the audio coprocessor (ACP)
+  and do not. Some, from the coprocessor's 6.3 generation (Ryzen 7040) on,
+  put their codecs on SoundWire behind the coprocessor instead, and there,
+  as on Intel's SoundWire laptops, the speakers, the jack and the
+  microphones are all silent.
 - **Smart amplifiers** in front of the speakers (Cirrus's CS35L41, CS35L54,
   CS35L56 and CS35L57, TI's TAS2781), on Intel and AMD laptops alike:
   linux-firmware has tuning files for about 200 models, most of them ASUS,
@@ -87,6 +90,12 @@ laptops tested then will show which kinds they are.
   rather than the codec's, whose input is the headset jack. It would have
   to prefer the built-in microphones, and the headset's while one is
   plugged in, which the codec's jack control says.
+- **SoundWire behind the coprocessor:** `SOUNDWIRE_AMD`,
+  `SND_SOC_AMD_SOUNDWIRE` and `SND_SOC_AMD_LEGACY_SDW_MACH`, which selects
+  Realtek's SoundWire codec drivers (RT711, RT712, RT715, RT722, RT1316,
+  RT1320), beside `SND_SOC_AMD_PS`. The coprocessor's ACPI device
+  describes the links under its child at `_ADR` 5. The mixer needs what
+  SoundWire needs on Intel: UCM, below.
 
 ### Intel's DSP: Sound Open Firmware
 
@@ -186,7 +195,7 @@ machine that has it has run it:
   none, and the mixer's choice of microphone;
 - SOF for HD Audio laptops with digital microphones: sof-bin's firmware and
   generic topologies, the softdep, and the mixer's devices by role;
-- SoundWire, with UCM in the mixer.
+- SoundWire, Intel's and AMD's, with UCM in the mixer.
 
 ## Check, when each comes
 

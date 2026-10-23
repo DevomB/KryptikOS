@@ -359,5 +359,70 @@ impl Drop for Cgroup {
     }
 }
 
+/// The desktop's cgroup: dwl, which the launch daemon starts there. Beside `kryptik/`, not in it,
+/// so nothing that takes a leaf there for a zone's or a proxy's counts the compositor as one.
+const DESKTOP_GROUP: &str = "kryptik-desktop";
+
+/// What the desktop may hold: a quarter of the memory, 1 GiB at least. The pages dwl faults in a
+/// zone's pool before the zone writes them are charged here, so a zone that pushes the compositor
+/// past this ends the desktop, and not the machine.
+pub fn desktop_memory_max(mem_total: u64) -> u64 {
+    (mem_total / 4).max(1 << 30)
+}
+
+/// The desktop's cgroup for `uid`'s login, which `pid` asked for, made afresh and bounded: the
+/// cgroup and its bound. dwl moves itself in before it takes the user's ids.
+pub fn prepare_desktop(uid: u32, pid: i32) -> Result<(PathBuf, u64), CgroupError> {
+    prepare_desktop_under(Path::new(CGROUP2_ROOT), Path::new("/proc"), uid, pid)
+}
+
+/// `prepare_desktop` against any hierarchy root and process table, for tests.
+pub fn prepare_desktop_under(root: &Path, procfs: &Path, uid: u32, pid: i32) -> Result<(PathBuf, u64), CgroupError> {
+    if uid == 0 {
+        return Err(CgroupError::Unavailable("the desktop is an ordinary user's, not root's".into()));
+    }
+    let asker = procfs.join(pid.to_string());
+    // Still the asker the socket named: a pid another user's process took since is not moved.
+    let status = read_trim(&asker.join("status"))?;
+    let real = status.lines().find_map(|l| l.strip_prefix("Uid:")).and_then(|v| v.split_whitespace().next());
+    let want = uid.to_string();
+    if real != Some(want.as_str()) {
+        return Err(CgroupError::Unavailable(format!("pid {pid} is not uid {uid}'s")));
+    }
+    // A zone's or a proxy's process never asks for a desktop.
+    let held = read_trim(&asker.join("cgroup"))?;
+    let zoned = |p: &str| p == "/kryptik" || p.starts_with("/kryptik/");
+    if held.lines().any(|l| l.strip_prefix("0::").is_some_and(zoned)) {
+        return Err(CgroupError::Unavailable(format!("pid {pid} runs in a zone's or a proxy's cgroup")));
+    }
+    if !root.join("cgroup.controllers").exists() {
+        return Err(CgroupError::Unavailable(format!(
+            "{} is not a cgroup v2 hierarchy (no cgroup.controllers)",
+            root.display()
+        )));
+    }
+    ensure_subtree_control(root)?;
+    let group = root.join(DESKTOP_GROUP);
+    /* A fresh group for each login. A zone that outlived the last desktop and kept its pools'
+     * descriptors keeps their pages charged to the last group: removed, it takes those charges to
+     * the root, and they do not count against this desktop. EBUSY keeps a group that is still
+     * populated. */
+    let _ = fs::remove_dir(&group);
+    if !group.exists() {
+        fs::create_dir(&group).map_err(|e| io_err(&group, e))?;
+    }
+    let meminfo = read_trim(&procfs.join("meminfo"))?;
+    let total_kb = meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))
+        .and_then(|v| v.trim().strip_suffix("kB"))
+        .and_then(|kb| kb.trim().parse::<u64>().ok())
+        .ok_or_else(|| CgroupError::Unavailable(format!("no MemTotal in {}", procfs.join("meminfo").display())))?;
+    let max = desktop_memory_max(total_kb * 1024);
+    let mem = group.join("memory.max");
+    fs::write(&mem, max.to_string()).map_err(|e| io_err(&mem, e))?;
+    Ok((group, max))
+}
+
 #[cfg(test)]
 mod tests;

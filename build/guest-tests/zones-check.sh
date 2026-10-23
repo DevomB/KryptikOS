@@ -1683,6 +1683,17 @@ grep -q /usr/lib/libhardened_malloc.so /proc/self/maps && pass "allocator-zone0"
 zrun untrusted 30 -- grep -c /usr/lib/libhardened_malloc.so /proc/self/maps
 [[ "$ZRC" = 0 ]] && pass "allocator-zone" "a process in untrusted runs on it too" || fail "allocator-zone" "rc=$ZRC $(tail -1 "$LOG/untrusted.err")"
 
+# --- shadow stacks in a zone: lenient (spawn.rs zone_environment) ------------
+# On a CPU with shadow stacks a zone's program that loads a library without the CET note, as
+# Firefox does libxul, runs on without its own; glibc reads the tunable only where the exec is not
+# secure, which LD_SHOW_AUXV shows (it says nothing in a secure one).
+zrun untrusted 30 -- sh -c 'echo "tunables=$GLIBC_TUNABLES"; LD_SHOW_AUXV=1 /bin/true | grep AT_SECURE'
+if [[ "$ZOUT" == *"tunables=glibc.cpu.x86_shstk=permissive"* && "$ZOUT" =~ AT_SECURE:[[:space:]]+0 ]]; then
+    pass "zone-shadow-stack-lenient" "a zone's command has glibc.cpu.x86_shstk=permissive, and AT_SECURE 0 for glibc to read it"
+else
+    fail "zone-shadow-stack-lenient" "rc=$ZRC: ${ZOUT//$'\n'/ } $(tail -1 "$LOG/untrusted.err")"
+fi
+
 # --- the installed root: privilege only where the allowlist says ------------
 # Stage 06 fails the build on any other bit; expected here: the entries of
 # build/config/setuid-allowlist.txt, and no file capabilities.
@@ -1803,18 +1814,23 @@ else
     [[ "$expl" == *"/usr (with the images probe over it, signed for this root and opened with dm-verity)"* ]] \
         && pass "image-explained" "explain names the image over the zone's /usr" \
         || fail "image-explained" "$(grep -m1 '^root ' <<<"$expl")"
-    # The controls stage 06 signed: a list in the release manifests' namespace, and one for another root.
-    keep_list "$D/controls/release-ns" manifest && irun imgok /usr/bin/kryptik-probe
-    if [[ "$ZRC" -ne 0 && "$ZERR" == *"the image list for this root is refused"* ]]; then
-        pass "image-list-namespace" "a list the release key signed in kryptik-release is refused"
+    # The controls stage 06 signed: a list in the release manifests' namespace, and one for another
+    # root. A production key signs real lists alone, so a production medium carries neither.
+    if [[ "$(cat /usr/share/kryptik/trust/required-role 2>/dev/null)" == production ]]; then
+        info "image-list-namespace and image-list-other-base: a production medium carries no controls"
     else
-        fail "image-list-namespace" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
-    fi
-    keep_list "$D/controls/other-base" manifest && irun imgok /usr/bin/kryptik-probe
-    if [[ "$ZRC" -ne 0 && "$ZERR" == *"is for another root"* ]]; then
-        pass "image-list-other-base" "a signed list for another root is refused"
-    else
-        fail "image-list-other-base" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+        keep_list "$D/controls/release-ns" manifest && irun imgok /usr/bin/kryptik-probe
+        if [[ "$ZRC" -ne 0 && "$ZERR" == *"the image list for this root is refused"* ]]; then
+            pass "image-list-namespace" "a list the release key signed in kryptik-release is refused"
+        else
+            fail "image-list-namespace" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+        fi
+        keep_list "$D/controls/other-base" manifest && irun imgok /usr/bin/kryptik-probe
+        if [[ "$ZRC" -ne 0 && "$ZERR" == *"is for another root"* ]]; then
+            pass "image-list-other-base" "a signed list for another root is refused"
+        else
+            fail "image-list-other-base" "rc ${ZRC}: ${ZOUT:-no output}; $(tail -2 <<<"$ZERR" | tr '\n' ' ')"
+        fi
     fi
     keep_list "$D" images.manifest
     # A byte of the probe program flipped in the stored image: with the cache dropped, dm-verity

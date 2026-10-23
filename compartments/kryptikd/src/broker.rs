@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::registry;
-use crate::serve::{peer_cred, recv_with_fds};
+use crate::serve::{peer_cred, recv_with_fds, release, Received};
 use crate::zone::{NetworkMode, Zone};
 
 /// The socket's name in a registry entry, and in the zone's /run/kryptik.
@@ -223,7 +223,7 @@ fn handle_time_offset(zone: &Zone, claim: &crate::time::Claim, asking: &dyn Fn()
         claim,
         &mut crate::time::SystemClock,
         Path::new(crate::time::STATE_DIR),
-        crate::time::floor_of_this_system(),
+        &crate::time::floor_of_this_system,
         asking,
     )
 }
@@ -260,13 +260,14 @@ fn handle_update(req: &Request, payload: &[u8]) -> Result<String, String> {
     }
 }
 
-/// `handle_time_offset` with the clock, state directory and floor passed in, for tests.
+/// `handle_time_offset` with the clock, state directory and floor passed in, for tests. The floor
+/// is found only for the zone that may ask: finding it can check the release, under its lock.
 fn time_offset_in(
     zone: &Zone,
     claim: &crate::time::Claim,
     clock: &mut dyn crate::time::Clock,
     dir: &Path,
-    floor: Option<i64>,
+    floor: &dyn Fn() -> Option<i64>,
     asking: &dyn Fn() -> bool,
 ) -> crate::time::Outcome {
     if zone.network != NetworkMode::Nic {
@@ -275,7 +276,7 @@ fn time_offset_in(
             zone.name
         ));
     }
-    crate::time::consider(clock, dir, floor, crate::time::DEFAULT_BOUND_SECS, claim, &mut |now, proposed, sources| {
+    crate::time::consider(clock, dir, floor(), crate::time::DEFAULT_BOUND_SECS, claim, &mut |now, proposed, sources| {
         crate::consent::ask_clock(now, proposed, sources, asking)
     })
 }
@@ -648,7 +649,11 @@ pub fn serve_one(listen_fd: RawFd, s: &Served) -> io::Result<Option<&'static str
         };
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    serve_connection(fd.as_raw_fd(), s)
+    let served = serve_connection(fd.as_raw_fd(), s);
+    // Released, not just closed: descriptors the zone queued behind the request would otherwise
+    // be closed by the kernel on this thread, where a lingering socket's close waits.
+    release(fd);
+    served
 }
 
 /// Answer one request: a foreign peer learns nothing, and refusals come before the payload.
@@ -771,7 +776,7 @@ pub fn serve_connection(fd: RawFd, s: &Served) -> io::Result<Option<&'static str
 }
 
 /// The request's first recvmsg, where descriptors arrive. Ok(false, ..) at EOF.
-fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(bool, Vec<OwnedFd>)> {
+fn recv_first(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<(bool, Received)> {
     let mut chunk = [0u8; 4096];
     loop {
         if started.elapsed() > REQUEST_DEADLINE {
@@ -817,20 +822,18 @@ fn recv_some(fd: RawFd, buf: &mut Vec<u8>, started: Instant) -> io::Result<bool>
     Ok(n > 0)
 }
 
-/// One recv into `out`, 0 at EOF. EAGAIN from SO_RCVTIMEO is retried until the deadline.
+/// One recv into `out`, 0 at EOF. EAGAIN from SO_RCVTIMEO is retried until the deadline. A
+/// recvmsg, so descriptors the zone sends with later bytes are released here, not closed by
+/// the kernel for want of room.
 fn recv_into(fd: RawFd, out: &mut [u8], started: Instant) -> io::Result<usize> {
     loop {
         if started.elapsed() > REQUEST_DEADLINE {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "request took longer than the deadline"));
         }
-        let n = unsafe { libc::recv(fd, out.as_mut_ptr() as *mut libc::c_void, out.len(), 0) };
-        if n >= 0 {
-            return Ok(n as usize);
-        }
-        let e = io::Error::last_os_error();
-        match e.raw_os_error() {
-            Some(libc::EINTR) | Some(libc::EAGAIN) => continue,
-            _ => return Err(e),
+        match recv_with_fds(fd, out, 0) {
+            Ok((n, _late)) => return Ok(n),
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EINTR) | Some(libc::EAGAIN)) => continue,
+            Err(e) => return Err(e),
         }
     }
 }

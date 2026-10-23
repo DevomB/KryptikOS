@@ -104,9 +104,10 @@ the firmware from the pinned linux-firmware release
 (`build/config/firmware.list`, ADR-012).
 
 - **Storage:** NVMe (including Intel VMD), AHCI and PIIX SATA, eMMC and SD on
-  SDHCI, LSI MegaRAID and MPT3 SAS, HPE Smart Array, USB mass storage and UAS,
-  virtio, VMware PVSCSI, Hyper-V. The disk Kryptik installs to needs 512-byte
-  logical sectors: 512e is fine, and a 4Kn disk is refused.
+  SDHCI, SD in Realtek's PCIe and USB card readers, LSI MegaRAID and MPT3 SAS,
+  HPE Smart Array, USB mass storage and UAS, virtio, VMware PVSCSI, Hyper-V.
+  The disk Kryptik installs to needs 512-byte logical sectors: 512e is fine,
+  and a 4Kn disk is refused.
 - **Wired network:** Intel e1000/e1000e, igb, igc, ixgbe, i40e; Broadcom tg3
   and bnxt; Realtek r8169; Aquantia AQtion; Mellanox ConnectX-4 and later;
   USB adapters (AX88179, RTL8152); virtio, VMware vmxnet3, Hyper-V.
@@ -121,7 +122,8 @@ the firmware from the pinned linux-firmware release
   GCN 1 and 2 parts, use the firmware framebuffer. The compositor renders
   with pixman, so no GPU acceleration is needed.
 - **Input:** USB HID, PS/2, I2C touchpads and touchscreens on Intel and AMD
-  laptops, VMware and Hyper-V input.
+  laptops, those behind Intel's Touch Host Controller from Lunar Lake on,
+  VMware and Hyper-V input.
 
 CPU microcode for Intel and AMD is built into the signed kernel. On a Zen 5
 processor, and a few EPYC models, the kernel loads it only once the machine's
@@ -331,7 +333,10 @@ and Firefox alone takes several), then `make acceptance` under KVM,
 uploading the acceptance report and the tested images. A tag `v<version>`
 builds that version from nothing, tests it and drafts it on the Releases
 page; from `v1` on, the build signs with the release keys once the
-maintainer approves it. To build locally, on Linux:
+maintainer approves it. Other runs resume from cached stages, so once a
+week main is built from nothing as a tag would be, and a step that only an
+empty cache breaks shows then, not at the next release; a dispatch with
+`cold` does the same for any branch. To build locally, on Linux:
 
 ```sh
 make check      # what the host is missing

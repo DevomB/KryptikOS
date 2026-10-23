@@ -29,6 +29,8 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT KEY-FOCUS-HOLD                               press Alt+j
+#   GT LOCK-TYPE-HOLD                               type the user's password and Enter
 #   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
 #   GT KEY-VOLUME-DOWN                              press the volume-down key
 #   GT KEY-LOCK-LAYOUT                              press Alt+Shift+l
@@ -46,7 +48,10 @@
 #   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT KEY-MENU-OPEN                                press Alt+p (a menu window for an open network)
 #   GT OPEN-TYPE N TEXT                             type TEXT and Enter (letters and digits)
-#   GT KEY-VIEW-BROWSER, GT KEY-BROWSER-BACK        press Alt+3 (a tag nothing is on), then Alt+1
+#   GT KEY-VIEW-BROWSER                             press Alt+3 (a tag nothing is on)
+#   GT KEY-BROWSER-AWAY, GT KEY-BROWSER-AGAIN       press Alt+1, then the browser key (Alt+Shift+u)
+#   GT KEY-BROWSER-ASIDE                            press Alt+1
+#   GT KEY-BROWSER-LAUNCH, GT KEY-BROWSER-BACK      press the browser key, then Alt+1
 #   GT KEY-VT-ADMIN, GT KEY-VT-DESKTOP              press Ctrl+Alt+F2, then Ctrl+Alt+F1
 #   GT KEY-MENU-AFTER-VT                            press Alt+p
 #   GT END
@@ -74,7 +79,7 @@ wait_for() {   # wait_for SECONDS CMD...
 zone_log() { cat "/var/log/kryptik/zone-$1.log" 2>/dev/null; }
 # A filter kill below the zone's pid 1 shows only in the kernel's audit line (type=1326).
 zone_why() {   # zone_why ZONE: the registry, both logs, what runs and the filter's last kills
-    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "/run/kryptik-proxy/$UID_/$1.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | tail -3 | tr '\n' ' ')"
+    echo "entries: $(ls /run/kryptik/zones 2>&1 | tr '\n' ' ')| $1: $(ls -la --time-style=full-iso /run/kryptik/zones/"$1" 2>&1 | tr '\n' ' ')| running: $("$KD" list --running 2>&1 | tr '\n' ' ')| log: $(zone_log "$1" | tail -10 | tr '\n' ' ')| proxy: $(tail -4 "/run/kryptik-proxy/$UID_/$1.log" 2>&1 | tr '\n' ' ')| procs: $(pgrep -af "havoc|kryptikd run $1" 2>/dev/null | cut -c1-90 | tr '\n' ';')| seccomp: $(dmesg 2>/dev/null | grep -a 'type=1326' | grep -av 'comm="dwl"' | tail -3 | tr '\n' ' ')"
 }
 mark() { echo "--- $1 ---" >> "/var/log/kryptik/zone-$2.log" 2>/dev/null; }
 since_mark() {   # since_mark MARK ZONE: the zone's log after the marker line
@@ -113,6 +118,38 @@ su -s /bin/sh "$USER_NAME" -c 'mkdir -p "$HOME/.config/kryptik" && printf "us de
 su -s /bin/bash "$USER_NAME" -c 'setsid /usr/bin/kryptik-session </dev/null >/dev/null 2>&1 &'
 if wait_for 30 test -S "$RT/wayland-0"; then pass "session-socket" "dwl listening at $RT/wayland-0"; else fail "session-socket" "$(cat "$RT/kryptik/session.log" 2>/dev/null | tail -3 | tr '\n' ' ')"; fi
 pgrep -u "$USER_NAME" -x dwl >/dev/null && pass "compositor-running" || fail "compositor-running" "$(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
+# The desktop's own cgroup bounds what a zone can make the compositor hold: a quarter of the
+# memory, 1 GiB at least (cgroup.rs's desktop_memory_max).
+dwl_pid="$(pgrep -u "$USER_NAME" -xo dwl)"
+want_max=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) * 1024 / 4 ))
+(( want_max < (1 << 30) )) && want_max=$(( 1 << 30 ))
+dcg=/sys/fs/cgroup/kryptik-desktop
+if [[ "$(cat "/proc/${dwl_pid:-0}/cgroup" 2>/dev/null)" == "0::/kryptik-desktop" && "$(cat "$dcg/memory.max" 2>/dev/null)" == "$want_max" ]]; then
+    pass "desktop-memory-bound" "dwl runs in $dcg under memory.max $want_max"
+else
+    fail "desktop-memory-bound" "dwl ${dwl_pid:-gone}: $(cat "/proc/${dwl_pid:-0}/cgroup" 2>&1); memory.max $(cat "$dcg/memory.max" 2>&1), want $want_max; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+fi
+# dwl runs without group kryptik, which reaches the launch daemon and the mixer's control socket;
+# the session's spawner keeps it for the keys' commands (compositor-separation design).
+kgid="$(awk -F: '$1 == "kryptik" { print $3 }' /etc/group)"
+spawner_pid="$(pgrep -u "$USER_NAME" -xo dwl-spawner)"
+dgroups="$(sed -n 's/^Groups:[[:space:]]*//p' "/proc/${dwl_pid:-0}/status" 2>/dev/null)"
+sgroups="$(sed -n 's/^Groups:[[:space:]]*//p' "/proc/${spawner_pid:-0}/status" 2>/dev/null)"
+if [[ -n "$kgid" && -r "/proc/${dwl_pid:-0}/status" ]] && ! grep -qw "$kgid" <<<"$dgroups" && grep -qw "$kgid" <<<"$sgroups"; then
+    pass "dwl-without-group" "dwl ${dwl_pid} runs with groups ${dgroups:-none}, without kryptik (${kgid}); its spawner ${spawner_pid} keeps it"
+else
+    fail "dwl-without-group" "dwl ${dwl_pid:-gone}: groups ${dgroups:-none}; spawner ${spawner_pid:-none}: groups ${sgroups:-none}; kryptik is ${kgid:-missing}; session.log: $(grep -a 'kryptik-launch' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
+fi
+# The seat is dwl's alone: seatd answers group seat, which the launch daemon gives dwl and the
+# login lacks, so nothing else of the session can switch the console or take the screens and keys.
+seatgid="$(awk -F: '$1 == "seat" { print $3 }' /etc/group)"
+lgroups="$(id -G "$USER_NAME" 2>/dev/null)"
+if [[ -n "$seatgid" ]] && grep -qw "$seatgid" <<<"$dgroups" && ! grep -qw "$seatgid" <<<"$sgroups" \
+   && ! grep -qw "$seatgid" <<<"$lgroups"; then
+    pass "seat-is-dwls" "dwl ${dwl_pid} holds seat (${seatgid}); its spawner ${spawner_pid} and ${USER_NAME} do not"
+else
+    fail "seat-is-dwls" "seat is ${seatgid:-missing}; dwl: ${dgroups:-none}; spawner: ${sgroups:-none}; ${USER_NAME}: ${lgroups:-none}"
+fi
 dwl_env="$(tr '\0' '\n' < "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/environ" 2>/dev/null \
            | grep -E '^(XKB_DEFAULT_LAYOUT|XKB_DEFAULT_VARIANT|XKB_DEFAULT_OPTIONS|KRYPTIK_LAYOUTS)=' | sort | tr '\n' ' ')"
 if [[ "$dwl_env" == "KRYPTIK_LAYOUTS=us de XKB_DEFAULT_LAYOUT=us,de XKB_DEFAULT_OPTIONS=grp:win_space_toggle XKB_DEFAULT_VARIANT=, " ]]; then
@@ -152,6 +189,52 @@ for g in zwlr_screencopy_manager_v1 zwlr_data_control_manager_v1 zwp_primary_sel
     [[ "$out" == *" $g "* ]] && hidden_seen="$hidden_seen $g"
 done
 [[ -z "$hidden_seen" ]] && pass "zone-hidden-globals" "no capture, data-control, primary-selection, layer-shell, virtual-input, dmabuf-export, gamma, output-management or session-lock global reaches the zone" || fail "zone-hidden-globals" "reached the zone:$hidden_seen"
+# Where a zone's unwritten pool is charged (resource-limits design, Tests). dwl reads it first, so
+# its pages are the desktop's, inside the desktop's bound and outside the zone's. The probe then
+# drops the pool and keeps its descriptor, as a zone may: the pages stay the desktop's until the
+# proxy punches the range.
+desk_mem() { cat /sys/fs/cgroup/kryptik-desktop/memory.current 2>/dev/null || echo 0; }
+# Its shmem alone, which the zone's pool is and dwl's own allocations are not.
+desk_shmem() { awk '$1 == "shmem" { print $2; f = 1 } END { if (!f) print 0 }' /sys/fs/cgroup/kryptik-desktop/memory.stat 2>/dev/null; }
+charge_said() { since_mark charge untrusted | grep -q "$1"; }
+# The probe's own file (memfd:wlprobe): what of it is allocated, and whether dwl still maps it. A
+# file emptied while the desktop's shmem stays up means the charge is elsewhere; a full one, that
+# the proxy did not punch it or something read it again after.
+probe_file() {
+    local p f b=0 bs=512
+    p="$(pgrep -xn wlprobe)" || { echo "unseen"; return; }
+    for f in /proc/"$p"/fd/*; do
+        if [[ "$(readlink "$f" 2>/dev/null)" == "/memfd:wlprobe (deleted)" ]]; then
+            read -r b bs < <(stat -Lc '%b %B' "$f" 2>/dev/null || echo "0 512")
+            echo "$(( b * bs / 1024 )) KiB"
+            return
+        fi
+    done
+    echo "unseen"
+}
+dwl_maps_probe() {
+    local n
+    n="$(grep -c 'memfd:wlprobe (deleted)' "/proc/$(pgrep -u "$USER_NAME" -xo dwl)/maps" 2>/dev/null)"
+    [[ "${n:-0}" -gt 0 ]] && echo "mapped by dwl" || echo "not mapped by dwl"
+}
+mark charge untrusted
+before="$(desk_mem)"; sbefore="$(desk_shmem)"
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe charge keep" > "$LOG/launch-charge.out" 2>&1 &
+charge_job=$!
+if wait_for 30 charge_said 'sample memory.current now'; then
+    sleep 1
+    held="$(desk_mem)"; kept="$held"; sheld="$(desk_shmem)"; skept="$sheld"
+    fheld="$(probe_file), $(dwl_maps_probe)"; fkept="$fheld"
+    wait_for 15 charge_said 'pool gone' && { sleep 1; kept="$(desk_mem)"; skept="$(desk_shmem)"; fkept="$(probe_file), $(dwl_maps_probe)"; }
+    unfreed="$(grep -h 'pages were not freed' "/run/kryptik-proxy/$UID_/untrusted.log" 2>/dev/null | tail -1)"
+    info "desktop-charge: a zone's unwritten 4 MiB pool raised the desktop's memory.current by $(( (held - before) / 1024 )) KiB and its shmem by $(( (sheld - sbefore) / 1024 )) KiB while dwl showed it; once the pool was gone and the zone kept its descriptor, by $(( (kept - before) / 1024 )) KiB and $(( (skept - sbefore) / 1024 )) KiB; the proxy: ${unfreed:-no unfreed pages logged}; the zone's file: ${fheld} while shown, ${fkept} after"
+else
+    info "desktop-charge: the probe drew nothing: $(since_mark charge untrusted | tail -3 | tr '\n' ' ')"
+fi
+wait "$charge_job" 2>/dev/null
+# The launch returns once the zone runs; the probe keeps its window 10 s, and the next checks
+# start untrusted themselves.
+wait_for 20 test ! -e /run/kryptik/zones/untrusted/init.pid; sleep 1
 # No zone reaches dwl's sockets: of every socket untrusted's user can find, none
 # is dwl's own or one of its zones' sockets, and its own is the proxy's. Each file is
 # stat'ed, which sees through a socket bound in over a file. The launcher marks
@@ -205,7 +288,7 @@ proxy_up="$(readlink "/proc/${ppid0:-none}/fd/4" 2>/dev/null)"
 as_user "WAYLAND_DISPLAY=$zsock /usr/libexec/kryptik/wlprobe list" > "$LOG/probe-zone-socket.out" 2>&1
 offered="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" | sort -u | tr '\n' ' ')"
 beyond="$(awk '$1 == "global" { print $3 }' "$LOG/probe-zone-socket.out" \
-    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter|wp_cursor_shape_manager_v1' | tr '\n' ' ')"
+    | grep -vxE 'wl_compositor|wl_subcompositor|wl_shm|wl_seat|wl_output|xdg_wm_base|zxdg_decoration_manager_v1|wp_viewporter|wp_cursor_shape_manager_v1|wp_fractional_scale_manager_v1' | tr '\n' ' ')"
 if grep -qxF "connected $zsock" "$LOG/probe-zone-socket.out" && [[ -z "$beyond" && "$offered" == *xdg_wm_base* && "$offered" == *wl_seat* ]]; then
     pass "zone-socket-allowlist" "dwl tells untrusted's socket of ${offered% } alone"
 else
@@ -574,12 +657,12 @@ sleep 6
 # opening on the grant, ends the fullscreen as any zone 0 window does; closed, Alt+e puts it back.
 # The mixer's directory is first made anew, as a restart that made it again would: the compositor's
 # watch stays with the old one, and the mark must come all the same.
-micdir=/run/kryptik-sound/control
+micdir=/run/kryptik-sound/marks
 micrec="$micdir/microphone"
 mic_record() {   # mic_record OWNER ZONE: a record of who may record, as OWNER writes it
-    printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0640 "$micrec.t" && mv -f "$micrec.t" "$micrec"
+    printf '%s\n' "$2" > "$micrec.t" && chown "$1" "$micrec.t" && chmod 0644 "$micrec.t" && mv -f "$micrec.t" "$micrec"
 }
-mv "$micdir" "$micdir.before" && install -d -m 2750 -o 87 -g kryptik "$micdir"
+mv "$micdir" "$micdir.before" && install -d -m 0755 -o 87 "$micdir"
 mic_record 87 untrusted
 modprobe vivid n_devs=1 node_types=0x1 2> "$LOG/vivid-marks.err"
 marks_cam="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"
@@ -864,6 +947,26 @@ for d in /proc/[0-9]*; do
     esac
 done
 [[ "${#foreign[@]}" -eq 0 ]] && pass "zone0-own-programs-only" "every process outside the zones' cgroups is one of zone 0's own" || fail "zone0-own-programs-only" "$(printf '%s; ' "${foreign[@]}")"
+# dwl starts no program itself: the session's spawner runs the keys' commands from a fixed table,
+# and dwl's own filter refuses exec (compositor-separation design).
+dwl_pid="$(pgrep -u "$USER_NAME" -xo dwl)"
+spawner="$(pgrep -u "$USER_NAME" -xo dwl-spawner)"
+# Every thread carries the filter, not the leader alone.
+unfiltered="$(for s in /proc/"${dwl_pid:-0}"/task/*/status; do grep -qE '^Seccomp:[[:space:]]+2$' "$s" 2>/dev/null || echo "${s%/status}"; done)"
+if [[ -z "$unfiltered" ]] && grep -qE '^Seccomp:[[:space:]]+2$' "/proc/${dwl_pid:-0}/status" 2>/dev/null \
+   && grep -qE '^NoNewPrivs:[[:space:]]+1$' "/proc/${dwl_pid:-0}/status" 2>/dev/null && [[ -n "$spawner" ]]; then
+    pass "dwl-execs-nothing" "dwl ${dwl_pid} runs under its no-exec filter, and its spawner is ${spawner}"
+else
+    fail "dwl-execs-nothing" "dwl ${dwl_pid:-gone}: $(grep -E '^(Seccomp|NoNewPrivs):' "/proc/${dwl_pid:-0}/status" 2>&1 | tr '\n' ' '); threads without the filter: ${unfiltered:-none}; spawner: ${spawner:-none}; $(pgrep -u "$USER_NAME" -a dwl | tr '\n' ';')"
+fi
+# And it reads only below its own list and writes no file but keymaps under /dev/shm (Landlock),
+# as its session log says:
+# every path of the list there, one thread to bind, and no signal outside its domain (ABI 6).
+if grep -qE '^dwl: confined: reads only below ([0-9]+) of its \1 paths, .*, signals nothing outside it \(1 thread, ' "$RT/kryptik/session.log" 2>/dev/null; then
+    pass "dwl-confined-to-its-files" "$(grep -m1 '^dwl: confined: ' "$RT/kryptik/session.log")"
+else
+    fail "dwl-confined-to-its-files" "session.log: $(grep -a '^dwl: \(confined\|not confined\|Landlock\)' "$RT/kryptik/session.log" 2>/dev/null | head -3 | tr '\n' ' ')"
+fi
 [[ -n "$zoned" ]] && pass "zone-app-in-cgroup" "the zone's terminal runs in its cgroup:$zoned" || fail "zone-app-in-cgroup" "no havoc in a /kryptik cgroup; processes in one: $(grep -ls kryptik /proc/[0-9]*/cgroup 2>/dev/null | wc -l)"
 
 stop_zone personal
@@ -1081,6 +1184,19 @@ if since_mark cursor untrusted | grep -q 'asked for the text cursor by name' && 
 else
     fail "zone-cursor-by-name" "$(since_mark cursor untrusted | tail -4 | tr '\n' ' ')"
 fi
+# --- a zone's window hears the scale it is shown at ------------------------------------------
+# wp_fractional_scale_v1 through the proxy: the compositor tells each window its output's scale,
+# in 120ths, so a browser draws text sharp at 1.5 instead of being scaled down from 2. This
+# machine's output is at 1, which wlroots sends as 120 once the window is shown.
+stop_zone untrusted
+mark scale untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe scale 10" > "$LOG/launch-scale.out" 2>&1
+scale_heard() { since_mark scale untrusted | grep -q 'preferred scale '; }
+if wait_for 20 scale_heard && ! since_mark scale untrusted | grep -qE 'refused|connection closed'; then
+    pass "zone-fractional-scale" "the zone's window heard its $(since_mark scale untrusted | grep -m1 'preferred scale ') through its proxy"
+else
+    fail "zone-fractional-scale" "$(since_mark scale untrusted | tail -4 | tr '\n' ' '); $(zone_why untrusted)"
+fi
 # --- a zone's window animates on a clock of its own ----------------------------------------
 # A zone's monotonic clock starts at a random point (isolate::set_time_origin), so the
 # compositor's frame times, read from zone 0's clock, share no base with the zone's.
@@ -1287,6 +1403,96 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+
+# --- holding the screen awake ------------------------------------------------------------------
+# A window of a zone whose file says hold_awake keeps the session's idle timers off while it is
+# shown and has the keyboard (docs/design/laptop.md). zone 0's probe of them counts inhibitors as
+# the lock's timers do: it hears nothing while personal's window holds, and hears the session is
+# idle within its 2 s once a zone 0 window takes the keyboard, and again once the lock comes.
+# dwl offers the inhibitor only on the sockets of zones whose file allows it, and untrusted's
+# file never does.
+offers_hold() { as_user "WAYLAND_DISPLAY=/run/kryptik-compositor/$UID_/$1 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -c ' zwp_idle_inhibit_manager_v1 '; }
+if [[ "$(offers_hold personal)" -eq 1 && "$(offers_hold untrusted)" -eq 0 ]]; then
+    pass "zone-hold-socket" "dwl offers the idle inhibitor on personal's socket, whose file says hold_awake, and not on untrusted's"
+else
+    fail "zone-hold-socket" "offered on personal's socket: $(offers_hold personal); on untrusted's: $(offers_hold untrusted)"
+fi
+mark holdhid untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe inhibit 5" > "$LOG/launch-hold-hidden.out" 2>&1
+hold_hidden() { since_mark holdhid untrusted | grep -q 'no zwp_idle_inhibit_manager_v1 offered'; }
+if wait_for 20 hold_hidden; then
+    pass "zone-hold-refused" "untrusted's window is offered no idle inhibitor"
+else
+    fail "zone-hold-refused" "$(since_mark holdhid untrusted | tail -3 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-hold-hidden.out")"
+fi
+stop_zone untrusted
+mark hold personal
+launch personal "/usr/libexec/kryptik/wlprobe inhibit 120" > "$LOG/launch-hold.out" 2>&1
+hold_keys() { [[ "$(since_mark hold personal | grep -c 'keyboard entered the window')" -ge "$1" ]]; }
+hold_asked() { since_mark hold personal | grep -q 'asked to keep the screen awake'; }
+hold_drawn() { since_mark hold personal | grep -q 'committed '; }
+# Mapped behind zone 0's window, it has the keyboard once the user's key takes it there.
+wait_for 30 hold_drawn
+echo "GT KEY-FOCUS-HOLD"
+wait_for 15 hold_keys 1 && hold_asked; held=$?
+sleep 1
+as_user "/usr/libexec/kryptik/wlprobe idle 2000 6" > "$LOG/hold-idle.out" 2>&1
+if [[ "$held" -eq 0 ]] && grep -q '^watching for 2000 ms' "$LOG/hold-idle.out" && ! grep -qx 'idled' "$LOG/hold-idle.out"; then
+    pass "zone-holds-screen-awake" "personal's window, shown with the keyboard, kept zone 0's 2 s idle timer from running out in 6 s"
+else
+    fail "zone-holds-screen-awake" "personal's probe: $(since_mark hold personal | tail -3 | tr '\n' ' '); zone 0's idle probe: $(tr '\n' ' ' < "$LOG/hold-idle.out"); $(zone_why personal)"
+fi
+# The chrome names the zone holding the screen awake, from dwl's status, for its menu.
+hold_named() { [[ "$(head -n 1 "$RT/kryptik/holdawake" 2>/dev/null)" == personal ]]; }
+if wait_for 10 hold_named; then
+    pass "chrome-names-hold" "the chrome's record names personal as holding the screen awake"
+else
+    fail "chrome-names-hold" "holdawake: $(tr '\n' ' ' < "$RT/kryptik/holdawake" 2>/dev/null)"
+fi
+# The idle lock heeds the hold: one of 2 s, started now, is still waiting 6 s later and never locked.
+as_user "/usr/bin/kryptik-lock --idle 2 --blank 30" > "$LOG/hold-idle-lock.out" 2>&1 &
+holdidle_pid=$!
+sleep 6
+pgrep -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 2 --blank 30' > /dev/null; waiting=$?
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 2 --blank 30' 2>/dev/null; wait "$holdidle_pid" 2>/dev/null
+if [[ "$waiting" -eq 0 ]] && ! grep -q 'locking' "$LOG/hold-idle-lock.out"; then
+    pass "idle-lock-heeds-hold" "a 2 s idle lock started while personal's window held the screen awake was still waiting 6 s later"
+else
+    fail "idle-lock-heeds-hold" "still waiting: $([[ "$waiting" -eq 0 ]] && echo yes || echo no); $(tr '\n' ' ' < "$LOG/hold-idle-lock.out")"
+fi
+# A zone 0 window maps in front and takes the keyboard: the hold ends at once.
+as_user "/usr/libexec/kryptik/wlprobe oversize 0 30 hold-0" > "$LOG/hold-zone0.out" 2>&1 &
+hold0_pid=$!
+hold_left() { since_mark hold personal | grep -q 'keyboard left the window'; }
+wait_for 15 grep -q 'keyboard entered the window' "$LOG/hold-zone0.out" && wait_for 5 hold_left; moved=$?
+as_user "/usr/libexec/kryptik/wlprobe idle 2000 6" > "$LOG/hold-idle-away.out" 2>&1
+if [[ "$moved" -eq 0 ]] && grep -qx 'idled' "$LOG/hold-idle-away.out"; then
+    pass "hold-ends-off-keyboard" "a zone 0 window took the keyboard from personal's, and zone 0's 2 s idle timer ran out"
+else
+    fail "hold-ends-off-keyboard" "zone 0's window: $(tr '\n' ' ' < "$LOG/hold-zone0.out" | cut -c1-200); personal's probe: $(since_mark hold personal | tail -3 | tr '\n' ' '); idle probe: $(tr '\n' ' ' < "$LOG/hold-idle-away.out")"
+fi
+hold_unnamed() { [[ -z "$(head -n 1 "$RT/kryptik/holdawake" 2>/dev/null)" ]]; }
+if wait_for 10 hold_unnamed; then
+    pass "chrome-hold-cleared" "the chrome's record names no zone once the zone 0 window took the keyboard"
+else
+    fail "chrome-hold-cleared" "holdawake: $(tr '\n' ' ' < "$RT/kryptik/holdawake" 2>/dev/null)"
+fi
+# Closed, it gives personal's window the keyboard back; the lock takes it, and the hold ends.
+pkill -u "$USER_NAME" -f 'wlprobe oversize 0 30 hold-0' 2>/dev/null; wait "$hold0_pid" 2>/dev/null
+wait_for 10 hold_keys 2; back=$?
+as_user "/usr/bin/kryptik-lock" > "$LOG/hold-lock.out" 2>&1 &
+holdlock_pid=$!
+wait_for 20 grep -q '^kryptik-lock: locked' "$LOG/hold-lock.out"; locked_now=$?
+as_user "/usr/libexec/kryptik/wlprobe idle 2000 6" > "$LOG/hold-idle-locked.out" 2>&1
+if [[ "$back" -eq 0 && "$locked_now" -eq 0 ]] && grep -qx 'idled' "$LOG/hold-idle-locked.out"; then
+    pass "hold-ends-at-lock" "personal's window had the keyboard back; the lock took it, and zone 0's 2 s idle timer ran out"
+else
+    fail "hold-ends-at-lock" "keyboard back: $([[ "$back" -eq 0 ]] && echo yes || echo no); lock: $(tr '\n' ' ' < "$LOG/hold-lock.out"); idle probe: $(tr '\n' ' ' < "$LOG/hold-idle-locked.out")"
+fi
+echo "GT LOCK-TYPE-HOLD"
+wait_for 30 grep -q '^kryptik-lock: unlocked' "$LOG/hold-lock.out" || fail "hold-lock-unlocks" "$(tr '\n' ' ' < "$LOG/hold-lock.out")"
+wait "$holdlock_pid" 2>/dev/null
+stop_zone personal
 
 # --- no sleep where the display would not come back --------------------------------------------
 # This VM shows through virtio-gpu, whose driver a sleep would leave waiting for good, so the
@@ -1529,7 +1735,8 @@ launch_plain untrusted "sh -c 'printf \"<title>kryptik-page</title><p>kryptik</p
 ff_page() { grep -q '^title=.*kryptik-page' "$RT/kryptik/focus" && grep -qx 'zone=untrusted' "$RT/kryptik/focus"; }
 ff_broke=""
 if wait_for 120 ff_page; then
-    pass "browser-window" "Firefox from the browser image opened a page in untrusted: $(grep '^title=' "$RT/kryptik/focus")"
+    # With its app_id as the proxy stamped it, which the browser key matches (dwl-config.h).
+    pass "browser-window" "Firefox from the browser image opened a page in untrusted: $(grep -E '^(title|appid)=' "$RT/kryptik/focus" | tr '\n' ' ')"
     # Its idle startup tasks and its startup cache's first write come later, the write at most
     # 60 s after the cache's last entry: a call the zone's filter kills there ends Firefox after
     # its window has shown.
@@ -1538,14 +1745,68 @@ if wait_for 120 ff_page; then
         pass "browser-stays-up" "Firefox's window is still untrusted's 90 s after its page showed"
     else
         ff_broke="browser-stays-up"
-        fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | tail -2 | tr '\n' ' ')"
+        fail "browser-stays-up" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp' | grep -av 'comm="dwl"' | tail -2 | tr '\n' ' ')"
     fi
 else
     # A start that shows nothing prints nothing in the zone either. The host prints FAIL lines
     # alone, so this one carries what the proxy refused, what the zone's filter killed, and
     # whether Firefox still runs and where it waits.
     ff_broke="browser-window"
-    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); zone: $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); proxy: $(tail -4 "$plog" 2>/dev/null | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp|segfault|traps:' | tail -4 | tr '\n' ' '); firefox: $(ps -eo pid=,stat=,wchan:24=,etime=,args= 2>/dev/null | grep '[f]irefox' | head -8 | cut -c1-120 | tr '\n' ';'); launch: $(tail -3 "$LOG/launch-firefox.out" 2>/dev/null | tr '\n' ' ')"
+    fail "browser-window" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); zone: $(since_mark firefox untrusted | tail -5 | tr '\n' ' '); proxy: $(tail -4 "$plog" 2>/dev/null | tr '\n' ' '); kernel: $(dmesg 2>/dev/null | grep -E 'type=1326|seccomp|segfault|traps:' | grep -av 'comm="dwl"' | tail -4 | tr '\n' ' '); firefox: $(ps -eo pid=,stat=,wchan:24=,etime=,args= 2>/dev/null | grep '[f]irefox' | head -8 | cut -c1-120 | tr '\n' ';'); launch: $(tail -3 "$LOG/launch-firefox.out" 2>/dev/null | tr '\n' ' ')"
+fi
+# --- a second launch puts the open browser in front ----------------------------------------
+# Alt+1 shows another tag; the browser key then views Firefox's tag, 3, on its monitor and
+# gives it the keyboard, and starts no second Firefox, which would only say that the first is
+# running. The menu's b asks dwl the same through a file in the session's runtime directory,
+# which dwl takes from the user alone: one root wrote is removed unheard. With the zone stopped
+# the key starts Firefox, on the tag left empty.
+# Firefox's own processes: its content processes are started with -contentproc.
+ff_count() {
+    local n=0 p
+    for p in $(pgrep -f '(^|/)firefox( |$)'); do
+        tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- '-contentproc' || n=$((n + 1))
+    done
+    echo "$n"
+}
+ff_front() { ff_page && grep -qx 'tagset=4' "$RT/kryptik/focus"; }
+ff_away() { ! grep -q '^title=.*kryptik-page' "$RT/kryptik/focus"; }
+ff_record() { echo "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); browsers: $(tr '\n' ' ' < "$RT/kryptik/browsers" 2>/dev/null)"; }
+front="$RT/kryptik/front/browser-front"
+ff_before="$(ff_count)"
+echo "GT KEY-BROWSER-AWAY"
+wait_for 10 ff_away || info "browser: Alt+1 left the keyboard with Firefox: $(ff_record)"
+echo "GT KEY-BROWSER-AGAIN"
+if wait_for 15 ff_front; then
+    sleep 5
+    if [[ "$(ff_count)" -eq "$ff_before" ]]; then
+        pass "browser-key-brings-forward" "the browser key viewed tag 3 and gave untrusted's Firefox the keyboard; ${ff_before} Firefox before and after"
+    else
+        fail "browser-key-brings-forward" "a second Firefox started: ${ff_before} before, $(ff_count) after"
+    fi
+else
+    fail "browser-key-brings-forward" "$(ff_record)"
+fi
+echo "GT KEY-BROWSER-ASIDE"
+wait_for 10 ff_away || info "browser: Alt+1 left the keyboard with Firefox: $(ff_record)"
+printf 'untrusted\n' > "$front"
+sleep 3
+if ff_away && [[ ! -e "$front" ]]; then
+    pass "browser-front-only-the-users" "a request root wrote was removed, and the keyboard stayed where it was"
+else
+    fail "browser-front-only-the-users" "$(ff_record); the request: $(ls -la "$front" 2>&1)"
+fi
+as_user "umask 077 && echo untrusted > $front.tmp && mv -f $front.tmp $front"
+if wait_for 10 ff_front && [[ ! -e "$front" ]]; then
+    pass "browser-front-request" "the user's request put untrusted's Firefox in front on tag 3, and was removed"
+else
+    fail "browser-front-request" "$(ff_record); the request: $(ls -la "$front" 2>&1)"
+fi
+stop_zone untrusted
+echo "GT KEY-BROWSER-LAUNCH"
+if wait_for 120 grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
+    pass "browser-key-launches" "with untrusted stopped, the browser key started Firefox: $(grep '^title=' "$RT/kryptik/focus")"
+else
+    fail "browser-key-launches" "$(ff_record)"
 fi
 stop_zone untrusted
 echo "GT KEY-BROWSER-BACK"
@@ -1555,7 +1816,17 @@ echo "GT KEY-BROWSER-BACK"
 # its clients and takes keys as before. Last, so a desktop that did not come back ends no round.
 vt_is() { [[ "$(fgconsole 2>/dev/null)" == "$1" ]]; }
 answers() { timeout 10 su -s /bin/bash "$USER_NAME" -c "XDG_RUNTIME_DIR=$RT WAYLAND_DISPLAY=wayland-0 /usr/libexec/kryptik/wlprobe list" 2>&1 | grep -q 'sync done'; }
-menus_vt="$(menu_windows)"
+# The input devices the seat handed dwl: it lets them go while tty2 is in front, and libinput takes
+# them back a moment after dwl answers clients again. A key pressed before that is lost.
+dwl_inputs() {
+    local p f n=0
+    p="$(pgrep -u "$USER_NAME" -xo dwl)" || { echo 0; return; }
+    for f in "/proc/$p/fd/"*; do
+        [[ "$(readlink "$f" 2>/dev/null)" == /dev/input/event* ]] && n=$((n + 1))
+    done
+    echo "$n"
+}
+menus_vt="$(menu_windows)"; inputs_vt="$(dwl_inputs)"
 echo "GT KEY-VT-ADMIN"
 if wait_for 15 vt_is 2; then
     pass "vt-admin-login" "Ctrl+Alt+F2 put tty2's login in front"
@@ -1568,12 +1839,14 @@ if wait_for 15 vt_is 1 && wait_for 15 answers; then
 else
     fail "vt-desktop-back" "console $(fgconsole 2>&1); dwl $(pgrep -u "$USER_NAME" -x dwl > /dev/null && echo running || echo gone); session.log: $(tail -3 "$RT/kryptik/session.log" 2>/dev/null | tr '\n' ' ')"
 fi
+inputs_back() { [[ "$(dwl_inputs)" -ge "$inputs_vt" ]]; }
+wait_for 15 inputs_back || info "dwl holds $(dwl_inputs) input devices after the switch back, ${inputs_vt} before"
 echo "GT KEY-MENU-AFTER-VT"
 more_menus() { [[ "$(menu_windows)" -gt "$menus_vt" ]]; }
 if wait_for 15 more_menus; then
     pass "vt-desktop-takes-keys" "Alt+p opened the menu after the switch back"
 else
-    fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after"
+    fail "vt-desktop-takes-keys" "menu windows: ${menus_vt} before Alt+p, $(menu_windows) after; dwl's input devices: ${inputs_vt} before the switch, $(dwl_inputs) after; session.log: $(grep -a 'keymap' "$RT/kryptik/session.log" 2>/dev/null | tail -2 | tr '\n' ' ')"
 fi
 pkill -n -u "$USER_NAME" -f 'havoc /usr/bin/kryptik-chrome --menu' 2>/dev/null
 
@@ -1597,6 +1870,12 @@ if [[ -n "$ff_broke" ]]; then
     fi
     fail "browser-window-trace" "${ff_broke} failed; untrusted's filter, notifying instead of killing, refused Firefox in zone 0 over ${ffset:-no browser /usr set}:${ff_calls:- nothing}"
 fi
+
+# What dwl called outside its filter's list over the whole suite, which the filter logs (audit
+# type 1326) and lets through, by number and how often: the list's next entries, until none.
+dwl_unlisted="$(dmesg 2>/dev/null | grep -a 'type=1326' | grep -a 'comm="dwl"' | grep -ao ' syscall=[0-9]*' \
+    | sort | uniq -c | awk '{ printf "%s%s x%s", s, substr($2, 9), $1; s = ", " }')"
+info "dwl's calls outside its list: ${dwl_unlisted:-none}"
 
 # --- teardown ------------------------------------------------------------------------------
 # The runtime tmpfs does not survive power-off: copy the session log and the

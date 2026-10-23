@@ -139,10 +139,10 @@ for f in kryptik-0.1.0.SHA256SUMS kryptik-0.1.0.SHA256SUMS.sig release-signers k
     cmp -s "${E}/${f}" "${S}/${f}" || { red "record file ${f} is missing or changed"; break; }
 done
 [[ "$f" == SHA256SUMS ]] && cmp -s "${E}/SHA256SUMS" "${S}/SHA256SUMS" && green "the record goes up as tested, every file"
-if cmp -s "$BUNDLE" "${S}/source-${REV:0:12}.tar"; then
-    green "the source bundle goes up under the name the notes give it"
+if [[ ! -e "${S}/source-${REV:0:12}.tar.001" ]] && cmp -s "$BUNDLE" "${S}/source-${REV:0:12}.tar.000"; then
+    green "a source bundle smaller than a part goes up as one, under the name the notes give it"
 else
-    red "source-${REV:0:12}.tar is missing or differs"
+    red "source-${REV:0:12}.tar.000 is missing or differs, or there are more parts"
 fi
 if tar -I zstd -tf "${S}/kryptik-0.1.0-acceptance-logs.tar.zst" 2>/dev/null | grep -qx 'acceptance-logs/install.log'; then
     green "the acceptance logs go up as one compressed tarball"
@@ -150,13 +150,34 @@ else
     red "the acceptance logs tarball"
 fi
 N="${S}/NOTES.md"
-zsum="$(sha "${S}/kryptik-0.1.0-usb.img.zst")"; bsum="$(sha "${S}/source-${REV:0:12}.tar")"
+zsum="$(sha "${S}/kryptik-0.1.0-usb.img.zst")"; bsum="$(sha "${S}/source-${REV:0:12}.tar.000")"
 if [[ "$(head -1 "$N")" == "# Kryptik 0.1.0" ]] && grep -qF 'built from `'"${REV}"'`' "$N" && grep -qx '## Downloads' "$N" \
     && grep -qF "| \`kryptik-0.1.0-usb.img.zst\` | " "$N" && grep -qF "| \`${zsum}\` |" "$N" && grep -qF "| \`${bsum}\` |" "$N" \
+    && grep -qF "\`cat source-${REV:0:12}.tar.[0-9][0-9][0-9] > source-${REV:0:12}.tar\` joins them" "$N" \
     && grep -qF -- '-s kryptik-0.1.0.SHA256SUMS.sig < kryptik-0.1.0.SHA256SUMS' "$N" && grep -qF 'sha256sum -c --ignore-missing kryptik-0.1.0.SHA256SUMS' "$N"; then
     green "the page's text is the release notes, then each upload's size and hash and how to check a download"
 else
     red "NOTES.md"; sed 's/^/        /' "$N"
+fi
+
+# --- a source bundle larger than a part goes up in parts that cat joins --------------
+S3="${W}/stage-parts"
+head -c 10000 /dev/urandom > "${W}/big-source.tar"
+KRYPTIK_RELEASE_PART=4096 publish "$E" "$S3" --source-bundle "${W}/big-source.tar"; rc=$?
+p="${S3}/source-${REV:0:12}.tar"
+if [[ "$rc" -eq 0 ]] && has "in ${S3}: 25 files and NOTES.md" \
+    && [[ -f "${p}.000" && -f "${p}.001" && -f "${p}.002" && ! -e "${p}.003" ]] \
+    && [[ "$(stat -c %s "${p}.000")" -eq 4096 && "$(stat -c %s "${p}.002")" -eq 1808 ]] \
+    && cmp -s "${W}/big-source.tar" <(cat "${p}".[0-9][0-9][0-9]) && grep -qF "in 3 part(s) of at most 4.0KiB" "${S3}/NOTES.md"; then
+    green "a bundle larger than a part goes up in parts, which cat joins into the bundle, and the notes say so"
+else
+    red "the bundle's parts (exit ${rc}): $(cat "$OUT")"; ls -la "$S3" | sed 's/^/        /'
+fi
+KRYPTIK_RELEASE_PART=2147483648 publish "$E" "${W}/stage-part-size" --source-bundle "$BUNDLE"; rc=$?
+if [[ "$rc" -ne 0 ]] && grep -qF "a part is a number of bytes under 2 GiB" "$ERR"; then
+    green "a part of 2 GiB is refused, as the page takes no such file"
+else
+    red "a 2 GiB part size (exit ${rc})"; show
 fi
 
 # --- a production release is a release, not a pre-release ---------------------------

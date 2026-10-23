@@ -750,6 +750,7 @@ usr/lib/kryptik/guest-tests/zones-check.sh
 usr/lib/kryptik/s6-rc/compiled/servicedirs/eudev/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/getty-tty1/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/getty-tty2/run
+usr/lib/kryptik/s6-rc/compiled/servicedirs/kryptik-sound/finish
 usr/lib/kryptik/s6-rc/compiled/servicedirs/kryptik-sound/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/kryptikd-serve/run
 usr/lib/kryptik/s6-rc/compiled/servicedirs/net-zone/run
@@ -1129,6 +1130,7 @@ usr/libexec/kryptik/netzone-init.sh
 usr/libexec/kryptik/power.sh
 usr/libexec/kryptik/sntp-offset.py
 usr/libexec/kryptik/soundprobe
+usr/libexec/kryptik/state-sealed.sh
 usr/libexec/kryptik/sysinit.sh
 usr/libexec/kryptik/testctl.sh
 usr/libexec/kryptik/time-floor.sh

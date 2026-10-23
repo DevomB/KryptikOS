@@ -194,9 +194,11 @@ work in zones from a terminal and a text browser, and keep it up to date.
       pool's descriptor keeps that page after the pool is gone; the proxy's
       bounds hold it only while the pools live
       ([Wayland shared memory](design/resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
-      First the measurement (`wlprobe charge`), then the proxy punching each
-      pool's range once the pool and its buffers are gone, refusing a pool it
-      cannot punch, and a `memory.max` on the session's cgroup.
+      Built: the desktop's own cgroup, `kryptik-desktop`, under a
+      `memory.max` of a quarter of the memory, and the desktop suite's
+      measurement (`wlprobe charge keep`). Still to do: the proxy punching
+      each pool's range once the pool and its buffers are gone, refusing a pool
+      it cannot punch.
 
 ## Version 2
 
@@ -233,6 +235,10 @@ A desktop someone can live in, built the same way.
 - **Input methods.** Decided (ADR-028): none for 1.0; after it, one per
   zone that asks, fcitx5 as a software image, its virtual keyboard bound
   to the zone ([input methods](design/input-methods.md)).
+- **Time zones.** None is shipped yet, so every clock reads UTC. Still to
+  come: the IANA database, built and verified as any other source; the
+  user's zone asked at first boot; and a zone's file choosing that zone or
+  UTC, which a zone that should not tell where its user is keeps.
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so

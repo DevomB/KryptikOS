@@ -181,6 +181,18 @@ Nothing on it is in use by this system. To replace it, run again with
     say "replacing ${labels} on ${TARGET}"
 fi
 
+# Another disk here with a Kryptik root, which the boot may take instead: the kernel takes the first
+# kryptik-a it finds, and with the same release on both, dm-verity passes its root, whose state
+# then follows. Told, not refused: such a disk may hold someone's only copy of their state.
+others=""
+for p in $(kryptik_named kryptik-a); do
+    d="/dev/$(basename "$(readlink -f "/sys/class/block/${p##*/}/..")")"
+    [ "$d" != "$TARGET_REAL" ] || continue
+    case " $root_disks " in *" $d "*) continue ;; esac
+    case " $others " in *" $d "*) ;; *) others="${others:+$others }$d" ;; esac
+done
+[ -z "$others" ] || say "WARNING: another disk here (${others}) carries a Kryptik installation: with both in this machine, the boot may take its system and its state. Take it out, or install to it instead with --replace-kryptik."
+
 # --- what we are installing, from the medium ---------------------------------
 media="$(sed -n 's/^media=//p' /run/kryptik/boot-identity 2>/dev/null)"
 [ -n "$media" ] || die "this is not an install medium (no kryptik.media= on the signed command line)"
@@ -346,7 +358,7 @@ plen="$(LC_ALL=C.UTF-8; echo "${#STATE_PASS}")"
 [ "$plen" -ge 8 ] || die "the state passphrase is ${plen} characters; it needs at least 8, as a stolen disk can be guessed at offline; nothing was written"
 # Named in the firmware once nothing is left to refuse, and before anything
 # is written to the disk: an install refused above has changed nothing.
-kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOUT}; nothing was written"
+kb_store "$LAYOUT" || die "the firmware did not take the keyboard layout ${LAYOUT}, as its variable store may be full or locked; nothing was written. --keyboard us stores nothing where no layout is stored yet, and the passphrase is then asked under us at every boot"
 
 # --- partition -------------------------------------------------------------
 say "partitioning (sfdisk, GPT: kryptik-esp, kryptik-a, kryptik-b, kryptik-state)"

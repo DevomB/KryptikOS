@@ -94,10 +94,12 @@ declare -F create_user >/dev/null || { echo "no create_user in $SRC"; exit 1; }
 declare -F new_user >/dev/null || { echo "no new_user in $SRC"; exit 1; }
 say() { echo "kryptik-firstboot: $*"; }
 getent() { return 0; }
-useradd() { printf '%s' "${@: -1}" > "$T/useradd.in"; }
+useradd() { printf '%s' "${@: -1}" > "$T/useradd.in"; printf '%s\n' "$@" > "$T/useradd.args"; }
 names() { rm -f "$T/useradd.in"; : > "$T/screen"; name=""; printf '%b' "$1" >&7; new_user; RC=$?; GOT="$(cat "$T/useradd.in" 2>/dev/null)"; }
 names 'ana\n'
 [[ "$RC|$GOT|$name" == "0|ana|ana" ]] && ok "a name of lower-case letters makes the user" || bad "a plain name: rc=$RC useradd got '$GOT', name '$name'"
+grep -qx 'kryptik,wheel' "$T/useradd.args" && ok "the user is in kryptik and wheel, not seat, which is dwl's" \
+    || bad "useradd's arguments: $(tr '\n' ' ' < "$T/useradd.args")"
 names 'Ana\nana\n'
 [[ "$RC|$GOT" == "0|ana" ]] && grep -qF "refusing user name 'Ana': lower-case" "$T/screen" \
     && ok "a refused name is told why and asked for again" || bad "a refused name: rc=$RC useradd got '$GOT', screen: $(tr '\n' '|' < "$T/screen")"
