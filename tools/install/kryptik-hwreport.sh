@@ -441,22 +441,24 @@ laptop() {
     done
     printf 'power controller: %s\n' "${pmc:-none}"
     # What ended the last sleep: the interrupt, where the kernel keeps it (PM_SLEEP_DEBUG), and the
-    # wakeup sources that fired most since boot.
+    # wakeup sources that fired most since boot. By their events: kryptikd sleeps without the
+    # wakeup_count handshake, so each source's wakeup_count stays 0.
     irq="$(one "$SYS/power/pm_wakeup_irq")"
     printf 'woken by irq: %s\n' "${irq:--}"
     for w in "$SYS"/class/wakeup/wakeup*; do
-        wn="$(int "$w/wakeup_count")"
+        wn="$(int "$w/event_count")"
         [ "${wn:-0}" -gt 0 ] && printf '%s %s\n' "$wn" "$(one "$w/name")"
-    done | sort -rn | head -n 5 | while read -r wn ws; do printf 'wakeup source %s wakeup_count %s\n' "$ws" "$wn"; done
-    # With the IOMMU on, AMD's family 1Ah processors sleep only where the firmware gives Pluton's
-    # device (MSFT0201) and has pre-boot DMA protection on (IVRS IVinfo bit 1), as amd-debug-tools
-    # checks: a firmware setting can take either away.
+    done | sort -rn | head -n 5 | while read -r wn ws; do printf 'wakeup source %s events %s\n' "$ws" "$wn"; done
+    # With the IOMMU on, amd-debug-tools holds AMD's family 1Ah models 0x20-0x2e, 0x60-0x6e and
+    # 0x70-0x7e to the ACPI device MSFT0201, and to pre-boot DMA protection (IVRS IVinfo bit 1) or
+    # MSFT0201 named in the IVRS: a firmware setting can take either away.
     if [ -r "$SYS/firmware/acpi/tables/IVRS" ]; then
         msft=absent
         for a in "$SYS"/bus/acpi/devices/MSFT0201:*; do [ -e "$a" ] && msft=present; done
         iv="$(od -An -tu4 -j36 -N4 "$SYS/firmware/acpi/tables/IVRS" 2>/dev/null | tr -d ' ')"
         case "$iv" in ''|*[!0-9]*) dp=- ;; *) dp=off; [ $(( iv & 2 )) -eq 0 ] || dp=on ;; esac
-        printf 'amd iommu: msft0201 %s, pre-boot dma protection %s\n' "$msft" "$dp"
+        named=no; LC_ALL=C grep -aq MSFT0201 "$SYS/firmware/acpi/tables/IVRS" && named=yes
+        printf 'amd iommu: msft0201 %s, pre-boot dma protection %s, msft0201 in ivrs %s\n' "$msft" "$dp" "$named"
     fi
     # Intel's image processing units by PCI ID: the IPU6 and IPU7 ones 6.18's drivers bind (ipu6.h,
     # staging ipu7.h), and IPU8's, which staging ipu7 names but does not bind yet.

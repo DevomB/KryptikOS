@@ -456,21 +456,24 @@ nolap "and no AMD IOMMU line without an IVRS table" '^amd iommu: '
 echo "-- what ended a sleep, and AMD's sleep needs with the IOMMU on"
 put sys/power/pm_wakeup_irq 9
 put sys/class/wakeup/wakeup0/name PNP0C0D:00
-put sys/class/wakeup/wakeup0/wakeup_count 2
+put sys/class/wakeup/wakeup0/event_count 2
+# A wakeup_count the kernel keeps only after the handshake kryptikd does not make.
+put sys/class/wakeup/wakeup0/wakeup_count 0
 put sys/class/wakeup/wakeup1/name alarmtimer.0.auto
-put sys/class/wakeup/wakeup1/wakeup_count 0
+put sys/class/wakeup/wakeup1/event_count 0
 mkdir -p "$W/sys/firmware/acpi/tables"
 { head -c 36 /dev/zero; printf '\002\000\000\000'; } > "$W/sys/firmware/acpi/tables/IVRS"
 put sys/bus/acpi/devices/MSFT0201:00/status 15
 laptop_now
 lap "the interrupt that ended the last sleep"   '^woken by irq: 9$'
-lap "a wakeup source that fired, and how often" '^wakeup source PNP0C0D:00 wakeup_count 2$'
+lap "a wakeup source that fired, by its events" '^wakeup source PNP0C0D:00 events 2$'
 nolap "not one that never did"                  '^wakeup source alarmtimer'
-lap "Pluton's device and pre-boot DMA protection, read from the firmware" '^amd iommu: msft0201 present, pre-boot dma protection on$'
-{ head -c 36 /dev/zero; printf '\000\000\000\000'; } > "$W/sys/firmware/acpi/tables/IVRS"
+lap "MSFT0201 and pre-boot DMA protection, read from the firmware" '^amd iommu: msft0201 present, pre-boot dma protection on, msft0201 in ivrs no$'
+# The protection off, MSFT0201 gone from ACPI's devices and named in the IVRS instead.
+{ head -c 36 /dev/zero; printf '\000\000\000\000'; printf 'IVHD MSFT0201'; } > "$W/sys/firmware/acpi/tables/IVRS"
 rm -rf "$W/sys/bus/acpi/devices/MSFT0201:00"
 laptop_now
-lap "either taken away by a firmware setting"   '^amd iommu: msft0201 absent, pre-boot dma protection off$'
+lap "each taken away, and MSFT0201 named in the IVRS" '^amd iommu: msft0201 absent, pre-boot dma protection off, msft0201 in ivrs yes$'
 
 echo
 echo "${PASS} passed, ${FAIL} failed"
