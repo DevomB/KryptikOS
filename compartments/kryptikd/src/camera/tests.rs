@@ -119,5 +119,7 @@ fn a_camera_still_held_is_not_taken_again() {
     assert!(kept(&s, &run), "held, with an interface to take again");
     fs::write(s.join("module").join(DRIVER).join("refcnt"), "0\n").unwrap();
     assert!(!kept(&s, &run), "let go of");
+    fs::remove_dir_all(s.join("module").join(DRIVER)).unwrap();
+    assert!(!kept(&s, &run), "unloaded");
     let _ = fs::remove_dir_all(&s);
 }
