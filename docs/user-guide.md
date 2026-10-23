@@ -328,8 +328,8 @@ to a minute (the lock shows WAIT and the seconds); Escape clears what was
 typed. If the lock's program dies, the screen stays locked and the lock
 starts again. The screen also locks by itself after ten minutes without a
 key, a click or the pointer moving; to change that, write the minutes to
-`~/.config/kryptik/lock-idle` (0 for never), which the next login reads. A
-minute after it locks, the screens turn off; any key or movement turns them
+`~/.config/kryptik/lock-idle` (0 for never), which the next login reads. Half
+a minute after it locks, the screens turn off; any key or movement turns them
 on again, and that key goes to the lock.
 
 `kryptik suspend`, from a terminal of zone 0's, locks the screen and puts

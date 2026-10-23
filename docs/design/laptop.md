@@ -349,7 +349,7 @@ beside `resume-state`, with its own pause after a wrong one, and on to
 cryptsetup's standard input. On idle, the chrome starts `kryptik-lock
 --idle`, which waits on dwl's `ext-idle-notify-v1` and locks after ten
 minutes without input, or the minutes in `~/.config/kryptik/lock-idle` (0
-never). A minute after the lock it turns the screens off through dwl's
+never). Half a minute after the lock it turns the screens off through dwl's
 `zwlr_output_power_manager_v1`, and the first key or movement turns them on
 again; an unlock turns them on as well, should the watcher be gone. It
 counts input, and a hold dwl counts for a zone under the conditions in

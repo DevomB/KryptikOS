@@ -5,7 +5,7 @@
  *                                  a lock up already, have that one do it
  *   kryptik-lock --idle SECONDS [--blank SECONDS] [--sleep SECONDS]
  *                                  lock each time the session has had no input that long, and
- *                                  after the lock turn the screens off that much later (60 s;
+ *                                  after the lock turn the screens off that much later (30 s;
  *                                  0 never) and have the machine sleep (never unless given)
  *
  * A lock that is up writes its supervisor's pid to $XDG_RUNTIME_DIR/kryptik/lock.pid, and
@@ -1088,10 +1088,11 @@ static void forward(int sig)
 
 int main(int argc, char **argv)
 {
-	/* --idle SECONDS, then --blank SECONDS (60 s unless given) and --sleep SECONDS (never
-	 * unless given), each after the lock; a week at most, so the compositor's milliseconds fit. */
+	/* --idle SECONDS, then --blank SECONDS (30 s unless given: long enough to see it locked, and
+	 * no lit panel after) and --sleep SECONDS (never unless given), each after the lock; a week
+	 * at most, so the compositor's milliseconds fit. */
 	if (argc >= 3 && argc % 2 == 1 && !strcmp(argv[1], "--idle")) {
-		long secs = seconds(argv[2]), blank = 60, nap = 0;
+		long secs = seconds(argv[2]), blank = 30, nap = 0;
 		int ok = secs > 0;
 		for (int i = 3; ok && i + 1 < argc; i += 2) {
 			if (!strcmp(argv[i], "--blank"))
