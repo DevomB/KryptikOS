@@ -650,9 +650,12 @@ stops listing until it is on again, is never turned on by it. A monitor no
 line names gets 2 if it is a built-in panel (eDP, LVDS, DSI) of 192 dpi or
 more and 1200 lines or more, as GNOME decides, and 1 otherwise: a
 television's EDID may give its aspect ratio as its size, so only built-in
-panels are measured. Zones are told the scale through `wl_output`, rounded
-up to a whole number, and draw that much larger; the compositor scales them
-down to a fraction such as 1.5. dwl and the proxy needed no change.
+panels are measured. A zone's window is told the exact scale through
+`wp_fractional_scale_v1`, which the proxy passes on (`policy.rs`), and a
+client that reads only `wl_output`'s whole number draws at that, which the
+compositor scales down to the fraction. havoc and kryptik-lock draw at 1 at
+every scale, so the compositor enlarges them, and they look soft at any scale
+but 1.
 
 Check: `make gui-test` writes the user's line for the first monitor at 1 and
 `* 2`, plugs a second monitor in, and finds it at scale 2 and the first at 1;
