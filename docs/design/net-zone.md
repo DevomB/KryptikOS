@@ -559,10 +559,14 @@ later by `request_module`, which the kernel cannot run here
 (`STATIC_USERMODEHELPER` with no helper), `build/config/modprobe.d/wifi.conf`
 loads with them:
 - Intel's op modes, `iwlmvm` and `iwlmld`;
-- `qrtr`, the socket family Qualcomm's QMI opens for `ath11k` and `ath12k`;
+- for `ath11k` and `ath12k`, `qrtr`, the socket family Qualcomm's QMI opens,
+  and `michael_mic`, the cipher they allocate by name for TKIP keys;
 - Broadcom's vendor code.
 
-Stage 05 fails a build that leaves out a module a softdep names.
+Broadcom's is best effort. It loads just after `brcmfmac`, and so before the
+attach that asks for it, but nothing holds that attach back, and a card whose
+attach comes first stays down until the driver is loaded again. Stage 05
+fails a build that leaves out a module a softdep names.
 
 ## Non-goals
 
