@@ -1973,11 +1973,13 @@ spawnergone(int fd, uint32_t mask, void *data)
 \t\treturn;
 """),
     # The backdrop under the lock, where it has not drawn yet or while it starts again, in the
-    # root colour rather than a grey of its own.
+    # root colour rather than a grey of its own. Opaque whatever the root's alpha: it hides the
+    # zones' windows.
     ("""\tlocked_bg = wlr_scene_rect_create(layers[LyrBlock], sgeom.width, sgeom.height,
 \t\t\t(float [4]){0.1f, 0.1f, 0.1f, 1.0f});
 """,
-     """\tlocked_bg = wlr_scene_rect_create(layers[LyrBlock], sgeom.width, sgeom.height, rootcolor);
+     """\tlocked_bg = wlr_scene_rect_create(layers[LyrBlock], sgeom.width, sgeom.height,
+\t\t\t(float [4]){rootcolor[0], rootcolor[1], rootcolor[2], 1.0f});
 """),
 ]
 
