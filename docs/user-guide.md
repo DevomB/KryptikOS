@@ -462,10 +462,12 @@ SCALE` draws everything on that monitor SCALE times as large, from 0.5 to 4,
 1.5 say on a laptop's high-resolution panel, and `kryptik display NAME SCALE
 X Y` also puts its top left corner at X,Y. The choice is kept for every
 login and made again whenever the monitor is plugged in; NAME `*` stands for
-every monitor no other line names, and `kryptik display NAME auto` gives the
-monitor back its own: 2 for a built-in panel of 192 dpi or more, 1 for the
-rest. Zones are told the scale rounded up to a whole number, and draw that
-much larger.
+every monitor no other line names. `kryptik display NAME auto` drops that
+monitor's line, so it takes the `*` line if there is one, and otherwise 2 for a
+built-in panel of 192 dpi or more and 1200 lines or more, 1 for the rest. A
+zone's window is told the exact scale, and the browser draws sharp at it.
+Kryptik's terminals, the menu and the lock screen draw at 1 and are enlarged,
+so at any scale but 1 they look soft.
 
 **USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
 one in opens a window of the chrome that names each partition by what the
