@@ -191,7 +191,9 @@ firmware from the verified root, so replacing it means re-signing the kernel.
 
 **Left out:** NVIDIA (nouveau needs tens of megabytes of GSP firmware per
 generation, and the firmware framebuffer gives those machines a display);
-Bluetooth, and the firmware of sound DSPs, which nothing here drives yet.
+Bluetooth; and the firmware of Intel's and AMD's sound DSPs, which nothing
+here drives yet. Cirrus's CS35L54, CS35L56 and CS35L57 speaker amplifiers'
+DSP images and tunings ship with their driver.
 What is not on the list is not shipped, and the other way round the
 acceptance checks that every file a shipped module names (`MODULE_FIRMWARE`)
 and linux-firmware has ships, or that `build/config/firmware-accepted.txt`
