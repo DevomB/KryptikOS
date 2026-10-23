@@ -1,0 +1,25 @@
+From: DevomB <Devom.hb@yahoo.com>
+Subject: [PATCH] Read Kryptik's system config in place of the working directory's
+
+havoc looks for havoc.cfg in the user's config directories, then in the
+working directory. Kryptik ships its file under /usr, which every terminal,
+zone 0's and a zone's, can read: that file is the last resort instead, and a
+havoc.cfg in whatever directory a terminal starts in no longer configures it.
+---
+ main.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -1884,7 +1884,9 @@
+ 			return f;
+ 	}
+ 
+-	f = fopen(CONF_FILE, "r");
++	/* Kryptik: the system's file, which a zone's terminal can read under /usr
++	 * too, rather than a havoc.cfg in the working directory. */
++	f = fopen("/usr/share/kryptik/havoc.cfg", "r");
+ 	return f;
+ }
+ 

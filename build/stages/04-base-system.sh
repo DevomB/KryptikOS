@@ -186,7 +186,7 @@ PACKAGES=(
     # every image all the same, as the images' inputs list those the sysroot has.
     # dwl's three inputs are digests, so editing any of them rebuilds it.
     "dwl"         "s_dwl $(sha256_of "${KRYPTIK_ROOT}/build/desktop/dwl-config.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/build/desktop/zone-colours.h" 2>/dev/null || echo none) $(sha256_of "${KRYPTIK_ROOT}/tools/desktop/dwl-zone-borders.py" 2>/dev/null || echo none)"
-    "havoc"       "s_havoc"
+    "havoc"       "s_havoc $(sha256_of "${KRYPTIK_ROOT}/build/desktop/havoc.cfg" 2>/dev/null || echo none)"
     "fonts"       "s_fonts"
     "lynx"        "s_lynx"
     "nano"        "native_build nano-${V_NANO}.tar.xz nano-${V_NANO} --sysconfdir=/etc --enable-utf8"

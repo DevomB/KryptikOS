@@ -289,8 +289,10 @@ passwords. Over a serial line, answer the setup's questions there: the
 serial console shows its login prompt only once setup has ended.
 
 Log in as the user on tty1. The desktop session starts from the profile:
-dwl with the Kryptik chrome as its startup command. Every application
-window belongs to a zone and carries that zone's border colour. The window
+dwl with the Kryptik chrome as its startup command. The desktop is black,
+and the terminals, the menu and the screen lock write in green. Every
+application window belongs to a zone and carries that zone's border colour,
+which the green never stands in for. The window
 with focus has the full-width border; the others' borders are narrower, in
 the same colour. Nothing else on screen names a window's zone, since dwl
 draws no titlebar: to name it in words, press Alt+p, then type f and Enter.
@@ -312,6 +314,8 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 | brightness keys | the screen's backlight up or down a step |
 | Alt+e | fullscreen (the window keeps its zone border, so the zone stays visible) |
 | Alt+Shift+c | close the focused window |
+| Ctrl+Shift+c / Ctrl+Shift+v | in a terminal: copy the selection, paste; through the terminal's own zone's clipboard |
+| Ctrl+Shift+Page Up / Page Down | in a terminal: scroll back through the last 2000 lines, and forward again; typing returns to the bottom |
 | Alt+j / Alt+k | focus next / previous |
 | Alt+, / Alt+. | the monitor to the left / right; with Shift, the focused window moves there |
 | Alt+1 … Alt+9 / Alt+Shift+1 … 9 | show a tag / move the focused window to it; vault windows keep to tag 9 |
@@ -328,8 +332,8 @@ to a minute (the lock shows WAIT and the seconds); Escape clears what was
 typed. If the lock's program dies, the screen stays locked and the lock
 starts again. The screen also locks by itself after ten minutes without a
 key, a click or the pointer moving; to change that, write the minutes to
-`~/.config/kryptik/lock-idle` (0 for never), which the next login reads. A
-minute after it locks, the screens turn off; any key or movement turns them
+`~/.config/kryptik/lock-idle` (0 for never), which the next login reads. Half
+a minute after it locks, the screens turn off; any key or movement turns them
 on again, and that key goes to the lock.
 
 `kryptik suspend`, from a terminal of zone 0's, locks the screen and puts
@@ -407,6 +411,15 @@ camera (`CAM`), whichever zones they are. Built-in and USB cameras that speak th
 most do; the cameras of recent Intel laptops that need Intel's image
 processing in userspace (MIPI cameras behind the IPU6) and infrared
 face-login cameras do not. `vault` and the net zone never get the camera.
+
+Firefox in a zone is not told when the camera is given or taken back.
+- Give the camera before opening the call. A page that looked for a camera
+  before goes on hearing there is none, even after a reload. Turning the
+  camera on in the call finds it, and so does starting Firefox again.
+- Turn the camera off in the call, or leave the call, before `k` takes the
+  camera back or the screen locks, or as soon as you can after. A call still
+  showing a camera that was taken back keeps a processor core busy and
+  keeps hold of the camera, and until then `k` cannot give it to any zone.
 
 For administration, Ctrl+Alt+F2 gives a text login: log in as the user, and
 `su` becomes root, where passwords change: `passwd NAME` for the user,
@@ -649,6 +662,10 @@ shows each timer, its timeout and whether it is running.
   amplifier. A USB headset or sound card works on all of them
   ([laptop sound](design/laptop-audio.md)). Nothing plays through a
   monitor's speakers over HDMI or DisplayPort.
+
+  Cirrus's CS35L54, CS35L56 and CS35L57 amplifiers on I2C are the
+  exception: their drivers are built, but they have not yet been tried on a
+  laptop that has them.
 - The laptop makers' own drivers (for ThinkPads, IdeaPads and ASUS, Dell
   and HP laptops) are not built. Some laptops, ThinkPads among them, send
   the microphone key only through one, so there that key does nothing;
@@ -673,9 +690,11 @@ shows each timer, its timeout and whether it is running.
   it is typed on a keyboard whose driver is in the kernel itself: a laptop's
   built-in keyboard on its PS/2 controller, as most are, or on I2C behind
   Intel's or AMD's usual controller, or a plain USB keyboard. A USB keyboard
-  its maker's own driver claims (some Apple, Microsoft and Cherry models),
-  and an I2C one on an older Atom, Haswell or Broadwell laptop, type nothing
-  there: plug in a plain USB keyboard.
+  its maker's own driver claims (some Apple, Microsoft and Cherry models) and
+  one behind Intel's Touch Host Controller type nothing there, though they
+  work once the system is up: plug in a plain USB keyboard. An I2C keyboard
+  on an older Atom, Haswell or Broadwell laptop, and the few others in
+  [status](status.md#known-gaps), type nothing at all.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - No time zone database is shipped yet, so every clock reads UTC, zone 0's

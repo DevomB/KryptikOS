@@ -58,6 +58,9 @@ EOF
 # performs the unmount and the hardware poweroff after this exits.
 
 exec >/dev/console 2>&1
+# A console= with no port behind it, such as a laptop's legacy ttyS0, fails every write, and
+# under -e the first echo would end this script before anything is brought down.
+stty -F /dev/console > /dev/null 2>&1 || exec >/dev/tty0 2>&1
 
 # Say so on the console at every step: shutdownd waits for this script to
 # exit before it touches the hardware, so a step that blocks here looks like
