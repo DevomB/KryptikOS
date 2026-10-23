@@ -59,8 +59,16 @@ media it tested.
   tunnel. A monitor over USB-C works where the laptop's controller drives
   it. Building them comes with a policy for which plugged devices are let in.
 - The state passphrase is asked in sysinit, before eudev loads any module,
-  so only built-in keyboard drivers type it: PS/2 (atkbd) and USB. A laptop
-  whose built-in keyboard is on I2C needs a USB keyboard there.
+  so only a keyboard whose drivers are built in types it: PS/2 (atkbd), a
+  USB keyboard the generic HID driver takes, and HID over I2C behind
+  Intel's LPSS (Skylake on) or AMD's DesignWare controller, which stage 05
+  and CI hold built in (`build/lib/kconfig-check.sh`). No machine with an
+  I2C keyboard has typed it in a test yet. A USB keyboard its vendor's HID
+  driver claims (some Apple, Microsoft and Cherry models) types only once
+  eudev has loaded that driver. These type nothing there: an I2C keyboard
+  on Apollo Lake, Gemini Lake, Haswell or Broadwell, whose pin controllers
+  are not built, or behind AMD's MP2 host, and a Surface or MacBook SPI
+  keyboard.
 - The keys that sign a release from 1.0.0 on are held on GitHub, in the
   repository's protected release environment: a release tag's build uses
   them once the maintainer approves it, so a release is as trustworthy as

@@ -2,8 +2,9 @@
 # kernel (docs/design/boot-and-updates.md). Merged after hardening.fragment;
 # check with `make validate-kernel-boot`.
 # With no initramfs, a driver is built in (ADR-013) only to find, verify or
-# mount the root, to give a console and keyboard before it, or where a module
-# cannot work (netfilter, microcode, the watchdog, some platform drivers).
+# mount the root, to give a console and a keyboard before eudev's coldplug
+# (the state passphrase is asked first), or where a module cannot work
+# (netfilter, microcode, the watchdog, some platform drivers).
 # Everything else is a signed module loaded by eudev at coldplug, the test VM's
 # network and display included. Stage 05 fails an image over size-budget.
 
@@ -169,30 +170,34 @@ CONFIG_MMC_REALTEK_USB=m
 CONFIG_USB_UHCI_HCD=y
 CONFIG_USB_OHCI_HCD=y
 CONFIG_USB_OHCI_HCD_PCI=y
-# Touchpads and touchscreens: HID over DesignWare I2C (Intel LPSS or the AMD
-# platform device), interrupts via the pin controller. Modules, except AMD's pin
-# controller and the DesignWare core and platform glue: some laptops' ACPI uses
-# them during boot and fails for good if they are not there yet.
+# Touchpads, touchscreens and some laptops' built-in keyboards: HID over
+# DesignWare I2C (Intel LPSS or the AMD platform device), interrupts via the pin
+# controller. Built in, so such a keyboard types the state passphrase, which
+# sysinit asks before eudev loads any module; some laptops' ACPI also uses the
+# bus during boot. kconfig-check.sh holds each link built in. hid-multitouch
+# stays a module: hid-generic has the device until it loads.
 CONFIG_X86_INTEL_LPSS=y
 CONFIG_X86_AMD_PLATFORM_DEVICE=y
-CONFIG_MFD_INTEL_LPSS_PCI=m
-CONFIG_MFD_INTEL_LPSS_ACPI=m
+CONFIG_MFD_INTEL_LPSS_PCI=y
+CONFIG_MFD_INTEL_LPSS_ACPI=y
 CONFIG_I2C_DESIGNWARE_CORE=y
 CONFIG_I2C_DESIGNWARE_PLATFORM=y
+# DesignWare outside Skylake-on LPSS (Medfield, Merrifield, Bay Trail, Haswell
+# in PCI mode, Braswell, Elkhart Lake's PSE, AMD Navi's UCSI bus): no keyboard.
 CONFIG_I2C_DESIGNWARE_PCI=m
 CONFIG_PINCTRL_AMD=y
-CONFIG_PINCTRL_SUNRISEPOINT=m
-CONFIG_PINCTRL_CANNONLAKE=m
-CONFIG_PINCTRL_ICELAKE=m
-CONFIG_PINCTRL_JASPERLAKE=m
-CONFIG_PINCTRL_ELKHARTLAKE=m
-CONFIG_PINCTRL_LAKEFIELD=m
-CONFIG_PINCTRL_TIGERLAKE=m
-CONFIG_PINCTRL_ALDERLAKE=m
-CONFIG_PINCTRL_METEORLAKE=m
-CONFIG_PINCTRL_METEORPOINT=m
-CONFIG_PINCTRL_INTEL_PLATFORM=m
-CONFIG_I2C_HID_ACPI=m
+CONFIG_PINCTRL_SUNRISEPOINT=y
+CONFIG_PINCTRL_CANNONLAKE=y
+CONFIG_PINCTRL_ICELAKE=y
+CONFIG_PINCTRL_JASPERLAKE=y
+CONFIG_PINCTRL_ELKHARTLAKE=y
+CONFIG_PINCTRL_LAKEFIELD=y
+CONFIG_PINCTRL_TIGERLAKE=y
+CONFIG_PINCTRL_ALDERLAKE=y
+CONFIG_PINCTRL_METEORLAKE=y
+CONFIG_PINCTRL_METEORPOINT=y
+CONFIG_PINCTRL_INTEL_PLATFORM=y
+CONFIG_I2C_HID_ACPI=y
 CONFIG_HID_MULTITOUCH=m
 # From Lunar Lake on, a touchpad or touch screen may sit behind the Touch Host Controller rather
 # than an LPSS I2C controller: QuickI2C for its I2C mode, QuickSPI for its SPI mode, which Meteor

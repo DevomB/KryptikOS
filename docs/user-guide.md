@@ -659,9 +659,12 @@ shows each timer, its timeout and whether it is running.
   at all. A monitor over USB-C works where the laptop's own USB-C controller
   drives it, as on most, and many docks fall back to plain USB-C.
 - The state passphrase at boot is asked before any driver module loads, so
-  it is typed on a built-in keyboard on the laptop's PS/2 controller, as
-  most are, or on a USB keyboard. A built-in keyboard on I2C, which a few
-  laptops have, types nothing there: plug in a USB keyboard.
+  it is typed on a keyboard whose driver is in the kernel itself: a laptop's
+  built-in keyboard on its PS/2 controller, as most are, or on I2C behind
+  Intel's or AMD's usual controller, or a plain USB keyboard. A USB keyboard
+  its maker's own driver claims (some Apple, Microsoft and Cherry models),
+  and an I2C one on an older Atom, Haswell or Broadwell laptop, type nothing
+  there: plug in a plain USB keyboard.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
 - No time zone database is shipped yet, so every clock reads UTC, zone 0's

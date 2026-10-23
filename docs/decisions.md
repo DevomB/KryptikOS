@@ -215,9 +215,10 @@ on a root image of about 1.6 GB, and an input nobody here can read.
 ## ADR-013: A driver is built in only when boot needs it
 
 With no initramfs, a driver is built into the signed kernel only if it finds,
-verifies or mounts the root; gives a console and keyboard before the root is
-mounted; or cannot work as a module (netfilter for the `net` zone, microcode,
-the watchdog, a few platform drivers that misbehave when loaded late).
+verifies or mounts the root; gives a console and keyboard before eudev's
+coldplug, where the state passphrase is asked; or cannot work as a module
+(netfilter for the `net` zone, microcode, the watchdog, a few platform
+drivers that misbehave when loaded late).
 Everything else, including every network card, GPU and pointing device, is a
 signed module that eudev loads at coldplug. What Kryptik never uses (network
 filesystems, CardBus, AGP, software RAID, conntrack helpers) is not built.
