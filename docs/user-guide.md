@@ -124,6 +124,17 @@ older EPYC models: they keep the firmware's own microcode, the kernel log
 says `No sha256 digest for patch ID`, and every login prompt says to update
 the firmware.
 
+Leave the firmware's IOMMU, its DMA protection and Pluton on, as they come.
+- Without the IOMMU, every device can reach all of memory, and nothing at
+  the login prompt says so.
+- With the IOMMU on, AMD's own sleep checker holds the Ryzen AI 300 and
+  Ryzen AI Max processors to two things:
+  - the firmware's ACPI device `MSFT0201`;
+  - pre-boot DMA protection, or `MSFT0201` named in the firmware's IVRS
+    table.
+
+  A firmware setting can take either away.
+
 A firmware that also keeps Microsoft's certificates in `db` boots whatever
 Microsoft signs, so someone with the machine in hand can start such a system
 and have it ask for the state passphrase as Kryptik does. Taking Microsoft's
@@ -463,6 +474,26 @@ joins, wherever it is, so anyone listening nearby learns it knows that
 network. A new passphrase keeps it so; forget the network to stop.
 `kryptik wifi list` names the saved networks, and `kryptik wifi forget SSID`
 removes one.
+
+**Your country's radio rules.** Nothing sets the country the radio's rules
+come from, so until it joins a network that names one, the radio keeps the
+world's rules:
+- the 6 GHz band is off, so a network on 6 GHz alone is never seen;
+- on 5 GHz it only listens, and joins a network there once it has heard it.
+
+The rules go back to the world's at every disconnect. For your own country's
+rules until the next boot:
+1. At the administration login, run `su`.
+2. Run `/usr/sbin/iw reg set XX`, where `XX` is your country's two letters
+   (`US`, `DE`).
+3. `/usr/sbin/iw reg get` shows the rules in force.
+
+A radio whose firmware keeps its own rules, as Intel's do, follows those
+instead, and `/usr/sbin/iw reg get` names it as self-managed.
+
+A Wi-Fi 7 network that offers only SAE-EXT-KEY, the WPA3 mode Wi-Fi 7's
+multi-link operation uses, is not joined. Have the router offer WPA3 (SAE)
+or WPA2 beside it.
 
 **The local network.** Every zone with a network reaches the internet through
 the net zone. The network the machine itself is on, with its router, its
