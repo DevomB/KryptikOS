@@ -116,6 +116,7 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
     "expect:GT POINTER-ZONE0" "pointer:-4000,-4000" "pointer:120,120" \
     "expect:GT POINTER-UNTRUSTED" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT TOUCH-HOVER-ZONE0" "pointer:4000,0" "pointer:-80,0" "pointer:-1,0" \
     "expect:GT TOUCH-UNTRUSTED" "touch:250,500" \
     "expect:GT SCREENSHOT-POPUP" "sleep:2" "screendump:${SHOT_POPUP}" \
     "expect:GT KEY-MENU-POPUP" "key:alt+p" \
@@ -184,7 +185,7 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             second-head-scale-chosen zone-sees-heads-unnamed \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group seat-is-dwls dwl-confined-to-its-files \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
-            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name touch-picks-window zone-fractional-scale compositor-socket-unreached \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name touch-picks-window touch-presses-window zone-fractional-scale compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
             zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key marks-fullscreen zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do

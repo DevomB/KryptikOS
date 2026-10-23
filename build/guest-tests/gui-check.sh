@@ -21,6 +21,7 @@
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
+#   GT TOUCH-HOVER-ZONE0                            move the pointer right, onto zone 0's window
 #   GT TOUCH-UNTRUSTED                              tap the screen's left half (the newest window)
 #   GT SCREENSHOT-POPUP                             take a screenshot
 #   GT KEY-MENU-POPUP                               press Alt+p (the chrome menu)
@@ -1199,6 +1200,13 @@ mark touch untrusted
 launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 30" > "$LOG/launch-touch.out" 2>&1
 wait_for 20 probe_committed touch
 sleep 2
+# The pointer rests on zone 0's window, the right half, when the tap comes: the press must
+# reach the window tapped, not the one under the pointer. zone 0's probe says each entry.
+entered="$(grep -c 'set a ' "$LOG/touch-zone0.out")"
+zone0_entered() { [[ "$(grep -c 'set a ' "$LOG/touch-zone0.out")" -gt "$entered" ]]; }
+echo "GT TOUCH-HOVER-ZONE0"
+wait_for 10 zone0_entered
+hovered="$(grep -c 'set a ' "$LOG/touch-zone0.out")"
 touch_before="$(grep '^zone=' "$RT/kryptik/focus" 2>/dev/null)"
 echo "GT TOUCH-UNTRUSTED"
 if ! grep -q 'Name="QEMU Virtio MultiTouch"' /proc/bus/input/devices; then
@@ -1209,6 +1217,16 @@ elif wait_for 10 grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
     pass "touch-picks-window" "a tap on untrusted's window gave it the keyboard, as a click does"
 else
     fail "touch-picks-window" "after the tap: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark touch untrusted | tail -2 | tr '\n' ' ')"
+fi
+touch_pressed() { since_mark touch untrusted | grep -q 'pointer button 272 released'; }
+if [[ "$hovered" -le "$entered" ]]; then
+    fail "touch-presses-window" "the pointer never came onto zone 0's window before the tap, so nothing was shown: $(tail -3 "$LOG/touch-zone0.out" | tr '\n' ' ')"
+elif ! wait_for 10 touch_pressed; then
+    fail "touch-presses-window" "untrusted's window was sent no press and release: $(since_mark touch untrusted | tail -3 | tr '\n' ' '); zone 0's: $(grep 'pointer button' "$LOG/touch-zone0.out" | tr '\n' ' ')"
+elif grep -q 'pointer button' "$LOG/touch-zone0.out"; then
+    fail "touch-presses-window" "the tap's button also went to zone 0's window, where the pointer rested: $(grep 'pointer button' "$LOG/touch-zone0.out" | tr '\n' ' ')"
+else
+    pass "touch-presses-window" "the tap's press and release went to untrusted's window, and none to zone 0's, under the pointer before"
 fi
 pkill -u "$USER_NAME" -f 'wlprobe cursor 40' 2>/dev/null; wait "$touch0" 2>/dev/null
 

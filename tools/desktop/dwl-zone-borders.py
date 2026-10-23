@@ -1342,6 +1342,10 @@ touchpoint(struct wlr_input_device *device, uint32_t time, double x, double y)
 \t\twlr_cursor_absolute_to_layout_coords(cursor, device, x, y, &lx, &ly);
 \t}
 \tmotionnotify(time, device, lx - cursor->x, ly - cursor->y, lx - cursor->x, ly - cursor->y);
+\t/* motionnotify picks the surface before it moves the cursor, which a mouse's small steps
+\t * never show. A touch jumps, so the surface is picked again where it landed, or the press
+\t * would go to whatever the pointer rested on, another zone's window as likely as not. */
+\tmotionnotify(0, NULL, 0, 0, 0, 0);
 }
 
 /* Kryptik: the left button, as buttonpress takes it from a pointer. */
