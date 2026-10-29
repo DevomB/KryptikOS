@@ -42,7 +42,9 @@ From the Releases page take the medium, its signed checksums and the anchor:
 `kryptik-VERSION-usb.img.zst` (or `kryptik-VERSION.iso.zst`),
 `kryptik-VERSION.SHA256SUMS` with its `.sig`, and `release-signers`. Check
 the download, then write it to a USB stick. The stick is overwritten whole:
-be sure of the disk you name.
+be sure of the disk you name. Between releases, a tested build of main is a
+Distro run's `kryptik-release` artifact
+([releases](docs/releases.md#a-build-of-main)).
 
 **Linux**
 

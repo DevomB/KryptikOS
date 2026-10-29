@@ -14,7 +14,25 @@ minor for new features, the major for a change that needs a reinstall. While
 every release is a development one the major number is 0: `0.1.0`, then
 `0.1.1` and `0.2.0`. `1.0.0` is the first production release, signed with
 the release key made offline. The dated builds CI makes of every push to main
-(`0.1.<date>.<commit>`) are not releases and never reach the page.
+(`0.1.<date>.<commit>`, and the `.1` build over it that the run tests and
+keeps) are not releases and never reach the page.
+
+## A build of main
+
+Each Distro run on main whose suites all passed keeps, for 14 days, the
+directory a release is drafted from, as the run's `kryptik-release`
+artifact. Its images are not compressed, and they carry the `.1` version
+the update suite updated to: `kryptik-0.1.DATE.COMMIT.1-usb.img` and its
+`.iso`. It is a development build with keys of its own, so the next build,
+a release among them, is a reinstall.
+
+```sh
+gh run list -R DevomB/KryptikOS -w Distro -b main -s success -L 1
+gh run download RUN -R DevomB/KryptikOS -n kryptik-release -D kryptik-RUN
+```
+
+The download is a zip of about 1.5 GB. Check the USB image and write it as
+the README's "Get it" says, without `zstd -d`, to a stick of 4 GB or more.
 
 ## Two kinds
 
@@ -45,7 +63,7 @@ the release key made offline. The dated builds CI makes of every push to main
    (`verify-signatures.sh --strict`, `verify-provenance.sh --strict`) and a
    commit whose CI did not pass, then builds that version from nothing, with
    no cached tree, so the release holds only what a clean build makes: about
-   three hours. It
+   six and a half hours, two and a half of them the browser's image. It
    builds it as the release under test, over a `0.0.0` build the update
    suite updates from, and runs every suite on the images. A production
    release (`v1.0.0` and up) is signed in a job of its own, once the

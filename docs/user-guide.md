@@ -262,6 +262,12 @@ Remove the medium. The installed disk boots on its own, by its
 the firmware (a firmware that refused it is named in the install's output);
 it does not need the medium again unless it has to be recovered.
 
+Over a disk that held another system, the firmware may still try that
+system's entry, or a network boot, before Kryptik's, which the installer
+puts last. If the disk does not start Kryptik, pick `Kryptik slot a` in the
+firmware's boot menu (F9 on HP, F12 on Dell and Lenovo) and move it first in
+the setup's boot order.
+
 **Unattended install** (what the VM tests do): a small control disk labelled
 `kryptik-testctl`, made with `tools/image/mk-testctl.sh --out FILE --key
 KRYPTIK-TESTCTL KEY=VALUE...`, carrying `install_target=/dev/vda`, the state
@@ -671,6 +677,19 @@ previous slot, because the one-time boot entry is used up.
 `s6-svstat /run/service/watchdog` shows the feeder; `/sys/class/watchdog/`
 shows each timer, its timeout and whether it is running.
 
+## When a machine does not work
+
+Photograph the screen. A kernel panic draws its last lines on the panel,
+green on black, and restarts the machine 10 seconds later. Note the
+machine's model and its firmware's version, which its setup screen shows.
+If the medium reaches its shell, `kryptik-hwreport --save` writes what the
+machine is made of, the drivers that took each part, the firmware the kernel
+missed and the kernel's log onto the stick; a medium that shows nothing
+writes one by itself when its first partition holds a `kryptik-report`
+directory ([hardware](hardware.md)). An installed system gives the same at
+the administration login, as root: `kryptik-hwreport > FILE`. The report
+leaves out serial numbers, hardware addresses and UUIDs.
+
 ## Known limitations of this release
 
 - The keys that sign a release from 1.0.0 on are held on GitHub, in the
@@ -678,9 +697,15 @@ shows each timer, its timeout and whether it is running.
   them once the maintainer approves it, so a release is as trustworthy as
   the maintainer's GitHub account and the runners that build it
   ([release keys](release-keys.md)). A development build, which every `0.x`
-  release is, is signed with keys that build generated and then discarded,
-  so its certificate is enrolled on its own and no other build's release
-  updates it.
+  release and every build of main is, is signed with keys that build
+  generated and then discarded. Its certificate is enrolled on its own, and
+  no other build's release updates it. Moving to another build, 1.0.0 among
+  them, is a reinstall with `--replace-kryptik`, which destroys the state
+  partition with its users and zone volumes: copy off what you keep first,
+  from each zone given a FAT stick to write (`kryptik-stick put`). Keep the
+  build's USB image too:
+  `kryptik-recover` restores a build only from a medium of it, and a build of
+  main stays downloadable for 14 days.
 - No independent security review has been made.
 - A Kryptik guest whose display is virtio-gpu, as QEMU's virtio-vga is, does
   not sleep: the kernel's virtio-gpu driver has no suspend callbacks, so the
