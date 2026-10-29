@@ -471,6 +471,22 @@ put sys/bus/acpi/devices/INTC1009:00/status 15
 put sys/bus/acpi/devices/OVTI02C1:00/status 0
 # The OmniVision sensor behind AMD's image processor, as amdgpu's ISP looks for it.
 put sys/bus/acpi/devices/OMNI5C10:00/status 15
+# A built-in USB camera with an infrared one in it, each with its control and streaming
+# interfaces, asleep as the rule lets it; an infrared camera of its own on port 11, which a
+# locale's collation may sort among port 1's interfaces; and a webcam, left awake.
+usbdev() {   # usbdev PORT VENDOR PRODUCT REMOVABLE CONTROL STATUS IF:SUBCLASS...
+    local d="sys/devices/pci0000:00/0000:00:14.0/usb1/$1" p="$1" f; shift
+    put "$d/idVendor" "$1"; put "$d/idProduct" "$2"; put "$d/removable" "$3"
+    put "$d/power/control" "$4"; put "$d/power/runtime_status" "$5"; shift 5
+    ln -s "$W/$d" "$W/sys/bus/usb/devices/$p"
+    for f in "$@"; do
+        put "$d/$p:${f%:*}/bInterfaceClass" 0e; put "$d/$p:${f%:*}/bInterfaceSubClass" "${f#*:}"
+        ln -s "$W/$d/$p:${f%:*}" "$W/sys/bus/usb/devices/$p:${f%:*}"
+    done
+}
+usbdev 1-1 0c45 6730 fixed auto suspended 1.0:01 1.1:02 1.2:01 1.3:02
+usbdev 1-11 0c45 6731 fixed auto suspended 1.0:01 1.1:02
+usbdev 1-5 046d 085e removable on active 1.0:01
 laptop_now
 lap "each backlight with its kind and range" '^backlight intel_backlight type raw max 19200$'
 lap "the firmware's as well"                 '^backlight acpi_video0 type firmware max 100$'
@@ -490,6 +506,12 @@ lap "its sensor, by its ACPI ID"             '^camera acpi OVTI01A0:00 sensor$'
 lap "and AMD's image processor's sensor"     '^camera acpi OMNI5C10:00 sensor$'
 lap "the sensor's power controller"          '^camera acpi INT3472:01 sensor power$'
 lap "and the Visual Sensing Controller"      '^camera acpi INTC1009:00 visual sensing controller$'
+lap "a built-in USB camera, and that it sleeps" '^camera usb 1-1 0c45:6730 port fixed control auto runtime suspended$'
+lap "an infrared camera of its own"          '^camera usb 1-11 0c45:6731 port fixed control auto runtime suspended$'
+lap "a webcam, and that it is kept awake"    '^camera usb 1-5 046d:085e port removable control on runtime active$'
+[[ "$(grep -c '^camera usb 1-1 ' "$L")|$(grep -c '^camera usb 1-11 ' "$L")" == "1|1" ]] \
+    && green "each USB camera once, the one with an infrared camera in it too" \
+    || red "the USB cameras $(grep -c '^camera usb 1-1 ' "$L") and $(grep -c '^camera usb 1-11 ' "$L") times"
 nolap "not a sensor the firmware calls absent" 'OVTI02C1'
 lap "no wakeup interrupt where the kernel keeps none" '^woken by irq: -$'
 nolap "and no AMD IOMMU line without an IVRS table" '^amd iommu: '

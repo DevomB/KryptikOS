@@ -523,7 +523,12 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   schedutil, so its clock still follows the load, and offers no preference.
   PCIe link power and NVMe power states keep the kernel's defaults, and no
   rule turns on USB autosuspend for input devices, which too often
-  misbehave with it.
+  misbehave with it. One does for a built-in camera
+  (`60-kryptik-camera.rules`), as `uvcvideo` would when it binds, which
+  here is only for a grant; a webcam stays awake until its first grant, as
+  the USB core keeps awake a device whose driver has not let it sleep. The
+  hardware report's `camera usb` line gives the camera's port (`fixed` is
+  built in) and whether it sleeps.
 - **Brightness.** An eudev rule (`70-kryptik-backlight.rules`) gives the
   session's group, `kryptik`, write access to the backlight's level, not
   `video`, which would hand the user the GPU's device nodes past seatd.
