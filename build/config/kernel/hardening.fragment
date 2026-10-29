@@ -195,7 +195,8 @@ CONFIG_IOMMU_DEFAULT_DMA_STRICT=y
 CONFIG_INTEL_IOMMU_DEFAULT_ON=y
 CONFIG_INTEL_IOMMU_SVM=y
 CONFIG_AMD_IOMMU=y
-# The TPM, as an entropy source.
+# The TPM, as an entropy source where it gives one: on AMD, 6.18 turns a firmware
+# TPM's off (AMD's PA-410), so there only a TPM chip of its own or Pluton feeds it.
 CONFIG_TCG_TPM=y
 CONFIG_TCG_TIS=y
 CONFIG_TCG_CRB=y
