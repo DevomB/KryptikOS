@@ -722,9 +722,10 @@ shows each timer, its timeout and whether it is running.
   its USB ports work at USB 2's speed, which USB-C carries by itself, or not
   at all. A monitor plugged straight into a USB-C port, or through a plain
   USB-C dock, works where the laptop's own USB-C controller drives it, as on
-  most. A Thunderbolt or USB4 dock on a Thunderbolt or USB4 port (a
-  lightning mark, or 40Gbps beside it) connects as USB4, and its monitors
-  may stay dark too, as nothing sets up the DisplayPort it carries: plug
+  most. A Thunderbolt or USB4 dock on a Thunderbolt or USB4 port (usually
+  a lightning mark, or 40Gbps beside it; the laptop's specifications say
+  which ports are USB4) connects as USB4, and its monitors may stay dark
+  too, as nothing sets up the DisplayPort it carries: plug
   such a dock into a plain USB-C port, where many fall back to USB-C, or
   the monitor into the laptop itself.
 - The state passphrase at boot is asked before any driver module loads, so
