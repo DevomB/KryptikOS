@@ -534,6 +534,33 @@ else
 fi
 if [[ "$(ask 'status\n')" == "end" ]]; then pass "S9u the daemon still answers"; else fail "S9u daemon wedged"; fi
 
+head_ "wi-fi country"
+# Kept beside the networks for the net zone's next start; the kernel is told only from /var/lib.
+WCOUNTRY="$WIFI/country"
+r="$(ask 'wifi-country\n')"
+if [[ "$r" == "ok country none" ]]; then pass "S10a no country set: none"; else fail "S10a: $r"; fi
+r="$(ask 'wifi-country gb\n')"
+if [[ "$r" == "ok the Wi-Fi country is GB; the kernel was not told"* && "$(cat "$WCOUNTRY" 2>/dev/null)" == GB \
+      && "$(stat -c %a "$WCOUNTRY")" == 600 ]]; then
+    pass "S10b wifi-country gb keeps GB, 0600, upper-cased, and tells no kernel from a test directory"
+else
+    fail "S10b: $r"
+fi
+r="$(ask 'wifi-country\n')"
+if [[ "$r" == "ok country GB" ]]; then pass "S10c it then says GB"; else fail "S10c: $r"; fi
+r="$(ask 'wifi-country G1\n')"; r2="$(ask 'wifi-country GB extra\n')"
+if [[ "$r" == "error: "*"is not a country"* && "$r2" == "error: usage: wifi-country [COUNTRY]" && "$(cat "$WCOUNTRY")" == GB ]]; then
+    pass "S10d a country that is not two letters, or a second word, is refused, and GB stays"
+else
+    fail "S10d: $r | $r2"
+fi
+r="$(ask 'wifi-country 00\n')"
+if [[ "$r" == "ok the Wi-Fi country is cleared"* && ! -e "$WCOUNTRY" ]]; then
+    pass "S10e wifi-country 00 removes the file: the rules that hold everywhere"
+else
+    fail "S10e: $r"
+fi
+
 # --- summary -----------------------------------------------------------------
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"

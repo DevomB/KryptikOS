@@ -1389,7 +1389,7 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
     let sub = args.get(1).map(String::as_str).unwrap_or("");
     let ssid = args.get(2).filter(|a| !a.starts_with("--"));
     let usage = || {
-        eprintln!("usage: kryptikd wifi list | scan | add SSID [--open] [--hidden] | forget SSID   [--wifi-dir DIR]");
+        eprintln!("usage: kryptikd wifi list | scan | add SSID [--open] [--hidden] | forget SSID | country [COUNTRY]   [--wifi-dir DIR]");
         ExitCode::from(2)
     };
     let refused = |e: String| {
@@ -1439,6 +1439,22 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        ("country", None) => match wifi::country(&dir) {
+            Ok(c) => {
+                println!("country {}", c.as_deref().unwrap_or("none"));
+                ExitCode::SUCCESS
+            }
+            Err(e) => refused(e),
+        },
+        // Root's, as `kryptikd serve` runs it for the desktop as a job: the kernel takes a country
+        // from zone 0 alone, and one it drops is waited out for seconds.
+        ("country", Some(c)) => match wifi::check_country(c).and_then(|c| wifi::set_country(&dir, &c)) {
+            Ok(said) => {
+                println!("{said}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => refused(e),
+        },
         ("forget", Some(ssid)) => {
             let owner = match wifi::owner_for(zones_dir) {
                 Ok(o) => o,

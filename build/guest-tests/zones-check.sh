@@ -1402,6 +1402,41 @@ if [[ "$hidden_up" = 1 && "$heard_nameless" == "an SSID element of length 0" && 
 else
     fail "wifi-hidden" "access point up: ${hidden_up}; its beacons on hwsim0: ${heard_nameless:-none heard in 10 s ($(tail -1 "$LOG/hwsim.err"))}; $(tr '\n' ' ' < "$LOG/wifi-add-hidden.out"); newest READY: ${line:-none}; $(tail -2 "$LOG/ap-hidden-wpa.log" 2>/dev/null | tr '\n' ' ')"
 fi
+# The country: zone 0 hands cfg80211 the user's hint, which the net zone, in a user namespace of
+# its own, may not. DE taken also proves the signed regulatory database loaded, as without it
+# there is no DE to move to. Then, the kernel put back on the rules that hold everywhere, the net
+# zone's next start sets DE again from the saved file.
+reg_is() { /usr/sbin/iw reg get 2>&1 | grep -q "^country $1:"; }
+country_said="$("$KD" wifi country de --wifi-dir "$WIFI_DIR" 2>&1)"
+for _ in $(seq 10); do reg_is DE && break; sleep 1; done
+if [[ "$country_said" == "the Wi-Fi country is DE" && "$(cat "$WIFI_DIR/country" 2>/dev/null)" == DE ]] && reg_is DE; then
+    pass "wifi-country" "kryptikd wifi country de kept DE, 0$(stat -c %a "$WIFI_DIR/country"), and the kernel took it: $(/usr/sbin/iw reg get 2>&1 | grep -m1 '^country')"
+else
+    fail "wifi-country" "said: ${country_said}; kept: $(cat "$WIFI_DIR/country" 2>&1); the kernel: $(/usr/sbin/iw reg get 2>&1 | head -2 | tr '\n' ' ')"
+fi
+/usr/sbin/iw reg set 00 2>> "$LOG/hwsim.err"
+for _ in $(seq 10); do reg_is 00 && break; sleep 1; done
+before="$(ready_count)"
+s6-svc -r /run/service/net-zone
+line="$(ready_after "$before" " nat=yes " 90)"
+for _ in $(seq 10); do reg_is DE && break; sleep 1; done
+if [[ -n "$line" ]] && reg_is DE && uncaught | grep -aq 'kryptikd: zone "[^"]*": the Wi-Fi country is DE'; then
+    pass "wifi-country-at-start" "the kernel on 00, the net zone's start set DE again from the saved file before its radios moved"
+else
+    fail "wifi-country-at-start" "READY again: ${line:-no}; the kernel: $(/usr/sbin/iw reg get 2>&1 | grep -m1 '^country'); kryptikd: $(uncaught | grep -a 'Wi-Fi country' | tail -2 | tr '\n' ' ')"
+fi
+# A code the regulatory database lacks is dropped by the kernel, so it is refused, nothing is
+# saved, and DE is told again once cfg80211 has fallen back to the rules that hold everywhere.
+uk_said="$("$KD" wifi country uk --wifi-dir "$WIFI_DIR" 2>&1)"; uk_rc=$?
+for _ in $(seq 10); do reg_is DE && break; sleep 1; done
+if [[ "$uk_rc" -ne 0 && "$uk_said" == *"UK is not a country the regulatory database holds (the United Kingdom's is GB)"* \
+      && "$(cat "$WIFI_DIR/country" 2>/dev/null)" == DE ]] && reg_is DE; then
+    pass "wifi-country-unknown" "uk refused, DE kept in the file and in the kernel: ${uk_said#kryptikd: wifi: }"
+else
+    fail "wifi-country-unknown" "exit ${uk_rc}: ${uk_said}; kept: $(cat "$WIFI_DIR/country" 2>&1); the kernel: $(/usr/sbin/iw reg get 2>&1 | grep -m1 '^country')"
+fi
+"$KD" wifi country 00 --wifi-dir "$WIFI_DIR" > "$LOG/wifi-country-clear.out" 2>&1
+[[ ! -e "$WIFI_DIR/country" ]] || fail "wifi-country-cleared" "$(cat "$LOG/wifi-country-clear.out")"
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
 [[ -n "$AP_HOLD" ]] && kill "$AP_HOLD" 2>/dev/null

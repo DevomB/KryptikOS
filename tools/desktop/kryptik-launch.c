@@ -17,6 +17,7 @@
  *   kryptik-launch --wifi-add-open SSID add one as an open network, with no passphrase
  *                                       (either with --hidden: one that hides its name)
  *   kryptik-launch --wifi-forget SSID   remove one
+ *   kryptik-launch --wifi-country [XX]  the country whose radio rules hold, or set it
  *   kryptik-launch --update status|fetch|forget|apply   show, fetch, drop or install a release
  *   kryptik-launch --update auto on|off   fetch each release as it is announced, or when asked
  *   kryptik-launch --sticks             the USB stick partitions a zone may be given: NAME WHAT a line
@@ -237,6 +238,7 @@ static void usage(void)
 	      "       kryptik-launch --desktop -- COMMAND [ARG...]\n"
 	      "       kryptik-launch --clipboard-move FROM TO\n"
 	      "       kryptik-launch --wifi-list | --wifi-scan | --wifi-add SSID [--hidden] | --wifi-add-open SSID [--hidden] | --wifi-forget SSID\n"
+	      "                      | --wifi-country [XX]\n"
 	      "                      (--wifi-add reads the passphrase from standard input)\n"
 	      "       kryptik-launch --update status|fetch|forget|apply | --update auto on|off\n"
 	      "       kryptik-launch --sticks | --stick-grant ZONE PARTITION ro|rw | --stick-eject ZONE\n"
@@ -303,6 +305,18 @@ static int wifi_main(int argc, char **argv)
 			p += n + (nl ? 1 : 0);
 		}
 		return 0;
+	}
+	/* The country is checked by the daemon; here only that it is one short word. */
+	if (strcmp(mode, "--wifi-country") == 0) {
+		if (argc > 3 || (argc == 3 && (strlen(argv[2]) != 2 || strpbrk(argv[2], " \n"))))
+			die("--wifi-country takes nothing, or two letters such as GB or US, or 00");
+		char req[32] = "wifi-country\n";
+		if (argc == 3)
+			snprintf(req, sizeof req, "wifi-country %s\n", argv[2]);
+		char *r = talk(req, -1);
+		int ok = strncmp(r, "ok ", 3) == 0;
+		fputs(ok ? r + 3 : r, ok ? stdout : stderr);
+		return ok ? 0 : 1;
 	}
 	/* An `ok` line and the daemon's lines, or one `error:` line; the net zone takes seconds. */
 	if (strcmp(mode, "--wifi-scan") == 0) {
