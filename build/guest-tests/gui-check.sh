@@ -31,6 +31,7 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT KEY-WAKE-BLANK                               press Shift (screens off, no lock)
 #   GT KEY-FOCUS-HOLD                               press Alt+j
 #   GT LOCK-TYPE-HOLD                               type the user's password and Enter
 #   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
@@ -1449,6 +1450,31 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+# With lock-idle 0 the chrome starts a watcher that never locks: the screens still go off --blank
+# seconds after the last input, and the first key turns them on again. --idle 0 takes nothing
+# else: no --blank, a --blank of 0, or a --sleep, which is asked of a lock, is refused.
+bad_args=""
+for a in "--idle 0" "--idle 0 --blank 0" "--idle 0 --blank 4 --sleep 5"; do
+    as_user "/usr/bin/kryptik-lock $a" > /dev/null 2>&1; rc=$?
+    [[ "$rc" -eq 2 ]] || bad_args="${bad_args} [${a}: exit ${rc}]"
+done
+as_user "/usr/bin/kryptik-lock --idle 0 --blank 4" > "$LOG/blank-only.out" 2>&1 &
+blank_pid=$!
+blank_said() { grep -q "^kryptik-lock: $1" "$LOG/blank-only.out"; }
+blank_off() { grep -qE '^kryptik-lock: screen [0-9]+ power off$' "$LOG/blank-only.out"; }
+blank_back() { sed -n '/^kryptik-lock: screen [0-9]* power off$/,$p' "$LOG/blank-only.out" | grep -qE '^kryptik-lock: screen [0-9]+ power on$'; }
+if [[ -z "$bad_args" ]] && wait_for 20 blank_said 'screens off' && wait_for 5 blank_off; then
+    pass "blank-without-lock" "with --idle 0 the screens went off 4 s after the last input; --idle 0 without a --blank, or with a --sleep, is refused"
+else
+    fail "blank-without-lock" "accepted:${bad_args:- nothing wrongly}; the watcher: $(tr '\n' ' ' < "$LOG/blank-only.out")"
+fi
+echo "GT KEY-WAKE-BLANK"
+if wait_for 20 blank_back && blank_said 'screens on' && ! grep -qE '^kryptik-lock: (no input for|locked)' "$LOG/blank-only.out"; then
+    pass "key-wakes-without-lock" "a key turned the screens on again, and nothing locked"
+else
+    fail "key-wakes-without-lock" "the watcher: $(tr '\n' ' ' < "$LOG/blank-only.out")"
+fi
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 0 --blank 4' 2>/dev/null; wait "$blank_pid" 2>/dev/null
 
 # --- holding the screen awake ------------------------------------------------------------------
 # A window of a zone whose file says hold_awake keeps the session's idle timers off while it is

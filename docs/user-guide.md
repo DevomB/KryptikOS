@@ -348,7 +348,9 @@ starts again. The screen also locks by itself after ten minutes without a
 key, a click or the pointer moving; to change that, write the minutes to
 `~/.config/kryptik/lock-idle` (0 for never), which the next login reads. Half
 a minute after it locks, the screens turn off; any key or movement turns them
-on again, and that key goes to the lock.
+on again, and that key goes to the lock. With 0 the screens still turn off
+after ten minutes without input, and the key that turns them on goes to the
+window with the keyboard.
 
 `kryptik suspend`, from a terminal of zone 0's, locks the screen and puts
 the machine to sleep with the state partition's key wiped from memory. On

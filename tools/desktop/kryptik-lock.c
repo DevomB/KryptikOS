@@ -7,6 +7,9 @@
  *                                  lock each time the session has had no input that long, and
  *                                  after the lock turn the screens off that much later (30 s;
  *                                  0 never) and have the machine sleep (never unless given)
+ *   kryptik-lock --idle 0 --blank SECONDS
+ *                                  never lock, but turn the screens off once the session has
+ *                                  had no input that long
  *
  * A lock that is up writes its supervisor's pid to $XDG_RUNTIME_DIR/kryptik/lock.pid, and
  * SIGUSR1 to that process has it ask for the machine's sleep, as the power key pressed while
@@ -969,7 +972,8 @@ static const struct ext_idle_notification_v1_listener nap_listener = {
 };
 
 /* --idle: a lock of its own each time the session has been idle `secs`, and after it the
- * screens off `blank` later and the machine asleep `nap` later, while the session lasts. No
+ * screens off `blank` later and the machine asleep `nap` later, while the session lasts. With
+ * `secs` 0 there is no lock, and the screens alone go off `blank` after the last input. No
  * keyboard is bound, so no key reaches it. */
 static int watch_idle(long secs, long blank, long nap)
 {
@@ -992,12 +996,17 @@ static int watch_idle(long secs, long blank, long nap)
 	/* Idle inhibitors count as dwl counts them: a hold a zone's file allows, while its window is
 	 * shown and has the keyboard, for four hours from the last key or button press
 	 * (docs/design/laptop.md). A zone 0 program's inhibitor holds nothing. */
-	struct ext_idle_notification_v1 *n = ext_idle_notifier_v1_get_idle_notification(notifier, (uint32_t)secs * 1000, seat);
-	ext_idle_notification_v1_add_listener(n, &idle_listener, NULL);
+	if (secs > 0) {
+		struct ext_idle_notification_v1 *n = ext_idle_notifier_v1_get_idle_notification(notifier, (uint32_t)secs * 1000, seat);
+		ext_idle_notification_v1_add_listener(n, &idle_listener, NULL);
+	}
 	/* The screens go off `blank` after the lock, and on again at the first input, which the
-	 * lock also takes. */
-	if (blank > 0 && !powermgr)
+	 * lock also takes; with no lock, that input goes on to the window with the keyboard. */
+	if (blank > 0 && !powermgr) {
 		say("the compositor cannot turn screens off");
+		if (secs == 0)
+			return 1;
+	}
 	if (blank > 0 && powermgr) {
 		struct screen *sc;
 		wl_list_for_each(sc, &screens, link)
@@ -1091,18 +1100,23 @@ int main(int argc, char **argv)
 {
 	/* --idle SECONDS, then --blank SECONDS (30 s unless given: long enough to see it locked, and
 	 * no lit panel after) and --sleep SECONDS (never unless given), each after the lock; a week
-	 * at most, so the compositor's milliseconds fit. */
+	 * at most, so the compositor's milliseconds fit. --idle 0 never locks: it takes a --blank,
+	 * counted from the last input, and no --sleep, which is asked of a lock. */
 	if (argc >= 3 && argc % 2 == 1 && !strcmp(argv[1], "--idle")) {
 		long secs = seconds(argv[2]), blank = 30, nap = 0;
-		int ok = secs > 0;
+		int ok = secs >= 0, blank_given = 0;
 		for (int i = 3; ok && i + 1 < argc; i += 2) {
-			if (!strcmp(argv[i], "--blank"))
+			if (!strcmp(argv[i], "--blank")) {
 				ok = (blank = seconds(argv[i + 1])) >= 0;
-			else if (!strcmp(argv[i], "--sleep"))
+				blank_given = 1;
+			} else if (!strcmp(argv[i], "--sleep")) {
 				ok = (nap = seconds(argv[i + 1])) >= 0;
-			else
+			} else {
 				ok = 0;
+			}
 		}
+		if (secs == 0 && (!blank_given || blank == 0 || nap > 0))
+			ok = 0;
 		if (ok && secs + blank <= 7 * 24 * 3600 && secs + nap <= 7 * 24 * 3600) {
 			signal(SIGPIPE, SIG_IGN);
 			return watch_idle(secs, blank, nap);
@@ -1111,12 +1125,14 @@ int main(int argc, char **argv)
 	suspend_wanted = argc == 2 && !strcmp(argv[1], "--suspend");
 	read_layouts();
 	if (argc != 1 && !suspend_wanted) {
-		fputs("usage: kryptik-lock [--suspend | --idle SECONDS [--blank SECONDS] [--sleep SECONDS]]\n"
+		fputs("usage: kryptik-lock [--suspend | --idle SECONDS [--blank SECONDS] [--sleep SECONDS]\n"
+		      "                    | --idle 0 --blank SECONDS]\n"
 		      "       (locks the session until the login password is typed; with --suspend, then\n"
 		      "       suspends the machine, or has the lock that is up do so; with --idle, each time\n"
 		      "       the session has had no input that long, and after the lock the screens go off\n"
-		      "       --blank later, 60 s unless given, 0 never, and the machine sleeps --sleep later,\n"
-		      "       never unless given)\n", stderr);
+		      "       --blank later, 30 s unless given, 0 never, and the machine sleeps --sleep later,\n"
+		      "       never unless given; with --idle 0, no lock, and the screens go off --blank\n"
+		      "       after the last input)\n", stderr);
 		return 2;
 	}
 	const char *rt = getenv("XDG_RUNTIME_DIR");
