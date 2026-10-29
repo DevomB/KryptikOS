@@ -503,11 +503,14 @@ the net zone. The network the machine itself is on, with its router, its
 printers and the page a hotel's or café's Wi-Fi asks you to log in on, is
 open to `untrusted` alone: open that page there (Alt+Shift+u).
 
-**Monitors.** `kryptik display`, in a terminal of zone 0's, lists the
-monitors by name with their scale, mode and place. `kryptik display NAME
-SCALE` draws everything on that monitor SCALE times as large, from 0.5 to 4,
-1.5 say on a laptop's high-resolution panel, and `kryptik display NAME SCALE
-X Y` also puts its top left corner at X,Y. The choice is kept for every
+**Monitors.** A monitor pulled out leaves its windows on another, and once
+it is plugged in again they go back to it, except any moved by hand in
+between (Alt+Shift+. or a drag). `kryptik display`, in a terminal of zone
+0's, lists the monitors by name with their scale, mode and place.
+`kryptik display NAME SCALE` draws everything on that monitor SCALE times
+as large, from 0.5 to 4, 1.5 say on a laptop's high-resolution panel, and
+`kryptik display NAME SCALE X Y` also puts its top left corner at X,Y. The
+choice is kept for every
 login and made again whenever the monitor is plugged in; NAME `*` stands for
 every monitor no other line names. `kryptik display NAME auto` drops that
 monitor's line, so it takes the `*` line if there is one, and otherwise 2 for a

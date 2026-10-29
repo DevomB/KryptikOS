@@ -46,6 +46,8 @@
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
 #   GT SCREENSHOT-HEAD                              take a screenshot of the second monitor
+#   GT HEAD-BACK, GT HEAD-OUT                       plug it in again, pull it out again
+#   GT KEY-FOCUS-BACK                               press Alt+period
 #   GT KEY-MENU-WIFI                                press Alt+p (a menu window for Wi-Fi)
 #   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT KEY-MENU-OPEN                                press Alt+p (a menu window for an open network)
@@ -1711,6 +1713,18 @@ as_user "rm -f \$HOME/.config/kryptik/display"
 back_on_first_head() { [[ "$(focus_output)" == "$first_head" ]]; }
 wait_for 20 back_on_first_head && pass "chrome-back-on-first-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")" \
     || fail "chrome-back-on-first-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+# Plugged in again, the monitor takes back the window that was on it.
+echo "GT HEAD-BACK"
+wait_for 30 heads 2
+sleep 2
+echo "GT KEY-FOCUS-BACK"
+if wait_for 20 zone_on_second_head; then
+    pass "window-returns-with-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "window-returns-with-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(outputs) output(s)"
+fi
+echo "GT HEAD-OUT"
+wait_for 30 heads 1
 stop_zone untrusted
 
 # --- Wi-Fi from the menu ----------------------------------------------------------------
