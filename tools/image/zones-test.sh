@@ -109,7 +109,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
             setuid-only-allowed no-file-capabilities sysctls-applied host-activity-hidden fetch-and-sntp-no-caps \
-            microcode-notice \
+            microcode-notice secureboot-notice \
             image-store image-runs image-needs-refused image-hidden image-explained "${CONTROLS[@]}" image-corrupt image-toolkit image-browser; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
