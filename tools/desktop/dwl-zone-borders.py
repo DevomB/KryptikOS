@@ -2204,6 +2204,47 @@ spawnergone(int fd, uint32_t mask, void *data)
 \t}
 \tif (selmon && selmon->wlr_output->enabled) {
 """),
+    # A window starts on a whole pixel of its screen. At a fractional scale wlroots puts a surface
+    # at its position times the scale, rounded, and sizes it by rounding its far edge, so off the
+    # grid a buffer drawn at the window's size times the scale is shown a pixel off that size and
+    # pixman scales it, soft, on every redraw: dwl's tiles start wherever mfact puts them.
+    ("""void
+resize(Client *c, struct wlr_box geo, int interact)
+{
+""",
+     """/* Kryptik: the step is 2 at 1.5 and 4 at 1.25 or 1.75; a scale that is no multiple of a
+ * quarter is left as it is. A tiled window gives up the pixels from its size, so it stays inside
+ * its tile; a floating one moves. */
+static void
+snaptopixel(Client *c)
+{
+\tfloat s = c->mon->wlr_output->scale * 4;
+\tint n = (int)(s + 0.5f), q, dx, dy;
+
+\tif (s - (float)n > 0.001f || (float)n - s > 0.001f || n % 4 == 0)
+\t\treturn;
+\tq = n % 2 ? 4 : 2;
+\tdx = (q - ((c->geom.x + (int)c->bw - c->mon->m.x) % q + q) % q) % q;
+\tdy = (q - ((c->geom.y + (int)c->bw - c->mon->m.y) % q + q) % q) % q;
+\tc->geom.x += dx;
+\tc->geom.y += dy;
+\tif (!c->isfloating) {
+\t\tc->geom.width = MAX(1 + 2 * (int)c->bw, c->geom.width - dx);
+\t\tc->geom.height = MAX(1 + 2 * (int)c->bw, c->geom.height - dy);
+\t}
+}
+
+void
+resize(Client *c, struct wlr_box geo, int interact)
+{
+"""),
+    ("""\tc->geom = geo;
+\tapplybounds(c, bbox);
+""",
+     """\tc->geom = geo;
+\tapplybounds(c, bbox);
+\tsnaptopixel(c);
+"""),
 ]
 
 

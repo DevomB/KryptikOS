@@ -694,13 +694,19 @@ client that reads only `wl_output`'s whole number draws at that, which the
 compositor scales down to the fraction. havoc follows the exact scale too
 (`build/patches/havoc-0.7.0`'s `0003`): its font and buffer are drawn that
 much larger, behind a viewport at the window's size. kryptik-lock does the
-same with the surface it puts on each output, at that output's scale.
+same with the surface it puts on each output, at that output's scale. At a
+fractional scale dwl starts each window on a whole pixel of its screen, in
+steps of 2 at 1.5 and 4 at 1.25 or 1.75: off that grid wlroots shows a
+buffer drawn at the exact scale a pixel off its own size, and pixman scales
+it soft. A tiled window gives up those pixels from its size, so it stays in
+its tile; a floating one moves.
 
 Check: `make gui-test` writes the user's line for the first monitor at 1 and
 `* 2`, plugs a second monitor in, and finds it at scale 2 and the first at 1;
 through a zone's proxy both outputs are named `output-N`, with no make or
 model, one of them at scale 2. On the second, a terminal and the lock draw
-buffers twice their surface's size. `tools/tests/display.sh` checks what
+buffers twice their surface's size. `tools/tests/dwl-headless.sh` puts its
+output at 1.25 and finds the window moved onto the grid. `tools/tests/display.sh` checks what
 `kryptik display` keeps and refuses. The panel's own default waits for
 physical hardware, as QEMU has no built-in panel.
 
