@@ -375,6 +375,9 @@ The lock's check, in `make gui-test`:
 - the lock's program killed leaves the session locked with no window given
   the keyboard, and the lock locks again;
 - a grab a zone makes while locked keeps no key from the lock;
+- the pointer leaves every window at the lock: a click and a wheel turn
+  under it, the pointer unmoved on a zone's window, reach that window not at
+  all, nor do the moves and the release of a button held down into the lock;
 - the login password unlocks, and zone 0's window has the keyboard again;
 - the chrome arms the idle lock at ten minutes, and an idle lock of 8 s
   locks the session, turns the screen off 4 s later as the compositor
@@ -680,14 +683,14 @@ panels are measured. A zone's window is told the exact scale through
 client that reads only `wl_output`'s whole number draws at that, which the
 compositor scales down to the fraction. havoc follows the exact scale too
 (`build/patches/havoc-0.7.0`'s `0003`): its font and buffer are drawn that
-much larger, behind a viewport at the window's size. kryptik-lock draws at 1
-at every scale, so the compositor enlarges it, and it looks soft at any scale
-but 1.
+much larger, behind a viewport at the window's size. kryptik-lock does the
+same with the surface it puts on each output, at that output's scale.
 
 Check: `make gui-test` writes the user's line for the first monitor at 1 and
 `* 2`, plugs a second monitor in, and finds it at scale 2 and the first at 1;
 through a zone's proxy both outputs are named `output-N`, with no make or
-model, one of them at scale 2. `tools/tests/display.sh` checks what
+model, one of them at scale 2. On the second, a terminal and the lock draw
+buffers twice their surface's size. `tools/tests/display.sh` checks what
 `kryptik display` keeps and refuses. The panel's own default waits for
 physical hardware, as QEMU has no built-in panel.
 
