@@ -485,7 +485,8 @@ much larger.
 `kryptik timezone list berlin` those whose name holds a word, and
 `kryptik timezone Europe/Berlin`, as root, uses one now and at every boot;
 `kryptik timezone` names the one in force. On the medium it lasts until
-shutdown. Zones keep UTC.
+shutdown, and an install from it keeps it (the plan's `time zone` line);
+`kryptik-install --timezone NAME` names another. Zones keep UTC.
 
 **USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
 one in opens a window of the chrome that names each partition by what the
