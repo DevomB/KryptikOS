@@ -424,6 +424,21 @@ pub fn replumb_routed_zones(zones_dir: &Path, nic_ns: i32) -> Vec<(String, Resul
 
 /// Move the uplinks into the nic zone and create kryptik0 there. Only here, before its root is
 /// built: its /sys keeps the devices of the NICs it holds then (`rootfs::nic_sysfs`).
+/* The country `kryptik wifi country` saved, as cfg80211's user hint, before the radios move: the
+ * net zone, in a user namespace of its own, may not set one (CAP_NET_ADMIN in the initial
+ * namespace). Without it the radios keep the rules that hold everywhere, with no 6 GHz and 5 GHz
+ * heard before it is used, and fall back to them at each disconnect. */
+fn tell_country(dir: &Path, zone: &str) {
+    match crate::wifi::country(dir) {
+        Ok(None) => {}
+        Ok(Some(c)) => match netlink::set_country(&c) {
+            Ok(()) => eprintln!("kryptikd: zone {zone:?}: the Wi-Fi country is {c}"),
+            Err(e) => eprintln!("kryptikd: zone {zone:?}: the Wi-Fi country {c} was not set: {e}"),
+        },
+        Err(e) => eprintln!("kryptikd: zone {zone:?}: {e}; the radios keep the rules that hold everywhere"),
+    }
+}
+
 fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
     // Without `[network] nic`, bridge only: kryptikd never picks a NIC to take from zone 0 itself.
     let nics: Vec<String> = match zone.nic.as_deref() {
@@ -452,6 +467,9 @@ fn plumb_nic_zone_bridge(zone: &Zone, zone_ns: i32) -> Result<(), NetError> {
             zone.name
         ),
         _ => {}
+    }
+    if zone.nic.is_some() {
+        tell_country(Path::new(crate::wifi::DEFAULT_DIR), &zone.name);
     }
     /* A radio switched off stays down: brought up, its link is refused (ERFKILL), and with it the
      * whole zone, wire and all. Bringing it up once it is switched on is the zone's. */

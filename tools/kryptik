@@ -46,6 +46,9 @@ USAGE:
                                     too, or asked for its passphrase); scans
                                     then ask for it by name, wherever they are
     $PROG wifi forget SSID          remove one
+    $PROG wifi country [XX]         the country whose radio rules the radios
+                                    follow, or set it (two letters, such as GB
+                                    or US; 00 for the rules that hold everywhere)
     $PROG update status             the release running, the newest one known
                                     and how old that news is, what is staged
     $PROG update fetch              ask for the newest release to be fetched
@@ -356,7 +359,8 @@ cmd_wifi() {
                  esac
              done ;;
         forget) [[ $# -eq 1 ]] || die "$PROG wifi forget SSID: exactly one SSID" 2 ;;
-        *) usage >&2; die "wifi needs a subcommand: list, scan, add SSID or forget SSID" 2 ;;
+        country) [[ $# -le 1 ]] || die "$PROG wifi country [XX]: one country at most" 2 ;;
+        *) usage >&2; die "wifi needs a subcommand: list, scan, add SSID, forget SSID or country [XX]" 2 ;;
     esac
     if via_launch; then
         case "$sub" in
@@ -370,6 +374,7 @@ cmd_wifi() {
                         printf '%s\n' "$PASSPHRASE" | "$LAUNCH" --wifi-add "$1" "${hidden[@]}"
                     fi ;;
             forget) "$LAUNCH" --wifi-forget "$1" ;;
+            country) "$LAUNCH" --wifi-country "$@" ;;
         esac
         return
     fi
@@ -384,6 +389,7 @@ cmd_wifi() {
                     printf '%s\n' "$PASSPHRASE" | "$KRYPTIKD" wifi add "$1" "${hidden[@]}" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR"
                 fi ;;
         forget) "$KRYPTIKD" wifi forget "$1" --wifi-dir "$WIFI_DIR" --zones "$ZONES_DIR" ;;
+        country) "$KRYPTIKD" wifi country "$@" --wifi-dir "$WIFI_DIR" ;;
     esac
 }
 

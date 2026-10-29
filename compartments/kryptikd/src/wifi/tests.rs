@@ -410,3 +410,34 @@ fn scan_said_in_words() {
         "\"Home\"  WPA2  -40 dBm\n\"Work\"  802.1X, which Kryptik does not join  -70 dBm\n\"Cafe\"  open  -75 dBm  saved\n"
     );
 }
+
+#[test]
+fn a_country_is_two_letters_or_00() {
+    assert_eq!(check_country("gb").unwrap(), "GB", "upper-cased, as the regulatory database names it");
+    assert_eq!(check_country("US").unwrap(), "US");
+    assert_eq!(check_country("00").unwrap(), "00", "the rules that hold everywhere");
+    for bad in ["", "G", "GBR", "G1", "01", "G ", "É", "UK\n"] {
+        assert!(check_country(bad).is_err(), "{bad:?} is no country");
+    }
+}
+
+#[test]
+fn a_country_is_kept_read_back_and_cleared() {
+    let dir = tmpdir("country");
+    assert_eq!(country(&dir).unwrap(), None, "none saved");
+    let said = set_country(&dir, "DE").unwrap();
+    assert!(said.starts_with("the Wi-Fi country is DE; the kernel was not told"), "a test directory tells no kernel: {said}");
+    assert_eq!(fs::read_to_string(dir.join(COUNTRY_FILE)).unwrap(), "DE\n");
+    assert_eq!(fs::metadata(dir.join(COUNTRY_FILE)).unwrap().mode() & 0o777, 0o600, "root's alone");
+    assert_eq!(country(&dir).unwrap().as_deref(), Some("DE"));
+    // The state partition is not authenticated: anything but two upper-case letters is refused.
+    for bad in ["de\n", "DEU\n", "00\n", "D\n", "\n", "DE\nGB\n"] {
+        fs::write(dir.join(COUNTRY_FILE), bad).unwrap();
+        assert!(country(&dir).is_err(), "{bad:?} is no country to hand the kernel");
+    }
+    assert!(set_country(&dir, "00").unwrap().starts_with("the Wi-Fi country is cleared"));
+    assert!(!dir.join(COUNTRY_FILE).exists(), "00 removes the file");
+    assert_eq!(country(&dir).unwrap(), None);
+    assert!(save_country(&dir, "00").is_ok(), "clearing twice is no error");
+    let _ = fs::remove_dir_all(&dir);
+}
