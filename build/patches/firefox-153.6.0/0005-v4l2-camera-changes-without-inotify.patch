@@ -1,0 +1,48 @@
+--- a/third_party/libwebrtc/modules/video_capture/linux/device_info_v4l2.cc
++++ b/third_party/libwebrtc/modules/video_capture/linux/device_info_v4l2.cc
+@@ -170,6 +170,33 @@
+ 
+         close(_fd_v4l);
+         close(_fd_dev);
++    } else {
++        // No inotify, as in a sandbox that refuses it: look for /dev/video<n> once a second
++        // instead, and say the devices changed whenever the set of them does.
++        if (_fd_v4l >= 0) {
++          close(_fd_v4l);
++        }
++        if (_fd_dev >= 0) {
++          close(_fd_dev);
++        }
++        uint64_t seen = 0;
++        for (int tick = 0; !_isShutdown; tick++) {
++            if (tick % 10 == 0) {
++                uint64_t now = 0;
++                for (int n = 0; n < 64; n++) {
++                    char path[32];
++                    snprintf(path, sizeof(path), "/dev/video%d", n);
++                    if (access(path, F_OK) == 0) {
++                        now |= uint64_t(1) << n;
++                    }
++                }
++                if (tick > 0 && now != seen) {
++                    DeviceChange();
++                }
++                seen = now;
++            }
++            usleep(100 * 1000);
++        }
+     }
+ }
+ #endif
+--- a/third_party/libwebrtc/modules/video_capture/linux/video_capture_v4l2.cc
++++ b/third_party/libwebrtc/modules/video_capture/linux/video_capture_v4l2.cc
+@@ -451,6 +451,9 @@
+     } else if (retVal == 0) {
+       // poll timed out
+       return true;
++    } else if (rSet.revents & (POLLERR | POLLHUP | POLLNVAL)) {
++      // the device is gone, or its queue failed: polling again would spin
++      return false;
+     } else if (!(rSet.revents & POLLIN)) {
+       // not event on camera handle
+       return true;

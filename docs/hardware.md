@@ -106,6 +106,7 @@ let the row's note name what did not work:
 | closed on its dock, then the dock unplugged | it sleeps within seconds, as a lid closed undocked does |
 | the state passphrase at boot, typed on the built-in keyboard | it unlocks, whether the keyboard is on PS/2 or on I2C behind Intel's LPSS or AMD's DesignWare controller; the row's note names which (`/proc/bus/input/devices`). One that types nothing there is among those status.md lists, and a plain USB keyboard is the way through |
 | the listing's `camera usb` line for the built-in camera, taken before any `k` | it reads `port fixed control auto runtime suspended`; a port that reads `unknown` keeps the camera awake, and the row's note gives the line |
+| at a console (Ctrl+Alt+F2) as root, before any `k`: `bash /usr/lib/kryptik/guest-tests/camera-check.sh USER --hardware`, USER the one logged in | every line reads `CT PASS`; a `CT FAIL` line goes in the row's note whole |
 | `k` and a zone's number in the menu, then a program there that records video | a USB camera records; one the listing's `camera` line puts behind an IPU does not, as 1.0 drives none |
 | a USB camera given to a zone with `k` and its number, then pulled out | the grant ends at once, and the menu's Camera line says no zone has it; plugged back in, it waits for `k` again |
 | Firefox in `untrusted`: Alt+p, its number and `b` | a window opens; where the listing's `shstk` line says yes, this is the only test of Firefox starting with shadow stacks on, and a failure names SHSTK in what it prints |
