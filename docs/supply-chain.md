@@ -191,7 +191,9 @@ checks them against kernel.org's published developer keys.
   through the release keyring GNU Savannah serves for each project, and patch
   through kernel.org. The others (binutils, gcc, glibc, bash, readline, gawk,
   tar, make and more) have no Savannah keyring, and their keys rest on the GNU
-  keyring alone.
+  keyring alone. So does tzdata's, Paul Eggert's: the tz project names no
+  signer, and every published copy of the key has expired, so its signature
+  verifies with the key expired (`tools/source-notes.tsv`).
 - The kernel.org signing keys pinned in `tools/verify-signatures.sh` are
   confirmed by two routes, kernel.org's `pgpkeys.git` and kernel.org's WKD,
   and `tools/key-provenance.tsv` has the gate fetch them from `pgpkeys.git` on

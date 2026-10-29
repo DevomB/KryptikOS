@@ -167,6 +167,35 @@ fn message_layout_matches_kernel() {
 }
 
 #[test]
+fn a_country_is_asked_as_iw_reg_set_asks() {
+    // nlmsghdr, genlmsghdr { NL80211_CMD_REQ_SET_REG }, then NL80211_ATTR_REG_ALPHA2 as a string.
+    let b = country_msg(0x1c, "DE");
+    assert_eq!(b.len(), 16 + 4 + 8);
+    assert_eq!(u32::from_ne_bytes(b[0..4].try_into().unwrap()) as usize, b.len());
+    assert_eq!(u16::from_ne_bytes(b[4..6].try_into().unwrap()), 0x1c, "the nl80211 family's id");
+    assert_eq!(&b[16..20], &[27, 0, 0, 0]);
+    assert_eq!(u16::from_ne_bytes(b[20..22].try_into().unwrap()), 7);
+    assert_eq!(u16::from_ne_bytes(b[22..24].try_into().unwrap()), 33);
+    assert_eq!(&b[24..27], b"DE\0");
+}
+
+#[test]
+fn the_country_is_read_from_a_get_reg_reply() {
+    // genlmsghdr, then the DFS region (u8, padded) before the country, as nl80211 sends them.
+    let mut r = vec![31, 0, 0, 0];
+    r.extend_from_slice(&5u16.to_ne_bytes());
+    r.extend_from_slice(&195u16.to_ne_bytes());
+    r.extend_from_slice(&[1, 0, 0, 0]);
+    r.extend_from_slice(&7u16.to_ne_bytes());
+    r.extend_from_slice(&33u16.to_ne_bytes());
+    r.extend_from_slice(b"DE\0\0");
+    assert_eq!(reg_alpha2(&r).as_deref(), Some("DE"));
+    assert_eq!(reg_alpha2(&r[..12]), None, "no country attribute");
+    assert_eq!(reg_alpha2(&r[..18]), None, "a truncated attribute is not read");
+    assert_eq!(reg_alpha2(&[]), None);
+}
+
+#[test]
 fn address_plan_is_fixed() {
     assert_eq!(zone_v4(2), [10, 19, 0, 2]);
     assert_eq!(zone_v6(2)[15], 2);

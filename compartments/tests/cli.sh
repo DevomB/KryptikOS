@@ -242,7 +242,7 @@ fi
 # A passphrase never goes on a command line, where any process could read it: `kryptik wifi add`
 # takes it from the terminal or a pipe and passes it on stdin.
 out="$(K wifi 2>&1)"; rc=$?
-if (( rc != 0 )) && [[ "$out" == *"list, scan, add SSID or forget SSID"* ]]; then
+if (( rc != 0 )) && [[ "$out" == *"list, scan, add SSID, forget SSID or country [XX]"* ]]; then
     pass "wifi without a subcommand fails and names the subcommands"
 else
     fail "wifi without a subcommand: exit $rc"
@@ -285,6 +285,47 @@ if (( rc == 0 )) && [[ "$out" == *"forgot network \"Home\""* && "$(K wifi list 2
     pass "wifi forget removes the network"
 else
     fail "wifi forget: exit $rc, output '$out'"
+fi
+
+# The country: kept beside the networks, root's, and handed to the kernel only from /var/lib.
+WCOUNTRY="$WORK/wifi/country"
+out="$(K wifi country 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ "$out" == "country none" ]]; then
+    pass "wifi country with none set says none"
+else
+    fail "wifi country, none set: exit $rc, output '$out'"
+fi
+out="$(K wifi country de 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ "$out" == "the Wi-Fi country is DE; the kernel was not told"* ]] \
+        && [[ "$(cat "$WCOUNTRY" 2>/dev/null)" == DE && "$(stat -c %a "$WCOUNTRY")" == 600 ]]; then
+    pass "wifi country de keeps DE, 0600, and tells no kernel from a test directory"
+else
+    fail "wifi country de: exit $rc, output '$out', file '$(cat "$WCOUNTRY" 2>&1)'"
+fi
+out="$(K wifi country 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ "$out" == "country DE" ]]; then
+    pass "wifi country then says DE"
+else
+    fail "wifi country after de: exit $rc, output '$out'"
+fi
+out="$(K wifi country United 2>&1)"; rc=$?
+if (( rc != 0 )) && [[ "$out" == *"is not a country"* && "$(cat "$WCOUNTRY")" == DE ]]; then
+    pass "wifi country refuses a word that is not two letters, and keeps DE"
+else
+    fail "wifi country United: exit $rc, output '$out'"
+fi
+printf 'de\n' > "$WCOUNTRY"
+out="$(K wifi country 2>&1)"; rc=$?
+if (( rc != 0 )) && [[ "$out" == *"holds no country"* ]]; then
+    pass "a country file that is not kryptikd's own is refused, never passed on"
+else
+    fail "a lower-case country file: exit $rc, output '$out'"
+fi
+out="$(K wifi country 00 2>&1)"; rc=$?
+if (( rc == 0 )) && [[ "$out" == *"cleared"* && ! -e "$WCOUNTRY" && "$(K wifi country 2>&1)" == "country none" ]]; then
+    pass "wifi country 00 removes the file: the rules that hold everywhere again"
+else
+    fail "wifi country 00: exit $rc, output '$out'"
 fi
 
 # --- update: refused here before the launch service is asked -----------------

@@ -355,7 +355,9 @@ cryptsetup's standard input. On idle, the chrome starts `kryptik-lock
 minutes without input, or the minutes in `~/.config/kryptik/lock-idle` (0
 never). Half a minute after the lock it turns the screens off through dwl's
 `zwlr_output_power_manager_v1`, and the first key or movement turns them on
-again; an unlock turns them on as well, should the watcher be gone. It
+again; an unlock turns them on as well, should the watcher be gone. With
+`lock-idle` 0 the chrome starts `kryptik-lock --idle 0 --blank 600`, which
+never locks and turns the screens off after ten minutes without input. It
 counts input, and a hold dwl counts for a zone under the conditions in
 Holding the screen awake, below; an inhibitor of any other zone, or of
 zone 0, never keeps the session unlocked or the screens lit. No zone can
@@ -377,7 +379,10 @@ The lock's check, in `make gui-test`:
 - the chrome arms the idle lock at ten minutes, and an idle lock of 8 s
   locks the session, turns the screen off 4 s later as the compositor
   reports to it, turns it on at the first key, and locks again after the
-  next 8 s once unlocked.
+  next 8 s once unlocked;
+- `--idle 0 --blank 4` turns the screen off 4 s after the last input and on
+  at the next key, with no lock, and `--idle 0` without a `--blank`, or with
+  a `--sleep`, is refused.
 
 **The watchdog** must not reset a sleeping machine, nor one waiting at the
 state prompt. Intel's timer stops across every sleep, and in ACPI's own
@@ -673,8 +678,10 @@ television's EDID may give its aspect ratio as its size, so only built-in
 panels are measured. A zone's window is told the exact scale through
 `wp_fractional_scale_v1`, which the proxy passes on (`policy.rs`), and a
 client that reads only `wl_output`'s whole number draws at that, which the
-compositor scales down to the fraction. havoc and kryptik-lock draw at 1 at
-every scale, so the compositor enlarges them, and they look soft at any scale
+compositor scales down to the fraction. havoc follows the exact scale too
+(`build/patches/havoc-0.7.0`'s `0003`): its font and buffer are drawn that
+much larger, behind a viewport at the window's size. kryptik-lock draws at 1
+at every scale, so the compositor enlarges it, and it looks soft at any scale
 but 1.
 
 Check: `make gui-test` writes the user's line for the first monitor at 1 and

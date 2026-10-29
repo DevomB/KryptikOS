@@ -97,19 +97,19 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             status-network-line \
             wifi-second-network \
             wifi-bss-age \
-            wifi-hidden \
+            wifi-hidden wifi-country wifi-country-at-start wifi-country-unknown \
             uplink-renamed-plain uplink-state-reset \
             radio-off-at-start \
             radio-recarried \
             wifi-wpa2-plain wifi-sae wifi-open wifi-own-address wifi-address-per-network wifi-supplicant-unprivileged wifi-supplicant-no-nft \
             wifi-refused-wpa2 wifi-refused-cleared wifi-refused-sae \
-            zone-clocks-own \
+            zone-clocks-own zone-local-time \
             wifi-sae-h2e \
             time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden dns-own-resolver dns-own-port-closed dns-cache-per-zone dns-uplink-closed net-zone-sysfs-nics-only \
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \
             volume-init zone-source-pinned bridge-ports-closed encrypted-zone-start stop-closes-volume wrong-passphrase persist-reopen no-mapping-after ephemeral-gone concurrent-start-refused full-volume header-restore volume-destroy vault-offline vault-ping no-passphrase-leak \
             setuid-only-allowed no-file-capabilities sysctls-applied host-activity-hidden fetch-and-sntp-no-caps \
-            microcode-notice \
+            microcode-notice secureboot-notice \
             image-store image-runs image-needs-refused image-hidden image-explained "${CONTROLS[@]}" image-corrupt image-toolkit image-browser; do
     grep -q "ZT PASS ${name}" <<<"$T2" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
@@ -183,7 +183,8 @@ T2C="$(txt)"
 [[ "$rc" -eq 0 ]] && green "the camera rounds ran to their end" || red "the camera rounds did not run to their end"
 for name in camera-not-by-alias camera-not-granted camera-refused-vault camera-refused-net camera-granted \
             camera-zone-captures camera-ends-with-zone camera-other-zone-none camera-revoked \
-            camera-revoked-kept-descriptor camera-granted-again-while-running camera-ends-with-zone-again camera-gone-ends-grant; do
+            camera-revoked-kept-descriptor camera-granted-again-while-running camera-ends-with-zone-again camera-gone-ends-grant \
+            camera-colour-first; do
     grep -q "CT PASS ${name}" <<<"$T2C" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 grep 'CT FAIL' <<<"$T2C" | sed 's/^/        /'

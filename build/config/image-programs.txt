@@ -1128,6 +1128,7 @@ usr/libexec/kryptik/medium-root.sh
 usr/libexec/kryptik/microcode-notice.sh
 usr/libexec/kryptik/netzone-init.sh
 usr/libexec/kryptik/power.sh
+usr/libexec/kryptik/secureboot-notice.sh
 usr/libexec/kryptik/sntp-offset.py
 usr/libexec/kryptik/soundprobe
 usr/libexec/kryptik/state-sealed.sh

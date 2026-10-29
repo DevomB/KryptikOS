@@ -858,14 +858,20 @@ int main(int argc, char **argv)
 	const char *disp = getenv("WAYLAND_DISPLAY");
 	const char *rt = getenv("XDG_RUNTIME_DIR");
 	char path[256];
+	int plen;
 	if (!disp || !*disp) disp = "wayland-0";
-	if (disp[0] == '/') snprintf(path, sizeof path, "%s", disp);
-	else if (rt && *rt) snprintf(path, sizeof path, "%s/%s", rt, disp);
+	if (disp[0] == '/') plen = snprintf(path, sizeof path, "%s", disp);
+	else if (rt && *rt) plen = snprintf(path, sizeof path, "%s/%s", rt, disp);
 	else { fprintf(stderr, "wlprobe: WAYLAND_DISPLAY is relative and XDG_RUNTIME_DIR is unset\n"); return 1; }
 
-	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	struct sockaddr_un sa; memset(&sa, 0, sizeof sa); sa.sun_family = AF_UNIX;
-	snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
+	/* Cut short, the path would name another socket: refused, as libwayland refuses it. */
+	if (plen < 0 || (size_t)plen >= sizeof sa.sun_path) {
+		fprintf(stderr, "wlprobe: the socket path is over %zu bytes\n", sizeof sa.sun_path - 1);
+		return 1;
+	}
+	memcpy(sa.sun_path, path, (size_t)plen + 1);
+	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (connect(sock, (struct sockaddr *)&sa, sizeof sa) < 0) { fprintf(stderr, "wlprobe: connect %s: %s\n", path, strerror(errno)); return 1; }
 	printf("connected %s\n", path);
 

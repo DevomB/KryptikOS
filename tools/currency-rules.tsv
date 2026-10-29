@@ -28,6 +28,8 @@ openssh	listing	https://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/	openssh-([
 # curl.se/ca/ is a meta refresh, which curl -L does not follow.
 ca-bundle	listing	https://curl.se/docs/caextract.html	cacert-([0-9]{4}-[0-9]{2}-[0-9]{2})\.pem	-
 lynx	listing	https://invisible-mirror.net/archives/lynx/tarballs/	lynx([0-9]+(\.[0-9]+)+)\.tar\.gz	-
+# A release is its year and a letter, with no dash before it: tzdata2026f.
+tzdata	listing	https://data.iana.org/time-zones/releases/	tzdata([0-9]{4}[a-z]+)\.tar\.gz	-
 seatd	listing	https://git.sr.ht/~kennylevinsen/seatd/refs/rss.xml	<title>([0-9]+(\.[0-9]+)+)</title>	-
 # Tags only: it publishes no releases.
 kernel-hardening-checker	listing	https://github.com/a13xp0p0v/kernel-hardening-checker/tags.atom	<title>v([0-9]+(\.[0-9]+)+)</title>	-

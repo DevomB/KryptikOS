@@ -112,6 +112,10 @@ pub struct Zone {
     /// (docs/design/laptop.md), so its proxy lets the idle inhibitor through. Off unless the file
     /// says so; never the nic zone's, which draws no window.
     pub hold_awake: bool,
+    /// `[clock] local = true`: the zone's /etc/localtime is zone 0's time zone, as it was when the
+    /// zone started (rootfs.rs). Off unless the file says so, and a zone keeps UTC: its time zone
+    /// tells where its user is. Never the nic zone's.
+    pub clock_local: bool,
 }
 
 /// Smallest `identity.uid_base`; every base is a multiple of `IDENTITY_STRIDE`.
@@ -154,6 +158,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "sound.play",
     "camera.use",
     "desktop.hold_awake",
+    "clock.local",
     "ui.border_color", "ui.border_pattern", "ui.glyph", "ui.label",
 ];
 
@@ -475,6 +480,15 @@ impl Zone {
             Some(v) => return Err(bad("desktop.hold_awake", v, "true or false")),
         };
 
+        let clock_local = match kv.get("clock.local").map(String::as_str) {
+            None | Some("false") => false,
+            Some("true") if network == NetworkMode::Nic => {
+                return Err(ZoneError::Invalid(format!("zone {name:?}: the nic zone keeps UTC")))
+            }
+            Some("true") => true,
+            Some(v) => return Err(bad("clock.local", v, "true or false")),
+        };
+
         let transfer_to: Vec<String> = match get("transfer.to") {
             None => Vec::new(),
             Some(v) => {
@@ -552,6 +566,7 @@ impl Zone {
             removable,
             camera,
             hold_awake,
+            clock_local,
             description: get("zone.description").unwrap_or_default(),
             volume: get("storage.volume"),
             size: get("storage.size"),

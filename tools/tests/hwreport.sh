@@ -38,6 +38,10 @@ put sys/firmware/efi/fw_platform_size 64
 mkdir -p "$W/sys/firmware/efi/efivars"
 printf '\006\000\000\000\001' > "$W/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 printf '\006\000\000\000\000' > "$W/sys/firmware/efi/efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+# db with Microsoft's 2023 CA beside another, and a KEK of the machine's own alone.
+{ printf '\047\000\000\000'; printf 'X509 O=Microsoft Corporation, CN=Windows UEFI CA 2023 X509 CN=kryptik-sb'; } \
+    > "$W/sys/firmware/efi/efivars/db-d719b2cb-3d3a-4596-a3bc-dad00e67656f"
+{ printf '\047\000\000\000'; printf 'X509 O=Example Platform, CN=Platform KEK'; } > "$W/sys/firmware/efi/efivars/KEK-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 put sys/kernel/security/lockdown 'none integrity [confidentiality]'
 put sys/class/tpm/tpm0/tpm_version_major 2
 mkdir -p "$W/sys/class/tpm/tpm0/device" "$W/sys/bus/platform/drivers/tpm_tis"
@@ -156,6 +160,8 @@ want "what booted"                          '^booted: the usb medium$'
 want "whether its state is kept"            '^state: tmpfs$'
 want "the maker and the model"              '^product_version: ThinkPad X1 Carbon Gen 9$'
 want "Secure Boot, read from the firmware"  '^secure boot: on$'
+want "whether db holds Microsoft's certificates" "^db holds microsoft's certificates: yes$"
+want "and whether KEK does"                 "^KEK holds microsoft's certificates: no$"
 want "the lockdown in force"                '^lockdown: confidentiality$'
 want "the TPM, its driver and the random number generator" '^tpm: version 2, driver tpm_tis; hwrng: tpm-rng-0$'
 want "the clock's driver, governor and energy hint" '^cpufreq: intel_pstate, governor powersave, epp balance_power, amd-pstate -$'
@@ -170,6 +176,26 @@ want "the memory"                           '^memory: 15902 MiB$'
 echo "-- devices and drivers"
 want "a device, its driver and its name"    '^0000:00:1f\.6 class 020000 8086:15fb sub 17aa:22b8 rev 20 driver e1000e \| Ethernet controller \| Intel Corporation Ethernet Connection \(13\) I219-LM$'
 want "a device with no driver"              '^0000:00:14\.3 class 028000 8086:a0f0 .* driver - \| Network controller \| Intel Corporation Wi-Fi 6 AX201$'
+# The image has no pci.ids, as image-excludes.txt drops hwdata: the names come from udev's hwdb,
+# asked by each device's modalias, here of a stand-in that knows the radio alone.
+mkdir -p "$W/hwdb-bin"
+cat > "$W/hwdb-bin/udevadm" <<'EOF'
+#!/bin/sh
+case "$*" in
+    "hwdb --test=pci:v00008086d0000a0f0"*)
+        printf 'ID_PCI_CLASS_FROM_DATABASE=Network controller\nID_PCI_SUBCLASS_FROM_DATABASE=Network controller\nID_VENDOR_FROM_DATABASE=Intel Corporation\nID_MODEL_FROM_DATABASE=Wi-Fi 6 AX201\n' ;;
+esac
+EOF
+chmod +x "$W/hwdb-bin/udevadm"
+mv "$W/usr/share/hwdata/pci.ids" "$W/pci.ids.away"
+PATH="$W/hwdb-bin:$PATH" KRYPTIK_HWREPORT_ROOT="$W" sh "$TOOL" > "$W/report-hwdb.txt" 2>&1
+mv "$W/pci.ids.away" "$W/usr/share/hwdata/pci.ids"
+if grep -qE '^0000:00:14\.3 class 028000 8086:a0f0 .* driver - \| Network controller \| Intel Corporation Wi-Fi 6 AX201$' "$W/report-hwdb.txt" \
+   && grep -qE '^0000:00:1f\.6 class 020000 8086:15fb sub 17aa:22b8 rev 20 driver [a-z0-9_-]+$' "$W/report-hwdb.txt"; then
+    green "with no pci.ids, the names from udev's hwdb, and none where it knows none"
+else
+    red "names from the hwdb: $(grep -E '^0000:00:(14\.3|1f\.6) ' "$W/report-hwdb.txt" | paste -sd'|')"
+fi
 want "a USB device by its own strings"      '^1-2 0781:5581 speed 5000 \| SanDisk Ultra$'
 want "a USB interface and its driver"       '^1-2:1\.0 interface class 08/06/50 driver usb-storage$'
 want "an interface nothing drives, with what would" '^usb 1-3:1\.0 usb:v8087p0026'
@@ -349,7 +375,19 @@ put sys/bus/acpi/devices/CSC3551:01/status 0
 audio_now
 aud "the amplifiers, and that nothing drives them" '^amplifier CSC3551:00 driver -$'
 noaud "not those the firmware calls absent" '^amplifier CSC3551:01'
+noaud "a CS35L41's files are not named by the codec: no pattern" '^amplifier-tuning '
 listed "the listing: the amplifiers, by their ACPI name" "HD Audio codec 10ec0287; amplifiers CSC3551, not driven"
+
+quiet
+pci 0000:00:1f.3 0x040300 8086 a0c8 snd_hda_intel
+codec hdaudioC0D0 10ec0245 103c8e19
+# Two Cirrus CS35L54s, as on HP's ZBook 8 G1a: their tuning files carry the codec's subsystem ID.
+put sys/bus/acpi/devices/CSC3554:00/status 15
+mkdir -p "$W/sys/devices/platform/CSC3554:00"
+ln -s "$W/sys/devices/platform/CSC3554:00" "$W/sys/bus/acpi/devices/CSC3554:00/physical_node"
+audio_now
+aud "a CS35L54, and the tuning files it asks for by the codec's subsystem" '^amplifier-tuning CSC3554:00 cirrus/cs35l54-\*-dsp1-misc-103c8e19\*$'
+listed "the listing reads the amplifier, not its pattern" "HD Audio codec 10ec0245; amplifiers CSC3554, not driven"
 
 echo "-- the watchdogs"
 put sys/class/watchdog/watchdog0/identity 'SP5100 TCO timer'
@@ -431,6 +469,8 @@ put sys/bus/acpi/devices/OVTI01A0:00/status 15
 put sys/bus/acpi/devices/INT3472:01/status 15
 put sys/bus/acpi/devices/INTC1009:00/status 15
 put sys/bus/acpi/devices/OVTI02C1:00/status 0
+# The OmniVision sensor behind AMD's image processor, as amdgpu's ISP looks for it.
+put sys/bus/acpi/devices/OMNI5C10:00/status 15
 laptop_now
 lap "each backlight with its kind and range" '^backlight intel_backlight type raw max 19200$'
 lap "the firmware's as well"                 '^backlight acpi_video0 type firmware max 100$'
@@ -447,6 +487,7 @@ lap "the sleeps, and the hardware's time asleep" '^sleep stats: 3 successful, 1 
 lap "and the power controller driver that counts it" '^power controller: intel_pmc_core$'
 lap "an IPU6 by its PCI ID"                  '^camera ipu6 0000:00:05\.0 8086:a75d driver -$'
 lap "its sensor, by its ACPI ID"             '^camera acpi OVTI01A0:00 sensor$'
+lap "and AMD's image processor's sensor"     '^camera acpi OMNI5C10:00 sensor$'
 lap "the sensor's power controller"          '^camera acpi INT3472:01 sensor power$'
 lap "and the Visual Sensing Controller"      '^camera acpi INTC1009:00 visual sensing controller$'
 nolap "not a sensor the firmware calls absent" 'OVTI02C1'

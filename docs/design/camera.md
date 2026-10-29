@@ -111,6 +111,9 @@ itself waits for the tests on physical hardware.
   `work` finds no camera; the chrome's window names `personal`;
 - taken away while granted (`vivid` unloaded), the grant ends and the node
   goes;
+- of two stand-ins, the grant passes over the lower numbered, whose node
+  offers only multi-planar formats, which Firefox does not read, for the
+  other;
 - `k` alone takes it back, and so does the screen locking: the probe's open
   descriptor fails at its next read, and the node is gone;
 - a zone whose file refuses the camera is never offered it.
@@ -118,13 +121,15 @@ itself waits for the tests on physical hardware.
 ## Not covered
 
 - MIPI cameras behind Intel's IPU6 and AMD's image processor (below), and
-  infrared cameras. Of several cameras, a grant gives the zone the lowest
-  numbered node that is its device's first (`index` 0), which a camera's
-  metadata node is not
-  (`camera_in` in `camera.rs`). On a laptop whose infrared face-login camera
-  is a USB device of its own, that node may be the infrared camera's, which
-  gives a call no picture. Preferring a node that offers a colour format
-  waits until a laptop shows it.
+  infrared cameras. An infrared face-login camera is usually a second
+  function of the same USB camera: a video4linux device of its own, whose
+  capture node is `index` 0 like the colour camera's. Of several cameras, a
+  grant gives the zone the lowest numbered node that is its device's first
+  (`index` 0), which a camera's metadata node is not, and that offers a
+  colour format (MJPEG, YUYV, NV12 and the like), which an infrared camera
+  giving grey frames alone does not; when none does, the lowest numbered
+  (`camera_in` in `camera.rs`). An infrared camera that offers a colour
+  format too may still be the one given, and gives a call no picture.
 - Which USB devices are accepted at all.
 - Screen sharing, which is the compositor's question, not the camera's.
 
