@@ -379,6 +379,8 @@ touch. Keys (Alt is the modifier):
 Alt+Shift+l locks the screen. Nothing shows but the word LOCKED and a mark
 for each character typed, and every key goes to the lock, so no window, zone
 0's or a zone's, sees the password; Ctrl+Alt+F2 does nothing while locked.
+No window gets the mouse either, not even one a button was held down on as
+the lock came.
 The volume, mute, microphone and brightness keys still work under the lock.
 Type the login password and Enter. After a wrong one the lock shows WRONG,
 and the next try waits 2 seconds, doubling with each wrong one in a row up
@@ -558,9 +560,8 @@ made again whenever the monitor is plugged in; NAME `*` stands for
 every monitor no other line names. `kryptik display NAME auto` drops that
 monitor's line, so it takes the `*` line if there is one, and otherwise 2 for a
 built-in panel of 192 dpi or more and 1200 lines or more, 1 for the rest. A
-zone's window is told the exact scale, and the browser, Kryptik's terminals
-and the menu draw sharp at it. The lock screen draws at 1 and is enlarged, so
-at any scale but 1 it looks soft.
+zone's window is told the exact scale, and the browser, Kryptik's terminals,
+the menu and the lock screen draw sharp at it.
 
 **Time zone.** Zone 0's clock reads UTC until you choose a time zone.
 `kryptik timezone list DE` lists a country's zones by its two letters,
@@ -817,8 +818,14 @@ leaves out serial numbers, hardware addresses and UUIDs.
 - Thunderbolt and USB4 are not built, so nothing lets in what a Thunderbolt
   or USB4 dock carries over PCIe or USB 3: its Ethernet may stay dark, and
   its USB ports work at USB 2's speed, which USB-C carries by itself, or not
-  at all. A monitor over USB-C works where the laptop's own USB-C controller
-  drives it, as on most, and many docks fall back to plain USB-C.
+  at all. A monitor plugged straight into a USB-C port, or through a plain
+  USB-C dock, works where the laptop's own USB-C controller drives it, as on
+  most. A Thunderbolt or USB4 dock on a Thunderbolt or USB4 port (usually
+  a lightning mark, or 40Gbps beside it; the laptop's specifications say
+  which ports are USB4) connects as USB4, and its monitors may stay dark
+  too, as nothing sets up the DisplayPort it carries: plug
+  such a dock into a plain USB-C port, where many fall back to USB-C, or
+  the monitor into the laptop itself.
 - The state passphrase at boot is asked before any driver module loads, so
   it is typed on a keyboard whose driver is in the kernel itself: a laptop's
   built-in keyboard on its PS/2 controller, as most are, or on I2C behind

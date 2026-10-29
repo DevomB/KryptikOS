@@ -30,6 +30,11 @@
 #   GT SCREENSHOT-LOCKED                            take a screenshot
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
+#   GT POINTER-BEFORE-LOCK                          move the pointer onto the newest window
+#   GT LOCKED-CLICK                                 click and turn the wheel, the pointer unmoved
+#   GT LOCK-TYPE-CLICK, GT LOCK-TYPE-DRAG           type the user's password and Enter
+#   GT BUTTON-HOLD                                  press the left button and keep it down
+#   GT LOCKED-DRAG                                  move the pointer, then let the button go
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
 #   GT KEY-WAKE-BLANK                               press Shift (screens off, no lock)
 #   GT KEY-FOCUS-HOLD                               press Alt+j
@@ -45,6 +50,7 @@
 #                                                   type the user's password and Enter
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
+#   GT LOCK-TYPE-HEAD                               type the user's password and Enter
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
 #   GT SCREENSHOT-HEAD                              take a screenshot of the second monitor
 #   GT HEAD-BACK, GT HEAD-OUT                       plug it in again, pull it out again
@@ -1417,6 +1423,48 @@ else
 fi
 pkill -u "$USER_NAME" -f 'wlprobe oversize 0 300 lock-0' 2>/dev/null; wait "$lock0_pid" 2>/dev/null
 stop_zone untrusted
+# The pointer under the lock: a zone's window under it is sent nothing once the lock is up, not a
+# click or a wheel turn while the pointer has not moved, nor the moves and the release of a button
+# held down into the lock. wlprobe cursor says each pointer event its window is sent.
+mark lockptr untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 150" > "$LOG/launch-lockptr.out" 2>&1
+wait_for 20 probe_committed lockptr
+echo "GT POINTER-BEFORE-LOCK"
+ptr_entered() { since_mark lockptr untrusted | grep -q 'set a '; }
+wait_for 20 ptr_entered
+ptr_after() { since_mark "$1" untrusted | grep -cE 'pointer (button|motion|axis)'; }
+lock_said() { grep -q "^kryptik-lock: $2" "$1"; }
+as_user "/usr/bin/kryptik-lock" > "$LOG/lockptr-click.out" 2>&1 &
+wait_for 20 lock_said "$LOG/lockptr-click.out" locked
+mark lockclick untrusted
+echo "GT LOCKED-CLICK"
+sleep 3
+clicked="$(ptr_after lockclick)"
+echo "GT LOCK-TYPE-CLICK"
+wait_for 30 lock_said "$LOG/lockptr-click.out" unlocked
+if ptr_entered && lock_said "$LOG/lockptr-click.out" locked && [[ "$clicked" -eq 0 ]]; then
+    pass "lock-takes-resting-pointer" "a click and a wheel turn under the lock, the pointer unmoved on a zone's window, reached that window not at all"
+else
+    fail "lock-takes-resting-pointer" "pointer events after the lock: ${clicked}; the window: $(since_mark lockptr untrusted | tail -4 | tr '\n' ' '); the lock: $(tr '\n' ' ' < "$LOG/lockptr-click.out")"
+fi
+mark lockhold untrusted
+echo "GT BUTTON-HOLD"
+held() { since_mark lockhold untrusted | grep -q 'pointer button 272 pressed'; }
+wait_for 10 held; held_rc=$?
+as_user "/usr/bin/kryptik-lock" > "$LOG/lockptr-drag.out" 2>&1 &
+wait_for 20 lock_said "$LOG/lockptr-drag.out" locked
+mark lockdrag untrusted
+echo "GT LOCKED-DRAG"
+sleep 3
+dragged="$(ptr_after lockdrag)"
+echo "GT LOCK-TYPE-DRAG"
+wait_for 30 lock_said "$LOG/lockptr-drag.out" unlocked
+if [[ "$held_rc" -eq 0 && "$dragged" -eq 0 ]] && lock_said "$LOG/lockptr-drag.out" locked; then
+    pass "lock-takes-held-pointer" "a button pressed on a zone's window reached it before the lock; its moves and its release under the lock did not"
+else
+    fail "lock-takes-held-pointer" "the press reached the window: $([[ "$held_rc" -eq 0 ]] && echo yes || echo no); pointer events after the lock: ${dragged}; the window: $(since_mark lockhold untrusted | tail -4 | tr '\n' ' ')"
+fi
+stop_zone untrusted
 # Idle, the session locks itself: kryptik-lock --idle, as the chrome starts it, locks after
 # its seconds without input, turns the screens off --blank seconds later and on again at the
 # first key, and locks again after the next quiet stretch once unlocked. The compositor tells
@@ -1712,6 +1760,26 @@ else
     fail "havoc-draws-at-scale" "$(grep -E 'preferred_scale|set_destination|create_buffer' "$LOG/havoc-scale.out" | tail -4 | tr '\n' ' ')"
 fi
 wait "$hscale" 2>/dev/null
+# The lock covers both heads, and on the scale-2 one draws its picture twice the surface's size,
+# shown at that size through a viewport, so its lettering is sharp. Only these lines of
+# libwayland's log are kept: the rest would hold the keys of the password.
+as_user "WAYLAND_DEBUG=client /usr/bin/kryptik-lock" 2>&1 \
+    | grep --line-buffered -E 'set_destination|create_buffer|preferred_scale|^kryptik-lock: ' > "$LOG/lock-scale.out" &
+lock_scaled() {
+    local d
+    while read -r d; do
+        [[ "$d" =~ \(([0-9]+),\ ([0-9]+)\) ]] || continue
+        grep -qE "create_buffer\(new id wl_buffer@[0-9]+, 0, $((BASH_REMATCH[1] * 2)), $((BASH_REMATCH[2] * 2)), " "$LOG/lock-scale.out" && return 0
+    done < <(grep -o 'set_destination([0-9]*, [0-9]*)' "$LOG/lock-scale.out" | sort -u)
+    return 1
+}
+if wait_for 20 lock_said "$LOG/lock-scale.out" locked && wait_for 15 lock_scaled; then
+    pass "lock-draws-at-scale" "on the scale-2 head the lock drew $(grep -o 'create_buffer([^)]*)' "$LOG/lock-scale.out" | sort -u | tr '\n' ' ')for $(grep -o 'set_destination([^)]*)' "$LOG/lock-scale.out" | sort -u | tr '\n' ' ')"
+else
+    fail "lock-draws-at-scale" "$(tail -6 "$LOG/lock-scale.out" | tr '\n' ' ')"
+fi
+echo "GT LOCK-TYPE-HEAD"
+wait_for 30 lock_said "$LOG/lock-scale.out" unlocked || fail "lock-scale-unlocks" "$(grep '^kryptik-lock: ' "$LOG/lock-scale.out" | tail -3 | tr '\n' ' ')"
 # What a zone is told of the monitors: both, each named by its number with no make or model,
 # as the zone's proxy rewrites them, and the second at the scale chosen for it.
 mark outs untrusted

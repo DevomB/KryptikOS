@@ -125,6 +125,12 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT SCREENSHOT-LOCKED" "sleep:2" "screendump:${SHOT_LOCKED}" \
     "expect:GT LOCK-TYPE-WRONG" "key:n" "key:o" "key:ret" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT POINTER-BEFORE-LOCK" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT LOCKED-CLICK" "button:left" "button:wheel-down" \
+    "expect:GT LOCK-TYPE-CLICK" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT BUTTON-HOLD" "button-down:left" \
+    "expect:GT LOCKED-DRAG" "pointer:40,40" "pointer:-40,-40" "button-up:left" \
+    "expect:GT LOCK-TYPE-DRAG" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT KEY-WAKE-BLANK" "key:shift" \
@@ -143,6 +149,7 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-FIRST-LAYOUT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT HEAD-ON" "head:${HEAD2}:1024x768" \
     "expect:GT KEY-FOCUS-HEAD\r?\n" "key:alt+dot" \
+    "expect:GT LOCK-TYPE-HEAD" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT KEY-FOCUS-HEAD-WINDOW" "key:alt+j" \
     "expect:GT SCREENSHOT-HEAD" "sleep:2" "screendump-head:1:${SHOT_HEAD}" \
     "expect:GT HEAD-OFF" "head:${HEAD2}:0x0" \
@@ -178,13 +185,13 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             map-keeps-zone0-focus close-keeps-zone0-focus alone-keeps-no-keyboard alone-reached-by-key focus-shows-zone focus-shows-label title-prefixed last-zone-recorded menu-opens-on-key menu-keeps-last-zone menu-names-stale-statement menu-names-install-age menu-update-auto menu-names-failed-trial menu-names-armed-trial zone-fullscreen-refused compositor-survives-close oversize-window forged-title-named-by-zone second-zone-window zone0-own-programs-only zone-app-in-cgroup no-virtual-input clipboard-isolated clipboard-move-gesture clipboard-moved zone-copy-pastes-in-zone zone-copy-stays-in-zone zone-copy-not-in-zone0 \
             move-door-unreached move-crosses-zones move-leaves-nothing-behind move-in-no-log move-door-refuses-others \
             transfer-policy no-question-for-policy-refusal consent-code-shown transfer-approved transfer-landed plain-y-refused denied-file-absent \
-            second-head-appears chrome-follows-head havoc-draws-at-scale second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up browser-key-brings-forward browser-front-only-the-users browser-front-request browser-key-launches \
+            second-head-appears chrome-follows-head havoc-draws-at-scale lock-draws-at-scale second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up browser-key-brings-forward browser-front-only-the-users browser-front-request browser-key-launches \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again blank-without-lock key-wakes-without-lock \
             zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
             chrome-names-hold idle-lock-heeds-hold chrome-hold-cleared \
-            suspend-refused-virtio-gpu suspend-refused-stays-awake \
+            suspend-refused-virtio-gpu suspend-refused-stays-awake lock-takes-resting-pointer lock-takes-held-pointer \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             second-head-scale-chosen zone-sees-heads-unnamed window-returns-with-head \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group seat-is-dwls dwl-confined-to-its-files \

@@ -150,10 +150,15 @@ commit_slot() {   # commit_slot SLOT (ESP mounted rw at /run/kryptik-recover)
     esp_put /run/kryptik-recover/kryptik/committed-slot "$s" || die "cannot record slot $s as committed"
     sync
     say "committed: BOOTX64.EFI is now slot $s ($(esp_version "/run/kryptik-recover/kryptik/version-$s"))"
-    # As boot-success does: forget Kryptik's firmware entries, then give the committed slot its own.
+    # As boot-success does: forget Kryptik's firmware entries, then give the committed slot its
+    # own where theirs stood.
     if [ -d /sys/firmware/efi/efivars ]; then
-        kryptik-efiboot forget >/dev/null 2>&1 || say "the firmware's Kryptik entries could not be removed; its own order may still name the other slot"
-        kryptik-efiboot ensure "$s" "$ESP" >/dev/null 2>&1 || say "slot $s has no firmware entry of its own; BOOTX64.EFI is the only way to it"
+        rc=0; kryptik-efiboot keep "$s" "$ESP" >/dev/null 2>&1 || rc=$?
+        case $rc in
+            0) ;;
+            3) say "slot $s has no firmware entry of its own; BOOTX64.EFI is the only way to it" ;;
+            *) say "the firmware's Kryptik entries could not be removed; its own order may still name the other slot" ;;
+        esac
     fi
 }
 

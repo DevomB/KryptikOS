@@ -375,6 +375,9 @@ The lock's check, in `make gui-test`:
 - the lock's program killed leaves the session locked with no window given
   the keyboard, and the lock locks again;
 - a grab a zone makes while locked keeps no key from the lock;
+- the pointer leaves every window at the lock: a click and a wheel turn
+  under it, the pointer unmoved on a zone's window, reach that window not at
+  all, nor do the moves and the release of a button held down into the lock;
 - the login password unlocks, and zone 0's window has the keyboard again;
 - the chrome arms the idle lock at ten minutes, and an idle lock of 8 s
   locks the session, turns the screen off 4 s later as the compositor
@@ -487,8 +490,11 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   `/run/kryptik-power/state`, which the chrome reads, so the menu says what
   the service acts on.
 - **The battery while the state partition waits.** From a wake until the
-  passphrase is given, the power service waits on the partition, as every
-  program started then does. A battery reaching its alarm level wakes an
+  passphrase is given, every program started waits on the partition. The
+  power service starts none in a look: it reads `/sys` with bash's own
+  `read`, waits in bash's loadable `sleep`, and writes its state in place
+  rather than through `mv`, so the state stays current. A battery reaching
+  its alarm level wakes an
   s2idle laptop, so a laptop asleep in a bag would wake to the prompt,
   lid still shut, and run flat there. kryptikd keeps the 3% rule
   meanwhile, from `/sys` alone (`critical` in `suspend.rs`, held to
@@ -497,9 +503,9 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   back to sleep soon after each wake still powers off. The zones are frozen
   and their volumes and the partition have no key, so they are not stopped
   first: everything was written out before the seal, nothing can be
-  written now, and a sync would wait for good. The power service, should
-  its programs run then, leaves the power-off to kryptikd: its shutdown
-  would stop the zones and sync, and neither could finish.
+  written now, and a sync would wait for good. The power service leaves
+  the power-off to kryptikd then: its shutdown would stop the zones and
+  sync, and neither could finish.
 - **A gauge that reads too low.** A worn battery whose gauge says 3% or less
   while it still holds charge powers the machine off a minute after every
   boot on battery. Requiring a reading above 3% earlier in the boot would
@@ -511,11 +517,18 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   rather than the battery's running down, so a machine that outdraws its
   charger under load does not swing between the two, on each
   processor policy that offers it (amd-pstate and intel_pstate both do).
+  Both are built in (`boot.fragment`), amd-pstate in active mode with its
+  dynamic EPP off, so the kernel does not override what this service sets.
   A processor neither drives falls back to acpi-cpufreq, which runs
-  schedutil (`boot.fragment`), so its clock still follows the load.
+  schedutil, so its clock still follows the load, and offers no preference.
   PCIe link power and NVMe power states keep the kernel's defaults, and no
   rule turns on USB autosuspend for input devices, which too often
-  misbehave with it.
+  misbehave with it. One does for a built-in camera
+  (`60-kryptik-camera.rules`), as `uvcvideo` would when it binds, which
+  here is only for a grant; a webcam stays awake until its first grant, as
+  the USB core keeps awake a device whose driver has not let it sleep. The
+  hardware report's `camera usb` line gives the camera's port (`fixed` is
+  built in) and whether it sleeps.
 - **Brightness.** An eudev rule (`70-kryptik-backlight.rules`) gives the
   session's group, `kryptik`, write access to the backlight's level, not
   `video`, which would hand the user the GPU's device nodes past seatd.
@@ -680,14 +693,20 @@ panels are measured. A zone's window is told the exact scale through
 client that reads only `wl_output`'s whole number draws at that, which the
 compositor scales down to the fraction. havoc follows the exact scale too
 (`build/patches/havoc-0.7.0`'s `0003`): its font and buffer are drawn that
-much larger, behind a viewport at the window's size. kryptik-lock draws at 1
-at every scale, so the compositor enlarges it, and it looks soft at any scale
-but 1.
+much larger, behind a viewport at the window's size. kryptik-lock does the
+same with the surface it puts on each output, at that output's scale. At a
+fractional scale dwl starts each window on a whole pixel of its screen, in
+steps of 2 at 1.5 and 4 at 1.25 or 1.75: off that grid wlroots shows a
+buffer drawn at the exact scale a pixel off its own size, and pixman scales
+it soft. A tiled window gives up those pixels from its size, so it stays in
+its tile; a floating one moves.
 
 Check: `make gui-test` writes the user's line for the first monitor at 1 and
 `* 2`, plugs a second monitor in, and finds it at scale 2 and the first at 1;
 through a zone's proxy both outputs are named `output-N`, with no make or
-model, one of them at scale 2. `tools/tests/display.sh` checks what
+model, one of them at scale 2. On the second, a terminal and the lock draw
+buffers twice their surface's size. `tools/tests/dwl-headless.sh` puts its
+output at 1.25 and finds the window moved onto the grid. `tools/tests/display.sh` checks what
 `kryptik display` keeps and refuses. The panel's own default waits for
 physical hardware, as QEMU has no built-in panel.
 

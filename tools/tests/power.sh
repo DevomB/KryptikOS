@@ -134,5 +134,19 @@ check "the state partition waiting for its passphrase" "$(is_sealed)" yes
 if grep -qF '[ "$low" -ge 2 ] && ! sealed; then' "$P"; then r=yes; else r=no; fi
 check "then the 3% power-off is kryptikd's, not the service's" "$r" yes
 
+# A program started then would wait on the partition, so a look must start none: with PATH
+# leading nowhere, any it started would fail and say so.
+fresh
+supply AC Mains online=0
+supply BAT0 Battery capacity=4 status=Discharging
+policy 0 "$ALL"
+dm 1 kryptik-state 1
+mkdir -p "$T/run"
+said="$(KRYPTIK_SYSFS="$T/sys" KRYPTIK_POWER_RUN="$T/run" PATH=/nonexistent "$BASH" "$P" --once 2>&1)"
+check "a look while it waits starts no program" "$said" "source=battery charge=4 critical=no warning=5"
+check "its state, written in place" "$(tr '\n' ' ' < "$T/run/state")" "source=battery charger=no charge=4 critical=no warning=5 "
+check "and the preference" "$(pref 0)" balance_power
+check "the rounds wait in bash's own sleep" "$(grep -c '^enable -f /usr/lib/bash/sleep sleep ' "$P")" 1
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

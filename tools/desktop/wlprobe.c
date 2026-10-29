@@ -617,6 +617,10 @@ static int handle_one(void)
 		draw_popup();
 	} else if (cursor && object == pointer_id && opcode == 0) {
 		set_cursor(get32(body));                /* wl_pointer.enter(serial, surface, x, y) */
+	} else if (cursor && object == pointer_id && (opcode == 1 || opcode == 2 || opcode == 4)) {
+		/* wl_pointer.leave, .motion and .axis: what the lock's check counts */
+		puts(opcode == 1 ? "pointer left" : opcode == 2 ? "pointer motion" : "pointer axis");
+		fflush(stdout);
 	} else if (cursor && object == pointer_id && opcode == 3) {
 		/* wl_pointer.button(serial, time, button, state) */
 		printf("pointer button %u %s\n", get32(body + 8), get32(body + 12) ? "pressed" : "released");
