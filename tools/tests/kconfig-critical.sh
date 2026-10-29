@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kconfig_critical_check against a stand-in .config: a bare entry takes =y or =m, one written
 # OPTION=y only =y, and either fails an option not set. Then the shipped list against
-# boot.fragment: each keyboard link it holds built in is a =y line there, but the four that are
+# boot.fragment: each entry it holds built in is a =y line there, but the four that are
 # not boot.fragment lines (kconfig-check.sh says what brings them). Offline.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

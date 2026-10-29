@@ -18,7 +18,8 @@ _kconfig_load() {   # <.config>
 # and HID over I2C behind Intel's LPSS or AMD's DesignWare controller, with the pin controllers its
 # interrupt comes through. SERIO_I8042, I2C_HID_CORE, PINCTRL_INTEL and USB_XHCI_PCI are not
 # boot.fragment lines: ATKBD, I2C_HID_ACPI and the pin controllers select the first three, and
-# xHCI brings the last by default.
+# xHCI brings the last by default. The two P-state drivers are bool only and default off: losing
+# one leaves that maker's processors at a fixed clock with no energy preference.
 KCONFIG_CRITICAL="CONFIG_SECURITY_LANDLOCK CONFIG_SECCOMP_FILTER CONFIG_USER_NS
 CONFIG_NET_NS CONFIG_EFI_STUB CONFIG_CMDLINE_BOOL CONFIG_CMDLINE_OVERRIDE
 CONFIG_DM_INIT CONFIG_EFIVAR_FS CONFIG_OVERLAY_FS CONFIG_DRM_VIRTIO_GPU
@@ -34,7 +35,8 @@ CONFIG_MFD_INTEL_LPSS_PCI=y CONFIG_MFD_INTEL_LPSS_ACPI=y CONFIG_PINCTRL_INTEL=y
 CONFIG_PINCTRL_SUNRISEPOINT=y CONFIG_PINCTRL_CANNONLAKE=y CONFIG_PINCTRL_ICELAKE=y
 CONFIG_PINCTRL_JASPERLAKE=y CONFIG_PINCTRL_ELKHARTLAKE=y CONFIG_PINCTRL_LAKEFIELD=y
 CONFIG_PINCTRL_TIGERLAKE=y CONFIG_PINCTRL_ALDERLAKE=y CONFIG_PINCTRL_METEORLAKE=y
-CONFIG_PINCTRL_METEORPOINT=y CONFIG_PINCTRL_INTEL_PLATFORM=y"
+CONFIG_PINCTRL_METEORPOINT=y CONFIG_PINCTRL_INTEL_PLATFORM=y
+CONFIG_X86_INTEL_PSTATE=y CONFIG_X86_AMD_PSTATE=y"
 
 # kconfig_critical_check <.config>: 0 when every bare entry is =y or =m and every OPTION=y one =y.
 kconfig_critical_check() {

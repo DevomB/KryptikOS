@@ -230,11 +230,15 @@ CONFIG_AMD_PMC=m
 # (root, /sys/power), amd_pmc's SMU idle mask and the LPS0 constraints reach the
 # kernel log, and pm_wakeup_irq names what woke it. Root-only switches, off until set.
 CONFIG_PM_DEBUG=y
-# The processor's clock: amd-pstate in active mode, where the power service sets the energy
-# preference, and schedutil for a machine whose processor falls back to acpi-cpufreq, where
-# defconfig's userspace governor would hold the clock wherever the firmware left it.
+# The processor's clock: intel_pstate from Sandy Bridge on and amd-pstate from Zen 2 on, both
+# bool with no Kconfig default and named by no defconfig line. amd-pstate runs in active mode
+# with its dynamic EPP off, as the power service sets the energy preference. A machine whose
+# processor falls back to acpi-cpufreq gets schedutil, where defconfig's userspace governor
+# would hold the clock wherever the firmware left it.
+CONFIG_X86_INTEL_PSTATE=y
 CONFIG_X86_AMD_PSTATE=y
 CONFIG_X86_AMD_PSTATE_DEFAULT_MODE=3
+# CONFIG_X86_AMD_PSTATE_DYNAMIC_EPP is not set
 CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
 # CONFIG_CPU_FREQ_DEFAULT_GOV_USERSPACE is not set
 CONFIG_INTEL_VSEC=m
