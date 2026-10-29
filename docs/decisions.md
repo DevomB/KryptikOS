@@ -665,3 +665,42 @@ that ask; fcitx5 and its engines as software images; no CJK input in 1.0.
 **Rejected:** one input method in zone 0 for every zone; a virtual keyboard
 as dwl has it; an input method of Kryptik's own that needs no virtual
 keyboard.
+
+## ADR-029 (proposed): USB4 and Thunderbolt through the kernel's connection manager, with no PCIe over a cable
+
+The kernel's USB4 connection manager (`CONFIG_USB4=m`, the `thunderbolt`
+module, loaded by the host router's PCI class) and native PCIe hotplug
+(`CONFIG_HOTPLUG_PCI_PCIE=y`) are built. The connection manager builds a
+dock's DisplayPort and USB 3 tunnels by itself. It builds a PCIe tunnel only
+for a router whose `authorized` is written, and nothing in Kryptik writes
+it, so no device inside a dock or at the end of a cable reaches memory over
+PCIe. Networking over the cable (`USB4_NET`) is not built, and the module
+is told `xdomain=0`, so another computer on the cable gets no answer.
+`host_reset` keeps its default, which tears down tunnels the firmware built.
+
+**Why:** on AMD laptops from Ryzen 6000 on, the USB-C ports with 40 Gbps
+are USB4 ports with no firmware connection manager. Without the kernel's:
+- the SoC stays out of its deepest sleep, as its USB4 routers reach their
+  low-power states only under the `thunderbolt` driver, and a PCIe hotplug
+  port only under pciehp (AMD's own s2idle checker fails on both), so a
+  sleeping laptop drains its battery faster;
+- a USB4 or Thunderbolt dock in USB4 mode leaves its screens dark and runs
+  its USB at USB 2's speed;
+- the kernel tells the firmware it has no native USB4 support.
+
+**Cost:**
+- A plugged router's description (DROM) is parsed by the kernel, which is
+  new attack surface reached by plugging a cable in, as a USB device's
+  descriptors already are.
+- pciehp can only be built in, ADR-013's case of what cannot be a module.
+  `USB4` selects `APPLE_PROPERTIES` and `EFI_DEV_PATH_PARSER`, also built in.
+- Docks whose USB ports or Ethernet sit behind their own PCIe controller (a
+  Thunderbolt 3 dock's), Thunderbolt drives and external graphics stay dark,
+  as they do now, until a policy for authorizing PCIe exists.
+- No firmware.
+
+**Rejected:**
+- Authorizing PCIe tunnels (boltd, or a security level of `none`): a
+  plugged device would reach memory, with only the IOMMU between them.
+- Leaving USB4 out: the sleep and dock costs above stay on every AMD laptop
+  of the last four years.
