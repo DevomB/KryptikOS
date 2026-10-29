@@ -136,8 +136,9 @@ ADR-009) and `boot.fragment` (ADR-013).
   and cannot be set).
 - Also on: KFENCE, trapping UBSAN bounds checks, page table checking,
   `DEBUG_VIRTUAL`, a strict IOMMU by default, the EFI stub's early-DMA and
-  reset-attack protections, the TPM as an entropy source, `/proc/pid/mem`
-  write protection, userspace shadow stacks.
+  reset-attack protections, the TPM as an entropy source where it is a chip
+  of its own or Pluton (6.18 gives an AMD firmware TPM no hwrng, after AMD's
+  PA-410), `/proc/pid/mem` write protection, userspace shadow stacks.
 - Off: `bpf()`, SELinux (LSMs are `landlock,lockdown,yama`), `/dev/mem`,
   `/proc/kcore`, MSR and CPUID devices, legacy PTYs, `binfmt_misc`, kexec,
   hibernation, IA-32 emulation, debugfs, ftrace, kprobes, io_uring, sysrq,
