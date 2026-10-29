@@ -676,7 +676,15 @@ for a router whose `authorized` is written, and nothing in Kryptik writes
 it, so no device inside a dock or at the end of a cable reaches memory over
 PCIe. Networking over the cable (`USB4_NET`) is not built, and the module
 is told `xdomain=0`, so another computer on the cable gets no answer.
-`host_reset` keeps its default, which tears down tunnels the firmware built.
+`host_reset` stays true, its default: the host router is reset as the
+module loads, which tears down every tunnel the firmware built before boot.
+Off, the driver would adopt those tunnels and mark each router the boot
+firmware set up as authorized, so a dock the firmware gave PCIe before boot
+(a setup screen's Thunderbolt or USB4 pre-boot support) would keep it with
+nothing in Kryptik having written `authorized`. Stage 05 fails a build
+whose modprobe.d sets it off, as it fails one missing a softdep. No udev
+rule writes `authorized` either: eudev ships none, and a rule imported
+later that did would undo this decision.
 
 **Why:** on AMD laptops from Ryzen 6000 on, the USB-C ports with 40 Gbps
 are USB4 ports with no firmware connection manager. Without the kernel's:
@@ -693,11 +701,16 @@ are USB4 ports with no firmware connection manager. Without the kernel's:
   new attack surface reached by plugging a cable in, as a USB device's
   descriptors already are.
 - pciehp can only be built in, ADR-013's case of what cannot be a module.
-  `USB4` selects `APPLE_PROPERTIES` and `EFI_DEV_PATH_PARSER`, also built in.
+  `USB4` selects `NVMEM`, `APPLE_PROPERTIES` and `EFI_DEV_PATH_PARSER`, all
+  bools and so built in, besides CRC32 and SHA-256 library code.
 - Docks whose USB ports or Ethernet sit behind their own PCIe controller (a
   Thunderbolt 3 dock's), Thunderbolt drives and external graphics stay dark,
   as they do now, until a policy for authorizing PCIe exists.
 - No firmware.
+- An Intel Thunderbolt 3 host whose firmware manages its connections
+  (before Ice Lake) follows the firmware's security level, as it does now
+  without the driver: at "no security" the firmware tunnels PCIe itself.
+  Every AMD USB4 laptop leaves that to the kernel's connection manager.
 
 **Rejected:**
 - Authorizing PCIe tunnels (boltd, or a security level of `none`): a
