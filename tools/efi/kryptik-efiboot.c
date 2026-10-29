@@ -288,7 +288,8 @@ static int holds(const unsigned char *list, size_t len, uint16_t num) {
     return 0;
 }
 
-/* Does entry NUM boot from the network: a MAC, IPv4, IPv6 or URI node in its device path? */
+/* Does entry NUM boot from the network: a MAC, IPv4, IPv6, iSCSI, URI or Wi-Fi node in its
+ * device path? An entry this misses counts as another system's, which nothing goes ahead of. */
 static int is_network(uint16_t num) {
     char var[9]; snprintf(var, sizeof var, "Boot%04X", (unsigned)num);
     unsigned char buf[2048]; size_t n = 0;
@@ -299,7 +300,7 @@ static int is_network(uint16_t num) {
     while (i + 4 <= end && i + 4 <= n) {
         unsigned t = buf[i], st = buf[i+1]; size_t l = (size_t)(buf[i+2] | (buf[i+3] << 8));
         if (l < 4 || t == 0x7f) break;
-        if (t == 3 && (st == 11 || st == 12 || st == 13 || st == 24)) return 1;
+        if (t == 3 && (st == 11 || st == 12 || st == 13 || st == 19 || st == 24 || st == 28)) return 1;
         i += l;
     }
     return 0;

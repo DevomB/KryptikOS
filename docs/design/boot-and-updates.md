@@ -132,9 +132,10 @@ second Kryptik disk in it boots by its own `BOOTX64.EFI`.
 entry for a trial. When the trial ends, committed or not, `keep` removes
 Kryptik's entries and `BootNext`, and the committed slot gets its own entry
 back where the first of them stood, so a place the user gave it in the
-firmware's setup outlasts every update. Firmware re-adds its own disk entry at the end of `BootOrder`, so an
-entry left in front of it must boot what `BOOTX64.EFI` boots; this one does,
-and is a second way to the committed slot should `BOOTX64.EFI` be lost. An
+firmware's setup outlasts every update. Firmware re-adds its own disk entry
+at the end of `BootOrder`, so an entry left in front of it must boot what
+`BOOTX64.EFI` boots; this one does, and is a second way to the committed
+slot should `BOOTX64.EFI` be lost. An
 entry is Kryptik's when its description and its file say so, never by its
 number: slot a's is `Boot00A0` and slot b's `Boot00B0` unless another system
 already uses that number, and then the next free one, the other system's
