@@ -145,6 +145,9 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT KEY-FOCUS-HEAD-WINDOW" "key:alt+j" \
     "expect:GT SCREENSHOT-HEAD" "sleep:2" "screendump-head:1:${SHOT_HEAD}" \
     "expect:GT HEAD-OFF" "head:${HEAD2}:0x0" \
+    "expect:GT HEAD-BACK" "head:${HEAD2}:1024x768" \
+    "expect:GT KEY-FOCUS-BACK" "key:alt+dot" \
+    "expect:GT HEAD-OUT" "head:${HEAD2}:0x0" \
     "expect:GT KEY-MENU-WIFI" "key:alt+p" \
     "type-from:GT WIFI-TYPE 1 ([a-z0-9]+)" "type-from:GT WIFI-TYPE 2 ([a-z0-9]+)" \
     "type-from:GT WIFI-TYPE 3 ([a-z0-9]+)" "type-from:GT WIFI-TYPE 4 ([a-z0-9]+)" \
@@ -182,7 +185,7 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             chrome-names-hold idle-lock-heeds-hold chrome-hold-cleared \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
-            second-head-scale-chosen zone-sees-heads-unnamed \
+            second-head-scale-chosen zone-sees-heads-unnamed window-returns-with-head \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group seat-is-dwls dwl-confined-to-its-files \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
             zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name touch-picks-window touch-presses-window zone-fractional-scale compositor-socket-unreached \
