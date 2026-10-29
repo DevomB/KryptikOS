@@ -664,8 +664,9 @@ leaves out serial numbers, hardware addresses and UUIDs.
   generated and then discarded. Its certificate is enrolled on its own, and
   no other build's release updates it. Moving to another build, 1.0.0 among
   them, is a reinstall with `--replace-kryptik`, which destroys the state
-  partition with its users and zone volumes: copy off what you keep first
-  (`kryptik-stick put` onto a FAT stick). Keep the build's USB image too:
+  partition with its users and zone volumes: copy off what you keep first,
+  from each zone given a FAT stick to write (`kryptik-stick put`). Keep the
+  build's USB image too:
   `kryptik-recover` restores a build only from a medium of it, and a build of
   main stays downloadable for 14 days.
 - No independent security review has been made.
