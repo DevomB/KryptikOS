@@ -29,17 +29,34 @@ const UVC: &str = "pci0000:00/0000:00:14.0/usb3/3-6/3-6:1.0";
 #[test]
 fn the_camera_is_the_first_capture_node() {
     let s = sys("uvc");
-    assert_eq!(camera_in(&s), None, "no node, no camera");
+    assert_eq!(camera_in(&s, |_| true), None, "no node, no camera");
     // A UVC camera: its capture node, then its metadata node.
     node(&s, UVC, "usb", "video1", 1, "81:1", "Integrated Camera: Integrated C");
-    assert_eq!(camera_in(&s), None, "a metadata node is no camera");
+    assert_eq!(camera_in(&s, |_| true), None, "a metadata node is no camera");
     node(&s, UVC, "usb", "video0", 0, "81:0", "Integrated Camera: Integrated C");
-    assert_eq!(camera_in(&s), Some(("video0".into(), 81, 0, "Integrated Camera: Integrated C".into())));
+    assert_eq!(camera_in(&s, |_| true), Some(("video0".into(), 81, 0, "Integrated Camera: Integrated C".into())));
     // Numbered as numbers: video10 comes after video2.
     node(&s, "platform/vivid.0", "platform", "video10", 0, "81:10", "vivid");
     node(&s, "platform/vivid.1", "platform", "video2", 0, "81:2", "\u{1b}[2Jvivid");
     let _ = fs::remove_file(s.join("class/video4linux/video0"));
-    assert_eq!(camera_in(&s), Some(("video2".into(), 81, 2, "[2Jvivid".into())), "a name shows no terminal escape");
+    assert_eq!(camera_in(&s, |_| true), Some(("video2".into(), 81, 2, "[2Jvivid".into())), "a name shows no terminal escape");
+    let _ = fs::remove_dir_all(&s);
+}
+
+/// A colour camera and an infrared one in one USB camera, each a device with its own capture
+/// node, as a laptop's colour and infrared module lists them; here the infrared one numbers lowest.
+#[test]
+fn the_camera_is_the_first_that_offers_colour() {
+    let s = sys("ir");
+    let ir = UVC.replace(":1.0", ":1.2");
+    node(&s, &ir, "usb", "video0", 0, "81:0", "HP 5MP Camera: HP IR Camera");
+    node(&s, &ir, "usb", "video1", 1, "81:1", "HP 5MP Camera: HP IR Camera");
+    node(&s, UVC, "usb", "video2", 0, "81:2", "HP 5MP Camera: HP 5MP Camera");
+    node(&s, UVC, "usb", "video3", 1, "81:3", "HP 5MP Camera: HP 5MP Camera");
+    let colour = |n: &str| n == "video2";
+    assert_eq!(camera_in(&s, colour), Some(("video2".into(), 81, 2, "HP 5MP Camera: HP 5MP Camera".into())));
+    assert_eq!(camera_in(&s, |_| false).map(|c| c.0).as_deref(), Some("video0"), "none offers colour: the lowest");
+    assert_eq!(camera_in(&s, |n| n == "video1").map(|c| c.0).as_deref(), Some("video0"), "a metadata node never");
     let _ = fs::remove_dir_all(&s);
 }
 
