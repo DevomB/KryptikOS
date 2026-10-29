@@ -98,6 +98,15 @@ if [[ -x "$B/kryptik-lock" ]]; then
     done
 fi
 
+# A socket path longer than a socket address holds is refused, never cut short to another's.
+if [[ -x "$B/wlprobe" ]]; then
+    long="/$(head -c 120 /dev/zero | tr '\0' x)"
+    out="$(WAYLAND_DISPLAY="$long" "$B/wlprobe" list 2>&1)"
+    rc=$?
+    [[ "$rc" -eq 1 && "$out" == *"socket path is over 107 bytes"* ]] && green "wlprobe refuses a socket path too long to connect to" \
+        || red "wlprobe with a 121-byte path: exit ${rc}: ${out:0:200}"
+fi
+
 { printf 'int kryptik_broken = ;\n'; cat "$D/kryptik-lock.c"; } > "$W/broken.c"
 if lock_cc "$W/broken.c" "$B/broken" 2> /dev/null; then
     red "a C error in kryptik-lock.c did not fail the build"
