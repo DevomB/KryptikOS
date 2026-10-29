@@ -124,6 +124,15 @@ older EPYC models: they keep the firmware's own microcode, the kernel log
 says `No sha256 digest for patch ID`, and every login prompt says to update
 the firmware.
 
+**Updating the firmware.** Do it before the install: Kryptik installs no
+firmware updates, and an install over the machine's only other system takes
+the maker's update tools with it. Many firmware setups fetch and install
+their own update over a wired network with no system at all: on an HP
+business laptop, Esc, then F10, then Main, Update System BIOS, Check HP.com
+for BIOS Updates, over its Ethernet port. Later firmware fixes come the same
+way. Once the medium boots, no `kryptik microcode` line above its shell means
+the firmware is new enough for the processor's microcode.
+
 Leave the firmware's IOMMU, its DMA protection and Pluton on, as they come.
 - Without the IOMMU, every device can reach all of memory, and nothing at
   the login prompt says so.
@@ -225,6 +234,16 @@ to destroy and then asks for `ERASE` as usual. Another disk in the machine
 that carries a Kryptik installation is left alone, but the installer warns:
 with both there, the boot may take that disk's system, and its state. Take
 it out, or install to it instead.
+
+The installer writes a new partition table and its own partitions, and
+nothing else: what the disk held before stays in the space they do not
+overwrite, readable by anyone who reads the disk, in plain text where the
+old system never encrypted it. To empty the disk first, use the drive's own
+erase from the firmware's setup (on an HP business laptop, Security, Hard
+Drive Utilities, Secure Erase), which a drive carries out itself. At the
+medium's shell, `blkdiscard -f /dev/sdY` discards every block on a drive
+that takes it, though a drive need not return zeros for a discarded block
+afterwards.
 
 Each root slot is sized for the image and half again, so that a later, larger
 release still fits. `--slot-size MIB` makes both slots larger than that,
@@ -648,6 +667,14 @@ backup with `--restore-state-header`. `--commit-slot` also writes the
 firmware an entry for the slot it commits, which a firmware that boots a
 fixed disk only from such an entry needs.
 
+A Secure Boot refusal at power-on is not the disk's fault: the firmware's
+keys were reset, and the medium is refused as well, so `kryptik-recover`
+cannot even start. On an HP business laptop, restoring its security
+settings to factory defaults, resetting its Secure Boot keys, or Sure Start
+restoring them all do it. Add the release's certificate to `db` again
+(section 1), or turn Secure Boot off to reach the system; `kryptik-recover`
+changes no firmware keys.
+
 `--backup-state-header FILE` and `--restore-state-header FILE` save and put
 back the state partition's LUKS2 header. Over a header that still opens, the
 restore takes only a backup of the same volume, and names both when they
@@ -740,6 +767,13 @@ leaves out serial numbers, hardware addresses and UUIDs.
   left powered on, which shortens the battery's time. A machine with
   NVIDIA's graphics alone shows the desktop through the firmware's
   framebuffer, at the resolution the firmware chose, on one monitor.
+- No power profile: AMD's platform management driver (`amd-pmf`) and the
+  makers' own are not built, so a laptop whose processor's power limits one
+  of them would switch, HP's G1a models among them, keeps its firmware's
+  balanced limits, with no quiet or performance profile. A limit on how far
+  the battery charges, where a laptop has one, is set in its firmware's
+  setup: on an HP business laptop, Battery Health Manager under Advanced,
+  Power Management Options.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
