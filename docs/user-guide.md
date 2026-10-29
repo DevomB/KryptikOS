@@ -94,6 +94,15 @@ BIOS from RAID to AHCI mode`: set it to AHCI in the firmware setup. A Windows
 kept on another disk must be made ready for AHCI first, or it stops booting. A
 newer machine's RST (Intel VMD) needs no change.
 
+Some firmware boots from the network first, and puts a new boot entry, such
+as the one the installer writes, below network boot: an HP business laptop
+does both, with Network (PXE) Boot on under Advanced, Boot Options. Turn
+network boot off unless the machine boots from a network, or move the
+installed disk above it in the boot order. On an HP, Save/Restore GPT of
+System Hard Drive, under Security, Hard Drive Utilities, must stay off, as
+it is by default, or the firmware takes the installer's new partition table
+for a change to put back.
+
 **Secure Boot.** The kernel is signed with the build's Secure Boot key: a
 release's, from 1.0.0 on, is the project's ([release keys](release-keys.md)),
 enrolled once for every release after it; a development build's is made by
