@@ -110,6 +110,13 @@ for target in /usr/share/zoneinfo/zone.tab /usr/share/zoneinfo/../../../etc/pass
     [[ ! -e "$T/up/localtime" && ! -L "$T/up/localtime" ]] && quarantined localtime && ok "a localtime linked to ${target} is quarantined" \
         || bad "a localtime linked to ${target} stayed"
 done
+# A relative link that reaches a zone's file from the upper layer, and something else from /etc.
+if [[ -f /usr/share/zoneinfo/UTC ]]; then
+    stage; rm -f "$T/up/localtime"; mkdir -p "$T/x"; ln -sfn /usr/share/zoneinfo/UTC "$T/x/tz"; ln -s ../x/tz "$T/up/localtime"
+    sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1
+    [[ ! -L "$T/up/localtime" ]] && quarantined localtime && ok "a relative localtime link is quarantined, though it leads into zoneinfo from here" \
+        || bad "a relative localtime link stayed"
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
