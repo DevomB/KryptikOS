@@ -5,7 +5,7 @@
 # on a build host; every check runs before the first write.
 #
 #   kryptik-install --target DISK [--yes] [--dry-run] [--preseed FILE]
-#                   [--replace-kryptik] [--slot-size MIB] [--keyboard NAME]
+#                   [--replace-kryptik] [--slot-size MIB] [--keyboard NAME] [--timezone NAME]
 set -eu
 
 PROG="kryptik-install"
@@ -37,10 +37,21 @@ preseed_ok() {   # preseed_ok FILE, or die
 TARGET=""
 ASSUME_YES=0
 REPLACE=0
+# The installed system's sysinit keeps localtime only as an absolute link with no dot in it to a
+# zone's file in the verified tree (prune_etc_upper): a name of letters, digits, _, + and -, in
+# parts, whose file starts as a TZif file does.
+timezone_ok() {   # timezone_ok NAME
+    case "$1" in [A-Za-z]*) ;; *) return 1 ;; esac
+    case "$1" in *[!A-Za-z0-9_+/-]*|*/|*//*) return 1 ;; esac
+    [ -f "$ZONEINFO/$1" ] && [ "$(head -c4 "$ZONEINFO/$1" 2>/dev/null)" = TZif ]
+}
+
 DRY_RUN=0
 PRESEED=""
 SLOT_ASKED=""
 KEYBOARD=""
+TIMEZONE=""
+ZONEINFO=/usr/share/zoneinfo
 MNT_BASE=/run/kryptik-install
 
 while [ $# -gt 0 ]; do
@@ -52,13 +63,16 @@ while [ $# -gt 0 ]; do
         --replace-kryptik) REPLACE=1; shift ;;
         --slot-size) SLOT_ASKED="${2:-}"; [ -n "$SLOT_ASKED" ] || die "--slot-size needs a number of MiB"; shift 2 ;;
         --keyboard) KEYBOARD="${2:-}"; [ -n "$KEYBOARD" ] || die "--keyboard needs a layout's name"; shift 2 ;;
+        --timezone) TIMEZONE="${2:-}"; [ -n "$TIMEZONE" ] || die "--timezone needs a zone's name, as Europe/Berlin"; shift 2 ;;
         -h|--help)
-            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik] [--slot-size MIB] [--keyboard NAME]\n' "$PROG"
+            printf 'usage: %s --target /dev/vdb [--yes] [--dry-run] [--preseed FILE] [--replace-kryptik] [--slot-size MIB] [--keyboard NAME] [--timezone NAME]\n' "$PROG"
             printf '\nInstalls the running medium onto --target. Destroys everything on it.\n'
             printf '%s\n' '--dry-run checks everything and writes nothing.'
             printf '%s\n' '--replace-kryptik allows a disk that holds an old Kryptik installation or medium.'
             printf '%s\n' '--slot-size MIB makes each root slot that large, for later releases with larger images.'
             printf '%s\n' '--keyboard NAME installs with that keyboard layout; kryptik keyboard lists them.'
+            printf '%s\n' '--timezone NAME installs with that time zone (kryptik timezone list lists them); without it,'
+            printf '%s\n' '  the one kryptik timezone chose on this medium, or UTC.'
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -120,6 +134,12 @@ mounted_on() {   # mounted_on DEVS < TABLE: "SOURCE on WHERE" for each source th
 . /usr/libexec/kryptik/image-store.sh
 [ -z "$KEYBOARD" ] || kb_row "$KEYBOARD" > /dev/null || die "no keyboard layout named ${KEYBOARD}: kryptik keyboard lists them"
 [ -z "$PRESEED" ] || preseed_ok "$PRESEED"
+# The time zone kryptik timezone chose on this medium, unless one is named.
+if [ -z "$TIMEZONE" ]; then
+    lt="$(readlink /etc/localtime 2>/dev/null || true)"
+    case "$lt" in "$ZONEINFO"/*) if timezone_ok "${lt#"$ZONEINFO"/}"; then TIMEZONE="${lt#"$ZONEINFO"/}"; fi ;; esac
+fi
+[ -z "$TIMEZONE" ] || timezone_ok "$TIMEZONE" || die "no time zone named ${TIMEZONE}: kryptik timezone list lists them; nothing was written"
 
 # --- refuse anything that is not a disposable whole disk -------------------
 [ -b "$TARGET" ] || die "${TARGET} is not a block device.
@@ -317,6 +337,7 @@ say "holds        ${pt:+${pt}: }${holds:-no partition}"
 say "running root ${root_src} on ${root_disks:-unknown}"
 say "layout       esp ${esp_mib} MiB, kryptik-a ${slot_mib} MiB, kryptik-b ${slot_mib} MiB, kryptik-state $(( have_mib - need_mib + state_min_mib )) MiB"
 say "root image   ${ROOT_BYTES} bytes, sha256 ${ROOT_SHA}"
+say "time zone    ${TIMEZONE:-UTC}"
 echo
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -455,6 +476,11 @@ cat > "$MNT_BASE/state/lib/kryptik/install.json" <<EOF
   "committed_slot": "a"
 }
 EOF
+# In the /etc upper layer, as kryptik timezone would make it there.
+if [ -n "$TIMEZONE" ]; then
+    mkdir -p "$MNT_BASE/state/lib/kryptik/etc/upper"
+    ln -s "$ZONEINFO/$TIMEZONE" "$MNT_BASE/state/lib/kryptik/etc/upper/localtime" || die "could not set the time zone ${TIMEZONE}"
+fi
 if [ -n "$PRESEED" ]; then
     umask 077
     cp "$PRESEED" "$MNT_BASE/state/lib/kryptik/firstboot.preseed" || die "could not install the preseed"
