@@ -535,13 +535,15 @@ cameras() {
     done
     # Each USB device with a video control interface (0e/01), once even when it holds an infrared
     # camera too: whether its port is built in, and whether it sleeps while idle, which
-    # 60-kryptik-camera.rules lets a built-in one do before a grant loads its driver.
-    last=""
+    # 60-kryptik-camera.rules lets a built-in one do before a grant loads its driver. A locale's
+    # collation may sort 1-11:1.0 between 1-1:1.1 and 1-1:1.2, so every device printed is kept,
+    # not only the last.
+    seen=" "
     for i in "$SYS"/bus/usb/devices/*:*; do
         [ "$(one "$i/bInterfaceClass")" = 0e ] && [ "$(one "$i/bInterfaceSubClass")" = 01 ] || continue
         n="${i##*/}"; n="${n%%:*}"
-        [ "$n" != "$last" ] || continue
-        last="$n"; d="$SYS/bus/usb/devices/$n"
+        case "$seen" in *" $n "*) continue ;; esac
+        seen="$seen$n "; d="$SYS/bus/usb/devices/$n"
         port="$(one "$d/removable")"; pc="$(one "$d/power/control")"; rs="$(one "$d/power/runtime_status")"
         printf 'camera usb %s %s:%s port %s control %s runtime %s\n' "$n" "$(hex "$d/idVendor")" \
             "$(hex "$d/idProduct")" "${port:--}" "${pc:--}" "${rs:--}"
