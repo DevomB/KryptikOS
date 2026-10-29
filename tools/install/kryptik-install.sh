@@ -447,7 +447,7 @@ rm -rf "$MNT_BASE/tesp/kryptik-report"
 rm -f "$MNT_BASE/tesp/EFI/kryptik/kryptik-b.efi" "$MNT_BASE/tesp/kryptik/version-b"
 sync
 umount "$MNT_BASE/tesp" || die "could not unmount the new ESP"
-# A firmware entry for slot a as well, last in BootOrder, as kryptik-recover and boot-success
+# A firmware entry for slot a as well, ahead of any network boot, as kryptik-recover and boot-success
 # leave one: some firmware boots an internal disk only from an entry, not by BOOTX64.EFI.
 # Entries of an earlier Kryptik go first, as they name a partition this install replaced.
 kryptik-efiboot forget > /dev/null 2>&1 || true

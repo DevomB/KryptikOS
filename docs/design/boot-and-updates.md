@@ -119,17 +119,23 @@ anything names it. A kernel's signature is the firmware's to check, at boot.
 
 The installed disk boots `BOOTX64.EFI` through the removable-media path with
 no firmware variables. Some firmware boots an internal disk only from a
-Boot#### entry, so the installer also gives slot a its own, last in
-`BootOrder`, after `forget` has removed an earlier install's; a firmware that
-refuses it leaves the disk to `BOOTX64.EFI`, and the installer says so.
+Boot#### entry, so the installer also gives slot a its own, after `forget`
+has removed an earlier install's; a firmware that refuses it leaves the disk
+to `BOOTX64.EFI`, and the installer says so. A new entry goes in `BootOrder`
+after the last entry that does not boot from the network: a firmware lists
+its network boot after the disks, and an entry behind it would wait on the
+network at every boot, while one ahead of another system's entry would
+change what that system's users boot.
 Entries are kept by slot, not by disk, so a machine holds one Kryptik's: a
 second Kryptik disk in it boots by its own `BOOTX64.EFI`.
 `kryptik-efiboot` adds a `Kryptik slot <x>` Boot####
-entry for a trial. When the trial ends, committed or not, `forget` removes
+entry for a trial. When the trial ends, committed or not, `keep` removes
 Kryptik's entries and `BootNext`, and the committed slot gets its own entry
-back. Firmware re-adds its own disk entry at the end of `BootOrder`, so an
-entry left in front of it must boot what `BOOTX64.EFI` boots; this one does,
-and is a second way to the committed slot should `BOOTX64.EFI` be lost. An
+back where the first of them stood, so a place the user gave it in the
+firmware's setup outlasts every update. Firmware re-adds its own disk entry
+at the end of `BootOrder`, so an entry left in front of it must boot what
+`BOOTX64.EFI` boots; this one does, and is a second way to the committed
+slot should `BOOTX64.EFI` be lost. An
 entry is Kryptik's when its description and its file say so, never by its
 number: slot a's is `Boot00A0` and slot b's `Boot00B0` unless another system
 already uses that number, and then the next free one, the other system's
