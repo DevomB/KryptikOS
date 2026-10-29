@@ -94,9 +94,9 @@ BIOS from RAID to AHCI mode`: set it to AHCI in the firmware setup. A Windows
 kept on another disk must be made ready for AHCI first, or it stops booting. A
 newer machine's RST (Intel VMD) needs no change.
 
-Some firmware boots from the network first, and puts a new boot entry, such
-as the one the installer writes, below network boot: an HP business laptop
-does both, with Network (PXE) Boot on under Advanced, Boot Options. Turn
+Some firmware boots from the network first, and puts a new boot entry below
+network boot, as the installer writes its own last in the boot order: an HP
+business laptop does both, with Network (PXE) Boot on under Advanced, Boot Options. Turn
 network boot off unless the machine boots from a network, or move the
 installed disk above it in the boot order. On an HP, Save/Restore GPT of
 System Hard Drive, under Security, Hard Drive Utilities, must stay off, as
@@ -138,7 +138,7 @@ firmware updates, and an install over the machine's only other system takes
 the maker's update tools with it. Many firmware setups fetch and install
 their own update over a wired network with no system at all: on an HP
 business laptop, Esc, then F10, then Main, Update System BIOS, Check HP.com
-for BIOS Updates, over its Ethernet port. Later firmware fixes come the same
+for BIOS Updates, over a wired network. Later firmware fixes come the same
 way. Once the medium boots, no `kryptik microcode` line above its shell means
 the firmware is new enough for the processor's microcode.
 
@@ -250,9 +250,10 @@ overwrite, readable by anyone who reads the disk, in plain text where the
 old system never encrypted it. To empty the disk first, use the drive's own
 erase from the firmware's setup (on an HP business laptop, Security, Hard
 Drive Utilities, Secure Erase), which a drive carries out itself. At the
-medium's shell, `blkdiscard -f /dev/sdY` discards every block on a drive
-that takes it, though a drive need not return zeros for a discarded block
-afterwards.
+medium's shell, `blkdiscard -f /dev/nvme0n1` (or `/dev/sdY`) tells a drive
+that takes it that every block is unused. That is a hint, not an erase: a
+drive may go on returning what a discarded block held, and keeps it in its
+flash until it reuses the cells.
 
 Each root slot is sized for the image and half again, so that a later, larger
 release still fits. `--slot-size MIB` makes both slots larger than that,
@@ -676,13 +677,19 @@ backup with `--restore-state-header`. `--commit-slot` also writes the
 firmware an entry for the slot it commits, which a firmware that boots a
 fixed disk only from such an entry needs.
 
-A Secure Boot refusal at power-on is not the disk's fault: the firmware's
-keys were reset, and the medium is refused as well, so `kryptik-recover`
-cannot even start. On an HP business laptop, restoring its security
-settings to factory defaults, resetting its Secure Boot keys, or Sure Start
-restoring them all do it. Add the release's certificate to `db` again
-(section 1), or turn Secure Boot off to reach the system; `kryptik-recover`
-changes no firmware keys.
+If the firmware refuses the installed system at power-on with a Secure Boot
+violation, boot the medium, and never turn Secure Boot off first: a disk
+whose kernel was replaced is refused the same way, and with Secure Boot off
+that kernel would boot and be handed the passphrase.
+- **The medium is refused too:** the firmware's keys were reset (on an HP
+  business laptop, restoring its security settings to factory defaults,
+  resetting its Secure Boot keys, or Sure Start restoring them all do it),
+  and `kryptik-recover` cannot start. Add the release's certificate to `db`
+  again (section 1). `kryptik-recover` changes no firmware keys.
+- **The medium boots:** the keys are as they were, and the firmware refused
+  the disk's own kernel. Leave Secure Boot on, run
+  `kryptik-recover --disk /dev/sdY --status`, and rewrite the slot it names
+  from the medium with `--restore-slot`, as above.
 
 `--backup-state-header FILE` and `--restore-state-header FILE` save and put
 back the state partition's LUKS2 header. Over a header that still opens, the
@@ -779,7 +786,7 @@ leaves out serial numbers, hardware addresses and UUIDs.
 - No power profile: AMD's platform management driver (`amd-pmf`) and the
   makers' own are not built, so a laptop whose processor's power limits one
   of them would switch, HP's G1a models among them, keeps its firmware's
-  balanced limits, with no quiet or performance profile. A limit on how far
+  default limits, with no quiet or performance profile. A limit on how far
   the battery charges, where a laptop has one, is set in its firmware's
   setup: on an HP business laptop, Battery Health Manager under Advanced,
   Power Management Options.
