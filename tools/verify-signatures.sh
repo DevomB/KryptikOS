@@ -289,9 +289,9 @@ PINNED_FPRS=(
     "108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE"   # Rust Language, rustc, cargo and rust-std
     # https://releases.llvm.org/release-keys.asc (retrieved 2026-10-13), the release managers' keys.
     "D574BD5D1D0E98895E3BF90044F2485E45D59042"   # Tobias Hieta, LLVM's release builds
-    # https://github.com/nodejs/node#release-keys (retrieved 2026-10-15) lists the releasers' keys, which
-    # its release-keys repository serves. Each release is signed by one releaser; this one signs 24.22.0.
-    "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C"   # Richard Lau, Node.js
+    # https://github.com/nodejs/node#release-keys (retrieved 2026-10-29) lists the releasers' keys, which
+    # its release-keys repository serves. Each release is signed by one releaser; this one signs 24.22.2.
+    "5BE8A3F6C8A5C01D106C0AD820B1A390B168D356"   # Antoine du Hamel, Node.js
     # https://sourceware.org/pub/lvm2/mcsontos.pubkey.asc (retrieved 2026-10-16), the key file beside
     # the releases, there since 2026-09-30: the key already signing them, 2.03.42 among them.
     "D501A478440AE2FD130A1BE8B9112431E509039F"   # Marian Csontos, lvm2
