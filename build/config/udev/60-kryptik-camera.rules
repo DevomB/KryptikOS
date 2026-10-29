@@ -1,3 +1,8 @@
 # A granted camera taken away ends its grant at once, before another camera plugged in can take
 # its node's number: kryptikd ends it only for the granted camera's node, removed after the grant.
 ACTION=="remove", SUBSYSTEM=="video4linux", RUN+="/usr/bin/kryptikd camera gone %p %E{SEQNUM}"
+
+# The USB core keeps a device awake until its driver lets it sleep, and a camera's, uvcvideo,
+# binds here only for a grant. A built-in camera may sleep from boot; a webcam keeps the core's
+# default, as uvcvideo keeps awake a few webcams that fail when they sleep.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:0e01??:*", ATTR{removable}=="fixed", TEST=="power/control", ATTR{power/control}="auto"

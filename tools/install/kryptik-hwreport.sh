@@ -437,8 +437,8 @@ nhlt() {
 # brightness.sh chooses among; each power supply, a battery's charge and kind but never its
 # serial number; the sleep states the kernel offers; and a camera's parts behind Intel's image
 # processing unit and in ACPI: its sensors, their power controller and the Visual Sensing
-# Controller between the two. A USB camera, the lid and a Bluetooth controller show under usb and
-# input.
+# Controller between the two; and whether a USB camera sleeps while idle. A USB camera's
+# interfaces, the lid and a Bluetooth controller show under usb and input.
 laptop() {
     for b in "$SYS"/class/backlight/*; do
         [ -e "$b" ] && printf 'backlight %s type %s max %s\n' "${b##*/}" "$(one "$b/type")" "$(one "$b/max_brightness")"
@@ -532,6 +532,19 @@ cameras() {
         esac
         [ "$(one "$a/status")" != 0 ] || continue
         printf 'camera acpi %s %s\n' "${a##*/}" "$w"
+    done
+    # Each USB device with a video control interface (0e/01), once even when it holds an infrared
+    # camera too: whether its port is built in, and whether it sleeps while idle, which
+    # 60-kryptik-camera.rules lets a built-in one do before a grant loads its driver.
+    last=""
+    for i in "$SYS"/bus/usb/devices/*:*; do
+        [ "$(one "$i/bInterfaceClass")" = 0e ] && [ "$(one "$i/bInterfaceSubClass")" = 01 ] || continue
+        n="${i##*/}"; n="${n%%:*}"
+        [ "$n" != "$last" ] || continue
+        last="$n"; d="$SYS/bus/usb/devices/$n"
+        port="$(one "$d/removable")"; pc="$(one "$d/power/control")"; rs="$(one "$d/power/runtime_status")"
+        printf 'camera usb %s %s:%s port %s control %s runtime %s\n' "$n" "$(hex "$d/idVendor")" \
+            "$(hex "$d/idProduct")" "${port:--}" "${pc:--}" "${rs:--}"
     done
 }
 
