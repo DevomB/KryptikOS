@@ -134,11 +134,11 @@ a plain file or a relative link among them, as glibc parses the file in
 every process of zone 0's that shows a local time. A relative link resolves
 from the upper layer while sysinit checks it and from `/etc` after, and a
 `..` can climb through `/var`, which is the state partition from then on:
-either could pass the check and lead elsewhere. The worst a writer of that partition can choose is another
-real zone. The time
-zone changes how a time is shown, never the clock or the floor. A zone's
-`/etc` is kryptikd's and has no `localtime`, so a zone reads UTC, and does
-not learn where its user is from it.
+either could pass the check and lead elsewhere. The worst a writer of that
+partition can choose is another real zone. The time zone changes how a time
+is shown, never the clock or the floor. A zone's `/etc` is kryptikd's and
+has no `localtime`, so a zone reads UTC, and does not learn where its user
+is from it.
 
 ## Tests
 
