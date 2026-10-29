@@ -102,8 +102,10 @@ if [[ -f /usr/share/zoneinfo/UTC ]]; then
         bad "legitimate zoneinfo symlink was not preserved"
     fi
 fi
-# In the tree but no zone's file, or a path walked out of the tree: quarantined.
-for target in /usr/share/zoneinfo/zone.tab /usr/share/zoneinfo/../../../etc/passwd; do
+# In the tree but no zone's file, a path walked out of the tree, or one that walks back in
+# through /var, which is the state partition at run time: quarantined.
+for target in /usr/share/zoneinfo/zone.tab /usr/share/zoneinfo/../../../etc/passwd \
+              /usr/share/zoneinfo/../../../var/tmp/../../usr/share/zoneinfo/UTC; do
     [[ -e "$target" ]] || continue
     stage; rm -f "$T/up/localtime"; ln -s "$target" "$T/up/localtime"
     sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1
