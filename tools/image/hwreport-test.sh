@@ -91,6 +91,7 @@ want "$R1" '^secure boot: off$'                               "Secure Boot as th
 want "$R1" '^microcode: '                                     "the processor's microcode"
 want "$R1" '^iommu: '                                         "what confines a device's DMA"
 want "$R1" ' class 0c0330 .* driver xhci_hcd'                 "a PCI device with the driver that took it"
+want "$R1" ' class 0c0330 .* driver xhci_hcd \| USB controller \| .+' "and its names, from udev's hwdb, as the image has no pci.ids"
 want "$R1" ' interface class 08/06/50 driver usb-storage$'    "the stick's own interface, by its driver"
 want "$R1" '^sd[a-z] .*\(the root is here\).*usb-storage \(built in\)' "the disk the root is on, through built-in drivers"
 want "$R1" '^== missing ==$'                                  "what the image lacks has its place"
