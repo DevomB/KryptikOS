@@ -521,10 +521,11 @@ cameras() {
         drv="$(target "$d/driver")"
         printf 'camera %s %s 8086:%s driver %s\n' "$k" "${d##*/}" "$(hex "$d/device")" "${drv:--}"
     done
-    # Sensors by the IDs ipu-bridge knows, OmniVision's and Himax's whole ranges with them.
+    # Sensors by the IDs ipu-bridge knows, OmniVision's and Himax's whole ranges with them, and the
+    # OmniVision sensor behind AMD's image processor, which amdgpu looks for as OMNI5C10.
     for a in "$SYS"/bus/acpi/devices/*; do
         case "${a##*/}" in
-            OVTI*:*|HIMX*:*|INT0310:*|INT33BE:*|INT33F0:*|INT3474:*|INT3479:*|INT347A:*|INT347E:*|INT3537:*|INTC10C5:*|XMCC0003:*) w=sensor ;;
+            OVTI*:*|OMNI*:*|HIMX*:*|INT0310:*|INT33BE:*|INT33F0:*|INT3474:*|INT3479:*|INT347A:*|INT347E:*|INT3537:*|INTC10C5:*|XMCC0003:*) w=sensor ;;
             INT3472:*) w="sensor power" ;;
             INTC1009:*|INTC1058:*|INTC1094:*|INTC10D0:*) w="visual sensing controller" ;;
             *) continue ;;

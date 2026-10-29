@@ -469,6 +469,8 @@ put sys/bus/acpi/devices/OVTI01A0:00/status 15
 put sys/bus/acpi/devices/INT3472:01/status 15
 put sys/bus/acpi/devices/INTC1009:00/status 15
 put sys/bus/acpi/devices/OVTI02C1:00/status 0
+# The OmniVision sensor behind AMD's image processor, as amdgpu's ISP looks for it.
+put sys/bus/acpi/devices/OMNI5C10:00/status 15
 laptop_now
 lap "each backlight with its kind and range" '^backlight intel_backlight type raw max 19200$'
 lap "the firmware's as well"                 '^backlight acpi_video0 type firmware max 100$'
@@ -485,6 +487,7 @@ lap "the sleeps, and the hardware's time asleep" '^sleep stats: 3 successful, 1 
 lap "and the power controller driver that counts it" '^power controller: intel_pmc_core$'
 lap "an IPU6 by its PCI ID"                  '^camera ipu6 0000:00:05\.0 8086:a75d driver -$'
 lap "its sensor, by its ACPI ID"             '^camera acpi OVTI01A0:00 sensor$'
+lap "and AMD's image processor's sensor"     '^camera acpi OMNI5C10:00 sensor$'
 lap "the sensor's power controller"          '^camera acpi INT3472:01 sensor power$'
 lap "and the Visual Sensing Controller"      '^camera acpi INTC1009:00 visual sensing controller$'
 nolap "not a sensor the firmware calls absent" 'OVTI02C1'
