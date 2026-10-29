@@ -939,7 +939,7 @@ write_manifest good
 prov_table "${GOODFPR}  korg  file://${PROV}/no-key.html  2026-09-11  good  good fixture, its page serving no key"
 runprov --report="${W}/r11.tsv"
 if [[ "$RC" -eq 0 && "$(klass_of "${W}/r11.tsv" good)" == "signature-keyring-key" ]] \
-   && grep -qF "answered with no OpenPGP key in it" "$OUT" && ! grep -qF "REFUSING" "$OUT"; then
+   && grep -qF "answered with no OpenPGP data in it" "$OUT" && ! grep -qF "REFUSING" "$OUT"; then
     green "a page that answers with no key is unread, not a changed key"
 else
     red "a page that answers with no key is unread (exit ${RC}, got $(klass_of "${W}/r11.tsv" good))"; show
@@ -958,6 +958,18 @@ if [[ "$RC" -eq 0 && "$(klass_of "${W}/r12.tsv" good)" == "signature-keyring-key
     green "and --strict --unread-warns checks it against the key held"
 else
     red "and --strict --unread-warns checks it against the key held (exit ${RC}, got $(klass_of "${W}/r12.tsv" good))"; show
+fi
+# OpenPGP data with no key gpg lists, as a bare revocation, is no error page: it stays refused.
+sed 's/^://' "${FIXG}/openpgp-revocs.d/${GOODFPR}.rev" > "${PROV}/good-revocation-only.asc"
+fresh_root
+write_manifest good
+prov_table "${GOODFPR}  korg  file://${PROV}/good-revocation-only.asc  2026-09-11  good  good fixture, its page serving a bare revocation"
+runprov --strict --unread-warns --report="${W}/r13.tsv"
+if [[ "$RC" -ne 0 && "$(klass_of "${W}/r13.tsv" good)" == "published-key-changed" ]] \
+   && ! grep -qF "answered with no OpenPGP data" "$OUT"; then
+    green "a page holding OpenPGP data but no key is refused, even under --unread-warns"
+else
+    red "a page holding OpenPGP data but no key is refused (exit ${RC}, got $(klass_of "${W}/r13.tsv" good))"; show
 fi
 fresh_root
 runprov --unread-warns
