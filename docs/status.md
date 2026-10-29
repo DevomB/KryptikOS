@@ -57,7 +57,9 @@ media it tested.
   USB ports and Ethernet, behind its own PCIe controllers, stay dark; a USB4
   or Thunderbolt 4 dock's USB devices run at USB 2's speed, which needs no
   tunnel. A monitor over USB-C works where the laptop's controller drives
-  it. Building them comes with a policy for which plugged devices are let in.
+  it; on a USB4 port, a USB4 or Thunderbolt dock's monitors may stay dark,
+  as nothing sets up the DisplayPort it tunnels. Building them comes with a
+  policy for which plugged devices are let in.
 - The state passphrase is asked in sysinit, before eudev loads any module,
   so only a keyboard whose drivers are built in types it: PS/2 (atkbd), a
   USB keyboard the generic HID driver takes, and HID over I2C behind
