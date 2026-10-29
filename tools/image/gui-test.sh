@@ -125,6 +125,12 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT SCREENSHOT-LOCKED" "sleep:2" "screendump:${SHOT_LOCKED}" \
     "expect:GT LOCK-TYPE-WRONG" "key:n" "key:o" "key:ret" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT POINTER-BEFORE-LOCK" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT LOCKED-CLICK" "button:left" "button:wheel-down" \
+    "expect:GT LOCK-TYPE-CLICK" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT BUTTON-HOLD" "button-down:left" \
+    "expect:GT LOCKED-DRAG" "pointer:40,40" "pointer:-40,-40" "button-up:left" \
+    "expect:GT LOCK-TYPE-DRAG" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT KEY-FOCUS-HOLD" "key:alt+j" \
@@ -180,7 +186,7 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
             zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
             chrome-names-hold idle-lock-heeds-hold chrome-hold-cleared \
-            suspend-refused-virtio-gpu suspend-refused-stays-awake \
+            suspend-refused-virtio-gpu suspend-refused-stays-awake lock-takes-resting-pointer lock-takes-held-pointer \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
             second-head-scale-chosen zone-sees-heads-unnamed \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group seat-is-dwls dwl-confined-to-its-files \

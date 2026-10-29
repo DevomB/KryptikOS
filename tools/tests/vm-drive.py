@@ -212,6 +212,28 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
 sys.argv = argv
 check("a tap off the screen is refused before QEMU is asked", (rc != 0, len(q7.asked)), (True, 2))
 
+print("-- button: clicks the mouse where the pointer is; button-down: and button-up: hold it and let it go")
+sock9 = os.path.join(T, "serial9"); qmp9 = os.path.join(T, "qmp9")
+Guest(sock9, {}).start()
+q9 = Qmp(qmp9, busy=0); q9.start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock9, "--qmp", qmp9, "--timeout", "5",
+                            "button:left", "button-down:right", "button-up:right", "button:wheel-down"]
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("button:, button-down: and button-up: succeed", rc, 0)
+btn = lambda down, name: ("input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": name}}]})
+check("a click is a press then a release; a hold is the press alone, and its release comes when asked", q9.asked, [
+    btn(True, "left"), btn(False, "left"), btn(True, "right"), btn(False, "right"),
+    btn(True, "wheel-down"), btn(False, "wheel-down")])
+sock10 = os.path.join(T, "serial10")
+Guest(sock10, {}).start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock10, "--qmp", qmp9, "--timeout", "5", "button:side"]
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("a button not named is refused before QEMU is asked", (rc != 0, len(q9.asked)), (True, 6))
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(0 if FAIL == 0 else 1)

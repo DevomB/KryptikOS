@@ -1147,6 +1147,24 @@ static void endpopups(void);
 \t\t\tendpopups();
 \t\t\tclient_notify_enter(selmon->lock_surface->surface,
 """),
+    # The pointer leaves every window at the lock, as the keyboard does. dwl moves pointer focus
+    # only with the pointer, so until it moved the window it rested on took a click or a wheel
+    # turn under the lock, and a window a button was held on kept the pointer, its moves and its
+    # release, as dwl keeps a pressed button's window. A move or resize by hand ends there too.
+    ("""\tlock = session_lock->data = ecalloc(1, sizeof(*lock));
+\tfocusclient(NULL, 0);
+""",
+     """\tlock = session_lock->data = ecalloc(1, sizeof(*lock));
+\tfocusclient(NULL, 0);
+\t/* Kryptik: and the pointer leaves every window, or the one it rested on, or a button was
+\t * held on, would take clicks and moves under the lock. */
+\tif (cursor_mode == CurMove || cursor_mode == CurResize) {
+\t\twlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+\t\tcursor_mode = CurNormal;
+\t\tgrabc = NULL;
+\t}
+\twlr_seat_pointer_notify_clear_focus(seat);
+"""),
     # The lid: dwl leaves switch devices alone, and a lid is one. Closed, it runs
     # suspendcmd, the lock that then has the machine sleep, as the power key does;
     # it runs while the session is locked too, when that lock is asked instead.
