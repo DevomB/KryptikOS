@@ -70,7 +70,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
             # Noon UTC on 2026-07-15 is 14:00 summer time in Berlin.
             'send:kryptik timezone Europe/Berlin; echo tz-$(date -d @1784116800 +%H%Z)'
             "expect:time zone Europe/Berlin, until this medium is shut down" "expect:tz-14CEST"
-            "send:kryptik-install --target /dev/vda" "expect:holds +gpt: vda1 crypto_LUKS 64M" "expect:Type ERASE to continue: " "send:ERASE"
+            "send:kryptik-install --target /dev/vda" "expect:holds +gpt: vda1 crypto_LUKS 64M" "expect:time zone +Europe/Berlin" "expect:Type ERASE to continue: " "send:ERASE"
             "expect:asked at every boot: " "send:${KRYPTIK_STATE_PASSPHRASE}" "expect:again: " "send:${KRYPTIK_STATE_PASSPHRASE}"
             "expect:installed [^ ]+ to /dev/vda: boot it from firmware with the medium removed"
             'send:echo ,,L | sfdisk -q -X gpt /dev/vdb; sleep 1; mkfs.ext4 -q -F /dev/vdb1; echo second-$(test -b /dev/vdb1 && echo disk)' "expect:second-disk"
@@ -133,6 +133,7 @@ for ((i = 0; i < ${#MEDIA[@]}; i += 2)); do
         said 'is in use: held open by' "a disk with a partition held open by device-mapper is refused"
         said '\* us' "kryptik keyboard lists the layouts, the one in force marked"
         said 'tz-14CEST' "kryptik timezone Europe/Berlin moves the clock's zone: noon UTC in July reads 14 CEST"
+        said 'time zone +Europe/Berlin' "the install takes the time zone chosen on the medium"
         said 'installed [^ ]* to /dev/vda: boot it from firmware' "an install typed at the console, ERASE and the passphrase twice, completed"
         said 'is in /mnt/kryptik-state-header' "kryptik-recover kept the state header on a second disk mounted at /mnt"
         said 'committed slot a' "kryptik-recover --status read the installed disk"

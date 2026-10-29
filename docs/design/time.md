@@ -126,8 +126,10 @@ a moved floor holds the clock wrong.
 **Time zone.** Zone 0's is `/etc/localtime`, a link into
 `/usr/share/zoneinfo`, which stage 04 builds from IANA's signed tzdata with
 glibc's `zic`. `kryptik timezone NAME` replaces the link by a rename, so no
-reader finds it missing. The link is on the `/etc` overlay's upper layer, on
-the state partition, which is not authenticated: sysinit keeps a
+reader finds it missing. `kryptik-install` writes the same link into the
+new state partition, for the zone chosen on the medium or named by
+`--timezone`. The link is on the `/etc` overlay's upper layer, on the
+state partition, which is not authenticated: sysinit keeps a
 `localtime` there only while it is an absolute link, with no `.` or `..`
 in it, to a TZif file in the verified tree, and quarantines anything else,
 a plain file or a relative link among them, as glibc parses the file in
