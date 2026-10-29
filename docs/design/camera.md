@@ -62,8 +62,9 @@ loaded only for a grant.
   from sysfs (`/sys/class/video4linux`), and gives the zone the node. A zone
   file may refuse the camera (`[camera] use = false`), as `vault`'s will;
   the net zone never gets it.
-- **The node in the zone.** Firefox finds cameras by opening `/dev/video*`,
-  so a descriptor through the broker would not reach it. Each zone that may
+- **The node in the zone.** Firefox finds cameras by opening `/dev/video*`
+  when a page asks, and hears of no node made or removed later, so a
+  descriptor through the broker would not reach it. Each zone that may
   use the camera starts with `/dev/video0` a link to a file in a directory
   of its own, which kryptikd binds into the zone at start from a small
   tmpfs that allows device nodes; the directory is root's, and a zone, in

@@ -15,7 +15,7 @@ static const unsigned int borderpx         = 6;  /* the identity channel: wide *
 static const unsigned int bandpx           = 2;  /* how much narrower an unfocused border's colour is */
 static const unsigned int barpx            = 22; /* the bar naming a fullscreen window's zone */
 static const unsigned int barscale         = 2;  /* its 5x7 lettering, magnified */
-static const float rootcolor[]             = COLOR(0x101418ff);
+static const float rootcolor[]             = COLOR(0x000000ff); /* black, as the terminals' and the lock's */
 static const float urgentcolor[]           = COLOR(KRYPTIK_URGENT_BORDER);
 static const float fullscreen_bg[]         = {0.0f, 0.0f, 0.0f, 1.0f};
 

@@ -52,8 +52,10 @@ turns a card's outputs off while the master is muted, and its inputs off
 while no zone holds the microphone, so the lights say both.
 
 Not yet: Intel's Sound Open Firmware drivers for laptops with digital
-microphones or SoundWire codecs, AMD's audio coprocessor drivers, and the
-smart-amplifier codecs (Cirrus, TI) many laptops put on their speakers.
+microphones or SoundWire codecs, and AMD's audio coprocessor drivers. Of the
+smart-amplifier codecs many laptops put on their speakers, only Cirrus's
+CS35L54, CS35L56 and CS35L57 on I2C are built so far, and they are untested;
+CS35L41, TI's TAS2781 and those on SPI are not.
 [Laptop sound past HD Audio](laptop-audio.md) says what each needs, what a
 laptop does without it, and the order they come in after 1.0.
 
@@ -351,7 +353,7 @@ beside `resume-state`, with its own pause after a wrong one, and on to
 cryptsetup's standard input. On idle, the chrome starts `kryptik-lock
 --idle`, which waits on dwl's `ext-idle-notify-v1` and locks after ten
 minutes without input, or the minutes in `~/.config/kryptik/lock-idle` (0
-never). A minute after the lock it turns the screens off through dwl's
+never). Half a minute after the lock it turns the screens off through dwl's
 `zwlr_output_power_manager_v1`, and the first key or movement turns them on
 again; an unlock turns them on as well, should the watcher be gone. It
 counts input, and a hold dwl counts for a zone under the conditions in

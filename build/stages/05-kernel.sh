@@ -236,11 +236,11 @@ s_build() {
     # The banner (/proc/version) records which compiler built the image.
     echo "--- linux_banner ---"
     strings vmlinux 2>/dev/null | grep -m1 "Linux version" || true
-    # The built-in firmware table names each blob; check one per vendor.
+    # The built-in firmware table names each blob; check Intel's first and AMD's Zen 3/4 and Zen 5.
     echo "--- built-in microcode ---"
     local blob
     for blob in "$(tr ' ' '\n' < "${KSRC}/kryptik-microcode/list" | grep -m1 '^intel-ucode/')" \
-                amd-ucode/microcode_amd_fam19h.bin; do
+                amd-ucode/microcode_amd_fam19h.bin amd-ucode/microcode_amd_fam1ah.bin; do
         grep -a -q -F "$blob" vmlinux || { echo "FAIL: ${blob} is not built into vmlinux"; return 1; }
         echo "  ok   ${blob}"
     done
@@ -301,9 +301,18 @@ s_install() {
         return 1
     fi
     echo "HDA codec drivers loaded ahead of snd-hda-intel: $(wc -l <<<"$built")"
-    # The mute lights' layer, which sound.conf loads ahead of the controller too.
-    if [[ -z "$(find "${MODDIR}/${krel}" -name 'snd-ctl-led.ko*')" ]]; then
-        echo "FAIL: snd-ctl-led was not built, and modprobe.d/sound.conf loads it (SND_CTL_LED, which SND_HDA_GENERIC_LEDS brings)"; return 1
+    # modprobe passes over a softdep it cannot find without a word, and the driver it was there
+    # for goes without: every module a softdep names is built, as a module or into the kernel.
+    local want pat missing=""
+    for want in $(sed -e ':a' -e '/\\$/N; s/\\\n/ /; ta' "${KRYPTIK_ROOT}"/build/config/modprobe.d/*.conf \
+            | awk '$1 == "softdep" { for (i = 3; i <= NF; i++) if ($i !~ /:$/) print $i }' | sort -u); do
+        pat="$(sed 's/[-_]/[-_]/g' <<<"$want")"
+        [[ -n "$(find "${MODDIR}/${krel}" -name "${pat}.ko*" -print -quit)" ]] && continue
+        grep -qE "/${pat}\.ko$" "${MODDIR}/${krel}/modules.builtin" 2>/dev/null && continue
+        missing="${missing} ${want}"
+    done
+    if [[ -n "$missing" ]]; then
+        echo "FAIL: modprobe.d's softdeps name modules this kernel does not build:${missing}"; return 1
     fi
     # The camera's driver loads only for a grant: built, and kept from loading by alias.
     if [[ -z "$(find "${MODDIR}/${krel}" -name 'uvcvideo.ko*')" ]]; then

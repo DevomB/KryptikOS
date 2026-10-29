@@ -1,0 +1,45 @@
+From: DevomB <Devom.hb@yahoo.com>
+Subject: [PATCH] Take and offer text with its charset
+
+havoc takes a selection offered as UTF8_STRING or as text/plain. Kryptik's
+move gesture carries one type into another zone, text/plain;charset=utf-8
+where the source offers it, as Firefox and GTK programs do, so without this
+a terminal pastes nothing moved in from another zone. havoc takes that type
+as well, for the clipboard and the primary selection; UTF8_STRING still wins
+where it is offered. Its own copies offer the type too, so text the gesture
+carries out of a terminal says it is UTF-8, which bare text/plain does not.
+---
+ main.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -875,6 +875,7 @@
+ 	term.d_copy.source =
+ 		wl_data_device_manager_create_data_source(term.d_dm);
+ 	wl_data_source_offer(term.d_copy.source, "UTF8_STRING");
++	wl_data_source_offer(term.d_copy.source, "text/plain;charset=utf-8");
+ 	wl_data_source_offer(term.d_copy.source, "text/plain");
+ 	wl_data_source_add_listener(term.d_copy.source, &ds_listener, NULL);
+ 	wl_data_device_set_selection(term.d_d, term.d_copy.source, serial);
+@@ -1381,6 +1382,9 @@
+ 	if (strcmp(mime_type, "UTF8_STRING") == 0)
+ 		term.paste.d_mime = "UTF8_STRING";
+ 	else if(term.paste.d_mime == NULL &&
++		strcmp(mime_type, "text/plain;charset=utf-8") == 0)
++		term.paste.d_mime = "text/plain;charset=utf-8";
++	else if(term.paste.d_mime == NULL &&
+ 		strcmp(mime_type, "text/plain") == 0)
+ 		term.paste.d_mime = "text/plain";
+ }
+@@ -1454,6 +1458,9 @@
+ 	if (strcmp(mime_type, "UTF8_STRING") == 0)
+ 		term.paste.ps_mime = "UTF8_STRING";
+ 	else if(term.paste.ps_mime == NULL &&
++		strcmp(mime_type, "text/plain;charset=utf-8") == 0)
++		term.paste.ps_mime = "text/plain;charset=utf-8";
++	else if(term.paste.ps_mime == NULL &&
+ 		strcmp(mime_type, "text/plain") == 0)
+ 		term.paste.ps_mime = "text/plain";
+ }

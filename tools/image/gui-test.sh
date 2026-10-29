@@ -382,7 +382,7 @@ check_shot "$SHOT_HEAD" "second head, at scale 2" untrusted:focused@2
 check_shot "$SHOT_POPUP" "zone popup" untrusted:unfocused inside:untrusted:00ffff
 # The lock covers zone 0's window and a zone's, whose popup grabbed the keyboard: only its own
 # background and word show (tools/desktop/kryptik-lock.c draws them).
-check_shot "$SHOT_LOCKED" "screen lock" lock:101418:e6e6e6
+check_shot "$SHOT_LOCKED" "screen lock" lock:000000:33ff66
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 echo "Guest log: /var/log/kryptik/gui-check.log on ${DISK}; serial transcript ${LOG}; screenshots ${SHOT} ${SHOT_FS} ${SHOT_OVER} ${SHOT_HEAD} ${SHOT_POPUP} ${SHOT_LOCKED}"

@@ -7,9 +7,10 @@ Intel's audio DSP, microphones on AMD's audio coprocessor, and amplifiers in
 front of the speakers that need a driver and a tuning file of their own.
 This note says what each needs from `boot.fragment`, `firmware.list` and
 `kryptik-sound`, what that costs against ADR-013 and ADR-012, and why 1.0
-ships without them. Linux 6.18 and linux-firmware 20260916 are the pinned
-versions; sof-bin, which nothing pins yet, is at 2026.09.2, its newest
-release.
+ships without most of them. Of the amplifiers, Cirrus's CS35L54, CS35L56
+and CS35L57 on I2C are built. Linux 6.18 and linux-firmware 20260916 are
+the pinned versions; sof-bin, which nothing pins yet, is at 2026.09.2, its
+newest release.
 
 ## What 1.0 does on each kind of laptop
 
@@ -38,7 +39,12 @@ platform's SOF driver is built, so with none built it finds no row and
 - **Smart amplifiers** in front of the speakers (Cirrus's CS35L41, CS35L54,
   CS35L56 and CS35L57, TI's TAS2781), on Intel and AMD laptops alike:
   linux-firmware has tuning files for about 200 models, most of them ASUS,
-  HP, Lenovo and Dell. The jack works, and the speakers stay silent.
+  HP, Lenovo and Dell. The jack works either way.
+  - For a CS35L54, CS35L56 or CS35L57 on I2C, the driver and every tuning
+    file linux-firmware has for them are built. That is untested: QEMU has
+    none, and no machine with one has run them yet.
+  - For a CS35L41, a TAS2781, or any of them on SPI, the speakers stay
+    silent.
 
 USB audio works on all of them. A machine shows which kinds it is without
 any of these drivers: the audio controller's PCI class (0x040100 or
@@ -66,6 +72,14 @@ laptops tested then will show which kinds they are.
   and about 90 files and 4 MB in `ti/audio/tas2781/` with their links,
   before compression. The source and its licence rows are those ADR-012
   already has, and the list takes them whole, as it takes `amdgpu/*`.
+- **Built so far:** the ASoC core, `SERIAL_MULTI_INSTANTIATE` and
+  `SND_HDA_SCODEC_CS35L56_I2C`, which drives the CS35L54, CS35L56 and
+  CS35L57. `firmware.list` takes their whole family: `cirrus/cs35l54-*`,
+  `cs35l56-*` and `cs35l57-*`, which with the DSP images their links bring
+  is 4.2 MB before compression. `SND_SOC_INTEL_SST_TOPLEVEL` is set off,
+  since the ASoC core would otherwise build Intel's Atom driver.
+  - Still to come: CS35L41's driver and its 1.8 MB of files, TAS2781's,
+    and the `_SPI` twins with the SPI core.
 - **Mixer:** nothing new, as the amplifiers play what the codec plays. The
   CS35L56 also sits on SoundWire, behind SOF, on some laptops; those come
   with SOF.
@@ -173,10 +187,15 @@ laptops tested then will show which kinds they are.
 
 ## Recommendation: a named gap in 1.0
 
-1.0 ships without them, and the user guide's known limitations say so: no
-built-in microphones on Intel laptops with a DSP or on AMD laptops, no
-built-in sound on SoundWire laptops, and no speakers behind smart
-amplifiers.
+1.0 ships without most of them, and the user guide's known limitations say
+so: no built-in microphones on Intel laptops with a DSP or on AMD laptops,
+no built-in sound on SoundWire laptops, and no speakers behind smart
+amplifiers other than Cirrus's CS35L54, CS35L56 and CS35L57 on I2C.
+
+Those three are built ahead of the rule below, that each comes only once a
+machine that has it has run it: the laptop of the first tests on physical
+hardware is expected to have them, and it will run them. Testing on
+physical hardware is planned for October 2026.
 
 - **None of it can be tested first.** QEMU emulates no DSP, coprocessor,
   SoundWire link or amplifier, and every check runs in QEMU.
@@ -190,9 +209,10 @@ amplifiers.
 After 1.0, ordered by what each gives for its cost, and each only once a
 machine that has it has run it:
 
-- the amplifiers, then AMD's microphones: the ASoC core and a few modules
-  (and the SPI core for amplifiers on SPI), firmware from linux-firmware or
-  none, and the mixer's choice of microphone;
+- the rest of the amplifiers, then AMD's microphones: a few modules on the
+  ASoC core already built (and the SPI core for amplifiers on SPI),
+  firmware from linux-firmware or none, and the mixer's choice of
+  microphone;
 - SOF for HD Audio laptops with digital microphones: sof-bin's firmware and
   generic topologies, the softdep, and the mixer's devices by role;
 - SoundWire, Intel's and AMD's, with UCM in the mixer.

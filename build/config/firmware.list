@@ -121,6 +121,13 @@ rtl_nic/rtl8402-1.fw
 rtl_nic/rtl8411-1.fw
 rtl_nic/rtl8411-2.fw
 
+# Cirrus's CS35L54, CS35L56 and CS35L57 speaker amplifiers (snd-hda-scodec-cs35l56): the tuning
+# files, each named for a laptop's PCI subsystem ID, and through their links the DSP images under
+# cs35l56/. Without its file an amplifier stays silent. The CS35L63 is on SoundWire, not built.
+cirrus/cs35l54-*
+cirrus/cs35l56-*
+cirrus/cs35l57-*
+
 # Graphics: Intel and AMD, not NVIDIA (GSP firmware is tens of MB; the framebuffer still works).
 # Intel: the files 6.18's i915 and xe name (intel_uc_fw.c, xe_uc_fw.c, intel_dmc.c), not the
 # older versions linux-firmware keeps for older kernels, and xe's fan control, which it asks

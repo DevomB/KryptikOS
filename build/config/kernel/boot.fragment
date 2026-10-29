@@ -2,8 +2,9 @@
 # kernel (docs/design/boot-and-updates.md). Merged after hardening.fragment;
 # check with `make validate-kernel-boot`.
 # With no initramfs, a driver is built in (ADR-013) only to find, verify or
-# mount the root, to give a console and keyboard before it, or where a module
-# cannot work (netfilter, microcode, the watchdog, some platform drivers).
+# mount the root, to give a console and a keyboard before eudev's coldplug
+# (the state passphrase is asked first), or where a module cannot work
+# (netfilter, microcode, the watchdog, some platform drivers).
 # Everything else is a signed module loaded by eudev at coldplug, the test VM's
 # network and display included. Stage 05 fails an image over size-budget.
 
@@ -74,6 +75,20 @@ CONFIG_DRM_SIMPLEDRM=y
 CONFIG_DRM_FBDEV_EMULATION=y
 CONFIG_SYSFB_SIMPLEFB=y
 CONFIG_FRAMEBUFFER_CONSOLE=y
+# Terminus 16x32 beside the VGA fonts, for HiDPI panels: fbcon and the panic screen pick it by
+# themselves from about 2560 pixels wide (lib/fonts/fonts.c get_default_font). With FONTS set,
+# the VGA fonts no longer come by default, so they are named.
+CONFIG_FONTS=y
+CONFIG_FONT_8x8=y
+CONFIG_FONT_8x16=y
+CONFIG_FONT_TER16x32=y
+# A panic's last kernel lines, drawn on the panel by the DRM driver that has it (simpledrm, then
+# the GPU's), under the desktop too: fbcon shows no oops, and a laptop has no serial port. They
+# stay for the photo the 10 s before panic=10 resets allow. Green on black.
+CONFIG_DRM_PANIC=y
+CONFIG_DRM_PANIC_SCREEN="kmsg"
+CONFIG_DRM_PANIC_FOREGROUND_COLOR=0x00ff00
+CONFIG_DRM_PANIC_BACKGROUND_COLOR=0x000000
 CONFIG_INPUT_EVDEV=y
 CONFIG_VIRTIO_INPUT=y
 CONFIG_INPUT_KEYBOARD=y
@@ -169,30 +184,34 @@ CONFIG_MMC_REALTEK_USB=m
 CONFIG_USB_UHCI_HCD=y
 CONFIG_USB_OHCI_HCD=y
 CONFIG_USB_OHCI_HCD_PCI=y
-# Touchpads and touchscreens: HID over DesignWare I2C (Intel LPSS or the AMD
-# platform device), interrupts via the pin controller. Modules, except AMD's pin
-# controller and the DesignWare core and platform glue: some laptops' ACPI uses
-# them during boot and fails for good if they are not there yet.
+# Touchpads, touchscreens and some laptops' built-in keyboards: HID over
+# DesignWare I2C (Intel LPSS or the AMD platform device), interrupts via the pin
+# controller. Built in, so such a keyboard types the state passphrase, which
+# sysinit asks before eudev loads any module; some laptops' ACPI also uses the
+# bus during boot. kconfig-check.sh holds each link built in. hid-multitouch
+# stays a module: hid-generic has the device until it loads.
 CONFIG_X86_INTEL_LPSS=y
 CONFIG_X86_AMD_PLATFORM_DEVICE=y
-CONFIG_MFD_INTEL_LPSS_PCI=m
-CONFIG_MFD_INTEL_LPSS_ACPI=m
+CONFIG_MFD_INTEL_LPSS_PCI=y
+CONFIG_MFD_INTEL_LPSS_ACPI=y
 CONFIG_I2C_DESIGNWARE_CORE=y
 CONFIG_I2C_DESIGNWARE_PLATFORM=y
+# DesignWare outside Skylake-on LPSS (Medfield, Merrifield, Bay Trail, Haswell
+# in PCI mode, Braswell, Elkhart Lake's PSE, AMD Navi's UCSI bus): no keyboard.
 CONFIG_I2C_DESIGNWARE_PCI=m
 CONFIG_PINCTRL_AMD=y
-CONFIG_PINCTRL_SUNRISEPOINT=m
-CONFIG_PINCTRL_CANNONLAKE=m
-CONFIG_PINCTRL_ICELAKE=m
-CONFIG_PINCTRL_JASPERLAKE=m
-CONFIG_PINCTRL_ELKHARTLAKE=m
-CONFIG_PINCTRL_LAKEFIELD=m
-CONFIG_PINCTRL_TIGERLAKE=m
-CONFIG_PINCTRL_ALDERLAKE=m
-CONFIG_PINCTRL_METEORLAKE=m
-CONFIG_PINCTRL_METEORPOINT=m
-CONFIG_PINCTRL_INTEL_PLATFORM=m
-CONFIG_I2C_HID_ACPI=m
+CONFIG_PINCTRL_SUNRISEPOINT=y
+CONFIG_PINCTRL_CANNONLAKE=y
+CONFIG_PINCTRL_ICELAKE=y
+CONFIG_PINCTRL_JASPERLAKE=y
+CONFIG_PINCTRL_ELKHARTLAKE=y
+CONFIG_PINCTRL_LAKEFIELD=y
+CONFIG_PINCTRL_TIGERLAKE=y
+CONFIG_PINCTRL_ALDERLAKE=y
+CONFIG_PINCTRL_METEORLAKE=y
+CONFIG_PINCTRL_METEORPOINT=y
+CONFIG_PINCTRL_INTEL_PLATFORM=y
+CONFIG_I2C_HID_ACPI=y
 CONFIG_HID_MULTITOUCH=m
 # From Lunar Lake on, a touchpad or touch screen may sit behind the Touch Host Controller rather
 # than an LPSS I2C controller: QuickI2C for its I2C mode, QuickSPI for its SPI mode, which Meteor
@@ -207,6 +226,10 @@ CONFIG_INTEL_QUICKSPI=m
 # bus and the telemetry under it. Not AMD's trace buffer, which is for debugging.
 CONFIG_AMD_PMC=m
 # CONFIG_AMD_MP2_STB is not set
+# What a sleep that stayed shallow says about why: with pm_debug_messages on
+# (root, /sys/power), amd_pmc's SMU idle mask and the LPS0 constraints reach the
+# kernel log, and pm_wakeup_irq names what woke it. Root-only switches, off until set.
+CONFIG_PM_DEBUG=y
 CONFIG_INTEL_VSEC=m
 CONFIG_INTEL_PMT_TELEMETRY=m
 CONFIG_INTEL_PMC_CORE=m
@@ -254,6 +277,9 @@ CONFIG_FW_LOADER_COMPRESS_ZSTD=y
 CONFIG_DRM_I915=m
 CONFIG_DRM_XE=m
 CONFIG_DRM_AMDGPU=m
+# AMD's display engine since Raven (DCN) is driven only through DC; on by default, pinned so a
+# resolution that drops it fails here rather than leaving an AMD laptop with a black screen.
+CONFIG_DRM_AMD_DC=y
 # Wi-Fi drivers: Intel (7260 on, Wi-Fi 7 under iwlmld), Qualcomm Atheros,
 # MediaTek, Realtek (rtw88, rtw89, USB rtl8xxxu) and Broadcom over PCIe.
 # mac80211_hwsim is a virtual radio for the integrity suite (signed copy loads,
@@ -303,8 +329,9 @@ CONFIG_ASUS_WIRELESS=m
 # loads them all ahead of snd-hda-intel (build/config/modprobe.d/sound.conf);
 # the generic parser takes any other codec. Not the MIDI sequencer and its
 # timer, the obsolete API, or the codec's debug interface. Codecs that need
-# firmware (CA0132), DSP platforms (Sound Open Firmware) and the speaker
-# amplifiers behind ASoC are not covered.
+# firmware (CA0132), DSP platforms (Sound Open Firmware) and speaker
+# amplifiers other than Cirrus's CS35L54/56/57 on I2C are not covered
+# (docs/design/laptop-audio.md).
 CONFIG_SOUND=m
 CONFIG_SND=m
 # CONFIG_SND_SUPPORT_OLD_API is not set
@@ -335,6 +362,13 @@ CONFIG_SND_HDA_CODEC_HDMI=m
 # CONFIG_SND_HDA_CODEC_HDMI_NVIDIA_MCP is not set
 # CONFIG_SND_HDA_CODEC_HDMI_TEGRA is not set
 CONFIG_SND_USB_AUDIO=m
+# Cirrus CS35L54/56/57 speaker amplifiers on I2C behind HD Audio, which the
+# codec's fixup binds as side codecs; serial-multi-instantiate splits their
+# one ACPI node. ASoC's Intel SST drivers would come on with SND_SOC.
+CONFIG_SND_SOC=m
+# CONFIG_SND_SOC_INTEL_SST_TOPLEVEL is not set
+CONFIG_SERIAL_MULTI_INSTANTIATE=m
+CONFIG_SND_HDA_SCODEC_CS35L56_I2C=m
 
 # --- the camera: modules, loaded only for a grant (docs/design/camera.md) ----
 # Video4Linux and the USB Video Class driver, which nearly every built-in and
