@@ -399,6 +399,11 @@ jobs:
       - name: dwl runs headless
         run: KRYPTIK_TEST_SOURCES="$HOME/.cache/kryptik-compositor-sources" tools/tests/dwl-headless.sh
 
+      # The screen lock, the launch client, the probe and the monitor tool, built as stage 04
+      # builds them, and the lock's --idle forms.
+      - name: The desktop's programs build
+        run: KRYPTIK_TEST_SOURCES="$HOME/.cache/kryptik-compositor-sources" tools/tests/desktop-compile.sh
+
   kernel:
     name: Kernel currency
     runs-on: ubuntu-24.04
