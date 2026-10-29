@@ -121,9 +121,10 @@ the firmware from the pinned linux-firmware release
   server BMCs; virtio-gpu, VMware SVGA, Hyper-V. NVIDIA machines, and AMD's
   GCN 1 and 2 parts, use the firmware framebuffer. The compositor renders
   with pixman, so no GPU acceleration is needed.
-- **Input:** USB HID, PS/2, I2C touchpads and touchscreens on Intel and AMD
-  laptops, those behind Intel's Touch Host Controller from Lunar Lake on,
-  VMware and Hyper-V input.
+- **Input:** USB HID, PS/2, I2C keyboards, touchpads and touchscreens on
+  Intel and AMD laptops, those behind Intel's Touch Host Controller from
+  Lunar Lake on, VMware and Hyper-V input. The keyboards that do not type the
+  state passphrase, or at all, are in [status](docs/status.md#known-gaps).
 
 CPU microcode for Intel and AMD is built into the signed kernel. On a Zen 5
 processor, and a few EPYC models, the kernel loads it only once the machine's
@@ -133,7 +134,8 @@ Microsoft's keys, so run Kryptik there with Secure Boot off.
 
 A machine outside that list boots a kernel that cannot find its disk or its
 network. Adding a driver is one line in the fragment, a firmware file one line
-in the list.
+in the list. Which machines Kryptik has been run on, and what each run showed,
+is in the [hardware list](docs/hardware.md).
 
 ## How it fits together
 

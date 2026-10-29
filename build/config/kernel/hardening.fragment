@@ -28,6 +28,10 @@ CONFIG_ZERO_CALL_USED_REGS=y
 CONFIG_STRICT_KERNEL_RWX=y
 CONFIG_STRICT_MODULE_RWX=y
 CONFIG_DEBUG_WX=y
+# Every usermode helper goes through one fixed path, which the image does not
+# have: the kernel runs no program, and request_module() fails. A module that
+# another would ask for that way loads with it, by a softdep in
+# build/config/modprobe.d/, which stage 05 holds to the modules built.
 CONFIG_STATIC_USERMODEHELPER=y
 
 # --- module signing: unsigned modules must not load ---
@@ -184,11 +188,13 @@ CONFIG_TRIM_UNUSED_KSYMS=y
 # pays for that in POST time.
 CONFIG_EFI_DISABLE_PCI_DMA=y
 CONFIG_RESET_ATTACK_MITIGATION=y
-# IOMMU on and strict from boot: a Thunderbolt or PCIe device gets only the
-# mappings its driver asked for. The checker also asks for Intel SVM.
+# Intel's and AMD's IOMMUs on and strict from boot: a Thunderbolt or PCIe device
+# gets only the mappings its driver asked for. AMD's has no DEFAULT_ON option:
+# built in, it is used. The checker also asks for Intel SVM.
 CONFIG_IOMMU_DEFAULT_DMA_STRICT=y
 CONFIG_INTEL_IOMMU_DEFAULT_ON=y
 CONFIG_INTEL_IOMMU_SVM=y
+CONFIG_AMD_IOMMU=y
 # The TPM, as an entropy source.
 CONFIG_TCG_TPM=y
 CONFIG_TCG_TIS=y
@@ -276,11 +282,10 @@ CONFIG_LSM="landlock,lockdown,yama"
 # CONFIG_NET_EMATCH is not set
 # CONFIG_NET_CLS_ACT is not set
 # CONFIG_DNS_RESOLVER is not set
-# rmmod -f, the power-management debug hooks (pm_trace keeps its trace in the
-# RTC), the cgroup debug controller, and /dev/nvram and /dev/hpet, which
-# nothing opens.
+# rmmod -f, pm_trace (which keeps its trace in the RTC, over the clock), the
+# cgroup debug controller, and /dev/nvram and /dev/hpet, which nothing opens.
 # CONFIG_MODULE_FORCE_UNLOAD is not set
-# CONFIG_PM_DEBUG is not set
+# CONFIG_PM_TRACE_RTC is not set
 # CONFIG_CGROUP_DEBUG is not set
 # CONFIG_NVRAM is not set
 # CONFIG_HPET is not set

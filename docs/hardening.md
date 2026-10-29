@@ -148,8 +148,10 @@ ADR-009) and `boot.fragment` (ADR-013).
   which any zone could reach; and what defconfig left on that nothing here
   uses: IP autoconfiguration, policy, multipath and multicast routing,
   NetLabel and SECMARK, NFLOG, tc's classifiers and actions, the network
-  filesystems' DNS upcall, forced module unloading, the power-management and
-  cgroup debug hooks, `/dev/nvram` and `/dev/hpet`.
+  filesystems' DNS upcall, forced module unloading, `pm_trace`, which keeps
+  its trace in the RTC, the cgroup debug controller, `/dev/nvram` and
+  `/dev/hpet`. The power-management debug messages stay, off until root
+  turns them on, for a laptop whose sleep stays shallow.
 
 Stage 05 refuses a `.config` that lost any fragment line
 (`build/lib/kconfig-check.sh`, shared with `tools/resolve-kernel-config.sh`

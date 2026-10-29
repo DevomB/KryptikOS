@@ -90,6 +90,7 @@ if ! mountpoint -q /sys/fs/cgroup 2>/dev/null; then
              -o nsdelegate,nosuid,noexec,nodev 2>/dev/null; then
         echo "sysinit: cgroup2 mounted"
     else
+        tell "sysinit: FAILED to mount cgroup2 - kryptikd will refuse zones"
         echo "sysinit: FAILED to mount cgroup2 - kryptikd will refuse zones" >&2
     fi
 fi
@@ -183,6 +184,7 @@ if ! mountpoint -q /var; then
     fi
     # State is unauthenticated, and root obeys /etc unasked (ld.so.preload, nsswitch.conf, udev).
     prune_etc_upper "$state_mnt/lib/kryptik/etc/upper" "$state_mnt/lib/kryptik/etc/quarantine" || {
+        tell "sysinit: refusing to boot with an unsafe /etc upper layer; recover from the install medium"
         echo "sysinit: refusing to boot with an unsafe /etc upper layer; recover from the install medium" >&2
         exit 1
     }
@@ -200,6 +202,7 @@ if ! mountpoint -q /etc; then
              /etc; then
         echo "sysinit: /etc overlay mounted"
     else
+        tell "sysinit: FAILED to overlay /etc - the system is read-only and cannot keep local changes"
         echo "sysinit: FAILED to overlay /etc - the system is read-only and cannot keep local changes" >&2
     fi
 fi

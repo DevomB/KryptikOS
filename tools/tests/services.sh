@@ -180,6 +180,15 @@ done
 # --- scripts ---------------------------------------------------------------
 echo
 echo "-- the scripts the services name"
+# Whether a script some service runs sources NAME. Not a pipeline: leaving one
+# at the first match kills its writer, which pipefail calls a failure.
+sourced() {   # sourced NAME
+    local u
+    while IFS= read -r u; do
+        grep -rqF "/usr/libexec/kryptik/${u##*/}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null && return 0
+    done < <(grep -lE "^\s*\. +/usr/libexec/kryptik/$1" "${SCRIPTS}"/*.sh 2>/dev/null)
+    return 1
+}
 for s in "${SCRIPTS}"/*.sh; do
     [[ -f "$s" ]] || continue
     n="$(basename "$s")"
@@ -192,12 +201,7 @@ for s in "${SCRIPTS}"/*.sh; do
     # or by the installer or the update tools, or bound to a key of dwl's.
     if grep -rqF "/usr/libexec/kryptik/${n}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null; then
         green "${n}: referenced by a service"
-    # The loop reads every name before it answers: one that stopped at the first would close the
-    # pipe on xargs, which pipefail then counts as a failure.
-    elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh 2>/dev/null \
-         && grep -lE "^\s*\. +/usr/libexec/kryptik/${n}" "${SCRIPTS}"/*.sh \
-            | xargs -r -n1 basename | { f=1; while read -r u; do
-                  grep -rqF "/usr/libexec/kryptik/${u}" "$SRC"/*/up "$SRC"/*/run 2>/dev/null && f=0; done; exit "$f"; }; then
+    elif sourced "$n"; then
         green "${n}: sourced by a script a service runs"
     elif grep -lqE "^\s*\. +/usr/libexec/kryptik/${n}" "$ROOT"/tools/install/*.sh "$ROOT"/tools/update/kryptik-* 2>/dev/null; then
         green "${n}: sourced by the installer or the update tools"

@@ -12,7 +12,7 @@ red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 
 # As 06-iso.sh writes them; the verity table is one long quoted word.
-common='ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt'
+common='ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt vt.default_red=0,170,0,170,0,170,0,51,85,255,85,255,85,255,85,255 vt.default_grn=0,0,170,85,0,0,170,255,85,85,255,255,85,85,255,255 vt.default_blu=0,0,0,0,170,170,170,85,85,85,85,85,255,255,255,255'
 table='0 3145728 verity 1 PARTLABEL=kryptik-media PARTLABEL=kryptik-media 4096 4096 393216 393216 sha256 ab12 cd34 1 panic_on_corruption'
 printf 'dm-mod.waitfor=PARTLABEL=kryptik-media dm-mod.create="kroot,,0,ro,%s" root=/dev/dm-0 %s kryptik.media=usb\n' "$table" "$common" > "$T/usb"
 printf 'dm-mod.create="kmedia,,0,ro,0 6291456 linear /dev/sr0 1234;kroot,,1,ro,%s" root=/dev/dm-1 %s kryptik.media=iso\n' "$table" "$common" > "$T/iso"

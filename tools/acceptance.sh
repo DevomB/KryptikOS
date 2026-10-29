@@ -405,6 +405,7 @@ it_medium_shell() {
     "${IMG}/medium-shell-test.sh" "${m[@]}"
 }
 it_smoke_iso()     { "${IMG}/media-smoke.sh" --iso "$MEDIA_ISO" --vars clean; }
+it_hwreport()      { "${IMG}/hwreport-test.sh" --usb "$MEDIA_USB"; }
 it_smoke_sb()      { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars enrolled; }
 it_refused()       { "${IMG}/media-smoke.sh" --usb "$MEDIA_USB" --vars ms --expect-refused; }
 it_install()       { "${IMG}/install-test.sh" --usb "$MEDIA_USB" --vars clean; }
@@ -476,6 +477,7 @@ item build     image-programs             M host  0 it_programs need_root_image
 item boot      media-smoke-usb            M vm   25 it_smoke_usb need_vm
 item boot      medium-shell               M vm    3 it_medium_shell need_vm
 item boot      media-smoke-iso            M vm   25 it_smoke_iso need_vm_iso
+item boot      hardware-report            M vm   20 it_hwreport need_vm
 item install   install-test               M vm   10 it_install need_vm
 item install   state-test                 M vm   10 it_state need_vm
 item install   keyboard-test              M vm   10 it_keyboard need_vm

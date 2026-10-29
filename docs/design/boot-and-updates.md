@@ -43,7 +43,7 @@ its signature and each image.
 
 ```text
 dm-mod.waitfor=PARTLABEL=kryptik-a dm-mod.create="kroot,,0,ro,0 <data_sectors> verity 1 PARTLABEL=kryptik-a PARTLABEL=kryptik-a 4096 4096 <data_blocks> <hash_start_block> sha256 <root_hash> <salt> 1 panic_on_corruption"
-root=/dev/dm-0 ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt kryptik.slot=a
+root=/dev/dm-0 ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4 mitigations=auto,nosmt pti=on page_alloc.shuffle=1 hash_pointers=always nosmt vt.default_red=0,170,0,170,0,170,0,51,85,255,85,255,85,255,85,255 vt.default_grn=0,0,170,85,0,0,170,255,85,85,255,255,85,85,255,255 vt.default_blu=0,0,0,0,170,170,170,85,85,85,85,85,255,255,255,255 kryptik.slot=a
 ```
 
 - The root hash in the signed kernel binds userland to kernel: replacing

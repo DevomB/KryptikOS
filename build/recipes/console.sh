@@ -28,8 +28,12 @@ fi
 
 # A virtual terminal is getty-tty1's: a second getty on tty0, where tty1 shows, would split its keys.
 case "$dev" in
-    tty[0-9]*) exec s6-pause ;;
+    tty[0-9]*) exec sleep infinity ;;
 esac
+
+# A console= the machine lacks, such as a laptop's legacy ttyS0, opens but fails every termios
+# call with EIO: agetty would fail on it and be restarted for as long as the machine runs.
+stty -F "/dev/$dev" > /dev/null 2>&1 || exec sleep infinity
 
 if [ -x /usr/sbin/agetty ]; then
     # Install media (kryptik.media= on the signed command line) get a root shell, others a login.

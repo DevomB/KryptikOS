@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+# Tests for tools/check-hardware.sh: what a report must show to carry a
+# listing, each reason it falls short, and the list held to its reports.
+# Offline; the reports are written here in kryptik-hwreport's form.
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TOOL="${ROOT}/tools/check-hardware.sh"
+
+PASS=0; FAIL=0
+green() { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
+red()   { printf '  FAIL  %s\n' "$1"; FAIL=$((FAIL + 1)); }
+W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+
+# An installed release on a laptop, with nothing wanting.
+cat > "$W/good.txt" <<'EOF'
+kryptik-hwreport 1
+
+== system ==
+kryptik: 1.0.0 (build 91c3238aabbccddeeff00112233445566778899a)
+kernel: 6.18.53-hardened1
+booted: slot a, installed
+state: persistent
+taken: 2026-10-14T09:12Z
+
+== machine ==
+sys_vendor: LENOVO
+product_name: 20XWCTO1WW
+product_version: ThinkPad X1 Carbon Gen 9
+bios_version: N32ET75W (1.51 )
+bios_date: 12/02/2021
+chassis_type: 10
+
+== firmware ==
+uefi: yes, 64-bit
+secure boot: on
+setup mode: 0
+lockdown: confidentiality
+tpm: version 2
+iommu: dmar0 dmar1; groups: 17 DMA
+thunderbolt domain0: security user, iommu protection 1
+
+== cpu ==
+model: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz
+vendor, family/model/stepping: GenuineIntel, 6/140/1
+microcode: 0xa4
+threads running: 4
+shadow stacks: yes
+present: 0-7, online: 0-3, smt: off
+microcode: Current revision: 0x000000a4
+memory: 15902 MiB
+
+== missing ==
+firmware the kernel asked for and did not find, each a line for build/config/firmware.list:
+  (none)
+devices with no driver, each wanting its driver's line in build/config/kernel/boot.fragment:
+  (none)
+disks behind a driver that is a module, which boot.fragment must build in before a root can sit there:
+  (none)
+
+== pci ==
+0000:00:02.0 class 030000 8086:9a49 sub 17aa:22b8 rev 01 driver i915 | VGA compatible controller | Intel Corporation TigerLake-LP GT2 [Iris Xe Graphics]
+0000:00:14.3 class 028000 8086:a0f0 sub 8086:0074 rev 20 driver iwlwifi | Network controller | Intel Corporation Wi-Fi 6 AX201
+
+== usb ==
+3-4 13d3:5411 speed 480 | Azurewave Integrated Camera
+3-4:1.0 interface class 0e/01/00 driver uvcvideo
+3-4:1.1 interface class 0e/02/00 driver uvcvideo
+3-10 8087:0026 speed 12 | Intel Corp. AX201 Bluetooth
+3-10:1.0 interface class e0/01/01 driver -
+3-10:1.1 interface class e0/01/01 driver -
+
+== no driver ==
+
+== storage ==
+nvme0n1 476.9 GiB (the root is here) | SAMSUNG MZVLB512HBJQ-000L7 | nvme (built in)
+
+== display ==
+card0 driver i915
+card0-eDP-1 connected 1920x1200
+card0-DP-1 disconnected
+
+== audio ==
+controller 0000:00:1f.3 class 040380 8086:a0c8 rev 20 driver snd_hda_intel
+codec 10ec0287 sub 17aa22e6
+codec 80862812 sub 80860101
+nhlt: 2 endpoints, pdm 1, ssp 1
+
+== laptop ==
+backlight intel_backlight type raw max 19200
+power_supply AC type Mains online 1
+power_supply BAT0 type Battery scope System capacity 87 technology Li-ion status Discharging
+sleep states: freeze mem
+sleep mem: s2idle [deep]
+
+== network ==
+rfkill0 wlan phy0 soft 0 hard 0
+in the net zone:
+  wlan0 wireless <BROADCAST,MULTICAST,UP,LOWER_UP>
+  kzbr0 virtual <BROADCAST,MULTICAST,UP,LOWER_UP>
+  default route by wlan0
+
+== input ==
+"Lid Switch" | event1
+"AT Translated Set 2 keyboard" | kbd event0
+
+== modules ==
+i915 iwlmvm iwlwifi
+
+== firmware messages ==
+
+== kernel log ==
+[    0.000000] Linux version 6.18.53-hardened1
+[    1.400100] usb 1-2: SerialNumber: <removed>
+[    3.100000] wlan0: authenticate with xx:xx:xx:xx:xx:xx
+EOF
+
+# see FILE: the tool's words on it in OUT, its status in RC.
+see() { OUT="$(bash "$TOOL" "$1" 2>&1)"; RC=$?; }
+# vary NAME SED-SCRIPT: the good report, changed, as $W/NAME.txt.
+vary() { sed "$2" "$W/good.txt" > "$W/$1.txt"; }
+# short NAME SED-SCRIPT REASON: that change leaves a reported listing, for REASON.
+short() {
+    vary "$1" "$2"; see "$W/$1.txt"
+    if [[ "$RC" -eq 0 ]] && grep -q '^  carries    reported; short of certified:$' <<<"$OUT" && grep -qF -- "      $3" <<<"$OUT"; then
+        green "short of certified: $3"
+    else
+        red "$1: wanted reported, for '$3'"; sed 's/^/        /' <<<"$OUT" | tail -6
+    fi
+}
+# unfit NAME SED-SCRIPT REASON: that change leaves no listing at all.
+unfit() {
+    vary "$1" "$2"; see "$W/$1.txt"
+    if [[ "$RC" -ne 0 ]] && grep -q '^  carries    no listing:$' <<<"$OUT" && grep -qF -- "      $3" <<<"$OUT"; then
+        green "no listing: $3"
+    else
+        red "$1: wanted no listing, for '$3'"; sed 's/^/        /' <<<"$OUT" | tail -6
+    fi
+}
+
+echo "-- a report that carries a certified listing"
+see "$W/good.txt"
+[[ "$RC" -eq 0 ]] && grep -q '^  carries    certified$' <<<"$OUT" && green "an installed release with nothing wanting is certified" \
+    || { red "the good report: exit ${RC}"; sed 's/^/        /' <<<"$OUT"; }
+grep -qF '  machine    LENOVO 20XWCTO1WW (ThinkPad X1 Carbon Gen 9), firmware N32ET75W (1.51 ) 12/02/2021' <<<"$OUT" \
+    && green "the machine, by maker, model and firmware" || red "machine line: $(grep machine <<<"$OUT")"
+grep -qF '  release    1.0.0, kernel 6.18.53-hardened1' <<<"$OUT" && green "the release and kernel" || red "release line"
+grep -qF '  display    i915: eDP-1 1920x1200' <<<"$OUT" && green "the display driver and the connected output" || red "display line: $(grep display <<<"$OUT")"
+grep -qF '  network    wireless wlan0' <<<"$OUT" && green "the interface the default route leaves by" || red "network line: $(grep network <<<"$OUT")"
+grep -qF "  audio      HD Audio codec 10ec0287; digital microphones on Intel's DSP, not driven" <<<"$OUT" \
+    && green "the sound, by kind, and what is not driven" || red "audio line: $(grep audio <<<"$OUT")"
+vary sof 's/driver snd_hda_intel$/driver sof-audio-pci-intel-tgl/'; see "$W/sof.txt"
+grep -qF "digital microphones on Intel's DSP, driven by sof-audio-pci-intel-tgl" <<<"$OUT" \
+    && green "and what drives it, once a driver does" || red "audio line with SOF: $(grep audio <<<"$OUT")"
+vary amdsdw 's/^controller 0000:00:1f\.3 .*$/acp 0000:04:00.5 class 048000 1022:15e2 rev 70 driver -\nsoundwire 0000:04:00.5 link 0 part 025d:0722/; /^codec /d; /^nhlt: /d'; see "$W/amdsdw.txt"
+grep -qF "  audio      AMD's coprocessor (rev 70) with no microphones its ACPI names; SoundWire 025d:0722 behind AMD's coprocessor, not driven" <<<"$OUT" \
+    && green "SoundWire behind AMD's coprocessor, the coprocessor's to drive" || red "audio line, AMD SoundWire: $(grep audio <<<"$OUT")"
+vary noaudio '/^== audio ==$/,/^$/d'; see "$W/noaudio.txt"
+grep -qF '  audio      not in this report' <<<"$OUT" && grep -q '^  carries    certified$' <<<"$OUT" \
+    && green "a report from before the section: said so, and no level asks for it" || red "a report with no audio section: $(grep -E 'audio|carries' <<<"$OUT")"
+
+echo "-- a laptop's parts, its sleep, its camera and its Bluetooth"
+# has NAME LINE: the tool's words on $W/NAME.txt hold LINE whole.
+has() { see "$W/$1.txt"; if grep -qxF -- "$2" <<<"$OUT"; then green "$3"; else red "$3: $(grep -E '^  (laptop|sleep|camera|bluetooth) ' <<<"$OUT" | tr '\n' '|')"; fi; }
+cp "$W/good.txt" "$W/as-is.txt"
+has as-is "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "the backlight and its kind, the battery, mains and the lid"
+has as-is "  sleep      mem is deep; s2idle also offered" "what a sleep to memory is, and what else is offered"
+has as-is "  camera     USB video 13d3:5411, driven by uvcvideo" "a USB camera, once, by its device's IDs"
+has as-is "  bluetooth  USB 8087:0026, not driven" "a Bluetooth controller, once, and that nothing drives it"
+vary mouse '/^power_supply BAT0/a power_supply hidpp_battery_0 type Battery scope Device capacity 40 technology - status Discharging'
+has mouse "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "a mouse's battery is not the machine's"
+vary resting 's/status Discharging/status Not charging/'
+has resting "  laptop     backlight intel_backlight (raw); battery BAT0 (Li-ion); mains AC; lid switch" "a status of two words, last on the line, leaves the kind"
+vary desktop '/^backlight /d; /^power_supply /d; /^"Lid Switch"/d'
+has desktop "  laptop     none of a laptop's parts: no backlight, battery or lid switch" "a desktop has none of them, and says so"
+vary s2idle 's/^sleep mem: .*/sleep mem: [s2idle]/'
+has s2idle "  sleep      mem is s2idle, the only kind offered" "s2idle with no deep beside it"
+vary s2slept 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 2 successful, 0 failed, hardware asleep 1800000000 us last, 3600000000 us in all'
+has s2slept "  sleep      mem is s2idle, the only kind offered; its last sleep kept the hardware asleep 1800 s" "an s2idle sleep that reached the hardware's state, and for how long"
+vary s2awake 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all\npower controller: amd_pmc'
+has s2awake "  sleep      mem is s2idle, the only kind offered; its last sleep never reached the hardware's sleep state, which drains the battery" "one that never got there, by the power controller's count"
+vary s2uncounted 's/^sleep mem: .*/sleep mem: [s2idle]/; /^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all\npower controller: none'
+has s2uncounted "  sleep      mem is s2idle, the only kind offered; no power controller driver counts how long its sleeps reach the hardware's sleep state" "a time no driver counts proves nothing"
+vary deepslept '/^sleep mem:/a sleep stats: 1 successful, 0 failed, hardware asleep 0 us last, 0 us in all'
+has deepslept "  sleep      mem is deep; s2idle also offered" "deep sleep, which counts no hardware time, is not judged by it"
+vary nomem 's/^sleep states: .*/sleep states: freeze disk/'
+has nomem "  sleep      no sleep to memory (offered: freeze disk)" "no mem at all"
+vary mipi '/^3-4/d
+/^sleep mem:/a\
+camera ipu6 0000:00:05.0 8086:a75d driver -\
+camera acpi OVTI01A0:00 sensor\
+camera acpi INT3472:01 sensor power\
+camera acpi INTC1009:00 visual sensing controller'
+has mipi "  camera     IPU6 8086:a75d, not driven; sensor OVTI01A0, behind a Visual Sensing Controller" "a MIPI camera: the IPU, its sensor and the controller between"
+vary nocamera '/^3-4/d'
+has nocamera "  camera     no camera found" "no camera, and says so"
+vary btusb 's/^\(3-10:1\.[01] interface class e0\/01\/01 driver\) -$/\1 btusb/'
+has btusb "  bluetooth  USB 8087:0026, driven by btusb" "and what drives it, once a driver does"
+vary nobt '/^3-10/d'
+has nobt "  bluetooth  no Bluetooth controller on USB" "no Bluetooth, and says so"
+vary nolaptop '/^== laptop ==$/,/^$/d'; see "$W/nolaptop.txt"
+if [[ "$(grep -cE '^  (laptop|sleep|camera) +not in this report$' <<<"$OUT")" -eq 3 ]] && grep -q '^  carries    certified$' <<<"$OUT"; then
+    green "a report from before the section: said so, and no level asks for them"
+else
+    red "a report with no laptop section: $(grep -E '^  (laptop|sleep|camera|carries) ' <<<"$OUT" | tr '\n' '|')"
+fi
+
+has as-is "  dma        on: dmar0 dmar1; groups: 17 DMA; thunderbolt domain0: security user, iommu protection 1" "what confines a device's DMA, and Thunderbolt's level"
+vary nodma 's/^iommu: .*/iommu: none/; /^thunderbolt /d'
+has nodma "  dma        none: nothing confines a device's DMA" "a machine whose IOMMU is off, said so"
+vary passthrough 's/^iommu: .*/iommu: dmar0; groups: 12 identity/; /^thunderbolt /d'
+has passthrough "  dma        on, but in passthrough: no group translates a device's DMA (dmar0; groups: 12 identity)" "an IOMMU whose every group is identity, said so"
+vary olddma '/^iommu: /d; /^thunderbolt /d'
+has olddma "  dma        not in this report" "a report from before the line"
+has as-is "  shstk      yes" "whether a program built for shadow stacks runs with one"
+vary noshstk 's/^shadow stacks: yes$/shadow stacks: no/'
+has noshstk "  shstk      no" "and a machine where none does, said so"
+vary oldshstk '/^shadow stacks: /d'
+has oldshstk "  shstk      not in this report" "a report from before the line"
+
+echo "-- each thing a certified listing needs"
+short medium    's/^booted: .*/booted: the usb medium/'           "not taken on an installed system (booted: the usb medium)"
+short degraded  's/^state: .*/state: degraded/'                   "the state partition is not in use (state: degraded)"
+short dated     's/^kryptik: 1\.0\.0/kryptik: 0.1.20261014.91c3238a/' "0.1.20261014.91c3238a is not a release (a dated build, or none)"
+short sboff     's/^secure boot: on/secure boot: off/'            "Secure Boot is off"
+short lockdown  's/^lockdown: .*/lockdown: integrity/'            "lockdown is integrity, not confidentiality"
+short firmware  '/^firmware the kernel asked/{n;s/.*/  iwlwifi-QuZ-a0-hr-b0-77.ucode/}' "firmware the kernel did not find: iwlwifi-QuZ-a0-hr-b0-77.ucode"
+short undriven  '/^devices with no driver/{n;s/.*/  0000:00:1f.6 class 020000 8086:15fb sub 17aa:22b8 rev 20 driver - | Ethernet controller/}' "no driver for 0000:00:1f.6 class 020000 8086:15fb"
+short modular   '/^disks behind a driver/{n;s/.*/  sda: ahci/}'    "a disk behind a module: sda: ahci"
+short dark      's/^card0-eDP-1 connected.*/card0-eDP-1 disconnected /' "no display the compositor can use"
+short nocarrier 's/^  wlan0 wireless <.*/  wlan0 wireless <NO-CARRIER,BROADCAST,MULTICAST,UP>/' "no network path"
+short noroute   '/^  default route by /d'                         "no network path"
+short elsewhere 's/^  default route by .*/  default route by kzbr0/' "no network path"
+
+echo "-- what leaves no listing at all"
+unfit other     '1s/.*/a hardware report/'                        "not a report this tool reads"
+unfit cut       '/^== storage ==$/d'                              "cut short: no 'storage' section"
+unfit nameless  's/^sys_vendor: .*/sys_vendor: /'                 "does not name its machine"
+line() { grep -n -- "$1" "$W/good.txt" | cut -d: -f1; }   # the good report's line holding $1
+unfit address   's/authenticate with xx:xx:xx:xx:xx:xx/authenticate with 00:11:22:33:44:55/' "holds a hardware address, a UUID or a serial number: line(s) $(line 'authenticate with')"
+grep -q '00:11:22:33:44:55' <<<"$OUT" && red "the address itself is printed" || green "the line is named, never what it holds"
+unfit serial    's/SerialNumber: <removed>/SerialNumber: 4C530001230506115281/' "holds a hardware address, a UUID or a serial number: line(s) $(line 'SerialNumber: ')"
+unfit uuid      's/^\[    0\.000000\] Linux.*/[    3.0] EXT4-fs (sda2): mounted filesystem 0a1b2c3d-1111-2222-3333-444455556666 ro/' "holds a hardware address, a UUID or a serial number: line(s) $(line 'Linux version')"
+
+echo "-- the list, held to its reports"
+L="$W/list"; mkdir -p "$L"
+lists() { OUT="$(KRYPTIK_HARDWARE_DIR="$L" bash "$TOOL" --list 2>&1)"; RC=$?; }
+rows() { printf '# report  level  who  day  note\n' > "$L/list.tsv"; printf '%s\n' "$@" >> "$L/list.tsv"; }
+bad() {   # bad WHAT WORDS: the list as it stands is refused, in WORDS
+    lists
+    if [[ "$RC" -ne 0 ]] && grep -qF -- "$2" <<<"$OUT"; then green "$1"; else red "$1"; sed 's/^/        /' <<<"$OUT" | tail -5; fi
+}
+cp "$W/good.txt" "$L/lenovo-thinkpad-x1-carbon-gen-9.txt"
+sed 's/^taken: 2026-10-14/taken: 2026-10-15/' "$W/medium.txt" > "$L/dell-xps-13-9310.txt"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14  on its own screen" \
+     "dell-xps-13-9310.txt  reported  DevomB  2026-10-15"
+lists
+[[ "$RC" -eq 0 ]] && grep -q '^ok: 2 machine(s) listed' <<<"$OUT" && green "a certified row and a reported one, each carried by its report" \
+    || { red "the good list: exit ${RC}"; sed 's/^/        /' <<<"$OUT"; }
+grep -qF '  ok    certified  LENOVO 20XWCTO1WW (ThinkPad X1 Carbon Gen 9), 1.0.0 (DevomB, 2026-10-14)' <<<"$OUT" \
+    && green "each row says what it lists" || red "row line: $(grep certified <<<"$OUT")"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14" "dell-xps-13-9310.txt  certified  DevomB  2026-10-15"
+bad "a row cannot claim certified on a report short of it" "dell-xps-13-9310.txt: listed certified, and its report is short of that:"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14"
+bad "a report beside the list needs a row" "dell-xps-13-9310.txt: a report with no row in the list"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15" \
+     "hp-elitebook-845.txt  reported  DevomB  2026-10-16"
+bad "a row needs its report" "hp-elitebook-845.txt: no such report beside the list"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  tested  DevomB  2026-10-14" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15"
+bad "a level is reported or certified" "the level is reported or certified, not 'tested'"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15" \
+     "dell-xps-13-9310.txt  reported  DevomB  2026-10-16"
+bad "a report is listed once" "dell-xps-13-9310.txt: listed twice"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  October" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15"
+bad "a row names who vouches and the day" "a row names who vouches and the day (YYYY-MM-DD)"
+cp "$W/address.txt" "$L/acer-swift-3.txt"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15" \
+     "acer-swift-3.txt  reported  DevomB  2026-10-16"
+bad "a report holding an address is not listed" "acer-swift-3.txt: carries no listing:"
+rm "$L/acer-swift-3.txt"
+# The processor's own word for it: a report whole in every other way.
+sed '/^threads running/a of note: nx smep smap hypervisor' "$W/good.txt" > "$L/qemu-standard-pc.txt"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-14" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15" \
+     "qemu-standard-pc.txt  certified  DevomB  2026-10-14"
+bad "a report taken in a virtual machine is not listed" "qemu-standard-pc.txt: taken in a virtual machine"
+rm "$L/qemu-standard-pc.txt"
+rows "lenovo-thinkpad-x1-carbon-gen-9.txt  certified  DevomB  2026-10-13" "dell-xps-13-9310.txt  reported  DevomB  2026-10-15"
+bad "a row's day is the day its report was taken" "lenovo-thinkpad-x1-carbon-gen-9.txt: its row says 2026-10-13, and the report was taken 2026-10-14T09:12Z"
+
+echo "-- the tree's own list"
+OUT="$(bash "$TOOL" --list 2>&1)"; RC=$?
+[[ "$RC" -eq 0 ]] && green "docs/hardware/list.tsv: $(tail -1 <<<"$OUT")" || { red "docs/hardware/list.tsv is refused"; sed 's/^/        /' <<<"$OUT"; }
+
+echo
+echo "${PASS} passed, ${FAIL} failed"
+[[ "$FAIL" -eq 0 ]]
