@@ -778,9 +778,9 @@ leaves out serial numbers, hardware addresses and UUIDs.
   planned for October 2026. QEMU has no lid, no microphone or brightness
   keys, no backlight, no built-in panel and no camera of the USB Video
   Class, so those parts wait for it.
-- Of a laptop's cameras, `k` gives the zone the first the kernel lists. On
-  a laptop whose infrared face-login camera is a USB device of its own,
-  that may be the infrared one, which shows no picture.
+- Of a laptop's cameras, `k` gives the zone the first that offers a colour
+  picture. An infrared face-login camera that offers a colour format too
+  may be the one given, and shows no picture.
 - Laptop sound goes through the HD Audio driver and USB audio. On many
   recent laptops part of it does not work: built-in microphones on Intel's
   or AMD's audio processor, all built-in sound on Intel and AMD laptops

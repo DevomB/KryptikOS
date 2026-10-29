@@ -114,8 +114,10 @@ fn kept(sys: &Path, run: &Path) -> bool {
 
 /// The camera's node in `sys`, standing for /sys: of the video4linux devices that are the first
 /// node of their device (`index` 0, a UVC camera's capture node and not its metadata one), the
-/// lowest numbered; its name, major and minor, and what the device calls itself.
-pub fn camera_in(sys: &Path) -> Option<(String, u32, u32, String)> {
+/// lowest numbered that `colour` passes, else the lowest numbered; its name, major and minor, and
+/// what the device calls itself. An infrared camera inside the same USB camera is a device of its
+/// own, so its capture node is `index` 0 too.
+pub fn camera_in(sys: &Path, colour: impl Fn(&str) -> bool) -> Option<(String, u32, u32, String)> {
     let class = sys.join("class/video4linux");
     let mut found: Vec<(u32, String)> = fs::read_dir(&class).ok()?.flatten()
         .filter_map(|e| {
@@ -125,13 +127,45 @@ pub fn camera_in(sys: &Path) -> Option<(String, u32, u32, String)> {
         })
         .collect();
     found.sort();
-    let (_, node) = found.into_iter().next()?;
+    let at = found.iter().position(|(_, n)| colour(n.as_str())).unwrap_or(0);
+    let (_, node) = found.into_iter().nth(at)?;
     let dev = read_trim(&class.join(&node).join("dev"))?;
     let (major, minor) = dev.split_once(':')?;
     let name: String = read_trim(&class.join(&node).join("name")).unwrap_or_default()
         .chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(48).collect();
     let name = if name.trim().is_empty() { "a camera".to_string() } else { name.trim().to_string() };
     Some((node, major.parse().ok()?, minor.parse().ok()?, name))
+}
+
+/// Whether /dev/NODE offers a picture a browser shows, not only an infrared camera's grey. The
+/// driver answers from the formats it read at probe, and opening the node does not power the
+/// camera; a node that will not open offers none.
+fn offers_colour(node: &str) -> bool {
+    #[allow(dead_code)]
+    #[repr(C)]
+    struct FmtDesc {
+        index: u32,
+        kind: u32,
+        flags: u32,
+        description: [u8; 32],
+        pixelformat: u32,
+        mbus_code: u32,
+        reserved: [u32; 3],
+    }
+    const VIDIOC_ENUM_FMT: libc::c_ulong = 0xc040_5602;
+    const CAPTURE: u32 = 1;
+    let mut open = fs::OpenOptions::new();
+    open.read(true).custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC);
+    let Ok(f) = open.open(Path::new("/dev").join(node)) else {
+        return false;
+    };
+    (0..64)
+        .map_while(|index| {
+            let mut d = FmtDesc { index, kind: CAPTURE, flags: 0, description: [0; 32], pixelformat: 0, mbus_code: 0, reserved: [0; 3] };
+            // SAFETY: d is the v4l2_fmtdesc the ioctl fills, on a descriptor we own.
+            (unsafe { libc::ioctl(f.as_raw_fd(), VIDIOC_ENUM_FMT as _, &mut d) } == 0).then_some(d.pixelformat)
+        })
+        .any(|p| matches!(&p.to_le_bytes(), b"MJPG" | b"JPEG" | b"YUYV" | b"UYVY" | b"NV12" | b"YU12" | b"YV12"))
 }
 
 /// A video4linux node's path as udev names it in an event (`%p`): its place in `sys`, under /sys.
@@ -264,7 +298,7 @@ pub fn grant(zone: &crate::zone::Zone) -> Result<Grant, String> {
     // A camera's node appears once its driver has probed it, which takes a moment.
     let deadline = Instant::now() + Duration::from_secs(3);
     let (node, major, minor, name) = loop {
-        if let Some(found) = camera_in(Path::new("/sys")) {
+        if let Some(found) = camera_in(Path::new("/sys"), offers_colour) {
             break found;
         }
         if Instant::now() > deadline {

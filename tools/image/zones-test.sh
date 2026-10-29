@@ -183,7 +183,8 @@ T2C="$(txt)"
 [[ "$rc" -eq 0 ]] && green "the camera rounds ran to their end" || red "the camera rounds did not run to their end"
 for name in camera-not-by-alias camera-not-granted camera-refused-vault camera-refused-net camera-granted \
             camera-zone-captures camera-ends-with-zone camera-other-zone-none camera-revoked \
-            camera-revoked-kept-descriptor camera-granted-again-while-running camera-ends-with-zone-again camera-gone-ends-grant; do
+            camera-revoked-kept-descriptor camera-granted-again-while-running camera-ends-with-zone-again camera-gone-ends-grant \
+            camera-colour-first; do
     grep -q "CT PASS ${name}" <<<"$T2C" && green "guest: ${name}" || red "guest: ${name} (not passed)"
 done
 grep 'CT FAIL' <<<"$T2C" | sed 's/^/        /'
