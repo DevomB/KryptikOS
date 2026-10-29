@@ -146,7 +146,7 @@ Everything runs on GitHub's runners, so a fork is enough:
   medium. Its `acceptance-report` artifact holds `REPORT.md`, one row per
   item, `results.tsv`, and every item's log and serial transcript
   ([status](status.md#the-last-full-pass)). A run from no cache takes about
-  three hours.
+  six hours.
 - **Locally**, [building](building.md) lists the host packages and stages;
   `make test` and `make zone-tests` need no build, and `make acceptance`
   needs KVM and two built releases.
