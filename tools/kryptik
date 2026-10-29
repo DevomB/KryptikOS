@@ -79,6 +79,11 @@ USAGE:
     $PROG display NAME auto         drop that monitor's line: the * line then,
                                     if any, else 2 for a built-in panel of 192
                                     dpi and 1200 lines or more, else 1
+    $PROG timezone                  the machine's time zone
+    $PROG timezone list [WORD]      the time zones, or those whose name holds
+                                    WORD, or a country's by its two letters (DE)
+    $PROG timezone NAME             use that zone, as Europe/Berlin (root): zone
+                                    0's clock now and at every boot; zones keep UTC
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
@@ -510,6 +515,44 @@ cmd_display() {
     exec kryptik-display apply
 }
 
+# The machine's time zone is /etc/localtime, a link into the verified zoneinfo tree: the one
+# shape of it sysinit keeps on the state partition (prune_etc_upper).
+cmd_timezone() {
+    local db="${KRYPTIK_ZONEINFO:-/usr/share/zoneinfo}" lt="${KRYPTIK_LOCALTIME:-/etc/localtime}" now w
+    [[ -r "${db}/zone.tab" ]] || die "no time zone database here: no ${db}/zone.tab"
+    if [[ $# -eq 0 ]]; then
+        now="$(readlink "$lt" 2>/dev/null)"
+        if [[ "$now" == "${db}/"* ]]; then echo "${now#"${db}/"}"; else echo "UTC (no time zone chosen)"; fi
+        return 0
+    fi
+    if [[ "$1" == list ]]; then
+        [[ $# -le 2 ]] || die "$PROG timezone list takes one word: a country's two letters, or part of a name" 2
+        w="${2:-}"
+        # A country's zones by its ISO 3166 code, with what the database says of each.
+        if [[ "$w" =~ ^[A-Za-z]{2}$ ]]; then
+            awk -F'\t' -v cc="${w^^}" '$1 == cc { if ($4 == "") print $3; else printf "%-32s %s\n", $3, $4 }' \
+                "${db}/zone.tab" | grep . || die "no zones for the country code ${w^^}" 2
+            return 0
+        fi
+        # The zones the database keeps apart since 1970; their old names are taken too, unlisted.
+        { echo UTC; awk -F'\t' '!/^#/ { print $3 }' "${db}/zone1970.tab"; } | LC_ALL=C sort -u \
+            | awk -v w="${w,,}" 'w == "" || index(tolower($0), w)' | grep . || die "no time zone's name holds ${w}" 2
+        return 0
+    fi
+    [[ $# -eq 1 ]] || die "$PROG timezone takes one zone's name, as Europe/Berlin" 2
+    [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$ && -f "${db}/$1" && "$(head -c4 "${db}/$1")" == TZif ]] \
+        || die "no time zone named $1: \`$PROG timezone list\` lists them" 2
+    # A new link renamed over the old, so no reader finds /etc/localtime missing.
+    ln -sfn "${db}/$1" "${lt}.new" 2>/dev/null && mv -fT "${lt}.new" "$lt" 2>/dev/null \
+        || { rm -f "${lt}.new" 2>/dev/null; die "could not link ${lt}: the time zone is root's to change"; }
+    now="$(TZ=":${db}/$1" date '+%H:%M %Z')"
+    if grep -qs '^media=.' /run/kryptik/boot-identity; then
+        echo "time zone $1, until this medium is shut down: ${now}"
+    else
+        echo "time zone $1: ${now} now, and from every boot. Zones keep UTC."
+    fi
+}
+
 # --- argument parsing -------------------------------------------------------
 load_conf
 
@@ -542,6 +585,7 @@ case "$cmd" in
     suspend) cmd_suspend "$@" ;;
     keyboard) cmd_keyboard "$@" ;;
     display) cmd_display "$@" ;;
+    timezone) cmd_timezone "$@" ;;
     ""|help) usage ;;
     # Commands users will expect, answered with why they do not exist.
     transfer|copy|clipboard|paste|mount)
