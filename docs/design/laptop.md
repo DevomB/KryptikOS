@@ -502,6 +502,10 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   rather than the battery's running down, so a machine that outdraws its
   charger under load does not swing between the two, on each
   processor policy that offers it (amd-pstate and intel_pstate both do).
+  Both are built in (`boot.fragment`), amd-pstate in active mode with its
+  dynamic EPP off, so the kernel does not override what this service sets.
+  A processor neither takes falls back to acpi-cpufreq, scaled by
+  schedutil, and offers no preference.
   PCIe link power and NVMe power states keep the kernel's defaults, and no
   rule turns on USB autosuspend for input devices, which too often
   misbehave with it.

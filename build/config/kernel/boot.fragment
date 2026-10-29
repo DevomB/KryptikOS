@@ -233,6 +233,20 @@ CONFIG_PM_DEBUG=y
 CONFIG_INTEL_VSEC=m
 CONFIG_INTEL_PMT_TELEMETRY=m
 CONFIG_INTEL_PMC_CORE=m
+# The processor's own clock control from the firmware's CPPC table: intel_pstate
+# from Sandy Bridge on, amd-pstate from Zen 2 on. Neither has a Kconfig default
+# and defconfig names neither, so without them every machine ran acpi-cpufreq
+# under defconfig's userspace governor, which holds the clock where the firmware
+# left it and gives power.sh no energy preference to set. amd-pstate starts in
+# active mode, with the hint; its dynamic EPP stays off, as power.sh sets the
+# hint from the charger. A processor neither takes (no _CPC, or CPPC turned off
+# in the firmware's setup) falls back to acpi-cpufreq, scaled by schedutil.
+CONFIG_X86_INTEL_PSTATE=y
+CONFIG_X86_AMD_PSTATE=y
+CONFIG_X86_AMD_PSTATE_DEFAULT_MODE=3
+# CONFIG_X86_AMD_PSTATE_DYNAMIC_EPP is not set
+CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y
+# CONFIG_CPU_FREQ_DEFAULT_GOV_USERSPACE is not set
 # The power key on Intel laptops whose firmware sends it, and the wake from
 # s2idle by it, to the HID event filter (INT33D5, INTC1051 and later) or the
 # virtual button device (INT33D6) instead of ACPI's power button: without these
