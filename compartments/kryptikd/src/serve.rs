@@ -10,6 +10,8 @@
 //!                network that hides its name, `end`
 //!              wifi-forget, `ssid <ssid>`, `end`
 //!              wifi-scan, answered once the nic zone has scanned
+//!              wifi-country [<country>], answered `ok country <XX>|none`, or with the
+//!                country set for now and each later boot
 //!              check-password, `password <password>`, `end` (the screen lock's)
 //!              unlock-kind, answered `ok login`, or `ok state` while the state
 //!                partition is suspended (the screen lock's)
@@ -1796,6 +1798,21 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 Ok(text) => {
                     eprintln!("kryptikd serve: {said}");
                     reply(&conn, &format!("ok\n{text}"));
+                }
+                Err(e) => reply(&conn, &format!("error: {e}\n")),
+            }
+        }
+        // The country whose radio rules hold: shown, or set for now and every later boot.
+        "wifi-country" => {
+            let said = match first.split_whitespace().collect::<Vec<_>>().as_slice() {
+                [_] => crate::wifi::country(&cfg.wifi_dir).map(|c| format!("country {}", c.as_deref().unwrap_or("none"))),
+                [_, c] => crate::wifi::check_country(c).and_then(|c| crate::wifi::set_country(&cfg.wifi_dir, &c)),
+                _ => Err("usage: wifi-country [COUNTRY]".into()),
+            };
+            match said {
+                Ok(s) => {
+                    eprintln!("kryptikd serve: uid {uid} wifi-country: {s}");
+                    reply(&conn, &format!("ok {s}\n"));
                 }
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
             }

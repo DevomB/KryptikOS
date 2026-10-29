@@ -456,6 +456,72 @@ pub fn restart_net_zone(dir: &Path) -> String {
     }
 }
 
+/// The country whose radio rules the machine follows, beside the networks; root's alone, as zone
+/// 0 sets it for the radios before the net zone has them.
+pub const COUNTRY_FILE: &str = "country";
+
+/// A country as the user names it, upper-cased: two letters as the regulatory database names
+/// countries (GB, US), or 00 for the rules that hold everywhere.
+pub fn check_country(s: &str) -> Result<String, String> {
+    let c = s.to_ascii_uppercase();
+    if c == "00" || (c.len() == 2 && c.bytes().all(|b| b.is_ascii_uppercase())) {
+        Ok(c)
+    } else {
+        Err(format!("{s:?} is not a country: two letters, such as GB or US, or 00 for the rules that hold everywhere"))
+    }
+}
+
+/// The country saved, if one is. The state partition is not authenticated, so a file that holds
+/// anything else is an error the caller says, never a hint for the kernel.
+pub fn country(dir: &Path) -> Result<Option<String>, String> {
+    let path = dir.join(COUNTRY_FILE);
+    match fs::read_to_string(&path) {
+        Ok(t) => {
+            let c = t.strip_suffix('\n').unwrap_or(&t);
+            if c.len() == 2 && c.bytes().all(|b| b.is_ascii_uppercase()) {
+                Ok(Some(c.to_string()))
+            } else {
+                Err(format!("{} holds no country", path.display()))
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Keep `country`, as `check_country` gives it, for each start of the net zone; 00 removes the
+/// file, as the rules that hold everywhere are what a boot starts with.
+pub fn save_country(dir: &Path, country: &str) -> Result<(), String> {
+    let path = dir.join(COUNTRY_FILE);
+    if country == "00" {
+        return match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        };
+    }
+    ensure_dir(dir)?;
+    crate::files::write_atomic(&path, &[format!("{country}\n").as_bytes()], 0o600, None).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Save the country and tell the kernel now; the net zone's start tells it again after a boot.
+/// Other directories (tests) only save it, as `restart_net_zone` leaves their net zone alone.
+pub fn set_country(dir: &Path, country: &str) -> Result<String, String> {
+    save_country(dir, country)?;
+    let said = if country == "00" {
+        "the Wi-Fi country is cleared: the radios follow the rules that hold everywhere".to_string()
+    } else {
+        format!("the Wi-Fi country is {country}")
+    };
+    if dir != Path::new(DEFAULT_DIR) {
+        return Ok(format!("{said}; the kernel was not told, as {} is not {DEFAULT_DIR}", dir.display()));
+    }
+    Ok(match crate::netlink::set_country(country) {
+        Ok(()) => said,
+        Err(e) => format!("{said} from the net zone's next start; the kernel refused it now: {e}"),
+    })
+}
+
 /// Where the nic zone answers a scan, in its own root (tools/net/netzone-init.sh, `scan_radios`).
 const SCAN_FILE: &str = "run/netzone-scan";
 /// From the ask to the answer: the zone may first finish a time query (8 s at most), then

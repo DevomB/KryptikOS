@@ -269,6 +269,20 @@ configured the zone keeps its IPv4 path and the launcher says so.
   `/sys/class/net/<n>/phy80211` exists. Every interface on the wiphy moves
   with its name, and cfg80211 returns the wiphy to the initial namespace when
   the net zone's namespace dies.
+- **Zone 0 tells the kernel the country.** The radio's rules come from
+  cfg80211's regulatory domain, global to the machine. Setting one
+  (`NL80211_CMD_REQ_SET_REG`) takes `CAP_NET_ADMIN` in the initial user
+  namespace (`GENL_ADMIN_PERM`), which the net zone, in a user namespace of
+  its own, does not have. So `kryptik wifi country XX` has kryptikd keep the
+  country in `/var/lib/kryptik/wifi/country` (root's, 0600) and send it at
+  once. Each start of the net zone sends it again before the radios move,
+  as a boot starts on the rules that hold everywhere: no 6 GHz, and every
+  5 GHz channel heard before it is used. The user's hint is kept across
+  disconnects, where an access point's own country is dropped. The state
+  partition is not authenticated, so a file holding anything but two
+  upper-case letters is logged and passed over. `00` removes the file. A
+  radio whose firmware keeps its own rules (self-managed, as Intel's)
+  follows those.
 - **It leaves zone 0 as a boot gives it, with one station.** The net zone
   can add netdevs to its radio, an AP, mesh or monitor one, or delete the
   one it has, and the radio comes back so. The next start deletes every

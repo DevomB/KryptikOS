@@ -478,21 +478,19 @@ network. A new passphrase keeps it so; forget the network to stop.
 `kryptik wifi list` names the saved networks, and `kryptik wifi forget SSID`
 removes one.
 
-**Your country's radio rules.** Nothing sets the country the radio's rules
-come from, so until it joins a network that names one, the radio keeps the
-world's rules:
+**Your country's radio rules.** Until a country is set, the radio keeps the
+rules that hold everywhere, and keeps a country only while it is joined to a
+network that names one:
 - the 6 GHz band is off, so a network on 6 GHz alone is never seen;
 - on 5 GHz it only listens, and joins a network there once it has heard it.
 
-The rules go back to the world's at every disconnect. For your own country's
-rules until the next boot:
-1. At the administration login, run `su`.
-2. Run `/usr/sbin/iw reg set XX`, where `XX` is your country's two letters
-   (`US`, `DE`).
-3. `/usr/sbin/iw reg get` shows the rules in force.
-
-A radio whose firmware keeps its own rules, as Intel's do, follows those
-instead, and `/usr/sbin/iw reg get` names it as self-managed.
+`kryptik wifi country XX`, with your country's two letters (`US`, `DE`,
+`GB`), sets your country's rules now and at every later boot, and
+`kryptik wifi country` alone says which is set. `kryptik wifi country 00`
+goes back to the rules that hold everywhere. As root, `/usr/sbin/iw reg get`
+shows the rules in force. A radio whose firmware keeps its own rules, as
+Intel's do, follows those instead, and `/usr/sbin/iw reg get` names it as
+self-managed.
 
 A Wi-Fi 7 network that offers only SAE-EXT-KEY, the WPA3 mode Wi-Fi 7's
 multi-link operation uses, is not joined. Have the router offer WPA3 (SAE)

@@ -97,7 +97,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             status-network-line \
             wifi-second-network \
             wifi-bss-age \
-            wifi-hidden \
+            wifi-hidden wifi-country wifi-country-at-start \
             uplink-renamed-plain uplink-state-reset \
             radio-off-at-start \
             radio-recarried \
