@@ -22,7 +22,7 @@ body "$ROOT/build/recipes/init.sh" "cat > \"\$skel/rc.shutdown\" <<'EOF'" > "$T/
 [[ -s "$T/shutdown.orig" ]] && green "rc.shutdown is in init.sh" || red "no rc.shutdown in init.sh"
 
 mkdir -p "$T/bin" "$T/run" "$T/dev"
-for held in sysinit firstboot; do echo done > "$T/run/kryptik-$held"; done
+for held in sysinit firstboot; do echo "done" > "$T/run/kryptik-$held"; done
 : > "$T/dev/ttyS0"; : > "$T/dev/tty0"; : > "$T/dev/console"
 echo 'ro rootwait kryptik.slot=a' > "$T/cmdline"
 cat > "$T/bin/stty" <<'S'
