@@ -101,14 +101,16 @@ loaded only for a grant.
 
 QEMU has no USB camera. The kernel's `vivid`, a test driver that makes V4L2
 devices with no hardware (as `test_power` makes a battery), stands in, built
-as a module that the zones and desktop suites alone load; `uvcvideo`
-itself waits for the tests on physical hardware.
+as a module that the zones and desktop suites alone load. The probe takes
+its frames by mmap streaming, as a browser does, since `uvcvideo` has no
+`read()`.
 
 - with no grant, no zone's `/dev/video0` opens, and loading by a camera's
   alias, as eudev does when one is plugged in, loads nothing
   (`modprobe -b` with a video-class alias);
-- granted to `personal`, a probe there captures a frame from the stand-in;
-  `work` finds no camera; the chrome's window names `personal`;
+- granted to `personal`, a probe there captures a frame from the stand-in,
+  which offers MJPEG or YUYV; `work` finds no camera; the chrome's window
+  names `personal`;
 - taken away while granted (`vivid` unloaded), the grant ends and the node
   goes;
 - of two stand-ins, the grant passes over the lower numbered, whose node
@@ -117,6 +119,16 @@ itself waits for the tests on physical hardware.
 - `k` alone takes it back, and so does the screen locking: the probe's open
   descriptor fails at its next read, and the node is gone;
 - a zone whose file refuses the camera is never offered it.
+
+On a laptop, `camera-check.sh USER --hardware`
+(`/usr/lib/kryptik/guest-tests`), run as root at a console with the user
+logged in and nothing using the camera since boot, checks the same against
+the laptop's own USB camera, with `vivid` never loaded, and what only
+`uvcvideo` shows: a program that keeps its descriptor past `k` holds the
+driver, which stays loaded, and no grant is given until it lets go; the
+next grant after that captures again and unloads the driver at its end; and
+the camera taken away (its USB device deauthorized) ends the grant, and
+loads nothing when it comes back.
 
 ## Not covered
 
