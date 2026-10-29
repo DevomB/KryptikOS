@@ -424,6 +424,15 @@ primaries_in() {
         | awk -F: '$1 == "pub" { p = 1; next } p && $1 == "fpr" { print toupper($10); p = 0 }' || true
 }
 
+# Whether FILE holds any OpenPGP data: an armor header, or a binary packet,
+# whose first byte has its top bit set.
+has_openpgp_data() {
+    local b
+    grep -qa -- '-----BEGIN PGP' "$1" && return 0
+    b="$(head -c1 -- "$1" | od -An -tu1 | tr -d ' ')"
+    [[ -n "$b" && "$b" -ge 128 ]]
+}
+
 # anchored_import FPR FILE: merge key FPR alone from FILE and print FILE's primary fingerprints;
 # returns 1 when FILE lacks FPR, and 2 when FPR is there but cannot be taken alone.
 anchored_import() {
@@ -453,7 +462,7 @@ anchored_import() {
 # that could not be read is remembered, and gives no class this run.
 declare -A PROV_FETCHED=() PROV_REFUSED=() PROV_MISSED=()
 import_provenance_keys_for() {
-    local name="$1" i fpr tmp home got rc try
+    local name="$1" i fpr tmp home got rc try nodata
     for i in "${!PROV_FPR[@]}"; do
         case "${PROV_SIGNS[$i]}" in *",${name},"*) ;; *) continue ;; esac
         [[ -z "${PROV_FETCHED[$i]:-}" ]] || continue
@@ -491,16 +500,27 @@ import_provenance_keys_for() {
         esac
         rc=0
         got="$(anchored_import "$fpr" "$tmp")" || rc=$?
+        nodata=0
+        if [[ "$rc" -eq 1 && -z "$got" ]] && ! has_openpgp_data "$tmp"; then nodata=1; fi
         rm -f "$tmp"
         if [[ "$rc" -eq 0 ]]; then
             dim "  ${name}: imported the key ${PROV_KIND[$i]} publishes (${fpr})"
+            continue
+        fi
+        # A page with no OpenPGP data at all (an error page served as 200) is
+        # unread, as a page that does not answer is: either one could hide a
+        # change, so --strict still fails it. Another key, or OpenPGP data
+        # with no key gpg can list (a bare revocation), is refused.
+        if [[ "$nodata" -eq 1 ]]; then
+            warn "${name}: ${PROV_LOC[$i]} answered with no OpenPGP data in it"
+            PROV_MISSED[$i]=1
             continue
         fi
         if [[ "$rc" -eq 2 ]]; then
             err "${name}: ${PROV_LOC[$i]} serves ${fpr}, but it could not be taken"
             err "  alone. REFUSING it: the recorded fingerprint is the anchor."
         else
-            err "${name}: ${PROV_LOC[$i]} now publishes ${got:-no key},"
+            err "${name}: ${PROV_LOC[$i]} now publishes ${got:-no key gpg can list},"
             err "  not the recorded ${fpr}. REFUSING it: a key that"
             err "  changed at a published location is a finding, not an update."
         fi
