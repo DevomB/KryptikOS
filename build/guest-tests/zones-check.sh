@@ -1804,6 +1804,32 @@ else
     fail "microcode-notice" "at boot: ${mc_boot:-none}; after the kernel's line: ${mc_told:-none}"
 fi
 
+# --- a kernel the firmware did not check, on the login prompt ----------------
+# The notice at boot says what the firmware's own variables say; on variables standing in for
+# Secure Boot enforced it goes, and the boot's comes back for the login prompts after.
+sb_notice=/run/issue.d/kryptik-secureboot.issue
+sb_guid=8be4df61-93ca-11d2-aa0d-00e098032b8c
+efi_val() { od -An -tu1 -j4 -N1 "/sys/firmware/efi/efivars/$1-$sb_guid" 2>/dev/null | tr -d ' '; }
+sb_boot="$(cat "$sb_notice" 2>/dev/null)"
+case "$(efi_val SetupMode)/$(efi_val SecureBoot)" in
+    1/*) sb_want="as it is in setup mode" ;;
+    */1) sb_want="" ;;
+    */) sb_want="gives no SecureBoot variable" ;;
+    *) sb_want="as Secure Boot is off" ;;
+esac
+sb_fake="$(mktemp -d)"
+printf '\006\000\000\000\001' > "$sb_fake/SecureBoot-$sb_guid"
+printf '\006\000\000\000\000' > "$sb_fake/SetupMode-$sb_guid"
+EFIVARS="$sb_fake" sh -c '. /usr/libexec/kryptik/secureboot-notice.sh; secureboot_notice' > /dev/null 2>&1
+if [[ -e "$sb_notice" ]]; then sb_cleared=no; else sb_cleared=yes; fi
+sh -c '. /usr/libexec/kryptik/secureboot-notice.sh; secureboot_notice' > /dev/null 2>&1
+rm -rf "$sb_fake"
+if [[ "$sb_cleared" == yes ]] && { [[ -z "$sb_want" && -z "$sb_boot" ]] || [[ -n "$sb_want" && "$sb_boot" == "kryptik secure boot: "*"$sb_want"* ]]; }; then
+    pass "secureboot-notice" "at boot: ${sb_boot:-none, Secure Boot enforced}; on Secure Boot enforced the notice goes"
+else
+    fail "secureboot-notice" "variables: SetupMode=$(efi_val SetupMode) SecureBoot=$(efi_val SecureBoot); at boot: ${sb_boot:-none}; cleared when enforced: ${sb_cleared}"
+fi
+
 # --- software images over a zone's /usr (images.rs) -------------------------
 # The list stage 06 signed for this root, the probe image it names and its two
 # controls, from the disk zones-test attached, kept under the names images.rs
