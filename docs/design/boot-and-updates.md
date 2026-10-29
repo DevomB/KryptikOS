@@ -58,6 +58,10 @@ root=/dev/dm-0 ro rootwait console=tty0 console=ttyS0,115200 panic=10 loglevel=4
 - `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG` is on but not the mechanism; the
   kernel's signature authenticates the hash.
 - `tools/check-kernel-hardening.sh` checks the parameters after `loglevel`.
+- `console=ttyS0` comes last so a VM's serial port is `/dev/console`, which
+  the suites read. On a machine with no UART behind ttyS0, as most laptops,
+  the kernel registers the console anyway and every write to it fails, so
+  `sysinit` drops it at once and `/dev/console` becomes the screen's.
 
 Stage 06 relinks stage 05's unbound kernel per variant (`media-usb`,
 `media-iso`, `slot-a`, `slot-b`; `06-kernel-bind.sh`), changing only

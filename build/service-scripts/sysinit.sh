@@ -5,6 +5,14 @@
 echo running > /run/kryptik-sysinit
 trap 'echo finished > /run/kryptik-sysinit' EXIT
 
+# A console= port the machine lacks, as a laptop's legacy ttyS0 (type 0: no UART answered), is
+# still /dev/console, and every write to it fails. Dropped, it hands /dev/console to the screen's
+# console, so whatever opens /dev/console later is seen. A port with a UART behind it is kept.
+for t in "${KRYPTIK_SYSFS:-/sys}"/class/tty/ttyS*; do
+    [ "$(cat "$t/type" 2>/dev/null)" = 0 ] && [ "$(cat "$t/console" 2>/dev/null)" = Y ] || continue
+    echo N > "$t/console" 2>/dev/null || true
+done
+
 [ -r /etc/hostname ] && hostname "$(cat /etc/hostname)" || true
 
 # The only names the /etc upper layer may carry: accounts, identity, clock, zone 0's resolver.
