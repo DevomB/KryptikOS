@@ -93,16 +93,18 @@ commit_slot() {   # commit_slot <slot>: make BOOTX64.EFI this slot's kernel
 }
 
 # However a trial ends: a stale slot entry would outrank BOOTX64.EFI at every cold boot,
-# and the committed slot's own entry is a second way to it should that file be lost.
+# and the committed slot's own entry, in the place Kryptik's had in the boot order, is a
+# second way to it should that file be lost.
 # It runs before the trial record is removed or set aside: while that stands
 # kryptik-update arms nothing, so no BootNext an apply has just set is forgotten here.
 forget_entries() {   # forget_entries COMMITTED-SLOT
-    if ! kryptik-efiboot forget >/dev/null 2>&1; then
-        say "the firmware's Kryptik entries could not be removed; its own boot order may not name the committed slot"
-        return 1
-    fi
-    kryptik-efiboot ensure "$1" >/dev/null 2>&1 \
-        || say "slot $1 has no firmware entry of its own; BOOTX64.EFI is the only way to it"
+    kryptik-efiboot keep "$1" >/dev/null 2>&1
+    case $? in
+        0) ;;
+        3) say "slot $1 has no firmware entry of its own; BOOTX64.EFI is the only way to it" ;;
+        *) say "the firmware's Kryptik entries could not be removed; its own boot order may not name the committed slot"
+           return 1 ;;
+    esac
     return 0
 }
 
