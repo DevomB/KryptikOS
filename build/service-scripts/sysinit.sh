@@ -245,7 +245,10 @@ if [ -d /usr/lib/kryptik/sysctl.d ]; then
         sysctl -p "$f" >/dev/null || echo "sysinit: sysctl -p $f reported errors" >&2
     done
 fi
-# Before the first login prompt: microcode the kernel refused is named there.
+# Before the first login prompt: microcode the kernel refused is named there, and so is a kernel
+# the firmware did not check.
 . /usr/libexec/kryptik/microcode-notice.sh
 microcode_notice || true
+. /usr/libexec/kryptik/secureboot-notice.sh
+secureboot_notice || true
 echo "sysinit: complete"

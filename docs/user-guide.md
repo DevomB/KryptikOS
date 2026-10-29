@@ -115,6 +115,11 @@ suspended first.
 
 The medium says which it got above its shell (`Secure Boot is on` or
 `off`), and as `KRYPTIK_SMOKE: secureboot=1` or `=0` on a serial console.
+The installed system says it on every login prompt while the firmware does
+not check its kernel: with Secure Boot off, or with the firmware in setup
+mode, where any program running as root can enrol keys of its own (a
+`kryptik secure boot:` line). A development build says that is expected of
+it, and a release names the step that turns it on.
 
 **AMD processors.** Update the machine's firmware (BIOS) first. With a
 firmware older than AMD's 2025 fix for microcode signatures, the kernel loads
