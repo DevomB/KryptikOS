@@ -45,3 +45,7 @@ images = "browser toolkit"
 [desktop]
 # Never here, where unknown links open: no page may keep the session unlocked (docs/design/laptop.md).
 hold_awake = false
+
+[clock]
+# UTC here, where unknown pages run: a time zone tells them where the user is.
+local = false

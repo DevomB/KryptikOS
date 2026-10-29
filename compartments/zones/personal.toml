@@ -40,3 +40,7 @@ images = "browser toolkit"
 # Video in the browser: a window of this zone may hold off the lock and the blanking while it is
 # shown and has the keyboard, for four hours from the last key or button (docs/design/laptop.md).
 hold_awake = true
+
+[clock]
+# Zone 0's time zone, as it is when the zone starts; a zone without this line keeps UTC.
+local = true

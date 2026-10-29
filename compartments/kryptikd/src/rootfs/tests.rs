@@ -81,6 +81,17 @@ fn etc_view_excludes_secrets() {
 }
 
 #[test]
+fn a_zones_localtime_leads_only_to_a_zone_file() {
+    let ok = |p: &str| localtime_target(std::path::Path::new(p), true);
+    assert_eq!(ok("/usr/share/zoneinfo/Europe/Berlin").as_deref(), Some("/usr/share/zoneinfo/Europe/Berlin"));
+    assert_eq!(ok("/usr/share/zoneinfo/UTC").as_deref(), Some("/usr/share/zoneinfo/UTC"));
+    for p in ["/usr/share/zoneinfo", "/usr/share/zoneinfo2/Europe/Berlin", "/etc/localtime", "/etc/shadow", "/home/x/zone", "zoneinfo/UTC"] {
+        assert_eq!(ok(p), None, "{p}");
+    }
+    assert_eq!(localtime_target(std::path::Path::new("/usr/share/zoneinfo/zone.tab"), false), None, "no TZif file");
+}
+
+#[test]
 fn proc_hides_host_activity() {
     // What times keystrokes in other zones, and what shows which encrypted zones are open.
     for f in ["interrupts", "stat", "loadavg", "partitions", "diskstats", "vmstat", "zoneinfo", "buddyinfo"] {

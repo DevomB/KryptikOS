@@ -528,7 +528,9 @@ so at any scale but 1 they look soft.
 `kryptik timezone list berlin` those whose name holds a word, and
 `kryptik timezone Europe/Berlin`, as root, uses one now and at every boot;
 `kryptik timezone` names the one in force. On the medium it lasts until
-shutdown. Zones keep UTC.
+shutdown. `personal`, `work` and `dev` take it when they start, as their
+files say (`[clock] local = true`); `untrusted`, whose pages could read
+where you are from it, and `vault` keep UTC.
 
 **USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
 one in opens a window of the chrome that names each partition by what the
@@ -766,8 +768,8 @@ leaves out serial numbers, hardware addresses and UUIDs.
   [status](status.md#known-gaps), type nothing at all.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
-- Zones keep UTC whatever time zone zone 0 has: the times a zone's programs
-  show, the pages Firefox shows among them, read in UTC.
+- A zone takes zone 0's time zone when it starts, so one already running
+  keeps the old one until it is stopped and started again.
 - A program in a zone cannot make its window fullscreen; Alt+e does, and
   the window then sits below a bar in its zone's colour that names the
   zone. Other windows show their zone by border colour alone, and the

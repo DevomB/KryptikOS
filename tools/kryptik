@@ -83,7 +83,8 @@ USAGE:
     $PROG timezone list [WORD]      the time zones, or those whose name holds
                                     WORD, or a country's by its two letters (DE)
     $PROG timezone NAME             use that zone, as Europe/Berlin (root): zone
-                                    0's clock now and at every boot; zones keep UTC
+                                    0's clock now and at every boot; a zone whose
+                                    file says [clock] local takes it as it starts
 
 OPTIONS:
     --zones DIR           override the zone directory (default: $ZONES_DIR)
@@ -549,7 +550,7 @@ cmd_timezone() {
     if grep -qs '^media=.' /run/kryptik/boot-identity; then
         echo "time zone $1, until this medium is shut down: ${now}"
     else
-        echo "time zone $1: ${now} now, and from every boot. Zones keep UTC."
+        echo "time zone $1: ${now} now, and from every boot; a zone whose file says [clock] local takes it as it starts, and the rest keep UTC."
     fi
 }
 

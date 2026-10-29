@@ -431,6 +431,38 @@ fn hold_awake_is_off_unless_the_file_says_so() {
     assert!(format!("{err}").contains("hold the screen awake"), "got: {err}");
 }
 
+#[test]
+fn clock_local_is_off_unless_the_file_says_so() {
+    let with = |v: &str| VAULT.replace("[ui]", &format!("[clock]\nlocal = {v}\n[ui]"));
+    assert!(!Zone::from_str(VAULT).unwrap().clock_local, "no [clock], UTC");
+    assert!(Zone::from_str(&with("true")).unwrap().clock_local);
+    assert!(!Zone::from_str(&with("false")).unwrap().clock_local);
+    for bad in ["yes", "1", "\"Europe/Berlin\""] {
+        assert!(Zone::from_str(&with(bad)).is_err(), "{bad:?}");
+    }
+    let nic = with("true").replace("mode = \"none\"", "mode = \"nic\"");
+    let err = Zone::from_str(&nic).unwrap_err();
+    assert!(format!("{err}").contains("keeps UTC"), "got: {err}");
+}
+
+/// The user's own zones show zone 0's time zone; untrusted, whose pages would read where its user
+/// is from it, keeps UTC, as do vault and the net zone.
+#[test]
+fn the_shipped_zones_on_local_time() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zones");
+    let mut local: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("toml"))
+        .map(|p| Zone::from_file(&p).expect("a shipped zone parses"))
+        .filter(|z| z.clock_local)
+        .map(|z| z.name)
+        .collect();
+    local.sort();
+    assert_eq!(local, ["dev", "personal", "work"]);
+}
+
 /// Video in the user's own zones may hold the screen awake; untrusted, where unknown links open,
 /// never; nor a zone without the browser, which would have nothing to hold it with.
 #[test]
