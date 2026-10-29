@@ -238,6 +238,70 @@ pub fn sleep() -> Result<(), String> {
         .map_err(|e| format!("/sys/power/state: {e}"))
 }
 
+/// The charge, in percent, at or under which a battery running down powers the machine off
+/// (power.sh's CRITICAL).
+pub const CRITICAL: u64 = 3;
+
+fn attr(dir: &Path, name: &str) -> Option<String> {
+    fs::read_to_string(dir.join(name)).ok().map(|s| s.trim().to_string())
+}
+
+/// A battery's charge in percent: its capacity, or the energy or the charge it holds against
+/// what it holds full.
+fn percent(bat: &Path) -> Option<u64> {
+    if let Some(c) = attr(bat, "capacity").filter(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit())) {
+        return c.parse().ok();
+    }
+    ["energy", "charge"].iter().find_map(|k| {
+        let now = attr(bat, &format!("{k}_now"))?.parse::<u64>().ok()?;
+        let full = attr(bat, &format!("{k}_full"))?.parse::<u64>().ok().filter(|&f| f > 0)?;
+        Some((now.saturating_mul(100) / full).min(100))
+    })
+}
+
+/// Whether the battery is critical as power.sh judges it, from what `sys` says: the fullest of
+/// the machine's own batteries (not a mouse's, scope Device) at or under CRITICAL, and running
+/// down: one says it discharges, or none says anything and no adapter is online. power.sh waits
+/// on the state partition while it is suspended, as anything started then does, so the daemon
+/// keeps the rule meanwhile; the two must agree.
+pub fn critical_in(sys: &Path) -> bool {
+    let Ok(rd) = fs::read_dir(sys.join("class/power_supply")) else { return false };
+    let all: Vec<(PathBuf, String)> = rd.flatten().filter_map(|e| Some((e.path(), attr(&e.path(), "type")?))).collect();
+    let mains = all.iter().any(|(d, t)| matches!(t.as_str(), "Mains" | "USB") && attr(d, "online").as_deref() == Some("1"));
+    let bats: Vec<&PathBuf> = all
+        .iter()
+        .filter(|(d, t)| t == "Battery" && attr(d, "scope").as_deref() != Some("Device") && attr(d, "present").is_none_or(|p| p == "1"))
+        .map(|(d, _)| d)
+        .collect();
+    let Some(charge) = bats.iter().filter_map(|d| percent(d)).max() else { return false };
+    let said: Vec<String> = bats.iter().filter_map(|d| attr(d, "status")).collect();
+    let draining = said.iter().any(|s| s == "Discharging")
+        || (!said.iter().any(|s| matches!(s.as_str(), "Charging" | "Full" | "Not charging")) && !mains);
+    draining && charge <= CRITICAL
+}
+
+pub fn critical() -> bool {
+    critical_in(Path::new("/sys"))
+}
+
+/// One look at the battery while the state partition is suspended, after `low` critical looks
+/// in a row: the count now, and whether to power off. Twice running, as power.sh has it, so one
+/// odd reading does not end the session.
+pub fn sealed_look(low: u32, critical: bool) -> (u32, bool) {
+    let low = if critical { low + 1 } else { 0 };
+    (low, low >= 2)
+}
+
+/// Off at once, the battery running out with the state partition suspended. Everything was
+/// written out before the seal, nothing can be written to the partition now, and a sync, or
+/// the shutdown that would stop the zones first, would wait on it for good. Returns only with
+/// why the kernel refused.
+pub fn power_off() -> std::io::Error {
+    // SAFETY: reboot takes a command alone, and RB_POWER_OFF does not return when it works.
+    unsafe { libc::reboot(libc::RB_POWER_OFF) };
+    std::io::Error::last_os_error()
+}
+
 #[derive(Debug)]
 pub enum ResumeError {
     /// cryptsetup exited 2: no keyslot took the passphrase.

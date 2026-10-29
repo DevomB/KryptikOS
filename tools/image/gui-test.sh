@@ -70,7 +70,7 @@ install_disk gui-install "$USB" --vars clean && green "installed" || { red "inst
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"
 rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_HEAD" "$SHOT_POPUP" "$SHOT_LOCKED"
-start_vm gui-p2 --net user --gpu --second-head --mem 3072
+start_vm gui-p2 --net user --gpu --second-head --touch --mem 3072
 DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} ${TPASS} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \
@@ -116,6 +116,8 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
     "expect:GT POINTER-ZONE0" "pointer:-4000,-4000" "pointer:120,120" \
     "expect:GT POINTER-UNTRUSTED" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT TOUCH-HOVER-ZONE0" "pointer:4000,0" "pointer:-80,0" "pointer:-1,0" \
+    "expect:GT TOUCH-UNTRUSTED" "touch:250,500" \
     "expect:GT SCREENSHOT-POPUP" "sleep:2" "screendump:${SHOT_POPUP}" \
     "expect:GT KEY-MENU-POPUP" "key:alt+p" \
     "expect:GT KEY-FOCUS-POPUP" "key:alt+j" \
@@ -125,6 +127,7 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-WAKE-BLANK" "key:shift" \
     "expect:GT KEY-FOCUS-HOLD" "key:alt+j" \
     "expect:GT LOCK-TYPE-HOLD" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-SUSPEND" "${PW_KEYS[@]}" "key:ret" \
@@ -175,7 +178,7 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             second-head-appears chrome-follows-head second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up browser-key-brings-forward browser-front-only-the-users browser-front-request browser-key-launches \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
-            idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
+            idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again blank-without-lock key-wakes-without-lock \
             zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
             chrome-names-hold idle-lock-heeds-hold chrome-hold-cleared \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
@@ -183,7 +186,7 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             second-head-scale-chosen zone-sees-heads-unnamed \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group seat-is-dwls dwl-confined-to-its-files \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
-            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name zone-fractional-scale compositor-socket-unreached \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name touch-picks-window touch-presses-window zone-fractional-scale compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
             zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key marks-fullscreen zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do

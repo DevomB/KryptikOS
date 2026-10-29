@@ -21,6 +21,8 @@
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
+#   GT TOUCH-HOVER-ZONE0                            move the pointer right, onto zone 0's window
+#   GT TOUCH-UNTRUSTED                              tap the screen's left half (the newest window)
 #   GT SCREENSHOT-POPUP                             take a screenshot
 #   GT KEY-MENU-POPUP                               press Alt+p (the chrome menu)
 #   GT KEY-FOCUS-POPUP                              press Alt+j
@@ -29,6 +31,7 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT KEY-WAKE-BLANK                               press Shift (screens off, no lock)
 #   GT KEY-FOCUS-HOLD                               press Alt+j
 #   GT LOCK-TYPE-HOLD                               type the user's password and Enter
 #   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
@@ -1184,6 +1187,50 @@ if since_mark cursor untrusted | grep -q 'asked for the text cursor by name' && 
 else
     fail "zone-cursor-by-name" "$(since_mark cursor untrusted | tail -4 | tr '\n' ' ')"
 fi
+# --- a touchscreen drives the pointer -------------------------------------------------------
+# dwl takes a touchscreen as the pointer, so a tap is a click: it gives a window the keyboard as
+# a click does, and zones are offered no touch. The VM's touchscreen is QEMU's virtio-multitouch
+# (run-ovmf.sh --touch). untrusted's window maps beside zone 0's, unasked, where dwl puts the
+# newest: the screen's left half, which the host taps.
+stop_zone untrusted
+as_user "/usr/libexec/kryptik/wlprobe cursor 40" > "$LOG/touch-zone0.out" 2>&1 &
+touch0=$!
+wait_for 20 grep -q committed "$LOG/touch-zone0.out"
+wait_for 10 grep -qx 'zone=0' "$RT/kryptik/focus"
+mark touch untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 30" > "$LOG/launch-touch.out" 2>&1
+wait_for 20 probe_committed touch
+sleep 2
+# The pointer rests on zone 0's window, the right half, when the tap comes: the press must
+# reach the window tapped, not the one under the pointer. zone 0's probe says each entry.
+entered="$(grep -c 'set a ' "$LOG/touch-zone0.out")"
+zone0_entered() { [[ "$(grep -c 'set a ' "$LOG/touch-zone0.out")" -gt "$entered" ]]; }
+echo "GT TOUCH-HOVER-ZONE0"
+wait_for 10 zone0_entered
+hovered="$(grep -c 'set a ' "$LOG/touch-zone0.out")"
+touch_before="$(grep '^zone=' "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT TOUCH-UNTRUSTED"
+if ! grep -q 'Name="QEMU Virtio MultiTouch"' /proc/bus/input/devices; then
+    fail "touch-picks-window" "no touchscreen in this guest: $(grep '^N: ' /proc/bus/input/devices | tr '\n' ' ')"
+elif [[ "$touch_before" != "zone=0" ]]; then
+    fail "touch-picks-window" "zone 0's window did not have the keyboard before the tap: ${touch_before:-no focus record}"
+elif wait_for 10 grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
+    pass "touch-picks-window" "a tap on untrusted's window gave it the keyboard, as a click does"
+else
+    fail "touch-picks-window" "after the tap: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark touch untrusted | tail -2 | tr '\n' ' ')"
+fi
+touch_pressed() { since_mark touch untrusted | grep -q 'pointer button 272 released'; }
+if [[ "$hovered" -le "$entered" ]]; then
+    fail "touch-presses-window" "the pointer never came onto zone 0's window before the tap, so nothing was shown: $(tail -3 "$LOG/touch-zone0.out" | tr '\n' ' ')"
+elif ! wait_for 10 touch_pressed; then
+    fail "touch-presses-window" "untrusted's window was sent no press and release: $(since_mark touch untrusted | tail -3 | tr '\n' ' '); zone 0's: $(grep 'pointer button' "$LOG/touch-zone0.out" | tr '\n' ' ')"
+elif grep -q 'pointer button' "$LOG/touch-zone0.out"; then
+    fail "touch-presses-window" "the tap's button also went to zone 0's window, where the pointer rested: $(grep 'pointer button' "$LOG/touch-zone0.out" | tr '\n' ' ')"
+else
+    pass "touch-presses-window" "the tap's press and release went to untrusted's window, and none to zone 0's, under the pointer before"
+fi
+pkill -u "$USER_NAME" -f 'wlprobe cursor 40' 2>/dev/null; wait "$touch0" 2>/dev/null
+
 # --- a zone's window hears the scale it is shown at ------------------------------------------
 # wp_fractional_scale_v1 through the proxy: the compositor tells each window its output's scale,
 # in 120ths, so a browser draws text sharp at 1.5 instead of being scaled down from 2. This
@@ -1403,6 +1450,31 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+# With lock-idle 0 the chrome starts a watcher that never locks: the screens still go off --blank
+# seconds after the last input, and the first key turns them on again. --idle 0 takes nothing
+# else: no --blank, a --blank of 0, or a --sleep, which is asked of a lock, is refused.
+bad_args=""
+for a in "--idle 0" "--idle 0 --blank 0" "--idle 0 --blank 4 --sleep 5"; do
+    as_user "/usr/bin/kryptik-lock $a" > /dev/null 2>&1; rc=$?
+    [[ "$rc" -eq 2 ]] || bad_args="${bad_args} [${a}: exit ${rc}]"
+done
+as_user "/usr/bin/kryptik-lock --idle 0 --blank 4" > "$LOG/blank-only.out" 2>&1 &
+blank_pid=$!
+blank_said() { grep -q "^kryptik-lock: $1" "$LOG/blank-only.out"; }
+blank_off() { grep -qE '^kryptik-lock: screen [0-9]+ power off$' "$LOG/blank-only.out"; }
+blank_back() { sed -n '/^kryptik-lock: screen [0-9]* power off$/,$p' "$LOG/blank-only.out" | grep -qE '^kryptik-lock: screen [0-9]+ power on$'; }
+if [[ -z "$bad_args" ]] && wait_for 20 blank_said 'screens off' && wait_for 5 blank_off; then
+    pass "blank-without-lock" "with --idle 0 the screens went off 4 s after the last input; --idle 0 without a --blank, or with a --sleep, is refused"
+else
+    fail "blank-without-lock" "accepted:${bad_args:- nothing wrongly}; the watcher: $(tr '\n' ' ' < "$LOG/blank-only.out")"
+fi
+echo "GT KEY-WAKE-BLANK"
+if wait_for 20 blank_back && blank_said 'screens on' && ! grep -qE '^kryptik-lock: (no input for|locked)' "$LOG/blank-only.out"; then
+    pass "key-wakes-without-lock" "a key turned the screens on again, and nothing locked"
+else
+    fail "key-wakes-without-lock" "the watcher: $(tr '\n' ' ' < "$LOG/blank-only.out")"
+fi
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 0 --blank 4' 2>/dev/null; wait "$blank_pid" 2>/dev/null
 
 # --- holding the screen awake ------------------------------------------------------------------
 # A window of a zone whose file says hold_awake keeps the session's idle timers off while it is

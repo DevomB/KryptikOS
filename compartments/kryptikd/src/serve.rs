@@ -1923,6 +1923,8 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
 
 /// How often the login prompt's update notice is checked.
 const NOTICE_EVERY: Duration = Duration::from_secs(3600);
+/// How often the battery is looked at while the state partition is suspended: power.sh's round.
+const SEALED_EVERY: Duration = Duration::from_secs(30);
 
 pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     // First, before anything that could read /etc or /var: a daemon started again while the state
@@ -1977,7 +1979,31 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
     // The login prompt carries what `kryptik update status` says of a stale statement, on the
     // installed system's instance: checked as it starts, then hourly, as days are what count.
     let mut notice_due = (!cfg.developer).then(Instant::now);
+    // From each wake until the passphrase is given, power.sh waits on the state partition, so
+    // its 3% rule is kept here: a laptop the battery's alarm woke, its lid shut, would
+    // otherwise run flat at the prompt. A daemon started again at the prompt looks too.
+    let mut sealed_due = (!cfg.developer && crate::suspend::state_suspended()).then(Instant::now);
+    let mut sealed_low = 0;
     loop {
+        if sealed_due.is_some_and(|due| Instant::now() >= due) {
+            sealed_due = None;
+            // A sleep under way looks again when it ends, the count carried across it: a machine
+            // put back to sleep within 30 s of each wake still powers off.
+            if !crate::suspend::state_suspended() {
+                sealed_low = 0;
+            } else if !jobs.iter().any(|j| j.what == JobKind::Sleep) {
+                let (low, off) = crate::suspend::sealed_look(sealed_low, crate::suspend::critical());
+                sealed_low = low;
+                sealed_due = Some(Instant::now() + SEALED_EVERY);
+                if off {
+                    eprintln!("kryptikd serve: the battery is at {}% or under, the state partition suspended: powering off", crate::suspend::CRITICAL);
+                    let e = crate::suspend::power_off();
+                    // Once: the next look would be refused the same way.
+                    eprintln!("kryptikd serve: the machine did not power off: {e}");
+                    sealed_due = None;
+                }
+            }
+        }
         if notice_due.is_some_and(|due| Instant::now() >= due) {
             // The update state is on the state partition: while that is suspended the notice
             // keeps, and the daemon stays free to answer the screen lock.
@@ -1992,13 +2018,19 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             notice_due = Some(Instant::now() + NOTICE_EVERY);
         }
         reap(&mut pending, &mut jobs, &mut proxies);
+        let mut slept = false;
         jobs.retain_mut(|j| match j.exited {
             Some(st) => {
+                slept |= j.what == JobKind::Sleep;
                 finish_job(j, st);
                 false
             }
             None => true,
         });
+        // Woken or refused, a sleep leaves the state partition suspended.
+        if slept && !cfg.developer {
+            sealed_due = Some(Instant::now());
+        }
 
         // fds[0] is the listener, then one per launch awaiting readiness; timeout: nearest deadline.
         let mut fds: Vec<libc::pollfd> = vec![libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
@@ -2013,7 +2045,7 @@ pub fn cmd_serve(zones_dir: &Path, args: &[String]) -> ExitCode {
             let left = p.deadline().saturating_duration_since(now).as_millis() as i32;
             timeout = if timeout < 0 { left } else { timeout.min(left) };
         }
-        if let Some(due) = notice_due {
+        for due in [notice_due, sealed_due].into_iter().flatten() {
             let left = due.saturating_duration_since(now).as_millis().min(i32::MAX as u128) as i32;
             timeout = if timeout < 0 { left } else { timeout.min(left) };
         }

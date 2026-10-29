@@ -40,6 +40,12 @@ printf '\006\000\000\000\001' > "$W/sys/firmware/efi/efivars/SecureBoot-8be4df61
 printf '\006\000\000\000\000' > "$W/sys/firmware/efi/efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c"
 put sys/kernel/security/lockdown 'none integrity [confidentiality]'
 put sys/class/tpm/tpm0/tpm_version_major 2
+mkdir -p "$W/sys/class/tpm/tpm0/device" "$W/sys/bus/platform/drivers/tpm_tis"
+ln -s "$W/sys/bus/platform/drivers/tpm_tis" "$W/sys/class/tpm/tpm0/device/driver"
+put sys/class/misc/hw_random/rng_current tpm-rng-0
+put sys/devices/system/cpu/cpufreq/policy0/scaling_driver intel_pstate
+put sys/devices/system/cpu/cpufreq/policy0/scaling_governor powersave
+put sys/devices/system/cpu/cpufreq/policy0/energy_performance_preference balance_power
 for n in 0 1; do
     printf 'processor\t: %s\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 140\nmodel name\t: 11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz\nstepping\t: 1\nmicrocode\t: 0xa4\nflags\t\t: fpu nx smep smap umip ibt rdrand aes\n\n' "$n"
 done > "$W/proc/cpuinfo"
@@ -151,7 +157,8 @@ want "whether its state is kept"            '^state: tmpfs$'
 want "the maker and the model"              '^product_version: ThinkPad X1 Carbon Gen 9$'
 want "Secure Boot, read from the firmware"  '^secure boot: on$'
 want "the lockdown in force"                '^lockdown: confidentiality$'
-want "the TPM"                              '^tpm: version 2$'
+want "the TPM, its driver and the random number generator" '^tpm: version 2, driver tpm_tis; hwrng: tpm-rng-0$'
+want "the clock's driver, governor and energy hint" '^cpufreq: intel_pstate, governor powersave, epp balance_power, amd-pstate -$'
 want "the processor"                        '^vendor, family/model/stepping: GenuineIntel, 6/140/1$'
 want "its microcode, and what loaded it"    '^microcode: 0xa4$'
 want "the loader's own line"            '^microcode: Current revision: 0x000000a4$'
@@ -443,6 +450,30 @@ lap "its sensor, by its ACPI ID"             '^camera acpi OVTI01A0:00 sensor$'
 lap "the sensor's power controller"          '^camera acpi INT3472:01 sensor power$'
 lap "and the Visual Sensing Controller"      '^camera acpi INTC1009:00 visual sensing controller$'
 nolap "not a sensor the firmware calls absent" 'OVTI02C1'
+lap "no wakeup interrupt where the kernel keeps none" '^woken by irq: -$'
+nolap "and no AMD IOMMU line without an IVRS table" '^amd iommu: '
+
+echo "-- what ended a sleep, and AMD's sleep needs with the IOMMU on"
+put sys/power/pm_wakeup_irq 9
+put sys/class/wakeup/wakeup0/name PNP0C0D:00
+put sys/class/wakeup/wakeup0/event_count 2
+# A wakeup_count the kernel keeps only after the handshake kryptikd does not make.
+put sys/class/wakeup/wakeup0/wakeup_count 0
+put sys/class/wakeup/wakeup1/name alarmtimer.0.auto
+put sys/class/wakeup/wakeup1/event_count 0
+mkdir -p "$W/sys/firmware/acpi/tables"
+{ head -c 36 /dev/zero; printf '\002\000\000\000'; } > "$W/sys/firmware/acpi/tables/IVRS"
+put sys/bus/acpi/devices/MSFT0201:00/status 15
+laptop_now
+lap "the interrupt that ended the last sleep"   '^woken by irq: 9$'
+lap "a wakeup source that fired, by its events" '^wakeup source PNP0C0D:00 events 2$'
+nolap "not one that never did"                  '^wakeup source alarmtimer'
+lap "MSFT0201 and pre-boot DMA protection, read from the firmware" '^amd iommu: msft0201 present, pre-boot dma protection on, msft0201 in ivrs no$'
+# The protection off, MSFT0201 gone from ACPI's devices and named in the IVRS instead.
+{ head -c 36 /dev/zero; printf '\000\000\000\000'; printf 'IVHD MSFT0201'; } > "$W/sys/firmware/acpi/tables/IVRS"
+rm -rf "$W/sys/bus/acpi/devices/MSFT0201:00"
+laptop_now
+lap "each taken away, and MSFT0201 named in the IVRS" '^amd iommu: msft0201 absent, pre-boot dma protection off, msft0201 in ivrs yes$'
 
 echo
 echo "${PASS} passed, ${FAIL} failed"

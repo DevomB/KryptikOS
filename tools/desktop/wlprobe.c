@@ -35,7 +35,8 @@
  *                             its middle: drawn, it covers the whole screen.
  *                             Says when the window, and when the cursor image,
  *                             enters an output: the second only if the
- *                             compositor took the image. With shape, also ask
+ *                             compositor took the image, and each pointer
+ *                             button it is sent. With shape, also ask
  *                             for the text cursor by name (wp_cursor_shape_v1)
  *   wlprobe animate SECONDS   as oversize 0, and once drawn commit again on
  *                             every frame callback for SECONDS; then say how
@@ -616,6 +617,10 @@ static int handle_one(void)
 		draw_popup();
 	} else if (cursor && object == pointer_id && opcode == 0) {
 		set_cursor(get32(body));                /* wl_pointer.enter(serial, surface, x, y) */
+	} else if (cursor && object == pointer_id && opcode == 3) {
+		/* wl_pointer.button(serial, time, button, state) */
+		printf("pointer button %u %s\n", get32(body + 8), get32(body + 12) ? "pressed" : "released");
+		fflush(stdout);
 	} else if (cursor && opcode == 0 && (object == SURFACE || (cursor_surf && object == cursor_surf))) {
 		/* wl_surface.enter(output) */
 		printf("%s entered an output\n", object == SURFACE ? "the window" : "the cursor image");
@@ -853,14 +858,20 @@ int main(int argc, char **argv)
 	const char *disp = getenv("WAYLAND_DISPLAY");
 	const char *rt = getenv("XDG_RUNTIME_DIR");
 	char path[256];
+	int plen;
 	if (!disp || !*disp) disp = "wayland-0";
-	if (disp[0] == '/') snprintf(path, sizeof path, "%s", disp);
-	else if (rt && *rt) snprintf(path, sizeof path, "%s/%s", rt, disp);
+	if (disp[0] == '/') plen = snprintf(path, sizeof path, "%s", disp);
+	else if (rt && *rt) plen = snprintf(path, sizeof path, "%s/%s", rt, disp);
 	else { fprintf(stderr, "wlprobe: WAYLAND_DISPLAY is relative and XDG_RUNTIME_DIR is unset\n"); return 1; }
 
-	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	struct sockaddr_un sa; memset(&sa, 0, sizeof sa); sa.sun_family = AF_UNIX;
-	snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
+	/* Cut short, the path would name another socket: refused, as libwayland refuses it. */
+	if (plen < 0 || (size_t)plen >= sizeof sa.sun_path) {
+		fprintf(stderr, "wlprobe: the socket path is over %zu bytes\n", sizeof sa.sun_path - 1);
+		return 1;
+	}
+	memcpy(sa.sun_path, path, (size_t)plen + 1);
+	sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (connect(sock, (struct sockaddr *)&sa, sizeof sa) < 0) { fprintf(stderr, "wlprobe: connect %s: %s\n", path, strerror(errno)); return 1; }
 	printf("connected %s\n", path);
 
