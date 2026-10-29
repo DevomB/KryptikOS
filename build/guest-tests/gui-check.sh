@@ -50,6 +50,7 @@
 #                                                   type the user's password and Enter
 #   GT HEAD-ON, GT HEAD-OFF                         plug a second monitor in, pull it out
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
+#   GT LOCK-TYPE-HEAD                               type the user's password and Enter
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
 #   GT SCREENSHOT-HEAD                              take a screenshot of the second monitor
 #   GT HEAD-BACK, GT HEAD-OUT                       plug it in again, pull it out again
@@ -1759,6 +1760,26 @@ else
     fail "havoc-draws-at-scale" "$(grep -E 'preferred_scale|set_destination|create_buffer' "$LOG/havoc-scale.out" | tail -4 | tr '\n' ' ')"
 fi
 wait "$hscale" 2>/dev/null
+# The lock covers both heads, and on the scale-2 one draws its picture twice the surface's size,
+# shown at that size through a viewport, so its lettering is sharp. Only these lines of
+# libwayland's log are kept: the rest would hold the keys of the password.
+as_user "WAYLAND_DEBUG=client /usr/bin/kryptik-lock" 2>&1 \
+    | grep --line-buffered -E 'set_destination|create_buffer|preferred_scale|^kryptik-lock: ' > "$LOG/lock-scale.out" &
+lock_scaled() {
+    local d
+    while read -r d; do
+        [[ "$d" =~ \(([0-9]+),\ ([0-9]+)\) ]] || continue
+        grep -qE "create_buffer\(new id wl_buffer@[0-9]+, 0, $((BASH_REMATCH[1] * 2)), $((BASH_REMATCH[2] * 2)), " "$LOG/lock-scale.out" && return 0
+    done < <(grep -o 'set_destination([0-9]*, [0-9]*)' "$LOG/lock-scale.out" | sort -u)
+    return 1
+}
+if wait_for 20 lock_said "$LOG/lock-scale.out" locked && wait_for 15 lock_scaled; then
+    pass "lock-draws-at-scale" "on the scale-2 head the lock drew $(grep -o 'create_buffer([^)]*)' "$LOG/lock-scale.out" | sort -u | tr '\n' ' ')for $(grep -o 'set_destination([^)]*)' "$LOG/lock-scale.out" | sort -u | tr '\n' ' ')"
+else
+    fail "lock-draws-at-scale" "$(tail -6 "$LOG/lock-scale.out" | tr '\n' ' ')"
+fi
+echo "GT LOCK-TYPE-HEAD"
+wait_for 30 lock_said "$LOG/lock-scale.out" unlocked || fail "lock-scale-unlocks" "$(grep '^kryptik-lock: ' "$LOG/lock-scale.out" | tail -3 | tr '\n' ' ')"
 # What a zone is told of the monitors: both, each named by its number with no make or model,
 # as the zone's proxy rewrites them, and the second at the scale chosen for it.
 mark outs untrusted

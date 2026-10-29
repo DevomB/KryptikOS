@@ -50,6 +50,8 @@ scan() {
 }
 scan "$W/lock" "$WP/staging/ext-session-lock/ext-session-lock-v1.xml" \
     "$WP/staging/ext-idle-notify/ext-idle-notify-v1.xml" \
+    "$WP/staging/fractional-scale/fractional-scale-v1.xml" \
+    "$WP/stable/viewporter/viewporter.xml" \
     "$DWL/protocols/wlr-output-power-management-unstable-v1.xml"
 scan "$W/display" "$WLR/protocol/wlr-output-management-unstable-v1.xml"
 
