@@ -124,6 +124,17 @@ older EPYC models: they keep the firmware's own microcode, the kernel log
 says `No sha256 digest for patch ID`, and every login prompt says to update
 the firmware.
 
+Leave the firmware's IOMMU, its DMA protection and Pluton on, as they come.
+- Without the IOMMU, every device can reach all of memory, and nothing at
+  the login prompt says so.
+- With the IOMMU on, AMD's own sleep checker holds the Ryzen AI 300 and
+  Ryzen AI Max processors to two things:
+  - the firmware's ACPI device `MSFT0201`;
+  - pre-boot DMA protection, or `MSFT0201` named in the firmware's IVRS
+    table.
+
+  A firmware setting can take either away.
+
 A firmware that also keeps Microsoft's certificates in `db` boots whatever
 Microsoft signs, so someone with the machine in hand can start such a system
 and have it ask for the state passphrase as Kryptik does. Taking Microsoft's
@@ -300,7 +311,10 @@ The menu shows the zone's glyph and label and the window's title, which the
 zone's proxy prefixes with the zone's name, as `[untrusted] ...`. A zone's
 window that opens while another window has the keyboard does not take it,
 nor does it get it when that window closes: Alt+j, Alt+k, a click or the
-pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
+pointer moving onto it moves the keyboard there. A touchscreen works as the
+pointer, on the built-in screen when there is one: a tap is a click and a
+drag drags with one finger, and zones are given pointer events only, not
+touch. Keys (Alt is the modifier):
 
 | keys | what |
 | --- | --- |
@@ -325,6 +339,8 @@ pointer moving onto it moves the keyboard there. Keys (Alt is the modifier):
 Alt+Shift+l locks the screen. Nothing shows but the word LOCKED and a mark
 for each character typed, and every key goes to the lock, so no window, zone
 0's or a zone's, sees the password; Ctrl+Alt+F2 does nothing while locked.
+No window gets the mouse either, not even one a button was held down on as
+the lock came.
 The volume, mute, microphone and brightness keys still work under the lock.
 Type the login password and Enter. After a wrong one the lock shows WRONG,
 and the next try waits 2 seconds, doubling with each wrong one in a row up
@@ -464,6 +480,26 @@ network. A new passphrase keeps it so; forget the network to stop.
 `kryptik wifi list` names the saved networks, and `kryptik wifi forget SSID`
 removes one.
 
+**Your country's radio rules.** Nothing sets the country the radio's rules
+come from, so until it joins a network that names one, the radio keeps the
+world's rules:
+- the 6 GHz band is off, so a network on 6 GHz alone is never seen;
+- on 5 GHz it only listens, and joins a network there once it has heard it.
+
+The rules go back to the world's at every disconnect. For your own country's
+rules until the next boot:
+1. At the administration login, run `su`.
+2. Run `/usr/sbin/iw reg set XX`, where `XX` is your country's two letters
+   (`US`, `DE`).
+3. `/usr/sbin/iw reg get` shows the rules in force.
+
+A radio whose firmware keeps its own rules, as Intel's do, follows those
+instead, and `/usr/sbin/iw reg get` names it as self-managed.
+
+A Wi-Fi 7 network that offers only SAE-EXT-KEY, the WPA3 mode Wi-Fi 7's
+multi-link operation uses, is not joined. Have the router offer WPA3 (SAE)
+or WPA2 beside it.
+
 **The local network.** Every zone with a network reaches the internet through
 the net zone. The network the machine itself is on, with its router, its
 printers and the page a hotel's or café's Wi-Fi asks you to log in on, is
@@ -475,10 +511,12 @@ SCALE` draws everything on that monitor SCALE times as large, from 0.5 to 4,
 1.5 say on a laptop's high-resolution panel, and `kryptik display NAME SCALE
 X Y` also puts its top left corner at X,Y. The choice is kept for every
 login and made again whenever the monitor is plugged in; NAME `*` stands for
-every monitor no other line names, and `kryptik display NAME auto` gives the
-monitor back its own: 2 for a built-in panel of 192 dpi or more, 1 for the
-rest. Zones are told the scale rounded up to a whole number, and draw that
-much larger.
+every monitor no other line names. `kryptik display NAME auto` drops that
+monitor's line, so it takes the `*` line if there is one, and otherwise 2 for a
+built-in panel of 192 dpi or more and 1200 lines or more, 1 for the rest. A
+zone's window is told the exact scale, and the browser draws sharp at it.
+Kryptik's terminals, the menu and the lock screen draw at 1 and are enlarged,
+so at any scale but 1 they look soft.
 
 **USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
 one in opens a window of the chrome that names each partition by what the

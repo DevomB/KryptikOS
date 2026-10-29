@@ -87,3 +87,83 @@ fn a_seal_that_left_a_zone_waiting_counts_itself() {
     count_left_waiting(&dir.join("absent").join("left-waiting"));
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A power supply of the kernel's shape under `sys`: a directory with its type and attributes.
+fn supply(sys: &Path, name: &str, kind: &str, attrs: &[(&str, &str)]) {
+    let d = sys.join("class/power_supply").join(name);
+    fs::create_dir_all(&d).unwrap();
+    fs::write(d.join("type"), format!("{kind}\n")).unwrap();
+    for (k, v) in attrs {
+        fs::write(d.join(k), format!("{v}\n")).unwrap();
+    }
+}
+
+fn fresh_sys(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("kryptikd-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+// The cases of tools/tests/power.sh that decide power.sh's critical=: the two must agree.
+#[test]
+fn the_battery_is_critical_as_power_sh_has_it() {
+    let s = fresh_sys("power-none");
+    assert!(!critical_in(&s), "no supply at all, as in a VM");
+    assert!(!critical_in(&s.join("absent")), "no power_supply class");
+
+    let s = fresh_sys("power-low");
+    supply(&s, "AC", "Mains", &[("online", "0")]);
+    supply(&s, "BAT0", "Battery", &[("capacity", "3"), ("status", "Discharging")]);
+    assert!(critical_in(&s), "3% on battery");
+    supply(&s, "BAT1", "Battery", &[("capacity", "60"), ("status", "Discharging")]);
+    assert!(!critical_in(&s), "but not while a second battery is full enough");
+
+    let s = fresh_sys("power-four");
+    supply(&s, "BAT0", "Battery", &[("capacity", "4"), ("status", "Discharging")]);
+    assert!(!critical_in(&s), "4% is not yet");
+
+    let s = fresh_sys("power-weak");
+    supply(&s, "AC", "Mains", &[("online", "1")]);
+    supply(&s, "BAT0", "Battery", &[("capacity", "2"), ("status", "Discharging")]);
+    assert!(critical_in(&s), "plugged in to a charger that gives less than the machine uses, it runs down");
+    supply(&s, "BAT0", "Battery", &[("status", "Charging")]);
+    assert!(!critical_in(&s), "2% charging on mains");
+
+    let s = fresh_sys("power-word");
+    supply(&s, "BAT0", "Battery", &[("capacity", "2"), ("status", "Unknown")]);
+    assert!(critical_in(&s), "no word from the battery and no adapter: it runs down");
+    supply(&s, "ucsi", "USB", &[("online", "1")]);
+    assert!(!critical_in(&s), "no word from the battery, a USB charger online");
+    supply(&s, "BAT0", "Battery", &[("status", "Not charging")]);
+    supply(&s, "ucsi", "USB", &[("online", "0")]);
+    assert!(!critical_in(&s), "one that holds its charge");
+
+    let s = fresh_sys("power-other");
+    supply(&s, "hidpp_battery_0", "Battery", &[("capacity", "1"), ("scope", "Device"), ("status", "Discharging")]);
+    assert!(!critical_in(&s), "a mouse's empty battery is not the machine's");
+    supply(&s, "BAT0", "Battery", &[("capacity", "2"), ("present", "0"), ("status", "Discharging")]);
+    supply(&s, "BAT1", "Battery", &[("capacity", "fail"), ("status", "Discharging")]);
+    assert!(!critical_in(&s), "an absent battery and a bad reading count for nothing");
+
+    let s = fresh_sys("power-energy");
+    supply(&s, "BAT0", "Battery", &[("capacity", "fail"), ("energy_now", "5130000"), ("energy_full", "57000000"), ("status", "Discharging")]);
+    assert!(!critical_in(&s), "with no capacity that reads, the energy against full: 9%");
+    let s = fresh_sys("power-charge");
+    supply(&s, "BAT0", "Battery", &[("charge_now", "120000"), ("charge_full", "4000000"), ("status", "Discharging")]);
+    assert!(critical_in(&s), "or the charge against full: 3%");
+    supply(&s, "BAT0", "Battery", &[("charge_full", "0")]);
+    assert!(!critical_in(&s), "a battery full at nothing gives no charge");
+
+    for tag in ["none", "low", "four", "weak", "word", "other", "energy", "charge"] {
+        let _ = fs::remove_dir_all(std::env::temp_dir().join(format!("kryptikd-power-{tag}-{}", std::process::id())));
+    }
+}
+
+#[test]
+fn critical_twice_running_powers_off() {
+    assert_eq!(sealed_look(0, true), (1, false), "one odd reading does not end the session");
+    assert_eq!(sealed_look(1, true), (2, true), "the second, 30 s on, does");
+    assert_eq!(sealed_look(1, false), (0, false), "a reading above starts the count again");
+    assert_eq!(sealed_look(0, false), (0, false));
+}

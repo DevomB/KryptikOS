@@ -21,6 +21,8 @@
 #   GT CONSENT-CODE 1 NN                            type NN and Enter (the question's code)
 #   GT CONSENT-WAIT 2                               type y and Enter (not the code: refused)
 #   GT POINTER-ZONE0, GT POINTER-UNTRUSTED          move the pointer onto the newest window
+#   GT TOUCH-HOVER-ZONE0                            move the pointer right, onto zone 0's window
+#   GT TOUCH-UNTRUSTED                              tap the screen's left half (the newest window)
 #   GT SCREENSHOT-POPUP                             take a screenshot
 #   GT KEY-MENU-POPUP                               press Alt+p (the chrome menu)
 #   GT KEY-FOCUS-POPUP                              press Alt+j
@@ -28,6 +30,11 @@
 #   GT SCREENSHOT-LOCKED                            take a screenshot
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
+#   GT POINTER-BEFORE-LOCK                          move the pointer onto the newest window
+#   GT LOCKED-CLICK                                 click and turn the wheel, the pointer unmoved
+#   GT LOCK-TYPE-CLICK, GT LOCK-TYPE-DRAG           type the user's password and Enter
+#   GT BUTTON-HOLD                                  press the left button and keep it down
+#   GT LOCKED-DRAG                                  move the pointer, then let the button go
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
 #   GT KEY-FOCUS-HOLD                               press Alt+j
 #   GT LOCK-TYPE-HOLD                               type the user's password and Enter
@@ -1184,6 +1191,50 @@ if since_mark cursor untrusted | grep -q 'asked for the text cursor by name' && 
 else
     fail "zone-cursor-by-name" "$(since_mark cursor untrusted | tail -4 | tr '\n' ' ')"
 fi
+# --- a touchscreen drives the pointer -------------------------------------------------------
+# dwl takes a touchscreen as the pointer, so a tap is a click: it gives a window the keyboard as
+# a click does, and zones are offered no touch. The VM's touchscreen is QEMU's virtio-multitouch
+# (run-ovmf.sh --touch). untrusted's window maps beside zone 0's, unasked, where dwl puts the
+# newest: the screen's left half, which the host taps.
+stop_zone untrusted
+as_user "/usr/libexec/kryptik/wlprobe cursor 40" > "$LOG/touch-zone0.out" 2>&1 &
+touch0=$!
+wait_for 20 grep -q committed "$LOG/touch-zone0.out"
+wait_for 10 grep -qx 'zone=0' "$RT/kryptik/focus"
+mark touch untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 30" > "$LOG/launch-touch.out" 2>&1
+wait_for 20 probe_committed touch
+sleep 2
+# The pointer rests on zone 0's window, the right half, when the tap comes: the press must
+# reach the window tapped, not the one under the pointer. zone 0's probe says each entry.
+entered="$(grep -c 'set a ' "$LOG/touch-zone0.out")"
+zone0_entered() { [[ "$(grep -c 'set a ' "$LOG/touch-zone0.out")" -gt "$entered" ]]; }
+echo "GT TOUCH-HOVER-ZONE0"
+wait_for 10 zone0_entered
+hovered="$(grep -c 'set a ' "$LOG/touch-zone0.out")"
+touch_before="$(grep '^zone=' "$RT/kryptik/focus" 2>/dev/null)"
+echo "GT TOUCH-UNTRUSTED"
+if ! grep -q 'Name="QEMU Virtio MultiTouch"' /proc/bus/input/devices; then
+    fail "touch-picks-window" "no touchscreen in this guest: $(grep '^N: ' /proc/bus/input/devices | tr '\n' ' ')"
+elif [[ "$touch_before" != "zone=0" ]]; then
+    fail "touch-picks-window" "zone 0's window did not have the keyboard before the tap: ${touch_before:-no focus record}"
+elif wait_for 10 grep -qx 'zone=untrusted' "$RT/kryptik/focus"; then
+    pass "touch-picks-window" "a tap on untrusted's window gave it the keyboard, as a click does"
+else
+    fail "touch-picks-window" "after the tap: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(since_mark touch untrusted | tail -2 | tr '\n' ' ')"
+fi
+touch_pressed() { since_mark touch untrusted | grep -q 'pointer button 272 released'; }
+if [[ "$hovered" -le "$entered" ]]; then
+    fail "touch-presses-window" "the pointer never came onto zone 0's window before the tap, so nothing was shown: $(tail -3 "$LOG/touch-zone0.out" | tr '\n' ' ')"
+elif ! wait_for 10 touch_pressed; then
+    fail "touch-presses-window" "untrusted's window was sent no press and release: $(since_mark touch untrusted | tail -3 | tr '\n' ' '); zone 0's: $(grep 'pointer button' "$LOG/touch-zone0.out" | tr '\n' ' ')"
+elif grep -q 'pointer button' "$LOG/touch-zone0.out"; then
+    fail "touch-presses-window" "the tap's button also went to zone 0's window, where the pointer rested: $(grep 'pointer button' "$LOG/touch-zone0.out" | tr '\n' ' ')"
+else
+    pass "touch-presses-window" "the tap's press and release went to untrusted's window, and none to zone 0's, under the pointer before"
+fi
+pkill -u "$USER_NAME" -f 'wlprobe cursor 40' 2>/dev/null; wait "$touch0" 2>/dev/null
+
 # --- a zone's window hears the scale it is shown at ------------------------------------------
 # wp_fractional_scale_v1 through the proxy: the compositor tells each window its output's scale,
 # in 120ths, so a browser draws text sharp at 1.5 instead of being scaled down from 2. This
@@ -1367,6 +1418,48 @@ else
     fail "lock-keeps-keys-from-zone-grab" "the zone's probe: $(since_mark lock2 untrusted | tail -4 | tr '\n' ' '); launch: $(tr '\n' ' ' < "$LOG/launch-lock2.out")"
 fi
 pkill -u "$USER_NAME" -f 'wlprobe oversize 0 300 lock-0' 2>/dev/null; wait "$lock0_pid" 2>/dev/null
+stop_zone untrusted
+# The pointer under the lock: a zone's window under it is sent nothing once the lock is up, not a
+# click or a wheel turn while the pointer has not moved, nor the moves and the release of a button
+# held down into the lock. wlprobe cursor says each pointer event its window is sent.
+mark lockptr untrusted
+launch_plain untrusted "/usr/libexec/kryptik/wlprobe cursor 150" > "$LOG/launch-lockptr.out" 2>&1
+wait_for 20 probe_committed lockptr
+echo "GT POINTER-BEFORE-LOCK"
+ptr_entered() { since_mark lockptr untrusted | grep -q 'set a '; }
+wait_for 20 ptr_entered
+ptr_after() { since_mark "$1" untrusted | grep -cE 'pointer (button|motion|axis)'; }
+lock_said() { grep -q "^kryptik-lock: $2" "$1"; }
+as_user "/usr/bin/kryptik-lock" > "$LOG/lockptr-click.out" 2>&1 &
+wait_for 20 lock_said "$LOG/lockptr-click.out" locked
+mark lockclick untrusted
+echo "GT LOCKED-CLICK"
+sleep 3
+clicked="$(ptr_after lockclick)"
+echo "GT LOCK-TYPE-CLICK"
+wait_for 30 lock_said "$LOG/lockptr-click.out" unlocked
+if ptr_entered && lock_said "$LOG/lockptr-click.out" locked && [[ "$clicked" -eq 0 ]]; then
+    pass "lock-takes-resting-pointer" "a click and a wheel turn under the lock, the pointer unmoved on a zone's window, reached that window not at all"
+else
+    fail "lock-takes-resting-pointer" "pointer events after the lock: ${clicked}; the window: $(since_mark lockptr untrusted | tail -4 | tr '\n' ' '); the lock: $(tr '\n' ' ' < "$LOG/lockptr-click.out")"
+fi
+mark lockhold untrusted
+echo "GT BUTTON-HOLD"
+held() { since_mark lockhold untrusted | grep -q 'pointer button 272 pressed'; }
+wait_for 10 held; held_rc=$?
+as_user "/usr/bin/kryptik-lock" > "$LOG/lockptr-drag.out" 2>&1 &
+wait_for 20 lock_said "$LOG/lockptr-drag.out" locked
+mark lockdrag untrusted
+echo "GT LOCKED-DRAG"
+sleep 3
+dragged="$(ptr_after lockdrag)"
+echo "GT LOCK-TYPE-DRAG"
+wait_for 30 lock_said "$LOG/lockptr-drag.out" unlocked
+if [[ "$held_rc" -eq 0 && "$dragged" -eq 0 ]] && lock_said "$LOG/lockptr-drag.out" locked; then
+    pass "lock-takes-held-pointer" "a button pressed on a zone's window reached it before the lock; its moves and its release under the lock did not"
+else
+    fail "lock-takes-held-pointer" "the press reached the window: $([[ "$held_rc" -eq 0 ]] && echo yes || echo no); pointer events after the lock: ${dragged}; the window: $(since_mark lockhold untrusted | tail -4 | tr '\n' ' ')"
+fi
 stop_zone untrusted
 # Idle, the session locks itself: kryptik-lock --idle, as the chrome starts it, locks after
 # its seconds without input, turns the screens off --blank seconds later and on again at the

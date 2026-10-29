@@ -188,6 +188,52 @@ check("the card goes on the xHCI port with its backend, and comes off with no dr
     ("device_add", {"driver": "usb-audio", "id": "usbsound", "audiodev": "snd2", "bus": "xhci.0"}),
     ("device_del", {"id": "usbsound"})])
 
+print("-- touch: taps the touchscreen on the GPU's first head: a finger down, then lifted")
+sock7 = os.path.join(T, "serial7"); qmp7 = os.path.join(T, "qmp7")
+Guest(sock7, {}).start()
+q7 = Qmp(qmp7, busy=0); q7.start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock7, "--qmp", qmp7, "--timeout", "5", "touch:250,500"]
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("touch: succeeds", rc, 0)
+mt = lambda kind, tracking, axis="x", value=0: {"type": "mtt", "data": {"type": kind, "slot": 0, "tracking-id": tracking, "axis": axis, "value": value}}
+check("the finger goes down at a quarter across and half down, then lifts, both bound to head 0", q7.asked, [
+    ("input-send-event", {"device": "gpu0", "head": 0, "events": [
+        mt("begin", 1), mt("data", 1, "x", 8191), mt("data", 1, "y", 16383),
+        {"type": "btn", "data": {"down": True, "button": "touch"}}]}),
+    ("input-send-event", {"device": "gpu0", "head": 0, "events": [
+        mt("end", -1), {"type": "btn", "data": {"down": False, "button": "touch"}}]})])
+sock8 = os.path.join(T, "serial8")
+Guest(sock8, {}).start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock8, "--qmp", qmp7, "--timeout", "5", "touch:1200,500"]
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("a tap off the screen is refused before QEMU is asked", (rc != 0, len(q7.asked)), (True, 2))
+
+print("-- button: clicks the mouse where the pointer is; button-down: and button-up: hold it and let it go")
+sock9 = os.path.join(T, "serial9"); qmp9 = os.path.join(T, "qmp9")
+Guest(sock9, {}).start()
+q9 = Qmp(qmp9, busy=0); q9.start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock9, "--qmp", qmp9, "--timeout", "5",
+                            "button:left", "button-down:right", "button-up:right", "button:wheel-down"]
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("button:, button-down: and button-up: succeed", rc, 0)
+btn = lambda down, name: ("input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": name}}]})
+check("a click is a press then a release; a hold is the press alone, and its release comes when asked", q9.asked, [
+    btn(True, "left"), btn(False, "left"), btn(True, "right"), btn(False, "right"),
+    btn(True, "wheel-down"), btn(False, "wheel-down")])
+sock10 = os.path.join(T, "serial10")
+Guest(sock10, {}).start()
+argv, sys.argv = sys.argv, ["vm-drive.py", "--serial", sock10, "--qmp", qmp9, "--timeout", "5", "button:side"]
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    rc = vm.main()
+sys.argv = argv
+check("a button not named is refused before QEMU is asked", (rc != 0, len(q9.asked)), (True, 6))
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(0 if FAIL == 0 else 1)
