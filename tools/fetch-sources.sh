@@ -117,6 +117,7 @@ libcap|${V_LIBCAP}|${MIRROR_LIBCAP}/libcap-${V_LIBCAP}.tar.xz|kernel|listing
 shadow|${V_SHADOW}|${MIRROR_GITHUB}/shadow-maint/shadow/releases/download/${V_SHADOW}/shadow-${V_SHADOW}.tar.xz|asc|github
 pkgconf|${V_PKGCONF}|https://distfiles.ariadne.space/pkgconf/pkgconf-${V_PKGCONF}.tar.xz|probe|listing
 iana-etc|${V_IANA_ETC}|${MIRROR_GITHUB}/Mic92/iana-etc/releases/download/${V_IANA_ETC}/iana-etc-${V_IANA_ETC}.tar.gz|sha256|github
+tzdata|${V_TZDATA}|https://data.iana.org/time-zones/releases/tzdata${V_TZDATA}.tar.gz|asc|rule
 less|${V_LESS}|https://www.greenwoodsoftware.com/less/less-${V_LESS}.tar.gz|stem.sig|rule
 groff|${V_GROFF}|${gnu}/groff/groff-${V_GROFF}.tar.gz|gnu|gnu
 util-linux|${V_UTIL_LINUX}|${MIRROR_KERNEL_UTILS}/util-linux/v${V_UTIL_LINUX%.*}/util-linux-${V_UTIL_LINUX}.tar.xz|kernel|vdir

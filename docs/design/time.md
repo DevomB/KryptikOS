@@ -123,6 +123,23 @@ partition could be set by whoever writes that partition: a wider bound lets
 lies through unasked, a shorter interval brings question after question, and
 a moved floor holds the clock wrong.
 
+**Time zone.** Zone 0's is `/etc/localtime`, a link into
+`/usr/share/zoneinfo`, which stage 04 builds from IANA's signed tzdata with
+glibc's `zic`. `kryptik timezone NAME` replaces the link by a rename, so no
+reader finds it missing. The link is on the `/etc` overlay's upper layer, on
+the state partition, which is not authenticated: sysinit keeps a
+`localtime` there only while it is an absolute link, with no `.` or `..`
+in it, to a TZif file in the verified tree, and quarantines anything else,
+a plain file or a relative link among them, as glibc parses the file in
+every process of zone 0's that shows a local time. A relative link resolves
+from the upper layer while sysinit checks it and from `/etc` after, and a
+`..` can climb through `/var`, which is the state partition from then on:
+either could pass the check and lead elsewhere. The worst a writer of that
+partition can choose is another real zone. The time zone changes how a time
+is shown, never the clock or the floor. A zone's `/etc` is kryptikd's and
+has no `localtime`, so a zone reads UTC, and does not learn where its user
+is from it.
+
 ## Tests
 
 `time.rs` unit tests cover every rule above: the floor and the release that
@@ -136,7 +153,11 @@ network and that a malformed claim is refused.
 on. `tools/tests/netzone-time.sh` runs the query and its
 caller against loopback servers five minutes ahead or behind, a day out among
 three, unsynchronised, sending kiss-of-death, not echoing, or silent, under
-every POSIX shell on the host. On the installed system,
+every POSIX shell on the host. `tools/tests/timezone.sh` runs
+`kryptik timezone` against a stand-in zoneinfo tree: the link it makes, the
+names it lists, and the names it refuses with the link left alone. The
+medium's console test sets Europe/Berlin and reads noon UTC in July as
+14 CEST. On the installed system,
 `build/guest-tests/zones-check.sh` sets the clock to 2000 and checks the
 clamp, that a release dated 2099 and signed by a key the anchor does not list
 leaves the floor alone, then that a claim steps the clock, one below the
@@ -150,6 +171,7 @@ recovery to A.
 `compartments/kryptikd/src/time.rs` (`kryptikd time floor | status |
 committed`), `broker.rs`, `consent.rs`, `tools/desktop/kryptik-chrome`,
 `tools/net/sntp-offset.py`, `tools/net/netzone-init.sh`, `rootfs.rs`
-(`time.conf` into the zones' `/etc`), `build/services/time-floor`,
+(`time.conf` into the zones' `/etc`), `build/services/time-floor`, `build/recipes/tzdata.sh`, `tools/kryptik`
+(`timezone`),
 `build/service-scripts/time-floor.sh`, `boot-success.sh` and
 `tools/update/kryptik-update` (`check-release`, the kept manifest).

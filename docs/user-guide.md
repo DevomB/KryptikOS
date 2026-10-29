@@ -480,6 +480,13 @@ monitor back its own: 2 for a built-in panel of 192 dpi or more, 1 for the
 rest. Zones are told the scale rounded up to a whole number, and draw that
 much larger.
 
+**Time zone.** Zone 0's clock reads UTC until you choose a time zone.
+`kryptik timezone list DE` lists a country's zones by its two letters,
+`kryptik timezone list berlin` those whose name holds a word, and
+`kryptik timezone Europe/Berlin`, as root, uses one now and at every boot;
+`kryptik timezone` names the one in force. On the medium it lasts until
+shutdown. Zones keep UTC.
+
 **USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
 one in opens a window of the chrome that names each partition by what the
 stick and its partition table say (maker and model, size, the partition's
@@ -697,9 +704,8 @@ shows each timer, its timeout and whether it is running.
   [status](status.md#known-gaps), type nothing at all.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
-- No time zone database is shipped yet, so every clock reads UTC, zone 0's
-  and each zone's: a file's time, and the times a zone's programs show, the
-  pages Firefox shows among them.
+- Zones keep UTC whatever time zone zone 0 has: the times a zone's programs
+  show, the pages Firefox shows among them, read in UTC.
 - A program in a zone cannot make its window fullscreen; Alt+e does, and
   the window then sits below a bar in its zone's colour that names the
   zone. Other windows show their zone by border colour alone, and the
