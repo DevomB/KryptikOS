@@ -200,7 +200,8 @@ run_status() {
     # The menu window, so a fresh session shows something usable.
     "$TERMINAL" /usr/bin/kryptik-chrome --menu &
     # The screen locks after ten minutes without input, or the minutes the user's
-    # lock-idle file holds; 0 never. expr reads 08 as eight, where $((...)) fails.
+    # lock-idle file holds; 0 never, though the screens still go off after ten minutes.
+    # expr reads 08 as eight, where $((...)) fails.
     idle="$(tr -cd 0-9 2>/dev/null < "${XDG_CONFIG_HOME:-$HOME/.config}/kryptik/lock-idle" | cut -c1-4)"
     idle="$(expr "${idle:-10}" \* 60)"
     # The machine sleeps that many minutes after the lock only when the user's lock-sleep file
@@ -212,6 +213,8 @@ run_status() {
         /usr/bin/kryptik-lock --idle "$idle" --sleep "$nap" &
     elif [ "$idle" -gt 0 ]; then
         /usr/bin/kryptik-lock --idle "$idle" &
+    else
+        /usr/bin/kryptik-lock --idle 0 --blank 600 &
     fi
     # The consent watcher. Holding watcher.lock tells the broker someone is here
     # to ask: consent.rs refuses at once if it can take the lock shared. The

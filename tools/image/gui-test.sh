@@ -127,6 +127,7 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT LOCK-TYPE-RIGHT" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE\r?\n" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-IDLE-AGAIN" "${PW_KEYS[@]}" "key:ret" \
+    "expect:GT KEY-WAKE-BLANK" "key:shift" \
     "expect:GT KEY-FOCUS-HOLD" "key:alt+j" \
     "expect:GT LOCK-TYPE-HOLD" "${PW_KEYS[@]}" "key:ret" \
     "expect:GT LOCK-TYPE-SUSPEND" "${PW_KEYS[@]}" "key:ret" \
@@ -180,7 +181,7 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             second-head-appears chrome-follows-head havoc-draws-at-scale second-head-zone-window second-head-names-zone second-head-gone compositor-survives-unplug zone-survives-unplug chrome-back-on-first-head chrome-wifi-add menu-network-line chrome-wifi-add-open chrome-wifi-scan browser-window browser-stays-up browser-key-brings-forward browser-front-only-the-users browser-front-request browser-key-launches \
             zone-popup-drawn zone-popup-yields-keyboard zone-popup-ends-on-own-focus \
             password-check-pauses lock-takes-keyboard lock-takes-camera lock-refuses-wrong-password lock-survives-its-death lock-unlocks-with-password lock-keeps-keys-from-zone-grab \
-            idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again \
+            idle-lock-armed idle-locks idle-blanks key-wakes-screens idle-locks-again blank-without-lock key-wakes-without-lock \
             zone-hold-socket zone-hold-refused zone-holds-screen-awake hold-ends-off-keyboard hold-ends-at-lock \
             chrome-names-hold idle-lock-heeds-hold chrome-hold-cleared \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
