@@ -127,7 +127,8 @@ the laptop's own USB camera, with `vivid` never loaded, and what only
 `uvcvideo` shows: a program that keeps its descriptor past `k` holds the
 driver, which stays loaded, and no grant is given until it lets go; the
 next grant after that captures again and unloads the driver at its end; and
-the camera taken away (its USB device deauthorized) ends the grant, and
+the camera taken away (its USB device deauthorized, which takes an infrared
+camera in the same module with it for those seconds) ends the grant, and
 loads nothing when it comes back.
 
 ## Not covered

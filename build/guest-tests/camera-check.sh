@@ -240,7 +240,10 @@ ended() { [[ "$(holder)" == none* && ! -e "$node" ]]; }
 # The granted node's USB device: its interface's parent.
 hn="$(holder | sed -n 's/.*(\(video[0-9]*\))$/\1/p')"
 dev="$(readlink -f "/sys/class/video4linux/${hn:-none}/device/..")"
-if [[ "$rc" -eq 0 && -e "$node" ]]; then
+if [[ "$HW" -eq 1 && ! ( -n "$hn" && -w "$dev/authorized" ) ]]; then
+    fail "camera-gone-ends-grant" "no USB device for ${hn:-the granted node}: $(holder)"
+    as_user "kryptik-launch --camera-revoke" > /dev/null 2>&1
+elif [[ "$rc" -eq 0 && -e "$node" ]]; then
     if [[ "$HW" -eq 1 ]]; then echo 0 > "$dev/authorized"; else modprobe -r vivid; fi > "$LOG/gone.out" 2>&1
     ok=no
     for _ in $(seq 1 15); do ended && { ok=yes; break; }; sleep 1; done
