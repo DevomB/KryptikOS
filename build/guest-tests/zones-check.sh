@@ -1603,6 +1603,23 @@ else
     fail "zone-clocks-own" "zone 0 read ${w0:-?}..${w1}, booted ${b0:-?}; untrusted read ${wu:-?}, booted ${bu:-?}; personal read ${wp:-?}, booted ${bp:-?}; $(tail -qn 2 "$LOG/untrusted.err" "$LOG/personal.err" 2>/dev/null | tr '\n' ' ')"
 fi
 
+# --- zones: zone 0's time zone where the zone's file asks, UTC elsewhere ------
+# personal says [clock] local = true and untrusted false; noon UTC on 2026-07-15 is 14 CEST.
+lt_was="$(readlink /etc/localtime 2>/dev/null)"
+tz_set="$(/usr/bin/kryptik timezone Europe/Berlin 2>&1)"
+tz_line='echo "LT=$(readlink /etc/localtime)"; date -d @1784116800 +TZ=%H%Z'
+zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c "$tz_line"
+tz_personal="$(tr '\n' ' ' <<<"$ZOUT")"
+zrun untrusted 20 -- sh -c "$tz_line"
+tz_untrusted="$(tr '\n' ' ' <<<"$ZOUT")"
+tz_zone0="$(date -d @1784116800 +TZ=%H%Z)"
+if [[ -n "$lt_was" ]]; then ln -sfn "$lt_was" /etc/localtime; else rm -f /etc/localtime; fi
+if [[ "$tz_zone0" == TZ=14CEST && "$tz_personal" == "LT=/usr/share/zoneinfo/Europe/Berlin TZ=14CEST " && "$tz_untrusted" == "LT= TZ=12UTC " ]]; then
+    pass "zone-local-time" "after kryptik timezone Europe/Berlin: personal reads 14 CEST through its own link, untrusted 12 UTC with none"
+else
+    fail "zone-local-time" "zone 0: ${tz_zone0} (${tz_set}); personal: ${tz_personal}; untrusted: ${tz_untrusted}; $(tail -qn 2 "$LOG/untrusted.err" "$LOG/personal.err" 2>/dev/null | tr '\n' ' ')"
+fi
+
 # --- storage: encrypted storage lifecycle -----------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass
 zrun personal 30 --passphrase-file /root/zt/wrong.pass -- sh -c 'echo SHOULD-NOT-RUN'

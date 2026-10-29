@@ -136,9 +136,16 @@ from the upper layer while sysinit checks it and from `/etc` after, and a
 `..` can climb through `/var`, which is the state partition from then on:
 either could pass the check and lead elsewhere. The worst a writer of that
 partition can choose is another real zone. The time zone changes how a time
-is shown, never the clock or the floor. A zone's `/etc` is kryptikd's and
-has no `localtime`, so a zone reads UTC, and does not learn where its user
-is from it.
+is shown, never the clock or the floor.
+
+A zone's `/etc` is kryptikd's. A zone whose file says `[clock] local =
+true` gets a `localtime` linking where zone 0's resolves as the zone
+starts, and only when that is a TZif file in `/usr/share/zoneinfo`, which
+the zone sees through its own `/usr` (`rootfs::machine_localtime`). A link,
+not a copy, as a program names the zone by the path (Firefox's `Intl`). Any
+other zone has no `localtime`, reads UTC, and does not learn where its user
+is from it: `untrusted` says so in its file, and `vault` and the net zone
+have no `[clock]` line. The net zone may not ask for one.
 
 ## Tests
 
@@ -157,7 +164,9 @@ every POSIX shell on the host. `tools/tests/timezone.sh` runs
 `kryptik timezone` against a stand-in zoneinfo tree: the link it makes, the
 names it lists, and the names it refuses with the link left alone. The
 medium's console test sets Europe/Berlin and reads noon UTC in July as
-14 CEST. On the installed system,
+14 CEST. The zones suite sets Europe/Berlin in zone 0 and reads the same
+noon as 14 CEST in `personal`, through its own link, and as 12 UTC in
+`untrusted`, which has none. On the installed system,
 `build/guest-tests/zones-check.sh` sets the clock to 2000 and checks the
 clamp, that a release dated 2099 and signed by a key the anchor does not list
 leaves the floor alone, then that a claim steps the clock, one below the
@@ -172,6 +181,6 @@ recovery to A.
 committed`), `broker.rs`, `consent.rs`, `tools/desktop/kryptik-chrome`,
 `tools/net/sntp-offset.py`, `tools/net/netzone-init.sh`, `rootfs.rs`
 (`time.conf` into the zones' `/etc`), `build/services/time-floor`, `build/recipes/tzdata.sh`, `tools/kryptik`
-(`timezone`),
+(`timezone`), `zone.rs` (`[clock] local`),
 `build/service-scripts/time-floor.sh`, `boot-success.sh` and
 `tools/update/kryptik-update` (`check-release`, the kept manifest).

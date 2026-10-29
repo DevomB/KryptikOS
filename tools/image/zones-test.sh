@@ -103,7 +103,7 @@ for name in kernel-support policies net-ready net-dns dhcpcd-separated dnsmasq-u
             radio-recarried \
             wifi-wpa2-plain wifi-sae wifi-open wifi-own-address wifi-address-per-network wifi-supplicant-unprivileged wifi-supplicant-no-nft \
             wifi-refused-wpa2 wifi-refused-cleared wifi-refused-sae \
-            zone-clocks-own \
+            zone-clocks-own zone-local-time \
             wifi-sae-h2e \
             time-floor-ran time-clamp time-floor-forged time-claim-stepped time-claim-floor time-claim-consent pids-limit ephemeral-size-bound cpu-max-set lifecycle-repeat lifecycle-registry resolver-after-attach dns-cache-off dns-counters-hidden dns-own-resolver dns-own-port-closed dns-cache-per-zone dns-uplink-closed net-zone-sysfs-nics-only \
             terminal-terminfo man-page text-browser tls-trust no-shared-writable-mount net-zone-no-zone-data no-swap no-dbus \

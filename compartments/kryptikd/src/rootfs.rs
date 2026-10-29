@@ -167,6 +167,27 @@ pub const SYSTEM_PATHS: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin"];
 pub const ETC_RO_FILES: &[&str] =
     &["/etc/ld.so.cache", "/etc/services", "/etc/protocols", "/etc/man_db.conf", "/etc/ssl/cert.pem"];
 
+/// The tree a zone's /etc/localtime may lead into: zone 0's, whose files no software image may
+/// replace (tools/check-image-tree.sh).
+pub const ZONEINFO: &str = "/usr/share/zoneinfo";
+
+/// Zone 0's time zone as a zone gets it: where /etc/localtime leads, if that is a zone's file in
+/// `ZONEINFO`, as `kryptik timezone` makes it and sysinit keeps it; else None, and UTC.
+pub fn machine_localtime() -> Option<String> {
+    let real = fs::canonicalize("/etc/localtime").ok()?;
+    let mut magic = [0u8; 4];
+    let tzif = fs::metadata(&real).is_ok_and(|m| m.is_file())
+        && fs::File::open(&real).and_then(|mut f| io::Read::read_exact(&mut f, &mut magic)).is_ok()
+        && magic == *b"TZif";
+    localtime_target(&real, tzif)
+}
+
+/// A resolved path a zone's /etc/localtime may name: a TZif file below `ZONEINFO`.
+pub fn localtime_target(real: &Path, tzif: bool) -> Option<String> {
+    let below = real.starts_with(ZONEINFO) && real != Path::new(ZONEINFO);
+    if tzif && below { real.to_str().map(str::to_string) } else { None }
+}
+
 /// The nic zone's own configuration (DHCP client, time sources, release source), for it alone.
 pub const NIC_ETC_FILES: &[&str] = &["/etc/dhcpcd.conf", "/etc/kryptik/time.conf", "/etc/kryptik/update.conf"];
 
@@ -319,8 +340,8 @@ pub fn check_data_dir(path: &str, expected_uid: u32) -> Result<(), RootfsError> 
 
 /// Pivot into a root holding only what the zone should see; returns the home. Runs as root in the
 /// new user namespace, before Landlock and seccomp; `ephemeral` is a tmpfs home's size, `usr` what
-/// the zone sees as /usr (zone 0's, or images stacked over it), and `service` adds dhcpcd's user
-/// and `SERVICE_HOME`.
+/// the zone sees as /usr (zone 0's, or images stacked over it), `localtime` the zone file in it
+/// /etc/localtime leads to, and `service` adds dhcpcd's user and `SERVICE_HOME`.
 #[allow(clippy::too_many_arguments)]
 pub fn pivot_into(
     data_dir: &str,
@@ -333,6 +354,7 @@ pub fn pivot_into(
     sound: Option<&str>,
     camera: Option<&str>,
     usr: &str,
+    localtime: Option<&str>,
     service: bool,
 ) -> Result<String, RootfsError> {
     let home = zone_home(zone);
@@ -394,7 +416,7 @@ pub fn pivot_into(
         }
     }
 
-    populate_etc(root, zone, &home, resolver, service)?;
+    populate_etc(root, zone, &home, resolver, localtime, service)?;
     // Made on the root tmpfs, so the seal below leaves it empty and read-only.
     if service {
         mkdir(&SERVICE_HOME[1..])?;
@@ -579,7 +601,7 @@ pub fn pivot_into(
 }
 
 /// The zone's /etc: synthesized identity files plus `ETC_RO_FILES` and `ETC_RO_DIRS`.
-fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver, service: bool) -> Result<(), RootfsError> {
+fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver, localtime: Option<&str>, service: bool) -> Result<(), RootfsError> {
     let etc = format!("{root}/etc");
     fs::create_dir_all(&etc).map_err(|e| RootfsError::Setup(format!("{etc}: {e}")))?;
     let write = |name: &str, content: String| -> Result<(), RootfsError> {
@@ -602,6 +624,12 @@ fn populate_etc(root: &str, zone: &str, home: &str, resolver: Resolver, service:
             std::os::unix::fs::symlink("/tmp/resolv.conf", format!("{etc}/resolv.conf"))
                 .map_err(|e| RootfsError::Setup(format!("{etc}/resolv.conf: {e}")))?;
         }
+    }
+
+    // A link, not a copy: a program names the zone by where it leads (Firefox's Intl among them).
+    if let Some(t) = localtime {
+        std::os::unix::fs::symlink(t, format!("{etc}/localtime"))
+            .map_err(|e| RootfsError::Setup(format!("{etc}/localtime: {e}")))?;
     }
 
     let nic: &[&str] = if resolver == Resolver::Writable { NIC_ETC_FILES } else { &[] };
