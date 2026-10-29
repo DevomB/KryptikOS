@@ -2,3 +2,4 @@
 b9bc94714ef801b3450dddfba1a35a7139ed48c9a958378dbda9016a4403ee14  0002-ffvpx-gcc-incompatible-pointer-types.patch
 692345659a387cda546bf9aa2a8b19cefce60f3545634607e6a35d526145fd90  0003-cstdint-includes.patch
 d68bb973e17677582d8988053518549d8261fe20934b732c12a4138bf9ec8dfb  0004-remote-needs-dbus-or-x11.patch
+a844c745485cbe462bfeab8dbce837594a8f883ee4de5164ed1e5a872aca52db  0005-v4l2-camera-changes-without-inotify.patch
