@@ -37,14 +37,17 @@ s_desktop() {
     [[ "$out" == *usage:* ]] || { echo "FAIL: wlprobe does not run here: ${out}"; return 1; }
     echo "wlprobe: built and runs"
 
-    # The screen lock: a client of ext-session-lock-v1 and ext-idle-notify-v1, and of wlroots'
-    # screen power control, whose description dwl's pinned source carries; wayland-scanner
-    # makes their code, and xkbcommon reads the user's keyboard layout.
+    # The screen lock: a client of ext-session-lock-v1 and ext-idle-notify-v1, of the scale and
+    # viewport protocols it draws at an output's scale with, and of wlroots' screen power
+    # control, whose description dwl's pinned source carries; wayland-scanner makes their code,
+    # and xkbcommon reads the user's keyboard layout.
     local gen p xml dwlsrc
     gen="$(mktemp -d)"
     dwlsrc="$(unpack "dwl-v${V_DWL}.tar.gz" "dwl-v${V_DWL}")"
     for xml in /usr/share/wayland-protocols/staging/ext-session-lock/ext-session-lock-v1.xml \
                /usr/share/wayland-protocols/staging/ext-idle-notify/ext-idle-notify-v1.xml \
+               /usr/share/wayland-protocols/staging/fractional-scale/fractional-scale-v1.xml \
+               /usr/share/wayland-protocols/stable/viewporter/viewporter.xml \
                "${dwlsrc}/protocols/wlr-output-power-management-unstable-v1.xml"; do
         [[ -f "$xml" ]] || { echo "FAIL: no ${xml}"; rm -rf "$gen" "$dwlsrc"; return 1; }
         p="$(basename "$xml" .xml)"

@@ -16,7 +16,9 @@
  * locked does: dwl runs no binding then, and dwl's power key and lid otherwise run --suspend.
  *
  * Through ext-session-lock-v1 the compositor shows nothing but this program's surfaces, one
- * per output, and gives them the keyboard. The lock runs in a child, started again if a
+ * per output, and gives them the keyboard. Each is drawn at its output's scale, as
+ * wp_fractional_scale_v1 tells it, and shown through a viewport, so its lettering stays sharp
+ * at 1.5 or 2. The lock runs in a child, started again if a
  * signal kills it, as the session stays locked without one. What is typed goes to the launch
  * daemon, which answers: this process never reads a password hash. The daemon also says what
  * unlocks: the login password, or once a suspend has dropped the state partition's key, that
@@ -52,6 +54,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include "ext-idle-notify-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 #include "wlr-output-power-management-unstable-v1-client-protocol.h"
 
 /* Reached without starting a program: while the state partition is suspended, a program's
@@ -109,12 +113,18 @@ struct output {
 	struct wl_output *wl;
 	struct wl_surface *surface;
 	struct ext_session_lock_surface_v1 *lock_surface;
+	struct wp_viewport *viewport;
+	struct wp_fractional_scale_v1 *fscale;
 	int w, h;
+	/* The output's scale in 120ths, as the compositor tells it. */
+	int scale;
 };
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
 static struct wl_shm *shm;
+static struct wp_viewporter *viewporter;
+static struct wp_fractional_scale_manager_v1 *fscale_mgr;
 static struct wl_seat *seat;
 static struct wl_keyboard *keyboard;
 static struct ext_session_lock_manager_v1 *manager;
@@ -189,13 +199,17 @@ static void buffer_release(void *data, struct wl_buffer *buffer)
 
 static const struct wl_buffer_listener buffer_listener = { .release = buffer_release };
 
-/* One output's picture: the status word and a mark for each character typed, nothing else. */
+/* One output's picture: the status word and a mark for each character typed, nothing else.
+ * With a viewport it is drawn in the output's own pixels, the surface's size times the scale,
+ * and shown at the surface's size, so the compositor does not enlarge it. */
 static void draw(struct output *o)
 {
 	if (!o->lock_surface || o->w <= 0 || o->h <= 0)
 		return;
-	int stride = o->w * 4, s = o->h / 160 > 2 ? o->h / 160 : 2;
-	size_t size = (size_t)stride * (size_t)o->h;
+	int w = o->viewport ? (o->w * o->scale + 60) / 120 : o->w;
+	int h = o->viewport ? (o->h * o->scale + 60) / 120 : o->h;
+	int stride = w * 4, s = h / 160 > 2 ? h / 160 : 2;
+	size_t size = (size_t)stride * (size_t)h;
 	int fd = memfd_create("kryptik-lock", MFD_CLOEXEC);
 	if (fd < 0 || ftruncate(fd, (off_t)size) < 0) {
 		if (fd >= 0)
@@ -207,23 +221,25 @@ static void draw(struct output *o)
 		close(fd);
 		return;
 	}
-	fill(px, o->w, o->h, 0, 0, o->w, o->h, bg);
+	fill(px, w, h, 0, 0, w, h, bg);
 	/* The status word above the middle, the marks below it, and the layout under them. */
-	text(px, o->w, o->h, s, o->h / 2 - 12 * s, status, refused ? warn : ink);
+	text(px, w, h, s, h / 2 - 12 * s, status, refused ? warn : ink);
 	int shown = ntyped < 32 ? (int)ntyped : 32, dot = 2 * s;
-	int x = (o->w - shown * 2 * dot) / 2, y = o->h / 2 + 2 * s;
+	int x = (w - shown * 2 * dot) / 2, y = h / 2 + 2 * s;
 	for (int i = 0; i < shown; i++)
-		fill(px, o->w, o->h, x + i * 2 * dot, y, dot, dot, ink);
+		fill(px, w, h, x + i * 2 * dot, y, dot, dot, ink);
 	if (nlayouts > 1 && layout_now >= 0)
-		text(px, o->w, o->h, s, y + dot + 6 * s, layouts[layout_now], ink);
+		text(px, w, h, s, y + dot + 6 * s, layouts[layout_now], ink);
 	munmap(px, size);
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
-	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, o->w, o->h, stride, WL_SHM_FORMAT_XRGB8888);
+	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, w, h, stride, WL_SHM_FORMAT_XRGB8888);
 	wl_shm_pool_destroy(pool);
 	close(fd);
 	wl_buffer_add_listener(buffer, &buffer_listener, NULL);
 	wl_surface_attach(o->surface, buffer, 0, 0);
-	wl_surface_damage_buffer(o->surface, 0, 0, o->w, o->h);
+	if (o->viewport)
+		wp_viewport_set_destination(o->viewport, o->w, o->h);
+	wl_surface_damage_buffer(o->surface, 0, 0, w, h);
 	wl_surface_commit(o->surface);
 }
 
@@ -248,6 +264,21 @@ static const struct ext_session_lock_surface_v1_listener lock_surface_listener =
 	.configure = lock_surface_configure,
 };
 
+/* Told once the surface is shown on its output, and again when that output's scale changes. */
+static void fscale_preferred(void *data, struct wp_fractional_scale_v1 *f, uint32_t scale)
+{
+	(void)f;
+	struct output *o = data;
+	if (scale == 0 || scale > 120 * 8 || (int)scale == o->scale)
+		return;
+	o->scale = (int)scale;
+	draw(o);
+}
+
+static const struct wp_fractional_scale_v1_listener fscale_listener = {
+	.preferred_scale = fscale_preferred,
+};
+
 /* Every output gets a surface of the lock's own, the ones that appear later as well. */
 static void cover(struct output *o)
 {
@@ -256,6 +287,11 @@ static void cover(struct output *o)
 	o->surface = wl_compositor_create_surface(compositor);
 	o->lock_surface = ext_session_lock_v1_get_lock_surface(lock, o->surface, o->wl);
 	ext_session_lock_surface_v1_add_listener(o->lock_surface, &lock_surface_listener, o);
+	if (viewporter && fscale_mgr) {
+		o->viewport = wp_viewporter_get_viewport(viewporter, o->surface);
+		o->fscale = wp_fractional_scale_manager_v1_get_fractional_scale(fscale_mgr, o->surface);
+		wp_fractional_scale_v1_add_listener(o->fscale, &fscale_listener, o);
+	}
 }
 
 static int request(const char *text, int fd);
@@ -688,6 +724,10 @@ static void global(void *data, struct wl_registry *r, uint32_t name, const char 
 		wl_seat_add_listener(seat, &seat_listener, NULL);
 	} else if (!strcmp(iface, ext_session_lock_manager_v1_interface.name)) {
 		manager = wl_registry_bind(r, name, &ext_session_lock_manager_v1_interface, 1);
+	} else if (!strcmp(iface, wp_viewporter_interface.name)) {
+		viewporter = wl_registry_bind(r, name, &wp_viewporter_interface, 1);
+	} else if (!strcmp(iface, wp_fractional_scale_manager_v1_interface.name)) {
+		fscale_mgr = wl_registry_bind(r, name, &wp_fractional_scale_manager_v1_interface, 1);
 	} else if (!strcmp(iface, zwlr_output_power_manager_v1_interface.name)) {
 		powermgr = wl_registry_bind(r, name, &zwlr_output_power_manager_v1_interface, 1);
 	} else if (!strcmp(iface, wl_output_interface.name)) {
@@ -695,6 +735,7 @@ static void global(void *data, struct wl_registry *r, uint32_t name, const char 
 		if (!o)
 			return;
 		o->name = name;
+		o->scale = 120;
 		o->wl = wl_registry_bind(r, name, &wl_output_interface, 1);
 		wl_list_insert(&outputs, &o->link);
 		cover(o);
@@ -708,6 +749,10 @@ static void global_remove(void *data, struct wl_registry *r, uint32_t name)
 	wl_list_for_each_safe(o, tmp, &outputs, link) {
 		if (o->name != name)
 			continue;
+		if (o->fscale)
+			wp_fractional_scale_v1_destroy(o->fscale);
+		if (o->viewport)
+			wp_viewport_destroy(o->viewport);
 		if (o->lock_surface)
 			ext_session_lock_surface_v1_destroy(o->lock_surface);
 		if (o->surface)
