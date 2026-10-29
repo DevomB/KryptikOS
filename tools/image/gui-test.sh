@@ -70,7 +70,7 @@ install_disk gui-install "$USB" --vars clean && green "installed" || { red "inst
 # ----------------------------------------------------------------- step 2 --
 step "step 2: the desktop, driven"
 rm -f "$SHOT" "$SHOT_FS" "$SHOT_OVER" "$SHOT_HEAD" "$SHOT_POPUP" "$SHOT_LOCKED"
-start_vm gui-p2 --net user --gpu --second-head --mem 3072
+start_vm gui-p2 --net user --gpu --second-head --touch --mem 3072
 DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:KRYPTIK_SMOKE: END" "seen:kryptik-firstboot: created user '${TUSER}'" "login:${TUSER}:${TPASS}" \
     "send:su - root -c 'bash /usr/lib/kryptik/guest-tests/gui-check.sh ${TUSER} ${TPASS} 2>&1 | tee /var/log/kryptik/gui-check.log; echo GCHECK-DONE'" \
@@ -116,6 +116,8 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT CONSENT-WAIT 2" "key:y" "key:ret" \
     "expect:GT POINTER-ZONE0" "pointer:-4000,-4000" "pointer:120,120" \
     "expect:GT POINTER-UNTRUSTED" "pointer:-4000,-4000" "pointer:120,120" \
+    "expect:GT TOUCH-HOVER-ZONE0" "pointer:4000,0" "pointer:-80,0" "pointer:-1,0" \
+    "expect:GT TOUCH-UNTRUSTED" "touch:250,500" \
     "expect:GT SCREENSHOT-POPUP" "sleep:2" "screendump:${SHOT_POPUP}" \
     "expect:GT KEY-MENU-POPUP" "key:alt+p" \
     "expect:GT KEY-FOCUS-POPUP" "key:alt+j" \
@@ -143,6 +145,9 @@ DRIVE_TIMEOUT=600 drive --qmp "$QMP" \
     "expect:GT KEY-FOCUS-HEAD-WINDOW" "key:alt+j" \
     "expect:GT SCREENSHOT-HEAD" "sleep:2" "screendump-head:1:${SHOT_HEAD}" \
     "expect:GT HEAD-OFF" "head:${HEAD2}:0x0" \
+    "expect:GT HEAD-BACK" "head:${HEAD2}:1024x768" \
+    "expect:GT KEY-FOCUS-BACK" "key:alt+dot" \
+    "expect:GT HEAD-OUT" "head:${HEAD2}:0x0" \
     "expect:GT KEY-MENU-WIFI" "key:alt+p" \
     "type-from:GT WIFI-TYPE 1 ([a-z0-9]+)" "type-from:GT WIFI-TYPE 2 ([a-z0-9]+)" \
     "type-from:GT WIFI-TYPE 3 ([a-z0-9]+)" "type-from:GT WIFI-TYPE 4 ([a-z0-9]+)" \
@@ -180,10 +185,10 @@ for name in session-socket compositor-running desktop-memory-bound chrome-focus-
             chrome-names-hold idle-lock-heeds-hold chrome-hold-cleared \
             suspend-refused-virtio-gpu suspend-refused-stays-awake \
             desktop-layouts lock-names-layout lock-refuses-other-layout lock-opens-in-first-layout \
-            second-head-scale-chosen zone-sees-heads-unnamed \
+            second-head-scale-chosen zone-sees-heads-unnamed window-returns-with-head \
             vt-admin-login vt-desktop-back vt-desktop-takes-keys dwl-execs-nothing dwl-without-group seat-is-dwls dwl-confined-to-its-files \
             volume-key lock-passes-volume-keys lock-holds-other-keys \
-            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name zone-fractional-scale compositor-socket-unreached \
+            zone0-cursor-set zone0-cursor-shown zone-cursor-asked zone-hears-of-outputs zone-cursor-not-shown zone-cursor-by-name touch-picks-window touch-presses-window zone-fractional-scale compositor-socket-unreached \
             zone0-frame-clock zone-window-animates \
             status-network-line-user \
             zone0-fullscreen-granted zone0-fullscreen-needs-focus fullscreen-by-key marks-fullscreen zone-child-mapped child-focused parent-focused parent-fullscreen fullscreen-keeps-focus keyboard-stays-on-fullscreen zoom-keeps-keyboard zoom-twice-keeps-keyboard zone0-over-fullscreen-gets-keyboard zone0-window-ends-fullscreen child-ends-fullscreen; do

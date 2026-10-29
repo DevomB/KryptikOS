@@ -104,6 +104,14 @@ fn read_trim(p: &Path) -> Option<String> {
     fs::read_to_string(p).ok().map(|s| s.trim().to_string())
 }
 
+/// Whether a program kept the camera from an earlier grant: its descriptor holds the driver in
+/// `sys`, and with it the streaming interface of the device in `LET_GO`, which, probed again,
+/// would come back with no capture node.
+fn kept(sys: &Path, run: &Path) -> bool {
+    run.join(LET_GO).exists()
+        && read_trim(&sys.join("module").join(DRIVER).join("refcnt")).is_some_and(|n| n != "0")
+}
+
 /// The camera's node in `sys`, standing for /sys: of the video4linux devices that are the first
 /// node of their device (`index` 0, a UVC camera's capture node and not its metadata one), the
 /// lowest numbered; its name, major and minor, and what the device calls itself.
@@ -240,6 +248,9 @@ pub fn grant(zone: &crate::zone::Zone) -> Result<Grant, String> {
         end(g)?;
     }
     let dir = zone_dir(&zone.name).map_err(|e| format!("{RUN_DIR}/{}: {e}", zone.name))?;
+    if kept(Path::new("/sys"), Path::new(RUN_DIR)) {
+        return Err("a program still holds the camera from its last grant: turn the camera off there, then give it again".into());
+    }
     modprobe(&[DRIVER])?;
     let _ = fs::remove_file(Path::new(RUN_DIR).join(STAYED));
     if let Ok(text) = fs::read_to_string(Path::new(RUN_DIR).join(LET_GO)) {

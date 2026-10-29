@@ -2,6 +2,21 @@
 # etc: a stage 04 recipe, sourced by build/stages/04-base-system.sh,
 # which runs it in the order its list gives.
 
+# etc_login_defs FILE: lines set in shadow's login.defs, not left to the file
+# a release ships. login reads the terminals root may use from CONSOLE's file.
+# su gives root ENV_SUPATH's PATH with or without "-", and shadow's step strips
+# /usr/sbin from it, where ip, iw and cryptsetup live.
+etc_login_defs() {
+    local def
+    for def in "CONSOLE /etc/securetty" "SU_WHEEL_ONLY yes" "ENV_SUPATH PATH=/usr/sbin:/usr/bin"; do
+        if grep -q "^${def%% *}[[:space:]]" "$1"; then
+            sed -i "s|^${def%% *}[[:space:]].*|${def}|" "$1"
+        else
+            printf '%s\n' "$def" >> "$1"
+        fi
+    done
+}
+
 # /etc/os-release and friends. BUILD_ID, the commit that built the image, is
 # added after the steps (at the end of this file): as this step's input it
 # would re-fingerprint this step, and every step after it, on each commit.
@@ -51,18 +66,11 @@ EOF
     usermod -p '*' root
     grep -q '^root:\*:' /etc/shadow && echo "root: no password" || { echo "FAIL: root has a password in the image"; return 1; }
     : > /etc/securetty
-    # Both set here, not left to shadow's login.defs, which a release may
-    # change: login reads the terminals root may use from CONSOLE's file.
-    local def
-    for def in "CONSOLE /etc/securetty" "SU_WHEEL_ONLY yes"; do
-        if grep -q "^${def%% *}[[:space:]]" /etc/login.defs; then
-            sed -i "s|^${def%% *}[[:space:]].*|${def}|" /etc/login.defs
-        else
-            printf '%s\n' "$def" >> /etc/login.defs
-        fi
-    done
+    etc_login_defs /etc/login.defs
     grep -qx 'CONSOLE /etc/securetty' /etc/login.defs && [[ ! -s /etc/securetty ]] \
         || { echo "FAIL: root is not kept off the terminals"; return 1; }
+    grep -qx 'ENV_SUPATH PATH=/usr/sbin:/usr/bin' /etc/login.defs \
+        || { echo "FAIL: su would give root a PATH without /usr/sbin"; return 1; }
 
     # Kernel interface names (eth0, wlan0), the same on every machine: eudev's
     # slot-naming rule is masked.
