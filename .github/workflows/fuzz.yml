@@ -1,11 +1,19 @@
 name: Fuzz
 
 # Coverage-guided fuzzing of the two parsers of zone bytes (docs/design/broker.md), weekly on a pinned nightly.
+# A pull request that touches their code builds both targets without fuzzing them, so a new request
+# variant the harness does not match fails there, not on the next weekly run.
 
 on:
   schedule:
     - cron: '0 4 * * 0'
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'compartments/kryptikd/src/**'
+      - 'compartments/kryptikd/fuzz/**'
+      - 'compositor/wlproxy/**'
+      - '.github/workflows/fuzz.yml'
 
 permissions:
   contents: read
@@ -59,8 +67,14 @@ jobs:
           fi
           echo "$(find "$RUNNER_TEMP/corpus" -type f | wc -l) seeds"
 
+      - name: The target builds
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ matrix.dir }}
+        run: cargo fuzz build --sanitizer none "$FUZZ_TARGET"
+
       # Safe Rust throughout, so no sanitizer: panics, overflow checks and the harness's asserts are the oracle.
       - name: Twenty minutes of fuzzing
+        if: github.event_name != 'pull_request'
         working-directory: ${{ matrix.dir }}
         run: cargo fuzz run --sanitizer none "$FUZZ_TARGET" "$RUNNER_TEMP/corpus" -- -max_total_time=1200 -max_len="$MAX_LEN" -timeout=10 -print_final_stats=1
 
