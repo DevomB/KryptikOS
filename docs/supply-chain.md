@@ -103,7 +103,9 @@ revoked, possibly compromised) always fail. `--strict`, the gate CI runs on
 every push, also fails on a signature that could not be checked and on a
 signer never established: a key taken from the signature itself, a key not
 held, a file not downloaded, a key whose published copy
-(`tools/key-provenance.tsv`) could not be read that run. On a pull request
+(`tools/key-provenance.tsv`) could not be read that run. A page that answers
+with no key in it at all, as an error page served as 200, counts as not read;
+one that serves another key is refused as a changed key. On a pull request
 CI adds `--unread-warns`: a published copy that does not answer is a warning
 there, and the key held decides, since a host being down is not the change's
 fault; the push to main reads every copy again. A row there speaks

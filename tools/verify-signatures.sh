@@ -496,11 +496,19 @@ import_provenance_keys_for() {
             dim "  ${name}: imported the key ${PROV_KIND[$i]} publishes (${fpr})"
             continue
         fi
+        # A page with no key in it at all (an error page served as 200) is
+        # unread, as a page that does not answer is: either one could hide a
+        # change, so --strict still fails it. Another key there is refused.
+        if [[ "$rc" -eq 1 && -z "$got" ]]; then
+            warn "${name}: ${PROV_LOC[$i]} answered with no OpenPGP key in it"
+            PROV_MISSED[$i]=1
+            continue
+        fi
         if [[ "$rc" -eq 2 ]]; then
             err "${name}: ${PROV_LOC[$i]} serves ${fpr}, but it could not be taken"
             err "  alone. REFUSING it: the recorded fingerprint is the anchor."
         else
-            err "${name}: ${PROV_LOC[$i]} now publishes ${got:-no key},"
+            err "${name}: ${PROV_LOC[$i]} now publishes ${got},"
             err "  not the recorded ${fpr}. REFUSING it: a key that"
             err "  changed at a published location is a finding, not an update."
         fi
