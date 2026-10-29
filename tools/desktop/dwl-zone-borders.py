@@ -1272,6 +1272,154 @@ inputdevice(struct wl_listener *listener, void *data)
 \t\twl_event_source_timer_update(undocktimer, 5000);
 }
 """),
+    # A touchscreen drives the pointer, where dwl 0.8 drops touch devices. A finger down moves
+    # the pointer there and presses its left button, moving drags, and lifting releases it: a tap
+    # clicks through dwl's own pointer path, its focus rules and the lock's. Zones are offered no
+    # touch, only those pointer events, so the proxy and its policy stay as they are.
+    ("""#include <wlr/types/wlr_switch.h>
+""",
+     """#include <wlr/types/wlr_switch.h>
+#include <wlr/types/wlr_touch.h>
+"""),
+    ("""static struct wl_listener cursor_motion_absolute = {.notify = motionabsolute};
+""",
+     """static struct wl_listener cursor_motion_absolute = {.notify = motionabsolute};
+static void touchdown(struct wl_listener *listener, void *data);
+static void touchmotion(struct wl_listener *listener, void *data);
+static void touchup(struct wl_listener *listener, void *data);
+static void touchcancel(struct wl_listener *listener, void *data);
+static struct wl_listener cursor_touch_down = {.notify = touchdown};
+static struct wl_listener cursor_touch_motion = {.notify = touchmotion};
+static struct wl_listener cursor_touch_up = {.notify = touchup};
+static struct wl_listener cursor_touch_cancel = {.notify = touchcancel};
+static struct wl_listener cursor_touch_frame = {.notify = cursorframe};
+"""),
+    ("""\twl_signal_add(&cursor->events.frame, &cursor_frame);
+""",
+     """\twl_signal_add(&cursor->events.frame, &cursor_frame);
+\twl_signal_add(&cursor->events.touch_down, &cursor_touch_down);
+\twl_signal_add(&cursor->events.touch_motion, &cursor_touch_motion);
+\twl_signal_add(&cursor->events.touch_up, &cursor_touch_up);
+\twl_signal_add(&cursor->events.touch_cancel, &cursor_touch_cancel);
+\twl_signal_add(&cursor->events.touch_frame, &cursor_touch_frame);
+"""),
+    ("""\twl_list_remove(&cursor_motion_absolute.link);
+""",
+     """\twl_list_remove(&cursor_motion_absolute.link);
+\twl_list_remove(&cursor_touch_down.link);
+\twl_list_remove(&cursor_touch_motion.link);
+\twl_list_remove(&cursor_touch_up.link);
+\twl_list_remove(&cursor_touch_cancel.link);
+\twl_list_remove(&cursor_touch_frame.link);
+"""),
+    ("""\tcase WLR_INPUT_DEVICE_SWITCH:
+\t\tcreateswitch(wlr_switch_from_input_device(device));
+\t\tbreak;
+""",
+     """\tcase WLR_INPUT_DEVICE_SWITCH:
+\t\tcreateswitch(wlr_switch_from_input_device(device));
+\t\tbreak;
+\tcase WLR_INPUT_DEVICE_TOUCH:
+\t\twlr_cursor_attach_input_device(cursor, device);
+\t\tbreak;
+"""),
+    ("""void
+cursorframe(struct wl_listener *listener, void *data)
+{
+""",
+     """/* Kryptik: the finger that drives the pointer, -1 while none is down; a second is ignored. */
+static int32_t touchid = -1;
+
+/* Kryptik: the pointer to where a touch is: on the built-in panel when there is one, as a
+ * laptop's touchscreen is its own, and over every screen otherwise. One touchscreen is taken
+ * to be the laptop's, so a touch monitor on a desk drives the panel too. 0, the touch dropped,
+ * while the panel is there but off: dark, or shut away, a touch on it lands where no one sees. */
+static int
+touchpoint(struct wlr_input_device *device, uint32_t time, double x, double y)
+{
+\tstruct wlr_box box = {0};
+\tdouble lx, ly;
+\tint panel = 0;
+\tMonitor *m;
+
+\twl_list_for_each(m, &mons, link) {
+\t\tconst char *n = m->wlr_output->name;
+\t\tif (strncmp(n, "eDP", 3) && strncmp(n, "LVDS", 4) && strncmp(n, "DSI", 3))
+\t\t\tcontinue;
+\t\tpanel = 1;
+\t\tif (m->wlr_output->enabled)
+\t\t\tbox = m->m;
+\t}
+\tif (panel && wlr_box_empty(&box))
+\t\treturn 0;
+\tif (!wlr_box_empty(&box)) {
+\t\tlx = box.x + x * box.width;
+\t\tly = box.y + y * box.height;
+\t} else {
+\t\twlr_cursor_absolute_to_layout_coords(cursor, device, x, y, &lx, &ly);
+\t}
+\tmotionnotify(time, device, lx - cursor->x, ly - cursor->y, lx - cursor->x, ly - cursor->y);
+\t/* motionnotify picks the surface before it moves the cursor, which a mouse's small steps
+\t * never show. A touch jumps, so the surface is picked again where it landed, or the press
+\t * would go to whatever the pointer rested on, another zone's window as likely as not. */
+\tmotionnotify(0, NULL, 0, 0, 0, 0);
+\treturn 1;
+}
+
+/* Kryptik: the left button, as buttonpress takes it from a pointer. */
+static void
+touchbutton(uint32_t time, enum wl_pointer_button_state state)
+{
+\tstruct wlr_pointer_button_event event = {.time_msec = time, .button = BTN_LEFT, .state = state};
+\tbuttonpress(NULL, &event);
+}
+
+void
+touchdown(struct wl_listener *listener, void *data)
+{
+\tstruct wlr_touch_down_event *event = data;
+\t/* Through a lid shut on a dock, a touch is no one's: it would click, and take the keyboard,
+\t * on a screen no one sees, and hold off the idle lock. */
+\tif (touchid != -1 || lidshut)
+\t\treturn;
+\tif (!touchpoint(&event->touch->base, event->time_msec, event->x, event->y))
+\t\treturn;
+\ttouchid = event->touch_id;
+\ttouchbutton(event->time_msec, WL_POINTER_BUTTON_STATE_PRESSED);
+}
+
+void
+touchmotion(struct wl_listener *listener, void *data)
+{
+\tstruct wlr_touch_motion_event *event = data;
+\tif (event->touch_id == touchid)
+\t\ttouchpoint(&event->touch->base, event->time_msec, event->x, event->y);
+}
+
+void
+touchup(struct wl_listener *listener, void *data)
+{
+\tstruct wlr_touch_up_event *event = data;
+\tif (event->touch_id != touchid)
+\t\treturn;
+\ttouchid = -1;
+\ttouchbutton(event->time_msec, WL_POINTER_BUTTON_STATE_RELEASED);
+}
+
+void
+touchcancel(struct wl_listener *listener, void *data)
+{
+\tstruct wlr_touch_cancel_event *event = data;
+\tif (event->touch_id != touchid)
+\t\treturn;
+\ttouchid = -1;
+\ttouchbutton(event->time_msec, WL_POINTER_BUTTON_STATE_RELEASED);
+}
+
+void
+cursorframe(struct wl_listener *listener, void *data)
+{
+"""),
     # Locked, dwl heeds no key at all, so a laptop that starts to play aloud under the lock
     # is silenced only by unlocking. It heeds config.h's lockedkeys instead: the volume and
     # brightness keys, which reach no zone and nothing typed at the lock. A key held from

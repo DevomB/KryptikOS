@@ -94,9 +94,16 @@ firmware() {
     case "$(efi_byte SecureBoot)" in 1) echo "secure boot: on" ;; 0) echo "secure boot: off" ;; *) echo "secure boot: unreadable" ;; esac
     printf 'setup mode: %s\n' "$(efi_byte SetupMode)"
     printf 'lockdown: %s\n' "$(sed -n 's/.*\[\(.*\)\].*/\1/p' "$SYS/kernel/security/lockdown" 2>/dev/null)"
+    # The TPM's version and the driver it came up under, and the hardware random number generator
+    # the kernel reads, if any: some firmware TPMs register none.
     tpm=none
-    for t in "$SYS"/class/tpm/tpm*; do [ -e "$t" ] && tpm="version $(one "$t/tpm_version_major")"; done
-    printf 'tpm: %s\n' "$tpm"
+    for t in "$SYS"/class/tpm/tpm*; do
+        [ -e "$t" ] || continue
+        drv="$(target "$t/device/driver")"
+        tpm="version $(one "$t/tpm_version_major"), driver ${drv:--}"
+    done
+    rng="$(one "$SYS/class/misc/hw_random/rng_current")"
+    printf 'tpm: %s; hwrng: %s\n' "$tpm" "${rng:-none}"
     # What confines a device's DMA: the IOMMUs in use, their groups by how they translate (DMA
     # strict, DMA-FQ lazy, identity not at all), and what Thunderbolt lets a plugged device do.
     units=""
@@ -148,6 +155,12 @@ cpu() {
         }' "$R/proc/cpuinfo" 2>/dev/null
     printf 'present: %s, online: %s, smt: %s\n' "$(one "$SYS/devices/system/cpu/present")" \
         "$(one "$SYS/devices/system/cpu/online")" "$(one "$SYS/devices/system/cpu/smt/control")"
+    # Which driver sets the clock, and how: power.sh's energy hints act only in a driver's active
+    # mode, and a firmware without CPPC leaves amd-pstate out.
+    pol="$SYS/devices/system/cpu/cpufreq/policy0"
+    fd="$(one "$pol/scaling_driver")"; fg="$(one "$pol/scaling_governor")"
+    fe="$(one "$pol/energy_performance_preference")"; fa="$(one "$SYS/devices/system/cpu/amd_pstate/status")"
+    printf 'cpufreq: %s, governor %s, epp %s, amd-pstate %s\n' "${fd:-none}" "${fg:--}" "${fe:--}" "${fa:--}"
     kmsg | sed -n 's/^\[[^]]*\] *\(microcode: .*\)/\1/p' | head -n 3
     for f in "$SYS"/devices/system/cpu/vulnerabilities/*; do
         [ -r "$f" ] && printf '%s: %s\n' "${f##*/}" "$(one "$f")"
@@ -409,6 +422,12 @@ laptop() {
             printf 'power_supply %s type %s online %s\n' "${p##*/}" "${t:--}" "${o:--}"
         fi
     done
+    sleeping
+    cameras
+}
+
+# The sleep states the kernel offers, how the last sleeps went, and what woke the machine.
+sleeping() {
     printf 'sleep states: %s\n' "$(one "$SYS/power/state")"
     printf 'sleep mem: %s\n' "$(one "$SYS/power/mem_sleep")"
     # The sleeps since boot, and how long the last kept the hardware in its deepest state: an
@@ -427,8 +446,31 @@ laptop() {
         done
     done
     printf 'power controller: %s\n' "${pmc:-none}"
-    # Intel's image processing units by PCI ID: the IPU6 and IPU7 ones 6.18's drivers bind (ipu6.h,
-    # staging ipu7.h), and IPU8's, which staging ipu7 names but does not bind yet.
+    # What ended the last sleep: the interrupt, where the kernel keeps it (PM_SLEEP_DEBUG), and the
+    # wakeup sources that fired most since boot. By their events: kryptikd sleeps without the
+    # wakeup_count handshake, so each source's wakeup_count stays 0.
+    irq="$(one "$SYS/power/pm_wakeup_irq")"
+    printf 'woken by irq: %s\n' "${irq:--}"
+    for w in "$SYS"/class/wakeup/wakeup*; do
+        wn="$(int "$w/event_count")"
+        [ "${wn:-0}" -gt 0 ] && printf '%s %s\n' "$wn" "$(one "$w/name")"
+    done | sort -rn | head -n 5 | while read -r wn ws; do printf 'wakeup source %s events %s\n' "$ws" "$wn"; done
+    # With the IOMMU on, amd-debug-tools holds AMD's family 1Ah models 0x20-0x2e, 0x60-0x6e and
+    # 0x70-0x7e to the ACPI device MSFT0201, and to pre-boot DMA protection (IVRS IVinfo bit 1) or
+    # MSFT0201 named in the IVRS: a firmware setting can take either away.
+    if [ -r "$SYS/firmware/acpi/tables/IVRS" ]; then
+        msft=absent
+        for a in "$SYS"/bus/acpi/devices/MSFT0201:*; do [ -e "$a" ] && msft=present; done
+        iv="$(od -An -tu4 -j36 -N4 "$SYS/firmware/acpi/tables/IVRS" 2>/dev/null | tr -d ' ')"
+        case "$iv" in ''|*[!0-9]*) dp=- ;; *) dp=off; [ $(( iv & 2 )) -eq 0 ] || dp=on ;; esac
+        named=no; LC_ALL=C grep -aq MSFT0201 "$SYS/firmware/acpi/tables/IVRS" && named=yes
+        printf 'amd iommu: msft0201 %s, pre-boot dma protection %s, msft0201 in ivrs %s\n' "$msft" "$dp" "$named"
+    fi
+}
+
+# Intel's image processing units by PCI ID: the IPU6 and IPU7 ones 6.18's drivers bind (ipu6.h,
+# staging ipu7.h), and IPU8's, which staging ipu7 names but does not bind yet.
+cameras() {
     for d in "$SYS"/bus/pci/devices/*; do
         [ "$(hex "$d/vendor")" = 8086 ] || continue
         case "$(hex "$d/device")" in

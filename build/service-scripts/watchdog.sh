@@ -5,14 +5,17 @@ set -u
 # AMD's TCO timer counts on through a sleep to idle (s2idle): its driver does not stop it for
 # one, as Intel's does, and the ticks that would feed it stop. Fed, it would reset a machine
 # that sleeps that way a minute into each sleep, so there it is left unopened, and stopped as
-# its driver leaves it. In ACPI's own sleep states the firmware stops it.
+# its driver leaves it. In ACPI's own sleep states the firmware stops it. The software
+# watchdog likewise: its clock runs whenever the s2idle loop wakes for an event that wakes
+# nothing, amd_pmc's 2.5 s pause after each deepest sleep included, so a night of an EC's
+# battery and charger events would spend its minute and reboot the sleeping machine.
 sleeps_to_idle() { grep -q '\[s2idle\]' /sys/power/mem_sleep 2>/dev/null; }
 fds=()
 for dev in /dev/watchdog[0-9]*; do
     [ -c "$dev" ] || continue
     name="${dev##*/}"
     id="$(cat "/sys/class/watchdog/${name}/identity" 2>/dev/null || echo unknown)"
-    if [ "$id" = "SP5100 TCO timer" ] && sleeps_to_idle; then
+    if { [ "$id" = "SP5100 TCO timer" ] || [ "$id" = "Software Watchdog" ]; } && sleeps_to_idle; then
         echo "watchdog: not feeding ${dev} (${id}): it would count through this machine's sleep to idle"
         continue
     fi

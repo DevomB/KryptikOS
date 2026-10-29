@@ -129,6 +129,18 @@ if [ "${1:-}" = --once ]; then
     exit 0
 fi
 
+# The state partition waits for its passphrase, read with builtins alone: a program started now
+# can wait on it. Then kryptikd keeps the 3% rule (suspend.rs), as neither the zones' stop nor
+# the shutdown's sync and unmounts could finish.
+sealed() {
+    local d n s
+    for d in "$SYS"/block/dm-*/dm; do
+        read -r n 2>/dev/null < "$d/name" && [ "$n" = kryptik-state ] || continue
+        read -r s 2>/dev/null < "$d/suspended" && [ "$s" = 1 ] && return 0
+    done
+    return 1
+}
+
 # Each running zone stopped as `kryptikd stop` does, its launcher closing its volume, then off.
 shut_down() {
     local z
@@ -158,7 +170,7 @@ while :; do
     fi
     # Twice running, so one odd reading does not end the session.
     if [ "$LOW" = yes ]; then low=$((low + 1)); else low=0; fi
-    if [ "$low" -ge 2 ]; then
+    if [ "$low" -ge 2 ] && ! sealed; then
         echo "power: the battery is at ${CHARGE}%: stopping the zones and powering off before it runs out"
         shut_down
     fi
