@@ -23,9 +23,10 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
         keep=0
         for k in $ETC_MUTABLE; do [ "$name" = "$k" ] && keep=1; done
         # A kept name must be a regular file, not a FIFO or a link into mutable state.
-        if [ "$keep" = 1 ] && [ -f "$e" ] && [ ! -L "$e" ]; then continue; fi
-        # localtime may link only into the verified zoneinfo tree.
-        if [ "$name" = localtime ] && [ -L "$e" ] && [ -f "$e" ]; then
+        if [ "$keep" = 1 ] && [ "$name" != localtime ] && [ -f "$e" ] && [ ! -L "$e" ]; then continue; fi
+        # localtime only as a link to a zone's file in the verified tree: glibc parses it in every
+        # process of zone 0's that shows a local time, root's among them.
+        if [ "$name" = localtime ] && [ -L "$e" ] && [ -f "$e" ] && [ "$(head -c4 -- "$e" 2>/dev/null)" = TZif ]; then
             case "$(realpath -e -- "$e")" in /usr/share/zoneinfo/*) continue ;; esac
         fi
         mkdir -p "$q" || return 1
