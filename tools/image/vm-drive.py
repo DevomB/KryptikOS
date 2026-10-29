@@ -32,6 +32,10 @@ Steps (each one argument):
     pointer:DX,DY           move the guest's mouse by DX,DY through QMP; it is
                             relative and accelerated, so a large move ends at
                             the screen's edge
+    button:NAME             click the guest's mouse button NAME through QMP
+                            (left, middle, right, wheel-up, wheel-down), where
+                            the pointer is; button-down:NAME presses it and
+                            button-up:NAME lets it go
     touch:X,Y               tap the touchscreen (run-ovmf.sh --touch) at X,Y,
                             thousandths of the first output's width and height:
                             one finger down, then lifted
@@ -363,6 +367,15 @@ def main():
                           {"type": "rel", "data": {"axis": "y", "value": dy}}]
                 r = qmp(qmpsock, "input-send-event", {"events": events})
                 if "error" in r: raise RuntimeError(f"input-send-event {rest}: {r['error']}")
+                time.sleep(0.3)
+            elif kind in ("button", "button-down", "button-up"):
+                if not qmpsock: raise RuntimeError(f"{kind} needs --qmp")
+                if rest not in ("left", "middle", "right", "wheel-up", "wheel-down"):
+                    raise RuntimeError(f"{kind}:{rest}: not left, middle, right, wheel-up or wheel-down")
+                for down in {"button": (True, False), "button-down": (True,), "button-up": (False,)}[kind]:
+                    r = qmp(qmpsock, "input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": rest}}]})
+                    if "error" in r: raise RuntimeError(f"input-send-event {kind}:{rest}: {r['error']}")
+                    time.sleep(0.1)
                 time.sleep(0.3)
             elif kind == "touch":
                 if not qmpsock: raise RuntimeError("touch needs --qmp")

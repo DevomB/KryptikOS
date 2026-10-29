@@ -375,6 +375,9 @@ The lock's check, in `make gui-test`:
 - the lock's program killed leaves the session locked with no window given
   the keyboard, and the lock locks again;
 - a grab a zone makes while locked keeps no key from the lock;
+- the pointer leaves every window at the lock: a click and a wheel turn
+  under it, the pointer unmoved on a zone's window, reach that window not at
+  all, nor do the moves and the release of a button held down into the lock;
 - the login password unlocks, and zone 0's window has the keyboard again;
 - the chrome arms the idle lock at ten minutes, and an idle lock of 8 s
   locks the session, turns the screen off 4 s later as the compositor

@@ -379,6 +379,8 @@ touch. Keys (Alt is the modifier):
 Alt+Shift+l locks the screen. Nothing shows but the word LOCKED and a mark
 for each character typed, and every key goes to the lock, so no window, zone
 0's or a zone's, sees the password; Ctrl+Alt+F2 does nothing while locked.
+No window gets the mouse either, not even one a button was held down on as
+the lock came.
 The volume, mute, microphone and brightness keys still work under the lock.
 Type the login password and Enter. After a wrong one the lock shows WRONG,
 and the next try waits 2 seconds, doubling with each wrong one in a row up
