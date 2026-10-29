@@ -290,7 +290,7 @@ fi
 # The country: kept beside the networks, root's, and handed to the kernel only from /var/lib.
 WCOUNTRY="$WORK/wifi/country"
 out="$(K wifi country 2>&1)"; rc=$?
-if (( rc == 0 )) && [[ "$out" == "none" ]]; then
+if (( rc == 0 )) && [[ "$out" == "country none" ]]; then
     pass "wifi country with none set says none"
 else
     fail "wifi country, none set: exit $rc, output '$out'"
@@ -303,7 +303,7 @@ else
     fail "wifi country de: exit $rc, output '$out', file '$(cat "$WCOUNTRY" 2>&1)'"
 fi
 out="$(K wifi country 2>&1)"; rc=$?
-if (( rc == 0 )) && [[ "$out" == DE ]]; then
+if (( rc == 0 )) && [[ "$out" == "country DE" ]]; then
     pass "wifi country then says DE"
 else
     fail "wifi country after de: exit $rc, output '$out'"
@@ -322,7 +322,7 @@ else
     fail "a lower-case country file: exit $rc, output '$out'"
 fi
 out="$(K wifi country 00 2>&1)"; rc=$?
-if (( rc == 0 )) && [[ "$out" == *"cleared"* && ! -e "$WCOUNTRY" && "$(K wifi country 2>&1)" == none ]]; then
+if (( rc == 0 )) && [[ "$out" == *"cleared"* && ! -e "$WCOUNTRY" && "$(K wifi country 2>&1)" == "country none" ]]; then
     pass "wifi country 00 removes the file: the rules that hold everywhere again"
 else
     fail "wifi country 00: exit $rc, output '$out'"

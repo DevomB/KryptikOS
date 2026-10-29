@@ -1441,12 +1441,13 @@ fn cmd_wifi(zones_dir: &Path, args: &[String]) -> ExitCode {
         }
         ("country", None) => match wifi::country(&dir) {
             Ok(c) => {
-                println!("{}", c.as_deref().unwrap_or("none"));
+                println!("country {}", c.as_deref().unwrap_or("none"));
                 ExitCode::SUCCESS
             }
             Err(e) => refused(e),
         },
-        // Root's, as `kryptikd serve` runs it for the desktop: the kernel takes it from zone 0 alone.
+        // Root's, as `kryptikd serve` runs it for the desktop as a job: the kernel takes a country
+        // from zone 0 alone, and one it drops is waited out for seconds.
         ("country", Some(c)) => match wifi::check_country(c).and_then(|c| wifi::set_country(&dir, &c)) {
             Ok(said) => {
                 println!("{said}");

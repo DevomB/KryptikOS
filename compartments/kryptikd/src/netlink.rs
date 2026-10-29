@@ -17,6 +17,7 @@ const CTRL_ATTR_FAMILY_NAME: u16 = 2;
 const NL80211_CMD_NEW_INTERFACE: u8 = 7;
 const NL80211_CMD_DEL_INTERFACE: u8 = 8;
 const NL80211_CMD_REQ_SET_REG: u8 = 27;
+const NL80211_CMD_GET_REG: u8 = 31;
 const NL80211_CMD_SET_WIPHY_NETNS: u8 = 49;
 const NL80211_ATTR_REG_ALPHA2: u16 = 33;
 const NL80211_ATTR_WIPHY: u16 = 1;
@@ -440,6 +441,33 @@ fn country_msg(family: u16, alpha2: &str) -> Vec<u8> {
 pub fn set_country(alpha2: &str) -> io::Result<()> {
     let family = genl_family_id("nl80211")?;
     transact_on(NETLINK_GENERIC, country_msg(family, alpha2), &format!("set the Wi-Fi country {alpha2}")).map(|_| ())
+}
+
+/// NL80211_ATTR_REG_ALPHA2 in a GET_REG reply (its genlmsghdr, then attributes).
+fn reg_alpha2(reply: &[u8]) -> Option<String> {
+    let mut off = 4;
+    while off + 4 <= reply.len() {
+        let len = u16::from_ne_bytes(reply[off..off + 2].try_into().unwrap()) as usize;
+        let kind = u16::from_ne_bytes(reply[off + 2..off + 4].try_into().unwrap()) & NLA_TYPE_MASK;
+        if len < 4 || off + len > reply.len() {
+            break;
+        }
+        if kind == NL80211_ATTR_REG_ALPHA2 {
+            let v = reply[off + 4..off + len].split(|&b| b == 0).next().unwrap_or_default();
+            return std::str::from_utf8(v).ok().map(str::to_string);
+        }
+        off += align4(len);
+    }
+    None
+}
+
+/// `iw reg get`'s global country: whose rules the radios follow now, 00 for the rules that hold
+/// everywhere, 98 where an access point's country was intersected with it. Asked by anyone.
+pub fn current_country() -> io::Result<Option<String>> {
+    let family = genl_family_id("nl80211")?;
+    let mut m = Msg::new(family, 0, 1);
+    m.genlmsghdr(NL80211_CMD_GET_REG, 0);
+    transact_on(NETLINK_GENERIC, m.finish(), "read the Wi-Fi country").map(|r| reg_alpha2(&r))
 }
 
 /// `iw phy <phy> interface add <name> type managed`: a station netdev on a wiphy, `%d` in

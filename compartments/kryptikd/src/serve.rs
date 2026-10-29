@@ -836,6 +836,9 @@ enum JobKind {
     Stop { uid: u32, zone: String },
     UpdateApply,
     WifiScan,
+    /// `kryptikd wifi country`, which waits for the kernel to take the country, and for seconds
+    /// after one it drops.
+    WifiCountry,
     /// The machine's sleep, whose write returns once it has woken: the daemon answers the
     /// screen lock meanwhile.
     Sleep,
@@ -1009,6 +1012,15 @@ fn finish_job(j: &mut Job, st: i32) {
         JobKind::WifiScan => {
             let why = why(j, "the scan failed");
             reply(&j.conn, &format!("error: {why}\n"));
+        }
+        JobKind::WifiCountry if ok => {
+            let said = read_back(&mut j.out);
+            eprintln!("kryptikd serve: wifi-country: {}", said.trim());
+            reply(&j.conn, &format!("ok {}\n", said.trim()));
+        }
+        JobKind::WifiCountry => {
+            let why = why(j, "the country was not set");
+            reply(&j.conn, &format!("error: {}\n", why.strip_prefix("kryptikd: wifi: ").unwrap_or(&why)));
         }
         JobKind::Sleep if ok => {
             eprintln!("kryptikd serve: woke; the state partition waits for its passphrase");
@@ -1802,21 +1814,30 @@ fn handle(cfg: &ServeConfig, conn: UnixStream, jobs: &mut Vec<Job>, pauses: &mut
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
             }
         }
-        // The country whose radio rules hold: shown, or set for now and every later boot.
-        "wifi-country" => {
-            let said = match first.split_whitespace().collect::<Vec<_>>().as_slice() {
-                [_] => crate::wifi::country(&cfg.wifi_dir).map(|c| format!("country {}", c.as_deref().unwrap_or("none"))),
-                [_, c] => crate::wifi::check_country(c).and_then(|c| crate::wifi::set_country(&cfg.wifi_dir, &c)),
-                _ => Err("usage: wifi-country [COUNTRY]".into()),
-            };
-            match said {
-                Ok(s) => {
-                    eprintln!("kryptikd serve: uid {uid} wifi-country: {s}");
-                    reply(&conn, &format!("ok {s}\n"));
-                }
+        // The country whose radio rules hold: shown, or set for now and every later boot by a job,
+        // as the kernel is waited for.
+        "wifi-country" => match first.split_whitespace().collect::<Vec<_>>().as_slice() {
+            [_] => match crate::wifi::country(&cfg.wifi_dir) {
+                Ok(c) => reply(&conn, &format!("ok country {}\n", c.as_deref().unwrap_or("none"))),
                 Err(e) => reply(&conn, &format!("error: {e}\n")),
-            }
-        }
+            },
+            [_, c] => match crate::wifi::check_country(c) {
+                Err(e) => reply(&conn, &format!("error: {e}\n")),
+                Ok(_) if jobs.iter().any(|j| j.what == JobKind::WifiCountry) => {
+                    reply(&conn, "error: a country is already being set\n");
+                }
+                Ok(c) => {
+                    eprintln!("kryptikd serve: uid {uid} wifi-country {c}");
+                    let mut cmd = std::process::Command::new("/proc/self/exe");
+                    cmd.args(["wifi", "country", c.as_str(), "--wifi-dir"]).arg(&cfg.wifi_dir);
+                    match start_job(conn, JobKind::WifiCountry, &mut cmd) {
+                        Ok(j) => jobs.push(j),
+                        Err((conn, e)) => reply(&conn, &format!("error: {e}\n")),
+                    }
+                }
+            },
+            _ => reply(&conn, "error: usage: wifi-country [COUNTRY]\n"),
+        },
         "wifi-list" => match crate::wifi::list(&cfg.wifi_dir) {
             Ok(names) => {
                 let mut out = String::new();

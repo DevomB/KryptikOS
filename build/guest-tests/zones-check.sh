@@ -1425,6 +1425,16 @@ if [[ -n "$line" ]] && reg_is DE && uncaught | grep -aq 'kryptikd: zone "[^"]*":
 else
     fail "wifi-country-at-start" "READY again: ${line:-no}; the kernel: $(/usr/sbin/iw reg get 2>&1 | grep -m1 '^country'); kryptikd: $(uncaught | grep -a 'Wi-Fi country' | tail -2 | tr '\n' ' ')"
 fi
+# A code the regulatory database lacks is dropped by the kernel, so it is refused, nothing is
+# saved, and DE is told again once cfg80211 has fallen back to the rules that hold everywhere.
+uk_said="$("$KD" wifi country uk --wifi-dir "$WIFI_DIR" 2>&1)"; uk_rc=$?
+for _ in $(seq 10); do reg_is DE && break; sleep 1; done
+if [[ "$uk_rc" -ne 0 && "$uk_said" == *"UK is not a country the regulatory database holds (the United Kingdom's is GB)"* \
+      && "$(cat "$WIFI_DIR/country" 2>/dev/null)" == DE ]] && reg_is DE; then
+    pass "wifi-country-unknown" "uk refused, DE kept in the file and in the kernel: ${uk_said#kryptikd: wifi: }"
+else
+    fail "wifi-country-unknown" "exit ${uk_rc}: ${uk_said}; kept: $(cat "$WIFI_DIR/country" 2>&1); the kernel: $(/usr/sbin/iw reg get 2>&1 | grep -m1 '^country')"
+fi
 "$KD" wifi country 00 --wifi-dir "$WIFI_DIR" > "$LOG/wifi-country-clear.out" 2>&1
 [[ ! -e "$WIFI_DIR/country" ]] || fail "wifi-country-cleared" "$(cat "$LOG/wifi-country-clear.out")"
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.

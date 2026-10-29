@@ -180,6 +180,22 @@ fn a_country_is_asked_as_iw_reg_set_asks() {
 }
 
 #[test]
+fn the_country_is_read_from_a_get_reg_reply() {
+    // genlmsghdr, then the DFS region (u8, padded) before the country, as nl80211 sends them.
+    let mut r = vec![31, 0, 0, 0];
+    r.extend_from_slice(&5u16.to_ne_bytes());
+    r.extend_from_slice(&195u16.to_ne_bytes());
+    r.extend_from_slice(&[1, 0, 0, 0]);
+    r.extend_from_slice(&7u16.to_ne_bytes());
+    r.extend_from_slice(&33u16.to_ne_bytes());
+    r.extend_from_slice(b"DE\0\0");
+    assert_eq!(reg_alpha2(&r).as_deref(), Some("DE"));
+    assert_eq!(reg_alpha2(&r[..12]), None, "no country attribute");
+    assert_eq!(reg_alpha2(&r[..18]), None, "a truncated attribute is not read");
+    assert_eq!(reg_alpha2(&[]), None);
+}
+
+#[test]
 fn address_plan_is_fixed() {
     assert_eq!(zone_v4(2), [10, 19, 0, 2]);
     assert_eq!(zone_v6(2)[15], 2);

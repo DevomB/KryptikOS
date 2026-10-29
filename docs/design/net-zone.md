@@ -273,9 +273,15 @@ configured the zone keeps its IPv4 path and the launcher says so.
   cfg80211's regulatory domain, global to the machine. Setting one
   (`NL80211_CMD_REQ_SET_REG`) takes `CAP_NET_ADMIN` in the initial user
   namespace (`GENL_ADMIN_PERM`), which the net zone, in a user namespace of
-  its own, does not have. So `kryptik wifi country XX` has kryptikd keep the
-  country in `/var/lib/kryptik/wifi/country` (root's, 0600) and send it at
-  once. Each start of the net zone sends it again before the radios move,
+  its own, does not have. So `kryptik wifi country XX` has kryptikd send it
+  at once and read the kernel's country back (`NL80211_CMD_GET_REG`). Only a
+  country the kernel took is kept, in `/var/lib/kryptik/wifi/country` (root's,
+  0600). A code the regulatory database lacks (`UK`, where it names `GB`) is
+  dropped, and cfg80211 then falls back to the rules that hold everywhere
+  some 3 s later (its CRDA timeout). So such a code is refused, and the
+  country kept before is sent again after that. `kryptikd serve` runs this
+  as a job, as it runs a scan, so the daemon never waits on it.
+  Each start of the net zone sends the kept country again before the radios move,
   as a boot starts on the rules that hold everywhere: no 6 GHz, and every
   5 GHz channel heard before it is used. The user's hint is kept across
   disconnects, where an access point's own country is dropped. The state

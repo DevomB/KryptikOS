@@ -486,8 +486,10 @@ network that names one:
 
 `kryptik wifi country XX`, with your country's two letters (`US`, `DE`,
 `GB`), sets your country's rules now and at every later boot, and
-`kryptik wifi country` alone says which is set. `kryptik wifi country 00`
-goes back to the rules that hold everywhere. As root, `/usr/sbin/iw reg get`
+`kryptik wifi country` alone says which is set. A code the radio rules do not
+know is refused, the United Kingdom's `UK` among them (its code there is
+`GB`). `kryptik wifi country 00` goes back to the rules that hold
+everywhere. As root, `/usr/sbin/iw reg get`
 shows the rules in force. A radio whose firmware keeps its own rules, as
 Intel's do, follows those instead, and `/usr/sbin/iw reg get` names it as
 self-managed.

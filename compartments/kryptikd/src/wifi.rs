@@ -504,22 +504,57 @@ pub fn save_country(dir: &Path, country: &str) -> Result<(), String> {
     crate::files::write_atomic(&path, &[format!("{country}\n").as_bytes()], 0o600, None).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Save the country and tell the kernel now; the net zone's start tells it again after a boot.
-/// Other directories (tests) only save it, as `restart_net_zone` leaves their net zone alone.
-pub fn set_country(dir: &Path, country: &str) -> Result<String, String> {
-    save_country(dir, country)?;
-    let said = if country == "00" {
+fn country_said(country: &str) -> String {
+    if country == "00" {
         "the Wi-Fi country is cleared: the radios follow the rules that hold everywhere".to_string()
     } else {
         format!("the Wi-Fi country is {country}")
-    };
-    if dir != Path::new(DEFAULT_DIR) {
-        return Ok(format!("{said}; the kernel was not told, as {} is not {DEFAULT_DIR}", dir.display()));
     }
-    Ok(match crate::netlink::set_country(country) {
-        Ok(()) => said,
-        Err(e) => format!("{said} from the net zone's next start; the kernel refused it now: {e}"),
-    })
+}
+
+/// Whether the kernel's country is `country` within two seconds of the hint: it takes a hint on
+/// its regulatory work, a moment later. 98, its intersection with a joined access point's
+/// country, is counted as taken too, as the country itself never shows then; joined that way
+/// before the hint, a code the database lacks would pass, and stay without effect.
+fn kernel_took(country: &str) -> bool {
+    for _ in 0..20 {
+        if let Ok(Some(now)) = crate::netlink::current_country() {
+            if now == country || now == "98" {
+                return true;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
+/// Tell the kernel the country and keep it once the kernel has taken it; the net zone's start
+/// tells it again after a boot. A code the regulatory database lacks (UK, where it names GB) is
+/// dropped, and about 3 s later cfg80211 falls back to the rules that hold everywhere, so the
+/// country kept before is told again after that and nothing is saved. Other directories (tests)
+/// only save it, as `restart_net_zone` leaves their net zone alone.
+pub fn set_country(dir: &Path, country: &str) -> Result<String, String> {
+    if dir != Path::new(DEFAULT_DIR) {
+        save_country(dir, country)?;
+        return Ok(format!("{}; the kernel was not told, as {} is not {DEFAULT_DIR}", country_said(country), dir.display()));
+    }
+    let before = self::country(dir).ok().flatten();
+    let told = std::time::Instant::now();
+    crate::netlink::set_country(country).map_err(|e| format!("the kernel refused the Wi-Fi country {country}: {e}"))?;
+    if kernel_took(country) {
+        save_country(dir, country)?;
+        return Ok(country_said(country));
+    }
+    let kept = match before {
+        Some(b) => {
+            std::thread::sleep(std::time::Duration::from_millis(4000).saturating_sub(told.elapsed()));
+            let _ = crate::netlink::set_country(&b);
+            format!("the radios keep {b}")
+        }
+        None => "the radios keep the rules that hold everywhere".to_string(),
+    };
+    let gb = if country == "UK" { " (the United Kingdom's is GB)" } else { "" };
+    Err(format!("{country} is not a country the regulatory database holds{gb}: nothing was saved, and {kept}"))
 }
 
 /// Where the nic zone answers a scan, in its own root (tools/net/netzone-init.sh, `scan_radios`).
