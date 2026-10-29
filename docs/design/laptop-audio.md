@@ -31,11 +31,15 @@ platform's SOF driver is built, so with none built it finds no row and
   microphones are all silent, and as that card has no device 0 the mixer
   plays to none of it, a monitor's speakers included.
 - **AMD laptops:** on most the codec is on HD Audio, so the speakers and
-  the jack work. The built-in microphones are on the audio coprocessor (ACP)
-  and do not. Some, from the coprocessor's 6.3 generation (Ryzen 7040) on,
-  put their codecs on SoundWire behind the coprocessor instead, and there,
-  as on Intel's SoundWire laptops, the speakers, the jack and the
-  microphones are all silent.
+  the jack work. Where the built-in microphones are on the audio
+  coprocessor (ACP), as on many consumer models (HP's OMEN and Victus among
+  them), they do not. Some put them on the codec's digital-microphone input
+  instead, as the kernel logs of HP's EliteBook 8 G1a and 845 G9 show, and
+  HD Audio then drives them as it does a headset's microphone; no such
+  laptop has run Kryptik yet. Some, from the coprocessor's 6.3 generation
+  (Ryzen 7040) on, put their codecs on SoundWire behind the coprocessor
+  instead, and there, as on Intel's SoundWire laptops, the speakers, the
+  jack and the microphones are all silent.
 - **Smart amplifiers** in front of the speakers (Cirrus's CS35L41, CS35L54,
   CS35L56 and CS35L57, TI's TAS2781), on Intel and AMD laptops alike:
   linux-firmware has tuning files for about 200 models, most of them ASUS,
@@ -50,7 +54,14 @@ USB audio works on all of them. A machine shows which kinds it is without
 any of these drivers: the audio controller's PCI class (0x040100 or
 0x040380 means a DSP, 0x040300 none), an `NHLT` table under
 `/sys/firmware/acpi/tables`, and whether its ACPI tables describe SoundWire
-links or amplifiers (`CSC3551` for Cirrus's CS35L41, `TIAS2781` for TI's).
+links or amplifiers, which `ls /sys/bus/acpi/devices` lists: `CSC3551`,
+`CLSA0100` and `CLSA0101` for Cirrus's CS35L41; `CSC3554`, `CSC3556` and
+`CSC3557` for its CS35L54, CS35L56 and CS35L57; `TIAS2781` and `TXNW2781`
+for TI's. On AMD, the codec
+shows whether it has the microphones: the kernel's autoconfig line for a
+Realtek codec lists `Internal Mic=0x12`, and pin 0x12 in
+`/proc/asound/card*/codec#0` has an internal-microphone default rather than
+0x411111f0, the value of a pin with nothing on it.
 Testing on physical hardware is planned for October 2026. The Intel and AMD
 laptops tested then will show which kinds they are.
 
@@ -188,8 +199,9 @@ laptops tested then will show which kinds they are.
 ## Recommendation: a named gap in 1.0
 
 1.0 ships without most of them, and the user guide's known limitations say
-so: no built-in microphones on Intel laptops with a DSP or on AMD laptops,
-no built-in sound on SoundWire laptops, and no speakers behind smart
+so: no built-in microphones on Intel laptops with a DSP or on AMD laptops
+whose microphones are on the coprocessor, no built-in sound on SoundWire
+laptops, and no speakers behind smart
 amplifiers other than Cirrus's CS35L54, CS35L56 and CS35L57 on I2C.
 
 Those three are built ahead of the rule below, that each comes only once a
