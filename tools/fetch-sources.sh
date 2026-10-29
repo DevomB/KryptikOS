@@ -98,7 +98,7 @@ xz|${V_XZ}|${MIRROR_XZ}/v${V_XZ}/xz-${V_XZ}.tar.xz|sig|github
 file|${V_FILE}|${MIRROR_FILE}/file-${V_FILE}.tar.gz|asc|listing
 zlib|${V_ZLIB}|${MIRROR_GITHUB}/madler/zlib/releases/download/v${V_ZLIB}/zlib-${V_ZLIB}.tar.gz|asc|github
 bzip2|${V_BZIP2}|${MIRROR_SOURCEWARE}/bzip2/bzip2-${V_BZIP2}.tar.gz|sig|listing
-zstd|${V_ZSTD}|${MIRROR_GITHUB}/facebook/zstd/releases/download/v${V_ZSTD}/zstd-${V_ZSTD}.tar.gz|sig|github
+zstd|${V_ZSTD}|${MIRROR_GITHUB}/meta/zstd/releases/download/v${V_ZSTD}/zstd-${V_ZSTD}.tar.gz|sig|github
 expat|${V_EXPAT}|${MIRROR_GITHUB}/libexpat/libexpat/releases/download/R_${V_EXPAT//./_}/expat-${V_EXPAT}.tar.xz|asc|github
 libffi|${V_LIBFFI}|${MIRROR_GITHUB}/libffi/libffi/releases/download/v${V_LIBFFI}/libffi-${V_LIBFFI}.tar.gz|probe|github
 libxcrypt|${V_LIBXCRYPT}|${MIRROR_GITHUB}/besser82/libxcrypt/releases/download/v${V_LIBXCRYPT}/libxcrypt-${V_LIBXCRYPT}.tar.xz|asc|github
