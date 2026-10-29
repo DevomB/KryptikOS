@@ -99,6 +99,33 @@ grep -q ' wl_compositor ' "$W/list" && check ok "a client lists dwl's globals ($
 WAYLAND_DISPLAY=wayland-0 timeout 20 "$W/wlprobe" oversize 0 3 kryptik-headless > "$W/window" 2>&1
 grep -q '^committed ' "$W/window" && check ok "a client maps a window and draws it" \
     || check no "the window was not drawn: $(tail -3 "$W/window" | tr '\n' ' ')"
+# A window starts on a whole pixel of its output (dwl-zone-borders.py's snaptopixel). At 1 the one
+# window fills the 1280x720 output inside its border. At 1.25, set as the chrome sets it, the
+# output is 1024x576, and the window gives up the pixels from its border's inner edge to the next
+# multiple of 4 across and down.
+bw="$(sed -n 's/^static const unsigned int borderpx *= *\([0-9]*\);.*/\1/p' "$REPO/build/desktop/dwl-config.h")"
+conf() { grep -o 'for a [0-9]*x[0-9]* configure' "$1" | tail -1 | grep -o '[0-9]*x[0-9]*'; }
+want="$((1280 - 2 * bw))x$((720 - 2 * bw))"
+[[ "$(conf "$W/window")" == "$want" ]] && check ok "at scale 1 the window fills the output inside its border (${want})" \
+    || check no "at scale 1 the window was configured $(conf "$W/window"), not ${want}"
+WLR="$(fetch_pinned wlroots "wlroots-${V_WLROOTS}.tar.gz" "$V_WLROOTS")" || exit 1
+xml="$WLR/protocol/wlr-output-management-unstable-v1.xml"
+mkdir -p "$W/proto" "$W/conf/kryptik"
+# shellcheck disable=SC2046
+if wayland-scanner client-header "$xml" "$W/proto/wlr-output-management-unstable-v1-client-protocol.h" \
+   && wayland-scanner private-code "$xml" "$W/proto/wlr-output-management-unstable-v1-protocol.c" \
+   && gcc -O2 -I"$W/proto" -o "$W/kryptik-display" "$REPO/tools/desktop/kryptik-display.c" \
+          "$W/proto/wlr-output-management-unstable-v1-protocol.c" $(pkg-config --cflags --libs wayland-client); then
+    echo '* 1.25' > "$W/conf/kryptik/display"
+    XDG_CONFIG_HOME="$W/conf" WAYLAND_DISPLAY=wayland-0 timeout 20 "$W/kryptik-display" apply > "$W/display" 2>&1
+    WAYLAND_DISPLAY=wayland-0 timeout 20 "$W/wlprobe" oversize 0 3 kryptik-grid > "$W/window-grid" 2>&1
+    step=$(( (4 - bw % 4) % 4 ))
+    want="$((1024 - step - 2 * bw))x$((576 - step - 2 * bw))"
+    [[ "$(conf "$W/window-grid")" == "$want" ]] && check ok "at 1.25 the window starts on a whole pixel (${want})" \
+        || check no "at 1.25 the window was configured $(conf "$W/window-grid"), not ${want}; kryptik-display: $(tr '\n' ' ' < "$W/display")"
+else
+    check no "kryptik-display does not build here"
+fi
 kill -0 "$dwlpid" 2>/dev/null && check ok "dwl still runs after its clients left" \
     || check no "dwl ended: $(tail -8 "$W/dwl.log" | tr '\n' ' ')"
 [[ -s "$W/status" ]] && check ok "dwl prints its status to the status command" || check no "no status line reached the status command"
