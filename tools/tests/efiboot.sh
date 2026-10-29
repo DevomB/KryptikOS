@@ -43,6 +43,8 @@ opt() {
     printf '\\x01\\x00\\x00\\x00\\x%02x\\x%02x%s\\x04\\x04\\x%02x\\x%02x%s\\x7f\\xff\\x04\\x00' \
         $(( (fl + 4) & 255 )) $(( (fl + 4) >> 8 )) "$(ucs2 "$1")" $(( fl & 255 )) $(( fl >> 8 )) "$(ucs2 "$2")"
 }
+# netopt DESC: an active load option that boots from the network (a MAC node), as a printf format.
+netopt() { printf '\\x01\\x00\\x00\\x00\\x29\\x00%s\\x03\\x0b\\x25\\x00%s\\x01\\x7f\\xff\\x04\\x00' "$(ucs2 "$1")" "$(printf '\\x00%.0s' $(seq 32))"; }
 KA="$(opt 'Kryptik slot a' '\EFI\kryptik\kryptik-a.efi')"
 KB="$(opt 'Kryptik slot b' '\EFI\kryptik\kryptik-b.efi')"
 WIN="$(opt 'Windows Boot Manager' '\EFI\Microsoft\Boot\bootmgfw.efi')"
@@ -122,6 +124,42 @@ check "slot b's entry is Boot00B0, on it" "$(efiboot list | grep -cF 'Boot00B0: 
 rm -f "$V"/*
 efiboot ensure b /dev/sdz9 > "$T/out" 2>&1; rc=$?
 check "a partition without the kryptik-esp label is refused, and nothing is written" "$rc|$(grep -c 'is not a kryptik-esp partition' "$T/out")|$(find "$V" -type f | wc -l)" "1|1|0"
+
+echo "-- a new entry goes ahead of network boot, never ahead of another system's"
+NET="$(netopt 'IPv4 Network')"
+rm -f "$V"/*; var Boot0000 "$WIN"; var Boot0001 "$MACHINE"; var Boot0002 "$NET"; var Boot0003 "$NET"
+var BootOrder '\x00\x00\x01\x00\x02\x00\x03\x00'
+efiboot ensure a > "$T/out" 2>&1; rc=$?
+check "ensure succeeds" "$rc" "0"
+check "slot a's entry goes after the disks and ahead of both network entries" "$(data BootOrder)" "00000100a00002000300"
+rm -f "$V"/*; var Boot0000 "$WIN"; var Boot0002 "$NET"; var BootOrder '\x02\x00\x00\x00'
+efiboot ensure a > "$T/out" 2>&1
+check "but behind another system's entry listed after the network" "$(data BootOrder)" "02000000a000"
+rm -f "$V"/*; var Boot0002 "$NET"; var BootOrder '\x02\x00'
+efiboot ensure a > "$T/out" 2>&1
+check "and first in an order of network boot alone" "$(data BootOrder)" "a0000200"
+
+echo "-- keep: the committed slot's entry where Kryptik's stood"
+# The trial's entry went in after slot a's; committed, slot b takes the place slot a had.
+rm -f "$V"/*; var Boot0001 "$MACHINE"; var Boot0002 "$NET"; var Boot00A0 "$KA"; var BootOrder '\x01\x00\xa0\x00\x02\x00'
+efiboot set-next b > "$T/out" 2>&1
+check "a trial's entry goes behind the committed one, ahead of the network" "$(data BootOrder)" "0100a000b0000200"
+efiboot keep b > "$T/out" 2>&1; rc=$?
+check "keep succeeds" "$rc" "0"
+check "slot b's entry stands where slot a's did, and slot a's is gone" "$(data BootOrder)|$(data Boot00A0)|$(data BootNext)" "0100b0000200|absent|absent"
+check "slot b's entry is Boot00B0" "$(efiboot list | grep -cF 'Boot00B0: Kryptik slot b  file=\EFI\kryptik\kryptik-b.efi')" "1"
+# Moved first in the firmware's setup, it stays first.
+rm -f "$V"/*; var Boot0000 "$WIN"; var Boot0001 "$MACHINE"; var Boot00A0 "$KA"; var BootOrder '\xa0\x00\x00\x00\x01\x00'
+efiboot keep a > "$T/out" 2>&1
+check "an entry the user moved first stays first" "$(data BootOrder)" "a00000000100"
+rm -f "$V"/*; var Boot0001 "$MACHINE"; var Boot0002 "$NET"; var BootOrder '\x01\x00\x02\x00'
+efiboot keep a > "$T/out" 2>&1
+check "with no Kryptik entry in the order it goes where ensure puts one" "$(data BootOrder)" "0100a0000200"
+rm -f "$V"/*; var Boot0001 "$MACHINE"; var Boot00A0 "$KA"; var BootOrder '\x01\x00\xa0\x00'
+efiboot keep b /dev/sdz9 > "$T/out" 2>&1; rc=$?
+check "an entry that cannot be made exits 3, with Kryptik's others forgotten" "$rc|$(data BootOrder)|$(data Boot00A0)" "3|0100|absent"
+efiboot keep c > "$T/out" 2>&1; rc=$?
+check "a slot other than a or b is refused before anything is forgotten" "$rc|$(data BootOrder)" "2|0100"
 
 echo "-- an order longer than 254 entries"
 # 300 of the machine's own numbers, 0x1000 up: past the 508 bytes a 512-byte read held.

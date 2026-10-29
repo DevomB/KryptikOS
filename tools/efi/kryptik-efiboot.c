@@ -8,9 +8,12 @@
  *                                        the partition when it is not this installation's
  *   kryptik-efiboot forget               delete Kryptik's entries, and BootNext if it names one,
  *                                        drop them from BootOrder: the firmware boots BOOTX64.EFI
+ *   kryptik-efiboot keep SLOT [ESP]      forget, then ensure SLOT where Kryptik's first entry
+ *                                        stood in BootOrder; exits 3 if only the entry failed
  *
  * An entry is Kryptik's by its description and file, never its number: slot a's is Boot00A0
- * and slot b's Boot00B0 unless another system holds that number, then the next free one. */
+ * and slot b's Boot00B0 unless another system holds that number, then the next free one. A new
+ * entry goes in BootOrder after the last entry that does not boot from the network. */
 #define _GNU_SOURCE
 #include <ctype.h>
 #include <dirent.h>
@@ -285,6 +288,34 @@ static int holds(const unsigned char *list, size_t len, uint16_t num) {
     return 0;
 }
 
+/* Does entry NUM boot from the network: a MAC, IPv4, IPv6 or URI node in its device path? */
+static int is_network(uint16_t num) {
+    char var[9]; snprintf(var, sizeof var, "Boot%04X", (unsigned)num);
+    unsigned char buf[2048]; size_t n = 0;
+    if (read_var(var, buf, sizeof buf, &n) || n < 6) return 0;
+    size_t i = 6;
+    while (i + 1 < n) { uint16_t c = buf[i] | (buf[i+1] << 8); i += 2; if (!c) break; }
+    size_t end = i + (size_t)(buf[4] | (buf[5] << 8));
+    while (i + 4 <= end && i + 4 <= n) {
+        unsigned t = buf[i], st = buf[i+1]; size_t l = (size_t)(buf[i+2] | (buf[i+3] << 8));
+        if (l < 4 || t == 0x7f) break;
+        if (t == 3 && (st == 11 || st == 12 || st == 13 || st == 24)) return 1;
+        i += l;
+    }
+    return 0;
+}
+
+/* Where in ORDER a new entry goes, counted in entries: AT if that is a place in it, else after
+ * the last entry that does not boot from the network. A firmware lists its network boot after
+ * the disks and adds entries after that, where each boot would wait on the network first; no
+ * other system's entry is passed. */
+static size_t place(const unsigned char *order, size_t ol, size_t at) {
+    size_t n = ol / 2;
+    if (at <= n) return at;
+    while (n > 0 && is_network((uint16_t)(order[2*n-2] | (order[2*n-1] << 8)))) n--;
+    return n;
+}
+
 /* Where SLOT's entry goes: its existing entry (own number first), else its own number if free,
  * else the next number that no variable and no place in ORDER uses. */
 static int slot_var(const char *slot, char var[9], const unsigned char *order, size_t ol) {
@@ -301,9 +332,10 @@ static int slot_var(const char *slot, char var[9], const unsigned char *order, s
     return -1;
 }
 
-static int ensure_with(const char *slot, const struct part *esp, char var[9], const unsigned char *order, size_t ol);
+static int ensure_with(const char *slot, const struct part *esp, char var[9], const unsigned char *order, size_t ol, size_t at);
 
-static int ensure_entry(const char *slot, const char *named, char var[9]) {
+/* AT is the entry's place in BootOrder should it not be there (place), SIZE_MAX for none. */
+static int ensure_entry(const char *slot, const char *named, char var[9], size_t at) {
     if (strcmp(slot, "a") && strcmp(slot, "b")) { errno = 0; return die("slot must be a or b"); }
     struct part esp; errno = 0;
     if (find_esp(&esp, named)) {
@@ -313,13 +345,13 @@ static int ensure_entry(const char *slot, const char *named, char var[9]) {
     }
     unsigned char *order; size_t ol;
     if (read_order(&order, &ol)) return die("BootOrder cannot be read whole, so it is not rewritten");
-    int r = ensure_with(slot, &esp, var, order, ol);
+    int r = ensure_with(slot, &esp, var, order, ol, at);
     free(order);
     return r;
 }
 
 /* ensure_entry, with BootOrder as read. */
-static int ensure_with(const char *slot, const struct part *esp, char var[9], const unsigned char *order, size_t ol) {
+static int ensure_with(const char *slot, const struct part *esp, char var[9], const unsigned char *order, size_t ol, size_t at) {
     if (slot_var(slot, var, order, ol)) { errno = 0; return die("no Boot#### number is free"); }
     char own[9]; snprintf(own, sizeof own, "Boot%04X", !strcmp(slot, "a") ? 0x00A0u : 0x00B0u);
     if (strcmp(own, var) && var_exists(own)) printf("%s is another system's entry; slot %s's is %s\n", own, slot, var);
@@ -335,13 +367,15 @@ static int ensure_with(const char *slot, const struct part *esp, char var[9], co
         if (write_var(var, buf, n)) return die("writing the Boot#### entry failed");
         printf("%s -> %s on %s (PARTUUID %s)\n", var, file, esp->dev, esp->uuid);
     }
-    /* Last in BootOrder, for a firmware that ignores BootNext; forget removes it. */
+    /* In BootOrder too, for a firmware that ignores BootNext; forget removes it. */
     uint16_t num = (uint16_t)strtol(var + 4, NULL, 16);
     if (holds(order, ol, num)) return 0;
     unsigned char *grown = malloc(ol + 2);
     if (!grown) return die("updating BootOrder failed");
-    if (ol) memcpy(grown, order, ol);
-    put_u16(grown + ol, num);
+    size_t k = 2 * place(order, ol, at);
+    if (k) memcpy(grown, order, k);
+    put_u16(grown + k, num);
+    if (ol > k) memcpy(grown + k + 2, order + k, ol - k);
     int bad = write_var("BootOrder", grown, ol + 2);
     free(grown);
     return bad ? die("updating BootOrder failed") : 0;
@@ -349,7 +383,7 @@ static int ensure_with(const char *slot, const struct part *esp, char var[9], co
 
 static int cmd_set_next(const char *slot) {
     char var[9];
-    if (ensure_entry(slot, NULL, var)) return 1;
+    if (ensure_entry(slot, NULL, var, SIZE_MAX)) return 1;
     unsigned char v[2]; put_u16(v, (uint16_t)strtol(var + 4, NULL, 16));
     if (write_var("BootNext", v, 2)) return die("writing BootNext failed");
     printf("BootNext = %s (one boot)\n", var);
@@ -357,8 +391,10 @@ static int cmd_set_next(const char *slot) {
 }
 
 /* Drop Kryptik's entries, and a BootNext naming one or no entry, so BOOTX64.EFI (the committed
- * slot) boots: a firmware re-adds its disk entry last, behind any leftover Kryptik entry. */
-static int cmd_forget(void) {
+ * slot) boots: a firmware re-adds its disk entry last, behind any leftover Kryptik entry. *AT
+ * gets the place in what is left of BootOrder where the first of them stood, SIZE_MAX if none. */
+static int cmd_forget(size_t *at) {
+    *at = SIZE_MAX;
     char names[256][9], mine[256][9]; int cnt = boot_vars(names, 256), no = 0;
     unsigned char ours[512]; size_t on = 0;
     for (int i = 0; i < cnt; i++)
@@ -369,6 +405,7 @@ static int cmd_forget(void) {
     for (size_t i = 0; i + 1 < ol; i += 2) {
         uint16_t e = (uint16_t)(order[i] | (order[i+1] << 8));
         if (!holds(ours, on, e)) kl += put_u16(kept + kl, e);
+        else if (*at == SIZE_MAX) *at = kl / 2;
     }
     int failed = kl != ol && (kl == 0 ? delete_var("BootOrder") : write_var("BootOrder", kept, kl));
     free(order); free(kept);
@@ -385,6 +422,17 @@ static int cmd_forget(void) {
     if (bad) return 1;
     printf("forgotten: Kryptik's entries and BootNext; the firmware boots BOOTX64.EFI\n");
     return 0;
+}
+
+/* The end of a trial: forget, then SLOT's entry where Kryptik's first one stood, so a place the
+ * user gave it in the firmware's setup outlasts every update. The entry is made even if forget
+ * failed, as after forget then ensure: 1 when forget failed, 3 when only the entry did. */
+static int cmd_keep(const char *slot, const char *named) {
+    if (strcmp(slot, "a") && strcmp(slot, "b")) { errno = 0; die("slot must be a or b"); return 2; }
+    size_t at; char var[9];
+    int forgot = cmd_forget(&at) == 0;
+    int made = ensure_entry(slot, named, var, at) == 0;
+    return !forgot ? 1 : made ? 0 : 3;
 }
 
 static void print_entry(const char *var) {
@@ -407,12 +455,13 @@ static int cmd_list(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: kryptik-efiboot list | set-next a|b | clear-next | ensure a|b [ESP] | forget\n"); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: kryptik-efiboot list | set-next a|b | clear-next | ensure a|b [ESP] | forget | keep a|b [ESP]\n"); return 2; }
     if (access(EFIVARS, R_OK)) { errno = 0; return die("no efivarfs at " EFIVARS " (not a UEFI boot, or sysinit did not mount it)"); }
     if (!strcmp(argv[1], "list")) return cmd_list();
     if (!strcmp(argv[1], "set-next") && argc == 3) return cmd_set_next(argv[2]);
-    if (!strcmp(argv[1], "ensure") && (argc == 3 || argc == 4)) { char var[9]; return ensure_entry(argv[2], argc == 4 ? argv[3] : NULL, var); }
-    if (!strcmp(argv[1], "forget")) return cmd_forget();
+    if (!strcmp(argv[1], "ensure") && (argc == 3 || argc == 4)) { char var[9]; return ensure_entry(argv[2], argc == 4 ? argv[3] : NULL, var, SIZE_MAX); }
+    if (!strcmp(argv[1], "forget")) { size_t at; return cmd_forget(&at); }
+    if (!strcmp(argv[1], "keep") && (argc == 3 || argc == 4)) return cmd_keep(argv[2], argc == 4 ? argv[3] : NULL);
     if (!strcmp(argv[1], "clear-next")) { if (delete_var("BootNext")) return die("deleting BootNext failed"); printf("BootNext cleared\n"); return 0; }
     fprintf(stderr, "kryptik-efiboot: unknown command\n"); return 2;
 }
