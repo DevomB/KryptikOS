@@ -667,8 +667,10 @@ television's EDID may give its aspect ratio as its size, so only built-in
 panels are measured. A zone's window is told the exact scale through
 `wp_fractional_scale_v1`, which the proxy passes on (`policy.rs`), and a
 client that reads only `wl_output`'s whole number draws at that, which the
-compositor scales down to the fraction. havoc and kryptik-lock draw at 1 at
-every scale, so the compositor enlarges them, and they look soft at any scale
+compositor scales down to the fraction. havoc follows the exact scale too
+(`build/patches/havoc-0.7.0`'s `0003`): its font and buffer are drawn that
+much larger, behind a viewport at the window's size. kryptik-lock draws at 1
+at every scale, so the compositor enlarges it, and it looks soft at any scale
 but 1.
 
 Check: `make gui-test` writes the user's line for the first monitor at 1 and

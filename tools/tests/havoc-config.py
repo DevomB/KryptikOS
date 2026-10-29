@@ -92,6 +92,15 @@ check(bool(move) and added.count(f'\t\tstrcmp(mime_type, "{move}") == 0)') == 2
 check(bool(move) and f'\twl_data_source_offer(term.d_copy.source, "{move}");' in added,
       f"havoc's copies offer {move or '(no MOVE_TYPES found)'}")
 
+# The output's scale: both globals bound, the font drawn again at it, the viewport at the window's
+# size, and the Makefile generating both protocols' client code.
+scaled = ['\t\t\t&wp_viewporter_interface, 1);', '\t\t\t&wp_fractional_scale_manager_v1_interface, 1);',
+          '\tfont_resize((term.cfg.font_size * term.scale + 60) / 120, &term.cwidth, &term.cheight);',
+          '\t\t\twp_viewport_set_destination(term.viewport, term.confwidth, term.confheight);',
+          'int font_resize(int size, int *w, int *h)', 'fractional-scale-v1.xml:', 'viewporter.xml:']
+missing = [s.strip() for s in scaled if s not in added]
+check(not missing, "havoc draws at the output's scale behind a viewport" + (f" (not added: {missing})" if missing else ""))
+
 # The recipe applies the set before it builds and installs this file, not upstream's; stage 04
 # passes the file's digest.
 recipe = read("build", "recipes", "havoc.sh")

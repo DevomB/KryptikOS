@@ -375,7 +375,7 @@ jobs:
       - name: The compositor's sources, keyed by their sources.lock lines
         id: sources
         run: |
-          echo "key=$(grep -E '  (wlroots-|wayland-protocols-|wayland-[0-9]|dwl-v|pixman-|libdrm-|libxkbcommon-|meson-)' sources.lock | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "key=$(grep -E '  (wlroots-|wayland-protocols-|wayland-[0-9]|dwl-v|havoc-|pixman-|libdrm-|libxkbcommon-|meson-)' sources.lock | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
@@ -393,6 +393,11 @@ jobs:
       # error in them shows here, not hours into a Distro build.
       - name: dwl compiles with Kryptik's edits
         run: KRYPTIK_TEST_SOURCES="$HOME/.cache/kryptik-compositor-sources" tools/tests/dwl-compile.sh
+
+      # havoc with Kryptik's patches, built against the host's libwayland and the pinned
+      # wayland-protocols, as the terminals and the chrome's menu are.
+      - name: havoc builds with Kryptik's patches
+        run: KRYPTIK_TEST_SOURCES="$HOME/.cache/kryptik-compositor-sources" tools/tests/havoc-compile.sh
 
       # The same dwl built over the pinned libraries and run headless: it starts, serves a client a
       # window, and stops on SIGTERM.
