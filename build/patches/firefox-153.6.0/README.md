@@ -1,4 +1,4 @@
-# Firefox 153.5.0 ESR: building with GCC 14
+# Firefox 153.6.0 ESR: building with GCC 14
 
 Applied by `s_browser_firefox` in the browser image through `apply_repo_patches`;
 `SHA256SUMS` is verified before anything is applied.
