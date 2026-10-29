@@ -26,10 +26,12 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
         if [ "$keep" = 1 ] && [ "$name" != localtime ] && [ -f "$e" ] && [ ! -L "$e" ]; then continue; fi
         # localtime only as an absolute link to a zone's file in the verified tree: glibc parses it
         # in every process of zone 0's that shows a local time, root's among them. A relative link
-        # resolves from here now and from /etc later, so two places; the magic is read only from a
-        # file the path check has put in the tree.
+        # resolves from here now and from /etc later, and a .. can climb through /var, which is the
+        # state from sysinit on: either could lead one place now and another later. The magic is
+        # read only from a file the path check has put in the tree.
         if [ "$name" = localtime ] && [ -L "$e" ]; then
             case "$(readlink -- "$e")" in
+                */../*|*/..|*/./*|*/.) ;;
                 /usr/share/zoneinfo/*)
                     case "$(realpath -e -- "$e" 2>/dev/null)" in
                         /usr/share/zoneinfo/*) [ -f "$e" ] && [ "$(head -c4 -- "$e" 2>/dev/null)" = TZif ] && continue ;;
