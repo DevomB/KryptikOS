@@ -23,9 +23,11 @@ stage() {   # a fresh upper layer holding what an attacker and the system would 
     printf 'kernel.kptr_restrict = 0\n' > "$T/up/sysctl.d/99-evil.conf"
     printf 'export PATH=/var/lib/evil:$PATH\n' > "$T/up/profile"
     printf 'passwd: evil\n' > "$T/up/nsswitch.conf"
-    for f in shadow group gshadow subuid subgid passwd- .pwd.lock hostname machine-id localtime adjtime resolv.conf; do
+    for f in shadow group gshadow subuid subgid passwd- .pwd.lock hostname machine-id adjtime resolv.conf; do
         printf 'kept\n' > "$T/up/$f"
     done
+    # A zone's magic, but no link into the verified tree: glibc would parse whatever the partition holds.
+    printf 'TZif2' > "$T/up/localtime"
 }
 
 stage
@@ -33,7 +35,7 @@ out="$(sh -e -c ". $T/fn.sh; prune_etc_upper $T/up $T/q" 2>&1)"; rc=$?
 [[ "$rc" -eq 0 ]] && ok "prune_etc_upper returns 0 under sh -e" || bad "prune_etc_upper failed under sh -e (rc=$rc): $(tail -2 <<<"$out" | tr '\n' ' ')"
 
 lost=""
-for f in shadow group gshadow subuid subgid passwd- .pwd.lock hostname machine-id localtime adjtime resolv.conf; do
+for f in shadow group gshadow subuid subgid passwd- .pwd.lock hostname machine-id adjtime resolv.conf; do
     [[ -f "$T/up/$f" && "$(cat "$T/up/$f")" = kept ]] || lost="$lost $f"
 done
 [[ -z "$lost" ]] && ok "the account database, the machine's identity and clock stay in the upper layer" || bad "allowed entries were not kept in the upper layer:$lost"
@@ -44,6 +46,9 @@ for f in ld.so.preload udev kryptik sysctl.d profile nsswitch.conf; do
     quarantined "$f" || left="$left $f (not in the quarantine directory)"
 done
 [[ -z "$left" ]] && ok "a preload library, a udev rule, a zone definition, a sysctl fragment, a profile and nsswitch.conf are quarantined" || bad "not quarantined:$left"
+
+[[ ! -e "$T/up/localtime" ]] && quarantined localtime && ok "a regular localtime is quarantined: only a link into zoneinfo is kept" \
+    || bad "a regular localtime stayed in the upper layer"
 
 [[ ! -e "$T/up/passwd" ]] && quarantined passwd && ok "a directory named after an allowed file is quarantined, not kept" || bad "a directory named passwd stayed in the upper layer"
 
@@ -89,13 +94,30 @@ sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/
 [[ ! -e "$T/up/..hidden" ]] && quarantined ..hidden && ok "double-dot hidden entry quarantined" || bad "double-dot hidden entry missed"
 
 if [[ -f /usr/share/zoneinfo/UTC ]]; then
-    rm "$T/up/localtime"
+    rm -f "$T/up/localtime"
     ln -s /usr/share/zoneinfo/UTC "$T/up/localtime"
     if sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1 && [[ -L "$T/up/localtime" ]]; then
         ok "localtime may still link into verified zoneinfo"
     else
         bad "legitimate zoneinfo symlink was not preserved"
     fi
+fi
+# In the tree but no zone's file, a path walked out of the tree, or one that walks back in
+# through /var, which is the state partition at run time: quarantined.
+for target in /usr/share/zoneinfo/zone.tab /usr/share/zoneinfo/../../../etc/passwd \
+              /usr/share/zoneinfo/../../../var/tmp/../../usr/share/zoneinfo/UTC; do
+    [[ -e "$target" ]] || continue
+    stage; rm -f "$T/up/localtime"; ln -s "$target" "$T/up/localtime"
+    sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1
+    [[ ! -e "$T/up/localtime" && ! -L "$T/up/localtime" ]] && quarantined localtime && ok "a localtime linked to ${target} is quarantined" \
+        || bad "a localtime linked to ${target} stayed"
+done
+# A relative link that reaches a zone's file from the upper layer, and something else from /etc.
+if [[ -f /usr/share/zoneinfo/UTC ]]; then
+    stage; rm -f "$T/up/localtime"; mkdir -p "$T/x"; ln -sfn /usr/share/zoneinfo/UTC "$T/x/tz"; ln -s ../x/tz "$T/up/localtime"
+    sh -e -c '. "$1"; prune_etc_upper "$2" "$3"' sh "$T/fn.sh" "$T/up" "$T/q" >/dev/null 2>&1
+    [[ ! -L "$T/up/localtime" ]] && quarantined localtime && ok "a relative localtime link is quarantined, though it leads into zoneinfo from here" \
+        || bad "a relative localtime link stayed"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

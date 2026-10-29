@@ -1402,6 +1402,41 @@ if [[ "$hidden_up" = 1 && "$heard_nameless" == "an SSID element of length 0" && 
 else
     fail "wifi-hidden" "access point up: ${hidden_up}; its beacons on hwsim0: ${heard_nameless:-none heard in 10 s ($(tail -1 "$LOG/hwsim.err"))}; $(tr '\n' ' ' < "$LOG/wifi-add-hidden.out"); newest READY: ${line:-none}; $(tail -2 "$LOG/ap-hidden-wpa.log" 2>/dev/null | tr '\n' ' ')"
 fi
+# The country: zone 0 hands cfg80211 the user's hint, which the net zone, in a user namespace of
+# its own, may not. DE taken also proves the signed regulatory database loaded, as without it
+# there is no DE to move to. Then, the kernel put back on the rules that hold everywhere, the net
+# zone's next start sets DE again from the saved file.
+reg_is() { /usr/sbin/iw reg get 2>&1 | grep -q "^country $1:"; }
+country_said="$("$KD" wifi country de --wifi-dir "$WIFI_DIR" 2>&1)"
+for _ in $(seq 10); do reg_is DE && break; sleep 1; done
+if [[ "$country_said" == "the Wi-Fi country is DE" && "$(cat "$WIFI_DIR/country" 2>/dev/null)" == DE ]] && reg_is DE; then
+    pass "wifi-country" "kryptikd wifi country de kept DE, 0$(stat -c %a "$WIFI_DIR/country"), and the kernel took it: $(/usr/sbin/iw reg get 2>&1 | grep -m1 '^country')"
+else
+    fail "wifi-country" "said: ${country_said}; kept: $(cat "$WIFI_DIR/country" 2>&1); the kernel: $(/usr/sbin/iw reg get 2>&1 | head -2 | tr '\n' ' ')"
+fi
+/usr/sbin/iw reg set 00 2>> "$LOG/hwsim.err"
+for _ in $(seq 10); do reg_is 00 && break; sleep 1; done
+before="$(ready_count)"
+s6-svc -r /run/service/net-zone
+line="$(ready_after "$before" " nat=yes " 90)"
+for _ in $(seq 10); do reg_is DE && break; sleep 1; done
+if [[ -n "$line" ]] && reg_is DE && uncaught | grep -aq 'kryptikd: zone "[^"]*": the Wi-Fi country is DE'; then
+    pass "wifi-country-at-start" "the kernel on 00, the net zone's start set DE again from the saved file before its radios moved"
+else
+    fail "wifi-country-at-start" "READY again: ${line:-no}; the kernel: $(/usr/sbin/iw reg get 2>&1 | grep -m1 '^country'); kryptikd: $(uncaught | grep -a 'Wi-Fi country' | tail -2 | tr '\n' ' ')"
+fi
+# A code the regulatory database lacks is dropped by the kernel, so it is refused, nothing is
+# saved, and DE is told again once cfg80211 has fallen back to the rules that hold everywhere.
+uk_said="$("$KD" wifi country uk --wifi-dir "$WIFI_DIR" 2>&1)"; uk_rc=$?
+for _ in $(seq 10); do reg_is DE && break; sleep 1; done
+if [[ "$uk_rc" -ne 0 && "$uk_said" == *"UK is not a country the regulatory database holds (the United Kingdom's is GB)"* \
+      && "$(cat "$WIFI_DIR/country" 2>/dev/null)" == DE ]] && reg_is DE; then
+    pass "wifi-country-unknown" "uk refused, DE kept in the file and in the kernel: ${uk_said#kryptikd: wifi: }"
+else
+    fail "wifi-country-unknown" "exit ${uk_rc}: ${uk_said}; kept: $(cat "$WIFI_DIR/country" 2>&1); the kernel: $(/usr/sbin/iw reg get 2>&1 | grep -m1 '^country')"
+fi
+"$KD" wifi country 00 --wifi-dir "$WIFI_DIR" > "$LOG/wifi-country-clear.out" 2>&1
+[[ ! -e "$WIFI_DIR/country" ]] || fail "wifi-country-cleared" "$(cat "$LOG/wifi-country-clear.out")"
 # Back to the wire: the radios go first, so the net zone the forget restarts finds none.
 for f in /run/zt-ap-dnsmasq.pid /run/zt-ap-wpa.pid; do p="$(cat "$f" 2>/dev/null)"; [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
 [[ -n "$AP_HOLD" ]] && kill "$AP_HOLD" 2>/dev/null
@@ -1603,6 +1638,23 @@ else
     fail "zone-clocks-own" "zone 0 read ${w0:-?}..${w1}, booted ${b0:-?}; untrusted read ${wu:-?}, booted ${bu:-?}; personal read ${wp:-?}, booted ${bp:-?}; $(tail -qn 2 "$LOG/untrusted.err" "$LOG/personal.err" 2>/dev/null | tr '\n' ' ')"
 fi
 
+# --- zones: zone 0's time zone where the zone's file asks, UTC elsewhere ------
+# personal says [clock] local = true and untrusted false; noon UTC on 2026-07-15 is 14 CEST.
+lt_was="$(readlink /etc/localtime 2>/dev/null)"
+tz_set="$(/usr/bin/kryptik timezone Europe/Berlin 2>&1)"
+tz_line='echo "LT=$(readlink /etc/localtime)"; date -d @1784116800 +TZ=%H%Z'
+zrun personal 30 --passphrase-file /root/zt/personal.pass -- sh -c "$tz_line"
+tz_personal="$(tr '\n' ' ' <<<"$ZOUT")"
+zrun untrusted 20 -- sh -c "$tz_line"
+tz_untrusted="$(tr '\n' ' ' <<<"$ZOUT")"
+tz_zone0="$(date -d @1784116800 +TZ=%H%Z)"
+if [[ -n "$lt_was" ]]; then ln -sfn "$lt_was" /etc/localtime; else rm -f /etc/localtime; fi
+if [[ "$tz_zone0" == TZ=14CEST && "$tz_personal" == "LT=/usr/share/zoneinfo/Europe/Berlin TZ=14CEST " && "$tz_untrusted" == "LT= TZ=12UTC " ]]; then
+    pass "zone-local-time" "after kryptik timezone Europe/Berlin: personal reads 14 CEST through its own link, untrusted 12 UTC with none"
+else
+    fail "zone-local-time" "zone 0: ${tz_zone0} (${tz_set}); personal: ${tz_personal}; untrusted: ${tz_untrusted}; $(tail -qn 2 "$LOG/untrusted.err" "$LOG/personal.err" 2>/dev/null | tr '\n' ' ')"
+fi
+
 # --- storage: encrypted storage lifecycle -----------------------------------
 printf 'wrong-pass\n' > /root/zt/wrong.pass; chmod 600 /root/zt/wrong.pass
 zrun personal 30 --passphrase-file /root/zt/wrong.pass -- sh -c 'echo SHOULD-NOT-RUN'
@@ -1750,6 +1802,32 @@ if [[ -z "$mc_boot" && "$mc_told" == "kryptik microcode: "*": update the machine
     pass "microcode-notice" "no notice at boot here; a refused patch in the kernel log puts one in issue.d: ${mc_told:0:120}"
 else
     fail "microcode-notice" "at boot: ${mc_boot:-none}; after the kernel's line: ${mc_told:-none}"
+fi
+
+# --- a kernel the firmware did not check, on the login prompt ----------------
+# The notice at boot says what the firmware's own variables say; on variables standing in for
+# Secure Boot enforced it goes, and the boot's comes back for the login prompts after.
+sb_notice=/run/issue.d/kryptik-secureboot.issue
+sb_guid=8be4df61-93ca-11d2-aa0d-00e098032b8c
+efi_val() { od -An -tu1 -j4 -N1 "/sys/firmware/efi/efivars/$1-$sb_guid" 2>/dev/null | tr -d ' '; }
+sb_boot="$(cat "$sb_notice" 2>/dev/null)"
+case "$(efi_val SetupMode)/$(efi_val SecureBoot)" in
+    1/*) sb_want="as it is in setup mode" ;;
+    */1) sb_want="" ;;
+    */) sb_want="gives no SecureBoot variable" ;;
+    *) sb_want="as Secure Boot is off" ;;
+esac
+sb_fake="$(mktemp -d)"
+printf '\006\000\000\000\001' > "$sb_fake/SecureBoot-$sb_guid"
+printf '\006\000\000\000\000' > "$sb_fake/SetupMode-$sb_guid"
+EFIVARS="$sb_fake" sh -c '. /usr/libexec/kryptik/secureboot-notice.sh; secureboot_notice' > /dev/null 2>&1
+if [[ -e "$sb_notice" ]]; then sb_cleared=no; else sb_cleared=yes; fi
+sh -c '. /usr/libexec/kryptik/secureboot-notice.sh; secureboot_notice' > /dev/null 2>&1
+rm -rf "$sb_fake"
+if [[ "$sb_cleared" == yes ]] && { [[ -z "$sb_want" && -z "$sb_boot" ]] || [[ -n "$sb_want" && "$sb_boot" == "kryptik secure boot: "*"$sb_want"* ]]; }; then
+    pass "secureboot-notice" "at boot: ${sb_boot:-none, Secure Boot enforced}; on Secure Boot enforced the notice goes"
+else
+    fail "secureboot-notice" "variables: SetupMode=$(efi_val SetupMode) SecureBoot=$(efi_val SecureBoot); at boot: ${sb_boot:-none}; cleared when enforced: ${sb_cleared}"
 fi
 
 # --- software images over a zone's /usr (images.rs) -------------------------

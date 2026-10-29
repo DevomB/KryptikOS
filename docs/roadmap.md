@@ -188,17 +188,19 @@ work in zones from a terminal and a text browser, and keep it up to date.
 - [x] **A destroy verb.** `kryptikd volume destroy NAME` erases a stopped
       zone's key slots and deletes its container; it refuses an open volume
       ([design](design/encrypted-volumes.md)). The zone's definition stays.
-- [ ] **Memory a zone makes the compositor hold.** A page of a zone's
+- [x] **Memory a zone makes the compositor hold.** A page of a zone's
       shared-memory pool that dwl reads before the zone writes it is charged
-      to dwl, not to the zone's `memory_max`, and a zone that keeps the
-      pool's descriptor keeps that page after the pool is gone; the proxy's
-      bounds hold it only while the pools live
+      to dwl, not to the zone's `memory_max`. The proxy keeps a copy of each
+      pool's descriptor and punches the pool's range once the pool and its
+      buffers are gone, so a zone that keeps its own descriptor keeps none
+      of dwl's pages, and it refuses a pool it could not punch: one not open
+      for writing, sealed against writes, or not shared memory
       ([Wayland shared memory](design/resource-limits-and-ephemeral-zones.md#wayland-shared-memory)).
-      Built: the desktop's own cgroup, `kryptik-desktop`, under a
-      `memory.max` of a quarter of the memory, and the desktop suite's
-      measurement (`wlprobe charge keep`). Still to do: the proxy punching
-      each pool's range once the pool and its buffers are gone, refusing a pool
-      it cannot punch.
+      dwl runs in a cgroup of its own, `kryptik-desktop`, under a
+      `memory.max` of a quarter of the memory, which contains the rest. The
+      proxy's unit tests punch a gone pool, refuse one they could not punch
+      and leave a shared file to the last pool on it; the desktop suite
+      reads the charge (`wlprobe charge keep`).
 
 ## Version 2
 
@@ -235,10 +237,10 @@ A desktop someone can live in, built the same way.
 - **Input methods.** Decided (ADR-028): none for 1.0; after it, one per
   zone that asks, fcitx5 as a software image, its virtual keyboard bound
   to the zone ([input methods](design/input-methods.md)).
-- **Time zones.** None is shipped yet, so every clock reads UTC. Still to
-  come: the IANA database, built and verified as any other source; the
-  user's zone asked at first boot; and a zone's file choosing that zone or
-  UTC, which a zone that should not tell where its user is keeps.
+- **Time zones.** The IANA database is built from its signed release,
+  `kryptik timezone` sets zone 0's, and a zone's file chooses that zone or
+  UTC, which `untrusted` keeps. Still to come: the user's zone asked at
+  first boot.
 - **Disk unlock by the TPM.** Measured boot and a state partition sealed to
   it, with the passphrase as fallback.
 - **Reproducible builds,** checked by CI, then a bootstrappable toolchain so

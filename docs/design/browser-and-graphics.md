@@ -254,7 +254,7 @@ floors are given with each layer.
     `-fno-delete-null-pointer-checks`, under which GCC 14 cannot evaluate
     SpiderMonkey's compile-time checks (Mozilla's own builds go without it
     too), and carries the few changes a GCC
-    build needs (`build/patches/firefox-153.5.0`).
+    build needs (`build/patches/firefox-153.6.0`).
   - `--enable-default-toolkit=cairo-gtk3-wayland-only`, `--disable-dbus`,
     `--enable-release`, `--disable-tests`, `--disable-crashreporter`,
     `--disable-updater` (updates are the image's) and `--disable-eme`.

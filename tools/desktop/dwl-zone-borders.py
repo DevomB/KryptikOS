@@ -2129,6 +2129,63 @@ spawnergone(int fd, uint32_t mask, void *data)
      """\tlocked_bg = wlr_scene_rect_create(layers[LyrBlock], sgeom.width, sgeom.height,
 \t\t\t(float [4]){rootcolor[0], rootcolor[1], rootcolor[2], 1.0f});
 """),
+    # A window goes back to the screen it left once that screen is back. dwl moves a gone
+    # screen's windows to another and never back, so a dock unplugged and plugged in again, or a
+    # monitor that drops its hotplug in standby, leaves every window on the laptop's panel. The
+    # first screen it was on is kept with the window, and a move by hand forgets it.
+    ("""\tuint32_t resize; /* configure serial of a pending resize */
+} Client;
+""",
+     """\tuint32_t resize; /* configure serial of a pending resize */
+\t/* Kryptik: the screen it was on before screens went, to go back to (updatemons). */
+\tchar returnto[32];
+} Client;
+"""),
+    ("""\t\tif (c->mon == m)
+\t\t\tsetmon(c, selmon, c->tags);
+""",
+     """\t\tif (c->mon == m) {
+\t\t\tsetmon(c, selmon, c->tags);
+\t\t\tif (!c->returnto[0])
+\t\t\t\tsnprintf(c->returnto, sizeof(c->returnto), "%s", m->wlr_output->name);
+\t\t}
+"""),
+    ("""\t\t\tselmon = xytomon(cursor->x, cursor->y);
+\t\t\tsetmon(grabc, selmon, 0);
+""",
+     """\t\t\tselmon = xytomon(cursor->x, cursor->y);
+\t\t\t/* Kryptik: dropped on another screen by hand, it stays there. */
+\t\t\tif (grabc->mon != selmon)
+\t\t\t\tgrabc->returnto[0] = '\\0';
+\t\t\tsetmon(grabc, selmon, 0);
+"""),
+    ("""\tClient *sel = focustop(selmon);
+\tif (sel)
+\t\tsetmon(sel, dirtomon(arg->i), 0);
+""",
+     """\tClient *sel = focustop(selmon);
+\tif (sel) {
+\t\t/* Kryptik: moved by hand, it stays where it was put. */
+\t\tsel->returnto[0] = '\\0';
+\t\tsetmon(sel, dirtomon(arg->i), 0);
+\t}
+"""),
+    ("""\tif (selmon && selmon->wlr_output->enabled) {
+""",
+     """\t/* Kryptik: a window goes back to the screen it left, once that screen is back. */
+\twl_list_for_each(c, &clients, link) {
+\t\tif (!c->returnto[0])
+\t\t\tcontinue;
+\t\twl_list_for_each(m, &mons, link) {
+\t\t\tif (m->wlr_output->enabled && !strcmp(m->wlr_output->name, c->returnto)) {
+\t\t\t\tc->returnto[0] = '\\0';
+\t\t\t\tsetmon(c, m, c->tags);
+\t\t\t\tbreak;
+\t\t\t}
+\t\t}
+\t}
+\tif (selmon && selmon->wlr_output->enabled) {
+"""),
 ]
 
 

@@ -94,6 +94,15 @@ BIOS from RAID to AHCI mode`: set it to AHCI in the firmware setup. A Windows
 kept on another disk must be made ready for AHCI first, or it stops booting. A
 newer machine's RST (Intel VMD) needs no change.
 
+Some firmware boots from the network first, and puts a new boot entry below
+network boot, as the installer writes its own last in the boot order: an HP
+business laptop does both, with Network (PXE) Boot on under Advanced, Boot Options. Turn
+network boot off unless the machine boots from a network, or move the
+installed disk above it in the boot order. On an HP, Save/Restore GPT of
+System Hard Drive, under Security, Hard Drive Utilities, must stay off, as
+it is by default, or the firmware takes the installer's new partition table
+for a change to put back.
+
 **Secure Boot.** The kernel is signed with the build's Secure Boot key: a
 release's, from 1.0.0 on, is the project's ([release keys](release-keys.md)),
 enrolled once for every release after it; a development build's is made by
@@ -115,6 +124,11 @@ suspended first.
 
 The medium says which it got above its shell (`Secure Boot is on` or
 `off`), and as `KRYPTIK_SMOKE: secureboot=1` or `=0` on a serial console.
+The installed system says it on every login prompt while the firmware does
+not check its kernel: with Secure Boot off, or with the firmware in setup
+mode, where any program running as root can enrol keys of its own (a
+`kryptik secure boot:` line). A development build says that is expected of
+it, and a release names the step that turns it on.
 
 **AMD processors.** Update the machine's firmware (BIOS) first. With a
 firmware older than AMD's 2025 fix for microcode signatures, the kernel loads
@@ -123,6 +137,15 @@ processor (Ryzen 9000, Ryzen AI 300 and Ryzen AI Max, EPYC 9005) and a few
 older EPYC models: they keep the firmware's own microcode, the kernel log
 says `No sha256 digest for patch ID`, and every login prompt says to update
 the firmware.
+
+**Updating the firmware.** Do it before the install: Kryptik installs no
+firmware updates, and an install over the machine's only other system takes
+the maker's update tools with it. Many firmware setups fetch and install
+their own update over a wired network with no system at all: on an HP
+business laptop, Esc, then F10, then Main, Update System BIOS, Check HP.com
+for BIOS Updates, over a wired network. Later firmware fixes come the same
+way. Once the medium boots, no `kryptik microcode` line above its shell means
+the firmware is new enough for the processor's microcode.
 
 Leave the firmware's IOMMU, its DMA protection and Pluton on, as they come.
 - Without the IOMMU, every device can reach all of memory, and nothing at
@@ -226,6 +249,17 @@ that carries a Kryptik installation is left alone, but the installer warns:
 with both there, the boot may take that disk's system, and its state. Take
 it out, or install to it instead.
 
+The installer writes a new partition table and its own partitions, and
+nothing else: what the disk held before stays in the space they do not
+overwrite, readable by anyone who reads the disk, in plain text where the
+old system never encrypted it. To empty the disk first, use the drive's own
+erase from the firmware's setup (on an HP business laptop, Security, Hard
+Drive Utilities, Secure Erase), which a drive carries out itself. At the
+medium's shell, `blkdiscard -f /dev/nvme0n1` (or `/dev/sdY`) tells a drive
+that takes it that every block is unused. That is a hint, not an erase: a
+drive may go on returning what a discarded block held, and keeps it in its
+flash until it reuses the cells.
+
 Each root slot is sized for the image and half again, so that a later, larger
 release still fits. `--slot-size MIB` makes both slots larger than that,
 never smaller, and the state partition gets what is left.
@@ -261,6 +295,12 @@ Remove the medium. The installed disk boots on its own, by its
 `EFI/BOOT/BOOTX64.EFI` or by the `Kryptik slot a` entry the installer gave
 the firmware (a firmware that refused it is named in the install's output);
 it does not need the medium again unless it has to be recovered.
+
+Over a disk that held another system, the firmware may still try that
+system's entry, or a network boot, before Kryptik's, which the installer
+puts last. If the disk does not start Kryptik, pick `Kryptik slot a` in the
+firmware's boot menu (F9 on HP, F12 on Dell and Lenovo) and move it first in
+the setup's boot order.
 
 **Unattended install** (what the VM tests do): a small control disk labelled
 `kryptik-testctl`, made with `tools/image/mk-testctl.sh --out FILE --key
@@ -348,7 +388,9 @@ starts again. The screen also locks by itself after ten minutes without a
 key, a click or the pointer moving; to change that, write the minutes to
 `~/.config/kryptik/lock-idle` (0 for never), which the next login reads. Half
 a minute after it locks, the screens turn off; any key or movement turns them
-on again, and that key goes to the lock.
+on again, and that key goes to the lock. With 0 the screens still turn off
+after ten minutes without input, and the key that turns them on goes to the
+window with the keyboard.
 
 `kryptik suspend`, from a terminal of zone 0's, locks the screen and puts
 the machine to sleep with the state partition's key wiped from memory. On
@@ -423,7 +465,8 @@ as well. A window in full screen covers those windows, so the bar above it
 names the zone that may use the microphone (`MIC`) and the zone that has the
 camera (`CAM`), whichever zones they are. Built-in and USB cameras that speak the USB Video Class work, as
 most do; the cameras of recent Intel laptops that need Intel's image
-processing in userspace (MIPI cameras behind the IPU6) and infrared
+processing in userspace (MIPI cameras behind the IPU6), those behind the
+image processor of AMD's Ryzen AI Max (HP's ZBook Ultra G1a), and infrared
 face-login cameras do not. `vault` and the net zone never get the camera.
 
 Firefox in a zone is not told when the camera is given or taken back.
@@ -478,21 +521,21 @@ network. A new passphrase keeps it so; forget the network to stop.
 `kryptik wifi list` names the saved networks, and `kryptik wifi forget SSID`
 removes one.
 
-**Your country's radio rules.** Nothing sets the country the radio's rules
-come from, so until it joins a network that names one, the radio keeps the
-world's rules:
+**Your country's radio rules.** Until a country is set, the radio keeps the
+rules that hold everywhere, and keeps a country only while it is joined to a
+network that names one:
 - the 6 GHz band is off, so a network on 6 GHz alone is never seen;
 - on 5 GHz it only listens, and joins a network there once it has heard it.
 
-The rules go back to the world's at every disconnect. For your own country's
-rules until the next boot:
-1. At the administration login, run `su`.
-2. Run `/usr/sbin/iw reg set XX`, where `XX` is your country's two letters
-   (`US`, `DE`).
-3. `/usr/sbin/iw reg get` shows the rules in force.
-
-A radio whose firmware keeps its own rules, as Intel's do, follows those
-instead, and `/usr/sbin/iw reg get` names it as self-managed.
+`kryptik wifi country XX`, with your country's two letters (`US`, `DE`,
+`GB`), sets your country's rules now and at every later boot, and
+`kryptik wifi country` alone says which is set. A code the radio rules do not
+know is refused, the United Kingdom's `UK` among them (its code there is
+`GB`). `kryptik wifi country 00` goes back to the rules that hold
+everywhere. As root, `/usr/sbin/iw reg get`
+shows the rules in force. A radio whose firmware keeps its own rules, as
+Intel's do, follows those instead, and `/usr/sbin/iw reg get` names it as
+self-managed.
 
 A Wi-Fi 7 network that offers only SAE-EXT-KEY, the WPA3 mode Wi-Fi 7's
 multi-link operation uses, is not joined. Have the router offer WPA3 (SAE)
@@ -503,18 +546,32 @@ the net zone. The network the machine itself is on, with its router, its
 printers and the page a hotel's or café's Wi-Fi asks you to log in on, is
 open to `untrusted` alone: open that page there (Alt+Shift+u).
 
-**Monitors.** `kryptik display`, in a terminal of zone 0's, lists the
-monitors by name with their scale, mode and place. `kryptik display NAME
-SCALE` draws everything on that monitor SCALE times as large, from 0.5 to 4,
-1.5 say on a laptop's high-resolution panel, and `kryptik display NAME SCALE
-X Y` also puts its top left corner at X,Y. The choice is kept for every
-login and made again whenever the monitor is plugged in; NAME `*` stands for
+**Monitors.** A monitor pulled out leaves its windows on another, and once
+it is plugged in again they go back to it, except any moved to another
+monitor by hand in between (Alt+Shift+, or ., or a drag).
+`kryptik display`, in a terminal of zone 0's, lists the monitors by name
+with their scale, mode and place. `kryptik display NAME SCALE` draws
+everything on that monitor SCALE times as large, from 0.5 to 4, 1.5 say on
+a laptop's high-resolution panel, and `kryptik display NAME SCALE X Y` also
+puts its top left corner at X,Y. The choice is kept for every login and
+made again whenever the monitor is plugged in; NAME `*` stands for
 every monitor no other line names. `kryptik display NAME auto` drops that
 monitor's line, so it takes the `*` line if there is one, and otherwise 2 for a
 built-in panel of 192 dpi or more and 1200 lines or more, 1 for the rest. A
-zone's window is told the exact scale, and the browser draws sharp at it.
-Kryptik's terminals, the menu and the lock screen draw at 1 and are enlarged,
-so at any scale but 1 they look soft.
+zone's window is told the exact scale, and the browser, Kryptik's terminals
+and the menu draw sharp at it. The lock screen draws at 1 and is enlarged, so
+at any scale but 1 it looks soft.
+
+**Time zone.** Zone 0's clock reads UTC until you choose a time zone.
+`kryptik timezone list DE` lists a country's zones by its two letters,
+`kryptik timezone list berlin` those whose name holds a word, and
+`kryptik timezone Europe/Berlin`, as root, uses one now and at every boot;
+`kryptik timezone` names the one in force. On the medium it lasts until
+shutdown, and an install from it keeps it (the plan's `time zone` line);
+`kryptik-install --timezone NAME` names another. `personal`, `work` and
+`dev` take it when they start, as their files say (`[clock] local =
+true`); `untrusted`, whose pages could read where you are from it, and
+`vault` keep UTC.
 
 **USB sticks.** Zone 0 reads nothing on a USB stick or an SD card. Plugging
 one in opens a window of the chrome that names each partition by what the
@@ -641,6 +698,20 @@ backup with `--restore-state-header`. `--commit-slot` also writes the
 firmware an entry for the slot it commits, which a firmware that boots a
 fixed disk only from such an entry needs.
 
+If the firmware refuses the installed system at power-on with a Secure Boot
+violation, boot the medium, and never turn Secure Boot off first: a disk
+whose kernel was replaced is refused the same way, and with Secure Boot off
+that kernel would boot and be handed the passphrase.
+- **The medium is refused too:** the firmware's keys were reset (on an HP
+  business laptop, restoring its security settings to factory defaults,
+  resetting its Secure Boot keys, or Sure Start restoring them all do it),
+  and `kryptik-recover` cannot start. Add the release's certificate to `db`
+  again (section 1). `kryptik-recover` changes no firmware keys.
+- **The medium boots:** the keys are as they were, and the firmware refused
+  the disk's own kernel. Leave Secure Boot on, run
+  `kryptik-recover --disk /dev/sdY --status`, and rewrite the slot it names
+  from the medium with `--restore-slot`, as above.
+
 `--backup-state-header FILE` and `--restore-state-header FILE` save and put
 back the state partition's LUKS2 header. Over a header that still opens, the
 restore takes only a backup of the same volume, and names both when they
@@ -670,6 +741,19 @@ previous slot, because the one-time boot entry is used up.
 `s6-svstat /run/service/watchdog` shows the feeder; `/sys/class/watchdog/`
 shows each timer, its timeout and whether it is running.
 
+## When a machine does not work
+
+Photograph the screen. A kernel panic draws its last lines on the panel,
+green on black, and restarts the machine 10 seconds later. Note the
+machine's model and its firmware's version, which its setup screen shows.
+If the medium reaches its shell, `kryptik-hwreport --save` writes what the
+machine is made of, the drivers that took each part, the firmware the kernel
+missed and the kernel's log onto the stick; a medium that shows nothing
+writes one by itself when its first partition holds a `kryptik-report`
+directory ([hardware](hardware.md)). An installed system gives the same at
+the administration login, as root: `kryptik-hwreport > FILE`. The report
+leaves out serial numbers, hardware addresses and UUIDs.
+
 ## Known limitations of this release
 
 - The keys that sign a release from 1.0.0 on are held on GitHub, in the
@@ -677,9 +761,15 @@ shows each timer, its timeout and whether it is running.
   them once the maintainer approves it, so a release is as trustworthy as
   the maintainer's GitHub account and the runners that build it
   ([release keys](release-keys.md)). A development build, which every `0.x`
-  release is, is signed with keys that build generated and then discarded,
-  so its certificate is enrolled on its own and no other build's release
-  updates it.
+  release and every build of main is, is signed with keys that build
+  generated and then discarded. Its certificate is enrolled on its own, and
+  no other build's release updates it. Moving to another build, 1.0.0 among
+  them, is a reinstall with `--replace-kryptik`, which destroys the state
+  partition with its users and zone volumes: copy off what you keep first,
+  from each zone given a FAT stick to write (`kryptik-stick put`). Keep the
+  build's USB image too:
+  `kryptik-recover` restores a build only from a medium of it, and a build of
+  main stays downloadable for 14 days.
 - No independent security review has been made.
 - A Kryptik guest whose display is virtio-gpu, as QEMU's virtio-vga is, does
   not sleep: the kernel's virtio-gpu driver has no suspend callbacks, so the
@@ -688,9 +778,9 @@ shows each timer, its timeout and whether it is running.
   planned for October 2026. QEMU has no lid, no microphone or brightness
   keys, no backlight, no built-in panel and no camera of the USB Video
   Class, so those parts wait for it.
-- Of a laptop's cameras, `k` gives the zone the first the kernel lists. On
-  a laptop whose infrared face-login camera is a USB device of its own,
-  that may be the infrared one, which shows no picture.
+- Of a laptop's cameras, `k` gives the zone the first that offers a colour
+  picture. An infrared face-login camera that offers a colour format too
+  may be the one given, and shows no picture.
 - Laptop sound goes through the HD Audio driver and USB audio. On many
   recent laptops part of it does not work: built-in microphones on Intel's
   or AMD's audio processor, all built-in sound on Intel and AMD laptops
@@ -714,6 +804,13 @@ shows each timer, its timeout and whether it is running.
   left powered on, which shortens the battery's time. A machine with
   NVIDIA's graphics alone shows the desktop through the firmware's
   framebuffer, at the resolution the firmware chose, on one monitor.
+- No power profile: AMD's platform management driver (`amd-pmf`) and the
+  makers' own are not built, so a laptop whose processor's power limits one
+  of them would switch, HP's G1a models among them, keeps its firmware's
+  default limits, with no quiet or performance profile. A limit on how far
+  the battery charges, where a laptop has one, is set in its firmware's
+  setup: on an HP business laptop, Battery Health Manager under Advanced,
+  Power Management Options.
 - A disk with 4096-byte logical sectors (4Kn) is refused, as the medium's
   boot partition is a FAT of 512-byte sectors that Linux does not mount
   there. Disks that present 512-byte sectors (512e), as most do, are fine.
@@ -733,9 +830,8 @@ shows each timer, its timeout and whether it is running.
   [status](status.md#known-gaps), type nothing at all.
 - The builds are not reproducible bit for bit; the hashes name what was
   tested, not what a rebuild would produce.
-- No time zone database is shipped yet, so every clock reads UTC, zone 0's
-  and each zone's: a file's time, and the times a zone's programs show, the
-  pages Firefox shows among them.
+- A zone takes zone 0's time zone when it starts, so one already running
+  keeps the old one until it is stopped and started again.
 - A program in a zone cannot make its window fullscreen; Alt+e does, and
   the window then sits below a bar in its zone's colour that names the
   zone. Other windows show their zone by border colour alone, and the

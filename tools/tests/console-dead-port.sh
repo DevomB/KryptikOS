@@ -3,7 +3,8 @@
 # every write. The early console's wrapper must then sleep rather than start agetty there, and
 # rc.shutdown, under -e, must move its output to tty0 and still bring everything down. Both
 # scripts are taken out of their recipes and run with their paths under a scratch directory,
-# stand-ins for stty, agetty and sleep, and /dev/full as the console that takes no write. Offline.
+# stand-ins for stty, agetty and sleep, and /dev/full as the console that takes no write. And
+# sysinit drops such a port's console, against a stand-in sysfs. Offline.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -84,6 +85,26 @@ if [[ "$rc" -eq 0 ]] && grep -q 'handing back to shutdownd' "$T/live" && [[ ! -s
 else
     red "a console that answers: exit ${rc}, console got $(wc -l < "$T/live") lines, tty0 $(wc -l < "$T/tty0")"
 fi
+
+echo "-- sysinit drops a console port with no UART"
+# The loop as sysinit.sh has it, from its comment to its done, against a stand-in sysfs.
+awk '/^# A console= port the machine lacks/ { f = 1 } f { print } f && /^done$/ { exit }' \
+    "$ROOT/build/service-scripts/sysinit.sh" > "$T/drop.sh"
+grep -q 'echo N >' "$T/drop.sh" && green "sysinit.sh has the loop" || red "no console-dropping loop in sysinit.sh"
+port() {   # port NAME TYPE CONSOLE
+    mkdir -p "$T/sys/class/tty/$1"; echo "$2" > "$T/sys/class/tty/$1/type"; echo "$3" > "$T/sys/class/tty/$1/console"
+}
+port ttyS0 0 Y; port ttyS1 4 Y; port ttyS2 0 N
+KRYPTIK_SYSFS="$T/sys" sh -e "$T/drop.sh" < /dev/null > /dev/null 2>&1; rc=$?
+[[ "$rc" -eq 0 && "$(cat "$T/sys/class/tty/ttyS0/console")" == N ]] \
+    && green "a console port no UART answered (type 0) is dropped" || red "ttyS0, type 0: exit ${rc}, console $(cat "$T/sys/class/tty/ttyS0/console")"
+[[ "$(cat "$T/sys/class/tty/ttyS1/console")" == Y ]] \
+    && green "a console port with a UART behind it is kept" || red "ttyS1, a 16550A, was dropped"
+[[ "$(cat "$T/sys/class/tty/ttyS2/console")" == N ]] \
+    && green "a port that is no console is left alone" || red "ttyS2 changed"
+rm -rf "$T/sys"; mkdir -p "$T/sys/class/tty"
+KRYPTIK_SYSFS="$T/sys" sh -e "$T/drop.sh" < /dev/null > /dev/null 2>&1 \
+    && green "no serial port at all is no error" || red "the loop failed with no ttyS port"
 
 echo
 echo "${PASS} passed, ${FAIL} failed"

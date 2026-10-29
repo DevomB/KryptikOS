@@ -123,6 +123,32 @@ partition could be set by whoever writes that partition: a wider bound lets
 lies through unasked, a shorter interval brings question after question, and
 a moved floor holds the clock wrong.
 
+**Time zone.** Zone 0's is `/etc/localtime`, a link into
+`/usr/share/zoneinfo`, which stage 04 builds from IANA's signed tzdata with
+glibc's `zic`. `kryptik timezone NAME` replaces the link by a rename, so no
+reader finds it missing. `kryptik-install` writes the same link into the
+new state partition, for the zone chosen on the medium or named by
+`--timezone`. The link is on the `/etc` overlay's upper layer, on the
+state partition, which is not authenticated: sysinit keeps a
+`localtime` there only while it is an absolute link, with no `.` or `..`
+in it, to a TZif file in the verified tree, and quarantines anything else,
+a plain file or a relative link among them, as glibc parses the file in
+every process of zone 0's that shows a local time. A relative link resolves
+from the upper layer while sysinit checks it and from `/etc` after, and a
+`..` can climb through `/var`, which is the state partition from then on:
+either could pass the check and lead elsewhere. The worst a writer of that
+partition can choose is another real zone. The time zone changes how a time
+is shown, never the clock or the floor.
+
+A zone's `/etc` is kryptikd's. A zone whose file says `[clock] local =
+true` gets a `localtime` linking where zone 0's resolves as the zone
+starts, and only when that is a TZif file in `/usr/share/zoneinfo`, which
+the zone sees through its own `/usr` (`rootfs::machine_localtime`). A link,
+not a copy, as a program names the zone by the path (Firefox's `Intl`). Any
+other zone has no `localtime`, reads UTC, and does not learn where its user
+is from it: `untrusted` says so in its file, and `vault` and the net zone
+have no `[clock]` line. The net zone may not ask for one.
+
 ## Tests
 
 `time.rs` unit tests cover every rule above: the floor and the release that
@@ -136,7 +162,13 @@ network and that a malformed claim is refused.
 on. `tools/tests/netzone-time.sh` runs the query and its
 caller against loopback servers five minutes ahead or behind, a day out among
 three, unsynchronised, sending kiss-of-death, not echoing, or silent, under
-every POSIX shell on the host. On the installed system,
+every POSIX shell on the host. `tools/tests/timezone.sh` runs
+`kryptik timezone` against a stand-in zoneinfo tree: the link it makes, the
+names it lists, and the names it refuses with the link left alone. The
+medium's console test sets Europe/Berlin and reads noon UTC in July as
+14 CEST. The zones suite sets Europe/Berlin in zone 0 and reads the same
+noon as 14 CEST in `personal`, through its own link, and as 12 UTC in
+`untrusted`, which has none. On the installed system,
 `build/guest-tests/zones-check.sh` sets the clock to 2000 and checks the
 clamp, that a release dated 2099 and signed by a key the anchor does not list
 leaves the floor alone, then that a claim steps the clock, one below the
@@ -150,6 +182,7 @@ recovery to A.
 `compartments/kryptikd/src/time.rs` (`kryptikd time floor | status |
 committed`), `broker.rs`, `consent.rs`, `tools/desktop/kryptik-chrome`,
 `tools/net/sntp-offset.py`, `tools/net/netzone-init.sh`, `rootfs.rs`
-(`time.conf` into the zones' `/etc`), `build/services/time-floor`,
+(`time.conf` into the zones' `/etc`), `build/services/time-floor`, `build/recipes/tzdata.sh`, `tools/kryptik`
+(`timezone`), `zone.rs` (`[clock] local`),
 `build/service-scripts/time-floor.sh`, `boot-success.sh` and
 `tools/update/kryptik-update` (`check-release`, the kept manifest).

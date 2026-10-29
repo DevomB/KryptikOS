@@ -31,6 +31,7 @@
 #   GT LOCK-TYPE-WRONG                              type a wrong password and Enter
 #   GT LOCK-TYPE-RIGHT                              type the user's password and Enter
 #   GT LOCK-TYPE-IDLE, GT LOCK-TYPE-IDLE-AGAIN      type the user's password and Enter
+#   GT KEY-WAKE-BLANK                               press Shift (screens off, no lock)
 #   GT KEY-FOCUS-HOLD                               press Alt+j
 #   GT LOCK-TYPE-HOLD                               type the user's password and Enter
 #   GT LOCK-TYPE-SUSPEND                            type the user's password and Enter
@@ -46,6 +47,8 @@
 #   GT KEY-FOCUS-HEAD                               press Alt+period (the next monitor)
 #   GT KEY-FOCUS-HEAD-WINDOW                        press Alt+j
 #   GT SCREENSHOT-HEAD                              take a screenshot of the second monitor
+#   GT HEAD-BACK, GT HEAD-OUT                       plug it in again, pull it out again
+#   GT KEY-FOCUS-BACK                               press Alt+period
 #   GT KEY-MENU-WIFI                                press Alt+p (a menu window for Wi-Fi)
 #   GT WIFI-TYPE N TEXT                             type TEXT and Enter (letters and digits)
 #   GT KEY-MENU-OPEN                                press Alt+p (a menu window for an open network)
@@ -1449,6 +1452,31 @@ echo "GT LOCK-TYPE-IDLE-AGAIN"
 wait_for 30 idle_said unlocked 2 || fail "idle-unlocks" "$(tr '\n' ' ' < "$LOG/idle-lock.out")"
 # Its own quiet stretches below must not lock the session under the suite.
 pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 8 --blank 4' 2>/dev/null; wait "$idle_pid" 2>/dev/null
+# With lock-idle 0 the chrome starts a watcher that never locks: the screens still go off --blank
+# seconds after the last input, and the first key turns them on again. --idle 0 takes nothing
+# else: no --blank, a --blank of 0, or a --sleep, which is asked of a lock, is refused.
+bad_args=""
+for a in "--idle 0" "--idle 0 --blank 0" "--idle 0 --blank 4 --sleep 5"; do
+    as_user "/usr/bin/kryptik-lock $a" > /dev/null 2>&1; rc=$?
+    [[ "$rc" -eq 2 ]] || bad_args="${bad_args} [${a}: exit ${rc}]"
+done
+as_user "/usr/bin/kryptik-lock --idle 0 --blank 4" > "$LOG/blank-only.out" 2>&1 &
+blank_pid=$!
+blank_said() { grep -q "^kryptik-lock: $1" "$LOG/blank-only.out"; }
+blank_off() { grep -qE '^kryptik-lock: screen [0-9]+ power off$' "$LOG/blank-only.out"; }
+blank_back() { sed -n '/^kryptik-lock: screen [0-9]* power off$/,$p' "$LOG/blank-only.out" | grep -qE '^kryptik-lock: screen [0-9]+ power on$'; }
+if [[ -z "$bad_args" ]] && wait_for 20 blank_said 'screens off' && wait_for 5 blank_off; then
+    pass "blank-without-lock" "with --idle 0 the screens went off 4 s after the last input; --idle 0 without a --blank, or with a --sleep, is refused"
+else
+    fail "blank-without-lock" "accepted:${bad_args:- nothing wrongly}; the watcher: $(tr '\n' ' ' < "$LOG/blank-only.out")"
+fi
+echo "GT KEY-WAKE-BLANK"
+if wait_for 20 blank_back && blank_said 'screens on' && ! grep -qE '^kryptik-lock: (no input for|locked)' "$LOG/blank-only.out"; then
+    pass "key-wakes-without-lock" "a key turned the screens on again, and nothing locked"
+else
+    fail "key-wakes-without-lock" "the watcher: $(tr '\n' ' ' < "$LOG/blank-only.out")"
+fi
+pkill -u "$USER_NAME" -fx '/usr/bin/kryptik-lock --idle 0 --blank 4' 2>/dev/null; wait "$blank_pid" 2>/dev/null
 
 # --- holding the screen awake ------------------------------------------------------------------
 # A window of a zone whose file says hold_awake keeps the session's idle timers off while it is
@@ -1667,6 +1695,23 @@ else
     fail "chrome-follows-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
 second_head="$(focus_output)"
+# A terminal on the second head, at scale 2, draws its buffer twice the window's size and shows it
+# at the window's size through a viewport, so its text is sharp (build/patches/havoc-0.7.0's 0003).
+# Its own requests, as libwayland logs them, say both.
+as_user "WAYLAND_DEBUG=client timeout 20 /usr/bin/havoc sleep 8" > "$LOG/havoc-scale.out" 2>&1 &
+hscale=$!
+havoc_scaled() {
+    local dest
+    dest="$(grep -o 'wp_viewport@[0-9]*\.set_destination([0-9]*, [0-9]*)' "$LOG/havoc-scale.out" | tail -1)"
+    [[ "$dest" =~ \(([0-9]+),\ ([0-9]+)\) && "${BASH_REMATCH[1]}" -gt 0 ]] || return 1
+    grep -qE "create_buffer\(new id wl_buffer@[0-9]+, 0, $((BASH_REMATCH[1] * 2)), $((BASH_REMATCH[2] * 2)), " "$LOG/havoc-scale.out"
+}
+if wait_for 15 havoc_scaled; then
+    pass "havoc-draws-at-scale" "a terminal on the scale-2 head drew $(grep -o 'create_buffer([^)]*)' "$LOG/havoc-scale.out" | tail -1) for its $(grep -o 'set_destination([^)]*)' "$LOG/havoc-scale.out" | tail -1)"
+else
+    fail "havoc-draws-at-scale" "$(grep -E 'preferred_scale|set_destination|create_buffer' "$LOG/havoc-scale.out" | tail -4 | tr '\n' ' ')"
+fi
+wait "$hscale" 2>/dev/null
 # What a zone is told of the monitors: both, each named by its number with no make or model,
 # as the zone's proxy rewrites them, and the second at the scale chosen for it.
 mark outs untrusted
@@ -1711,6 +1756,18 @@ as_user "rm -f \$HOME/.config/kryptik/display"
 back_on_first_head() { [[ "$(focus_output)" == "$first_head" ]]; }
 wait_for 20 back_on_first_head && pass "chrome-back-on-first-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")" \
     || fail "chrome-back-on-first-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
+# Plugged in again, the monitor takes back the window that was on it.
+echo "GT HEAD-BACK"
+wait_for 30 heads 2
+sleep 2
+echo "GT KEY-FOCUS-BACK"
+if wait_for 20 zone_on_second_head; then
+    pass "window-returns-with-head" "$(tr '\n' ' ' < "$RT/kryptik/focus")"
+else
+    fail "window-returns-with-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null); $(outputs) output(s)"
+fi
+echo "GT HEAD-OUT"
+wait_for 30 heads 1
 stop_zone untrusted
 
 # --- Wi-Fi from the menu ----------------------------------------------------------------

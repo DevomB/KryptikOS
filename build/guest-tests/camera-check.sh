@@ -159,5 +159,23 @@ else
     fail "camera-gone-ends-grant" "the grant: rc ${rc}: ${said}"
 fi
 
+# Of two cameras, the first that offers a picture a browser reads: vivid.0's node offers only
+# multi-planar formats, which Firefox does not read, so the grant passes it for vivid.1's, as it
+# passes an infrared camera's grey.
+modprobe -r vivid 2>/dev/null
+if modprobe vivid n_devs=2 node_types=0x1,0x1 multiplanar=2,1 2> "$LOG/vivid-two.err"; then
+    first="$(ls /sys/devices/platform/vivid.0/video4linux 2>&1)"
+    want="$(ls /sys/devices/platform/vivid.1/video4linux 2>&1)"
+    said="$(as_user "kryptik-launch --camera-grant untrusted" 2>&1)"; rc=$?
+    if [[ "$rc" -eq 0 && "$(holder)" == "zone untrusted holds "*" (${want})" ]]; then
+        pass "camera-colour-first" "${said}: vivid.1's ${want}, not vivid.0's ${first}"
+    else
+        fail "camera-colour-first" "rc ${rc}: ${said}; $(holder); vivid.0's ${first}, vivid.1's ${want}"
+    fi
+    as_user "kryptik-launch --camera-revoke" > /dev/null 2>&1
+else
+    fail "camera-colour-first" "$(oneline < "$LOG/vivid-two.err")"
+fi
+
 modprobe -r vivid uvcvideo 2>/dev/null
 echo "CT END"

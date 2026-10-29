@@ -33,3 +33,7 @@ border_color   = "#7f623d"
 border_pattern = "dotted"
 glyph          = "◆"
 label          = "DEV"
+
+[clock]
+# Zone 0's time zone, as it is when the zone starts; a zone without this line keeps UTC.
+local = true

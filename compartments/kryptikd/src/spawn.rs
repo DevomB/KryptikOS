@@ -1403,7 +1403,9 @@ fn zone_init(
         (crate::zone::NetworkMode::Routed, _) => rootfs::Resolver::Bridge,
         _ => rootfs::Resolver::None,
     };
-    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, sound_dir, camera_dir, usr, service) {
+    // Zone 0's time zone as the zone starts, read before the pivot hides zone 0's /etc.
+    let localtime = if zone.clock_local { rootfs::machine_localtime() } else { None };
+    let home = match rootfs::pivot_into(rootfs, &zone.name, ephemeral, resolver, Some(broker_path), wayland_path, wifi_conf, sound_dir, camera_dir, usr, localtime.as_deref(), service) {
         Ok(h) => h,
         Err(e) => bail!("could not build the zone root: {e}"),
     };

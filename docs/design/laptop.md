@@ -45,7 +45,11 @@ other codec, and `snd-usb-audio`; none of them needs firmware. The kernel
 loads no module by itself (`STATIC_USERMODEHELPER`), and a codec binds only
 to a driver loaded when the controller probes it, so modprobe loads every
 codec driver ahead of `snd-hda-intel` (`build/config/modprobe.d/sound.conf`,
-which stage 05 holds to the drivers built).
+which stage 05 holds to the drivers built). `snd-ctl-led` loads with them:
+a codec's parser asks for it by `request_module`, and a laptop's mute and
+microphone-mute lights follow the card's switches only through it. The mixer
+turns a card's outputs off while the master is muted, and its inputs off
+while no zone holds the microphone, so the lights say both.
 
 Not yet: Intel's Sound Open Firmware drivers for laptops with digital
 microphones or SoundWire codecs, and AMD's audio coprocessor drivers. Of the
@@ -351,7 +355,9 @@ cryptsetup's standard input. On idle, the chrome starts `kryptik-lock
 minutes without input, or the minutes in `~/.config/kryptik/lock-idle` (0
 never). Half a minute after the lock it turns the screens off through dwl's
 `zwlr_output_power_manager_v1`, and the first key or movement turns them on
-again; an unlock turns them on as well, should the watcher be gone. It
+again; an unlock turns them on as well, should the watcher be gone. With
+`lock-idle` 0 the chrome starts `kryptik-lock --idle 0 --blank 600`, which
+never locks and turns the screens off after ten minutes without input. It
 counts input, and a hold dwl counts for a zone under the conditions in
 Holding the screen awake, below; an inhibitor of any other zone, or of
 zone 0, never keeps the session unlocked or the screens lit. No zone can
@@ -373,7 +379,10 @@ The lock's check, in `make gui-test`:
 - the chrome arms the idle lock at ten minutes, and an idle lock of 8 s
   locks the session, turns the screen off 4 s later as the compositor
   reports to it, turns it on at the first key, and locks again after the
-  next 8 s once unlocked.
+  next 8 s once unlocked;
+- `--idle 0 --blank 4` turns the screen off 4 s after the last input and on
+  at the next key, with no lock, and `--idle 0` without a `--blank`, or with
+  a `--sleep`, is refused.
 
 **The watchdog** must not reset a sleeping machine, nor one waiting at the
 state prompt. Intel's timer stops across every sleep, and in ACPI's own
@@ -504,8 +513,8 @@ and the power key, idle and inhibitors, suspend, and runtime directories
   processor policy that offers it (amd-pstate and intel_pstate both do).
   Both are built in (`boot.fragment`), amd-pstate in active mode with its
   dynamic EPP off, so the kernel does not override what this service sets.
-  A processor neither takes falls back to acpi-cpufreq, scaled by
-  schedutil, and offers no preference.
+  A processor neither drives falls back to acpi-cpufreq, which runs
+  schedutil, so its clock still follows the load, and offers no preference.
   PCIe link power and NVMe power states keep the kernel's defaults, and no
   rule turns on USB autosuspend for input devices, which too often
   misbehave with it.
@@ -671,8 +680,10 @@ television's EDID may give its aspect ratio as its size, so only built-in
 panels are measured. A zone's window is told the exact scale through
 `wp_fractional_scale_v1`, which the proxy passes on (`policy.rs`), and a
 client that reads only `wl_output`'s whole number draws at that, which the
-compositor scales down to the fraction. havoc and kryptik-lock draw at 1 at
-every scale, so the compositor enlarges them, and they look soft at any scale
+compositor scales down to the fraction. havoc follows the exact scale too
+(`build/patches/havoc-0.7.0`'s `0003`): its font and buffer are drawn that
+much larger, behind a viewport at the window's size. kryptik-lock draws at 1
+at every scale, so the compositor enlarges it, and it looks soft at any scale
 but 1.
 
 Check: `make gui-test` writes the user's line for the first monitor at 1 and

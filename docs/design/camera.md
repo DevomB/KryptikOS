@@ -21,7 +21,9 @@ to grant it, and the grant visible for as long as it lasts.
   device made for it.
 - **Not covered:** the MIPI cameras of many Intel laptops since 2022, behind
   the IPU6, which need a camera stack in userspace (libcamera and Intel's
-  image processing), and infrared face-login cameras.
+  image processing); those behind the image processor of AMD's Ryzen AI Max
+  (HP's ZBook Ultra G1a), whose driver came in Linux 7.2, after 6.18; and
+  infrared face-login cameras.
 
 ## Who reaches that code, and when
 
@@ -109,19 +111,25 @@ itself waits for the tests on physical hardware.
   `work` finds no camera; the chrome's window names `personal`;
 - taken away while granted (`vivid` unloaded), the grant ends and the node
   goes;
+- of two stand-ins, the grant passes over the lower numbered, whose node
+  offers only multi-planar formats, which Firefox does not read, for the
+  other;
 - `k` alone takes it back, and so does the screen locking: the probe's open
   descriptor fails at its next read, and the node is gone;
 - a zone whose file refuses the camera is never offered it.
 
 ## Not covered
 
-- MIPI cameras behind the IPU6 (below), and infrared cameras. Of several
-  cameras, a grant gives the zone the lowest numbered node that is its
-  device's first (`index` 0), which a camera's metadata node is not
-  (`camera_in` in `camera.rs`). On a laptop whose infrared face-login camera
-  is a USB device of its own, that node may be the infrared camera's, which
-  gives a call no picture. Preferring a node that offers a colour format
-  waits until a laptop shows it.
+- MIPI cameras behind Intel's IPU6 and AMD's image processor (below), and
+  infrared cameras. An infrared face-login camera is usually a second
+  function of the same USB camera: a video4linux device of its own, whose
+  capture node is `index` 0 like the colour camera's. Of several cameras, a
+  grant gives the zone the lowest numbered node that is its device's first
+  (`index` 0), which a camera's metadata node is not, and that offers a
+  colour format (MJPEG, YUYV, NV12 and the like), which an infrared camera
+  giving grey frames alone does not; when none does, the lowest numbered
+  (`camera_in` in `camera.rs`). An infrared camera that offers a colour
+  format too may still be the one given, and gives a call no picture.
 - Which USB devices are accepted at all.
 - Screen sharing, which is the compositor's question, not the camera's.
 
@@ -159,3 +167,13 @@ it; a USB camera works on those laptops. The firmware is the small part of
 the cost. Where the image processing runs and what a grant hands over are
 the questions, and they wait for a machine with such a camera to answer
 them on.
+
+AMD's Ryzen AI Max has an image processor of its own, the ISP4, behind the
+MIPI camera of HP's ZBook Ultra G1a. Its firmware drives the sensor and
+makes the picture, and its driver gives one capture node of NV12 or YUYV
+frames, as a USB camera does, rather than a graph of raw ones, so it would
+fit a grant of one node. That driver (`VIDEO_AMD_ISP4_CAPTURE`) came in
+Linux 7.2, and Kryptik builds 6.18. It would also need amdgpu's half
+(`DRM_AMD_ISP`, off), platform cameras in the media filter (off), the
+processor's firmware (`amdgpu/isp_*`, which `firmware.list` leaves out),
+and kryptikd's grant loading it beside `uvcvideo`.

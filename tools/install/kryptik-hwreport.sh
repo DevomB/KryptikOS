@@ -93,6 +93,14 @@ firmware() {
     else echo "uefi: no"; fi
     case "$(efi_byte SecureBoot)" in 1) echo "secure boot: on" ;; 0) echo "secure boot: off" ;; *) echo "secure boot: unreadable" ;; esac
     printf 'setup mode: %s\n' "$(efi_byte SetupMode)"
+    # Secure Boot on shows Kryptik's certificate is in db; this says whether Microsoft's are there
+    # too, which start what Microsoft signed, Windows among it. Every Microsoft CA names Microsoft
+    # in its subject.
+    for v in db-d719b2cb-3d3a-4596-a3bc-dad00e67656f KEK-8be4df61-93ca-11d2-aa0d-00e098032b8c; do
+        f="$SYS/firmware/efi/efivars/$v"; ms=-
+        [ -r "$f" ] && { ms=no; LC_ALL=C grep -qa Microsoft "$f" && ms=yes; }
+        printf "%s holds microsoft's certificates: %s\n" "${v%%-*}" "$ms"
+    done
     printf 'lockdown: %s\n' "$(sed -n 's/.*\[\(.*\)\].*/\1/p' "$SYS/kernel/security/lockdown" 2>/dev/null)"
     # The TPM's version and the driver it came up under, and the hardware random number generator
     # the kernel reads, if any: some firmware TPMs register none.
@@ -177,8 +185,13 @@ pci_raw() {
             "$(hex "$d/subsystem_vendor")" "$(hex "$d/subsystem_device")" "$(hex "$d/revision")" "${drv:--}" "$(one "$d/modalias")"
     done
 }
-# The same, with the names hwdata's list gives the class and the device.
+# The same, with the names hwdata's list gives the class and the device. The image leaves that
+# list out, so there the names come from udev's hwdb, which holds the same ones.
 pci_named() {   # pci_named RAW-FILE
+    if [ ! -r "$R/usr/share/hwdata/pci.ids" ] && command -v udevadm >/dev/null 2>&1; then
+        pci_hwdb "$1"
+        return
+    fi
     awk -v ids="$R/usr/share/hwdata/pci.ids" '
         BEGIN {
             while ((getline l < ids) > 0) {
@@ -200,6 +213,22 @@ pci_named() {   # pci_named RAW-FILE
             if (name != "") printf " | %s", name
             printf "\n"
         }' "$1"
+}
+hwdb_prop() { printf '%s\n' "$2" | sed -n "s/^$1=//p" | head -n 1; }   # hwdb_prop KEY PROPERTIES
+# pci_named's lines, the names asked of udev's hwdb by each device's modalias.
+pci_hwdb() {   # pci_hwdb RAW-FILE
+    while read -r slot class v d sv sd rev drv alias; do
+        props=""
+        [ -z "$alias" ] || props="$(udevadm hwdb --test="$alias" 2>/dev/null)"
+        what="$(hwdb_prop ID_PCI_SUBCLASS_FROM_DATABASE "$props")"
+        [ -n "$what" ] || what="$(hwdb_prop ID_PCI_CLASS_FROM_DATABASE "$props")"
+        name="$(hwdb_prop ID_VENDOR_FROM_DATABASE "$props")"; model="$(hwdb_prop ID_MODEL_FROM_DATABASE "$props")"
+        [ -z "$model" ] || name="${name:+$name }$model"
+        printf '%s class %s %s:%s sub %s:%s rev %s driver %s' "$slot" "$class" "$v" "$d" "$sv" "$sd" "$rev" "$drv"
+        [ -z "$what" ] || printf ' | %s' "$what"
+        [ -z "$name" ] || printf ' | %s' "$name"
+        printf '\n'
+    done < "$1"
 }
 
 usb() {
@@ -335,6 +364,12 @@ audio() {
         [ -r "$c/vendor_id" ] && printf 'codec %s sub %s\n' "$(hex "$c/vendor_id")" "$(hex "$c/subsystem_id")"
     done
     nhlt
+    # The tuning files a Cirrus CS35L54, CS35L56 or CS35L57 asks for are named by the codec's
+    # subsystem ID, and its driver asks without logging a name: the pattern firmware.list needs.
+    ssid=""
+    for c in "$SYS"/bus/hdaudio/devices/*; do
+        case "$(hex "$c/vendor_id")" in 10ec*) ssid="$(hex "$c/subsystem_id")"; break ;; esac
+    done
     for a in "$SYS"/bus/acpi/devices/*; do
         case "${a##*/}" in
             CSC355[1467]:*|CLSA010[01]:*|TIAS2781:*|TXNW2770:*|TXNW2781:*|TXNW5825:*|INT8866:*) ;;
@@ -347,6 +382,10 @@ audio() {
             x="$(target "$n/driver")"; [ -z "$x" ] || drv="$drv $x"
         done
         printf 'amplifier %s driver%s\n' "${a##*/}" "${drv:- -}"
+        case "${a##*/}" in
+            CSC355[467]:*)
+                [ -z "$ssid" ] || { n="${a##*/CSC35}"; printf 'amplifier-tuning %s cirrus/cs35l%s-*-dsp1-misc-%s*\n' "${a##*/}" "${n%%:*}" "$ssid"; } ;;
+        esac
     done
     names=""
     for k in AcpDmicConnected acp-audio-device-type _WOV; do
@@ -482,10 +521,11 @@ cameras() {
         drv="$(target "$d/driver")"
         printf 'camera %s %s 8086:%s driver %s\n' "$k" "${d##*/}" "$(hex "$d/device")" "${drv:--}"
     done
-    # Sensors by the IDs ipu-bridge knows, OmniVision's and Himax's whole ranges with them.
+    # Sensors by the IDs ipu-bridge knows, OmniVision's and Himax's whole ranges with them, and the
+    # OmniVision sensor behind AMD's image processor, which amdgpu looks for as OMNI5C10.
     for a in "$SYS"/bus/acpi/devices/*; do
         case "${a##*/}" in
-            OVTI*:*|HIMX*:*|INT0310:*|INT33BE:*|INT33F0:*|INT3474:*|INT3479:*|INT347A:*|INT347E:*|INT3537:*|INTC10C5:*|XMCC0003:*) w=sensor ;;
+            OVTI*:*|OMNI*:*|HIMX*:*|INT0310:*|INT33BE:*|INT33F0:*|INT3474:*|INT3479:*|INT347A:*|INT347E:*|INT3537:*|INTC10C5:*|XMCC0003:*) w=sensor ;;
             INT3472:*) w="sensor power" ;;
             INTC1009:*|INTC1058:*|INTC1094:*|INTC10D0:*) w="visual sensing controller" ;;
             *) continue ;;

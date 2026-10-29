@@ -11,7 +11,7 @@ fuzz_target!(|data: &[u8]| {
     let Some(nl) = data.iter().position(|b| *b == b'\n') else { return };
     let header = String::from_utf8_lossy(&data[..nl]);
     match parse_request(&header) {
-        Err(_) | Ok(Request::Version | Request::ClipboardGet | Request::UpdatePoll) => {}
+        Err(_) | Ok(Request::Version | Request::ClipboardGet | Request::UpdatePoll | Request::Stick) => {}
         Ok(Request::ClipboardSet { mime, len }) => assert!(MIME_TYPES.contains(&mime.as_str()) && len <= CLIPBOARD_MAX),
         Ok(Request::Transfer { dest, name }) => {
             assert!((1..=12).contains(&dest.len()));

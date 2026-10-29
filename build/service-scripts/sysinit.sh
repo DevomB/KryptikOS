@@ -5,6 +5,14 @@
 echo running > /run/kryptik-sysinit
 trap 'echo finished > /run/kryptik-sysinit' EXIT
 
+# A console= port the machine lacks, as a laptop's legacy ttyS0 (type 0: no UART answered), is
+# still /dev/console, and every write to it fails. Dropped, it hands /dev/console to the screen's
+# console, so whatever opens /dev/console later is seen. A port with a UART behind it is kept.
+for t in "${KRYPTIK_SYSFS:-/sys}"/class/tty/ttyS*; do
+    [ "$(cat "$t/type" 2>/dev/null)" = 0 ] && [ "$(cat "$t/console" 2>/dev/null)" = Y ] || continue
+    echo N > "$t/console" 2>/dev/null || true
+done
+
 [ -r /etc/hostname ] && hostname "$(cat /etc/hostname)" || true
 
 # The only names the /etc upper layer may carry: accounts, identity, clock, zone 0's resolver.
@@ -23,10 +31,20 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
         keep=0
         for k in $ETC_MUTABLE; do [ "$name" = "$k" ] && keep=1; done
         # A kept name must be a regular file, not a FIFO or a link into mutable state.
-        if [ "$keep" = 1 ] && [ -f "$e" ] && [ ! -L "$e" ]; then continue; fi
-        # localtime may link only into the verified zoneinfo tree.
-        if [ "$name" = localtime ] && [ -L "$e" ] && [ -f "$e" ]; then
-            case "$(realpath -e -- "$e")" in /usr/share/zoneinfo/*) continue ;; esac
+        if [ "$keep" = 1 ] && [ "$name" != localtime ] && [ -f "$e" ] && [ ! -L "$e" ]; then continue; fi
+        # localtime only as an absolute link to a zone's file in the verified tree: glibc parses it
+        # in every process of zone 0's that shows a local time, root's among them. A relative link
+        # resolves from here now and from /etc later, and a .. can climb through /var, which is the
+        # state from sysinit on: either could lead one place now and another later. The magic is
+        # read only from a file the path check has put in the tree.
+        if [ "$name" = localtime ] && [ -L "$e" ]; then
+            case "$(readlink -- "$e")" in
+                */../*|*/..|*/./*|*/.) ;;
+                /usr/share/zoneinfo/*)
+                    case "$(realpath -e -- "$e" 2>/dev/null)" in
+                        /usr/share/zoneinfo/*) [ -f "$e" ] && [ "$(head -c4 -- "$e" 2>/dev/null)" = TZif ] && continue ;;
+                    esac ;;
+            esac
         fi
         mkdir -p "$q" || return 1
         saved="$(mktemp -d "$q/$name.XXXXXX")" || return 1
@@ -39,10 +57,12 @@ prune_etc_upper() {   # prune_etc_upper UPPER QUARANTINE
 }
 
 . /usr/libexec/kryptik/ask.sh
+# Told after a minute with nothing typed: a keyboard whose driver is a module types nothing here.
+NO_KEY="sysinit: if no key reaches this prompt, a plain USB keyboard will: some keyboards' drivers load only after it."
 unlock_state() {   # unlock_state DEVICE -> /dev/mapper/kryptik-state
     try=1
     while [ "$try" -le 3 ] && [ ! -b /dev/mapper/kryptik-state ]; do
-        pass=$(ask -s 0 "sysinit: passphrase for the state partition (try $try of 3): ") || pass=""
+        pass=$(ask -s -h 60 "$NO_KEY" 0 "sysinit: passphrase for the state partition (try $try of 3): ") || pass=""
         # printf is a builtin: the passphrase never appears as an argument.
         printf '%s' "$pass" | cryptsetup open --type luks2 --key-file=- "$1" kryptik-state 2>/dev/null || true
         try=$((try + 1))
@@ -235,7 +255,10 @@ if [ -d /usr/lib/kryptik/sysctl.d ]; then
         sysctl -p "$f" >/dev/null || echo "sysinit: sysctl -p $f reported errors" >&2
     done
 fi
-# Before the first login prompt: microcode the kernel refused is named there.
+# Before the first login prompt: microcode the kernel refused is named there, and so is a kernel
+# the firmware did not check.
 . /usr/libexec/kryptik/microcode-notice.sh
 microcode_notice || true
+. /usr/libexec/kryptik/secureboot-notice.sh
+secureboot_notice || true
 echo "sysinit: complete"

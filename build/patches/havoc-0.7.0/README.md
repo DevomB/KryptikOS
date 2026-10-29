@@ -1,7 +1,7 @@
-# havoc 0.7.0: Kryptik's config, and text with its charset
+# havoc 0.7.0: Kryptik's config, text with its charset, and the output's scale
 
 Applied by `s_havoc` in stage 04 through `apply_repo_patches`;
-`SHA256SUMS` is verified before anything is applied. Both patches are
+`SHA256SUMS` is verified before anything is applied. The patches are
 Kryptik's own, and `tools/tests/havoc-config.py` checks what they add.
 
 - `0001`: Kryptik's config is read. havoc reads `havoc.cfg` from `-c`, then
@@ -25,3 +25,14 @@ Kryptik's own, and `tools/tests/havoc-config.py` checks what they add.
   nothing moved in from another zone. The patch takes that type as well, and
   havoc's own copies (`d_copy()`) offer it, so text moved out of a terminal
   arrives as UTF-8 rather than as bare `text/plain`, which is US-ASCII.
+- `0003`: drawing at the output's scale. havoc draws at one size, so at a
+  scale of 2, or a fraction, the compositor enlarges its buffer and the
+  text is soft. The patch binds `wp_viewporter` and
+  `wp_fractional_scale_v1`, which dwl offers and the proxy passes to zones
+  (`policy.rs`). At the scale the window is told, in 120ths, the font is
+  drawn that much larger (`font_resize()` in `glyph.c`) into a buffer the
+  window's size times the scale, which the viewport shows at the window's
+  size (`layout()` in `main.c`). What the cells leave is margin, and
+  pointer positions are scaled to the cells. At a scale of 1, or without
+  the two globals, it draws as before. The Makefile generates both
+  protocols' client code from wayland-protocols.

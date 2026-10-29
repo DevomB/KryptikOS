@@ -62,6 +62,12 @@ video says `[desktop] hold_awake = true`, under the conditions in the
 [laptop design](../docs/design/laptop.md#power-management-without-logind);
 `personal` and `work` do, and `untrusted` never.
 
+A zone that shows zone 0's time zone says `[clock] local = true`, and gets an
+`/etc/localtime` that links where zone 0's does as it starts; `personal`,
+`work` and `dev` do. The others keep UTC, `untrusted` because its pages
+would read where the user is from it
+([clock](../docs/design/time.md)).
+
 [Zone policy files](../docs/design/zone-policy-files.md) covers the seccomp
 policy files and the optional `[policy] landlock` file, which narrows the
 Landlock ruleset every zone gets at entry. No shipped zone names a Landlock

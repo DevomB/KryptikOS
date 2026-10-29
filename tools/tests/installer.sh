@@ -310,6 +310,32 @@ checked="$(grep -n '^\[ -z "\$PRESEED" \] || preseed_ok' "$INSTALLER" | cut -d: 
     && green "the preseed is checked before the first write" \
     || red "the preseed is checked at line ${checked:-none}; the disk is written from ${written:-none}"
 
+echo "-- a time zone is one the installed system's sysinit would keep, checked before anything is written"
+eval "$(sed -n '/^timezone_ok()/,/^}/p' "$INSTALLER")"
+if ! declare -F timezone_ok >/dev/null; then
+    red "could not extract timezone_ok from the installer"
+else
+    ZONEINFO="$(mktemp -d)"
+    mkdir -p "$ZONEINFO/Europe" "$ZONEINFO/America/Argentina" "$ZONEINFO/Etc"
+    for z in UTC Europe/Berlin America/Argentina/Buenos_Aires Etc/GMT+5; do printf 'TZif2' > "$ZONEINFO/$z"; done
+    echo tab > "$ZONEINFO/zone.tab"
+    for n in UTC Europe/Berlin America/Argentina/Buenos_Aires Etc/GMT+5; do
+        if timezone_ok "$n"; then green "'${n}' is taken"; else red "'${n}' was refused"; fi
+    done
+    # A dot would be refused by sysinit even where the file is real; so would a name with no file.
+    for n in '' zone.tab Europe Europe/ /UTC ../UTC Europe/../UTC ./UTC -x Europe//Berlin 'Europe/Berlin x' Nowhere; do
+        if timezone_ok "$n"; then red "'${n}' was taken"; else green "'${n}' is refused"; fi
+    done
+    rm -rf "${ZONEINFO:?}"
+fi
+checked="$(grep -n '^\[ -z "\$TIMEZONE" \] || timezone_ok' "$INSTALLER" | cut -d: -f1)"
+[[ "$checked" =~ ^[0-9]+$ && "$written" =~ ^[0-9]+$ && "$checked" -lt "$written" ]] \
+    && green "the time zone is checked before the first write" \
+    || red "the time zone is checked at line ${checked:-none}; the disk is written from ${written:-none}"
+linked="$(grep -n 'ln -s "\$ZONEINFO/\$TIMEZONE" "\$MNT_BASE/state/lib/kryptik/etc/upper/localtime"' "$INSTALLER" | cut -d: -f1)"
+[[ -n "$linked" ]] && green "the time zone is an absolute link in the state's /etc upper layer, the shape sysinit keeps" \
+    || red "no absolute localtime link into the state's /etc upper layer"
+
 echo
 echo "-- the kernel reads the new table whole, so its partitions carry their names"
 eval "$(sed -n '/^reread_table()/,/^}/p' "$INSTALLER")"

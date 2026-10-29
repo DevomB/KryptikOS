@@ -272,6 +272,12 @@ static int pick_card(snd_pcm_stream_t dir)
 	return first;
 }
 
+/* The card's own controls this mixer sets. USB audio names a headset's controls Headset and a
+ * microphone's Mic where the device gives them no name. On HD Audio a Mic control is the
+ * loopback into the output, a playback one, which the capture side here leaves alone. */
+static const char *const outputs[] = { "Master", "PCM", "Speaker", "Headphone", "Headset", "Front", "Line Out", NULL };
+static const char *const inputs[] = { "Capture", "Mic", "Headset", NULL };
+
 static int named(snd_mixer_elem_t *e, const char *const *names)
 {
 	for (; *names; names++)
@@ -280,40 +286,63 @@ static int named(snd_mixer_elem_t *e, const char *const *names)
 	return 0;
 }
 
-/* The card's own controls at unity and on, so the mixer's volumes are the only ones that act:
- * a card can come up muted, and nothing else here sets it. USB audio names a headset's controls
- * Headset and a microphone's Mic where the device gives them no name. On HD Audio a Mic control
- * is the loopback into the output, a playback one, which the capture side here leaves alone. */
-static void levels(int card)
+static snd_mixer_t *card_mixer(int card)
 {
-	static const char *const play[] = { "Master", "PCM", "Speaker", "Headphone", "Headset", "Front", "Line Out", NULL };
-	static const char *const rec[] = { "Capture", "Mic", "Headset", NULL };
 	char hw[16];
 	snprintf(hw, sizeof hw, "hw:%d", card);
 	snd_mixer_t *m;
 	if (snd_mixer_open(&m, 0) < 0)
-		return;
+		return NULL;
 	if (snd_mixer_attach(m, hw) < 0 || snd_mixer_selem_register(m, NULL, NULL) < 0 || snd_mixer_load(m) < 0) {
 		snd_mixer_close(m);
-		return;
+		return NULL;
 	}
+	return m;
+}
+
+/* The card's switches say what the mixer does: its outputs off while the master is muted, its
+ * inputs off while no zone holds the microphone. A laptop's mute and microphone-mute lights
+ * follow them (snd-ctl-led), and a card nothing may record from records nothing. */
+static void switches(snd_mixer_t *m)
+{
+	for (snd_mixer_elem_t *e = snd_mixer_first_elem(m); e; e = snd_mixer_elem_next(e)) {
+		if (named(e, outputs) && snd_mixer_selem_has_playback_switch(e))
+			snd_mixer_selem_set_playback_switch_all(e, !master_muted);
+		if (named(e, inputs) && snd_mixer_selem_has_capture_switch(e))
+			snd_mixer_selem_set_capture_switch_all(e, granted >= 0);
+	}
+}
+
+/* Every card's, for a mute or a grant that changed: a card nothing plays on keeps its lights. */
+static void switches_everywhere(void)
+{
+	int card = -1;
+	while (snd_card_next(&card) == 0 && card >= 0) {
+		snd_mixer_t *m = card_mixer(card);
+		if (!m)
+			continue;
+		switches(m);
+		snd_mixer_close(m);
+	}
+}
+
+/* The card's own volumes at unity, so the mixer's volumes are the only ones that act, and its
+ * switches as switches() says: a card can come up muted, and nothing else here sets it. */
+static void levels(int card)
+{
+	snd_mixer_t *m = card_mixer(card);
+	if (!m)
+		return;
 	for (snd_mixer_elem_t *e = snd_mixer_first_elem(m); e; e = snd_mixer_elem_next(e)) {
 		long lo, hi;
-		if (named(e, play)) {
-			if (snd_mixer_selem_has_playback_switch(e))
-				snd_mixer_selem_set_playback_switch_all(e, 1);
-			if (snd_mixer_selem_has_playback_volume(e) && snd_mixer_selem_set_playback_dB_all(e, 0, 1) < 0
-			    && snd_mixer_selem_get_playback_volume_range(e, &lo, &hi) == 0)
-				snd_mixer_selem_set_playback_volume_all(e, hi);
-		}
-		if (named(e, rec)) {
-			if (snd_mixer_selem_has_capture_switch(e))
-				snd_mixer_selem_set_capture_switch_all(e, 1);
-			if (snd_mixer_selem_has_capture_volume(e) && snd_mixer_selem_set_capture_dB_all(e, 0, 1) < 0
-			    && snd_mixer_selem_get_capture_volume_range(e, &lo, &hi) == 0)
-				snd_mixer_selem_set_capture_volume_all(e, hi);
-		}
+		if (named(e, outputs) && snd_mixer_selem_has_playback_volume(e) && snd_mixer_selem_set_playback_dB_all(e, 0, 1) < 0
+		    && snd_mixer_selem_get_playback_volume_range(e, &lo, &hi) == 0)
+			snd_mixer_selem_set_playback_volume_all(e, hi);
+		if (named(e, inputs) && snd_mixer_selem_has_capture_volume(e) && snd_mixer_selem_set_capture_dB_all(e, 0, 1) < 0
+		    && snd_mixer_selem_get_capture_volume_range(e, &lo, &hi) == 0)
+			snd_mixer_selem_set_capture_volume_all(e, hi);
 	}
+	switches(m);
 	snd_mixer_close(m);
 }
 
@@ -466,15 +495,17 @@ static void control_line(struct conn *c)
 		master = v;
 	else if (is_volume && n == 3 && (v = level(d, zones[z].volume)) >= 0)
 		zones[z].volume = v;
-	else if (is_mute && n == 2 && (v = switched(b, master_muted)) >= 0)
+	else if (is_mute && n == 2 && (v = switched(b, master_muted)) >= 0) {
 		master_muted = v;
-	else if (is_mute && n == 3 && (v = switched(d, zones[z].muted)) >= 0)
+		switches_everywhere();
+	} else if (is_mute && n == 3 && (v = switched(d, zones[z].muted)) >= 0)
 		zones[z].muted = v;
 	else if (!strcmp(a, "grant") && n == 2) {
 		/* One zone at a time: a grant moves, and what another zone recorded ends. */
 		end_records(z);
 		granted = z;
 		record_holder();
+		switches_everywhere();
 		say("the microphone is granted to %s", zones[z].name);
 	} else if (!strcmp(a, "revoke") && n <= 2) {
 		if (granted >= 0 && (n == 1 || z == granted)) {
@@ -482,6 +513,7 @@ static void control_line(struct conn *c)
 			say("the microphone is taken back from %s", zones[granted].name);
 			granted = -1;
 			record_holder();
+			switches_everywhere();
 		}
 	} else
 		answer = "error: status | volume [ZONE] N|+N|-N | mute [ZONE] on|off|toggle | grant ZONE | revoke [ZONE]\n";
@@ -795,9 +827,11 @@ int main(int argc, char **argv)
 	int control = listen_at(CONTROL_PATH, 0660);
 	/* A record a mixer that died left behind would name a zone that may not record. */
 	record_holder();
-	/* The levels to start at, and at once the record of them a stop keeps. */
+	/* The levels to start at, and at once the record of them a stop keeps; the cards' switches
+	 * then say them, and that no zone holds the microphone. */
 	restore_levels();
 	record_levels();
+	switches_everywhere();
 	if (control < 0)
 		say("no control socket at %s: %s; volume and the microphone stay as they are", CONTROL_PATH, strerror(errno));
 	say("mixing for %d zone(s)", nzones);
