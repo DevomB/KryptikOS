@@ -519,9 +519,9 @@ login and made again whenever the monitor is plugged in; NAME `*` stands for
 every monitor no other line names. `kryptik display NAME auto` drops that
 monitor's line, so it takes the `*` line if there is one, and otherwise 2 for a
 built-in panel of 192 dpi or more and 1200 lines or more, 1 for the rest. A
-zone's window is told the exact scale, and the browser draws sharp at it.
-Kryptik's terminals, the menu and the lock screen draw at 1 and are enlarged,
-so at any scale but 1 they look soft.
+zone's window is told the exact scale, and the browser, Kryptik's terminals
+and the menu draw sharp at it. The lock screen draws at 1 and is enlarged, so
+at any scale but 1 it looks soft.
 
 **Time zone.** Zone 0's clock reads UTC until you choose a time zone.
 `kryptik timezone list DE` lists a country's zones by its two letters,

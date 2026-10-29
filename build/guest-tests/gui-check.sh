@@ -1667,6 +1667,23 @@ else
     fail "chrome-follows-head" "focus: $(tr '\n' ' ' < "$RT/kryptik/focus" 2>/dev/null)"
 fi
 second_head="$(focus_output)"
+# A terminal on the second head, at scale 2, draws its buffer twice the window's size and shows it
+# at the window's size through a viewport, so its text is sharp (build/patches/havoc-0.7.0's 0003).
+# Its own requests, as libwayland logs them, say both.
+as_user "WAYLAND_DEBUG=client timeout 20 /usr/bin/havoc sleep 8" > "$LOG/havoc-scale.out" 2>&1 &
+hscale=$!
+havoc_scaled() {
+    local dest
+    dest="$(grep -o 'wp_viewport@[0-9]*\.set_destination([0-9]*, [0-9]*)' "$LOG/havoc-scale.out" | tail -1)"
+    [[ "$dest" =~ \(([0-9]+),\ ([0-9]+)\) && "${BASH_REMATCH[1]}" -gt 0 ]] || return 1
+    grep -qE "create_buffer\(new id wl_buffer@[0-9]+, 0, $((BASH_REMATCH[1] * 2)), $((BASH_REMATCH[2] * 2)), " "$LOG/havoc-scale.out"
+}
+if wait_for 15 havoc_scaled; then
+    pass "havoc-draws-at-scale" "a terminal on the scale-2 head drew $(grep -o 'create_buffer([^)]*)' "$LOG/havoc-scale.out" | tail -1) for its $(grep -o 'set_destination([^)]*)' "$LOG/havoc-scale.out" | tail -1)"
+else
+    fail "havoc-draws-at-scale" "$(grep -E 'preferred_scale|set_destination|create_buffer' "$LOG/havoc-scale.out" | tail -4 | tr '\n' ' ')"
+fi
+wait "$hscale" 2>/dev/null
 # What a zone is told of the monitors: both, each named by its number with no make or model,
 # as the zone's proxy rewrites them, and the second at the scale chosen for it.
 mark outs untrusted

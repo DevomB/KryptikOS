@@ -1,0 +1,341 @@
+From: DevomB <Devom.hb@yahoo.com>
+Subject: [PATCH] Draw at the output's scale
+
+havoc draws at one size, so at a scale of 2, or of 1.5, the compositor
+enlarges its buffer and every terminal is soft. It binds wp_viewporter and
+wp_fractional_scale_v1 where the compositor offers them, and at the scale
+the window is told draws its font that much larger into a buffer the
+window's size times the scale, which the viewport shows at the window's
+size: each pixel is one of the screen's. What the cells leave is margin,
+and pointer positions are scaled to the cells. At a scale of 1, or without
+the two globals, it draws as before.
+---
+ Makefile |  18 ++++++++++++++++--
+ glyph.c  |  27 +++++++++++++++++++++++++++
+ main.c   | 131 ++++++++++++++++++++++++++++++++++++++++--------------------
+ 3 files changed, 146 insertions(+), 30 deletions(-)
+
+diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -20,7 +20,9 @@
+ XML = \
+ 	xdg-shell.xml \
+ 	xdg-decoration-unstable-v1.xml \
+-	primary-selection-unstable-v1.xml
++	primary-selection-unstable-v1.xml \
++	fractional-scale-v1.xml \
++	viewporter.xml
+ 
+ GEN = \
+ 	xdg-shell.h \
+@@ -28,7 +30,11 @@
+ 	xdg-decoration-unstable-v1.h \
+ 	xdg-decoration-unstable-v1.c \
+ 	primary-selection-unstable-v1.h \
+-	primary-selection-unstable-v1.c
++	primary-selection-unstable-v1.c \
++	fractional-scale-v1.h \
++	fractional-scale-v1.c \
++	viewporter.h \
++	viewporter.c
+ 
+ OBJ = \
+ 	main.o \
+@@ -36,6 +42,8 @@
+ 	xdg-shell.o \
+ 	xdg-decoration-unstable-v1.o \
+ 	primary-selection-unstable-v1.o \
++	fractional-scale-v1.o \
++	viewporter.o \
+ 	tsm/wcwidth.o \
+ 	tsm/shl-htable.o \
+ 	tsm/tsm-render.o \
+@@ -71,6 +79,12 @@
+ primary-selection-unstable-v1.xml:
+ 	cp $(WAYLAND_PROTOCOLS_DIR)/unstable/primary-selection/$@ $@
+ 
++fractional-scale-v1.xml:
++	cp $(WAYLAND_PROTOCOLS_DIR)/staging/fractional-scale/$@ $@
++
++viewporter.xml:
++	cp $(WAYLAND_PROTOCOLS_DIR)/stable/viewporter/$@ $@
++
+ install: havoc
+ 	mkdir -p $(DESTDIR)$(BINDIR)
+ 	install -m 755 havoc $(DESTDIR)$(BINDIR)/havoc
+diff --git a/glyph.c b/glyph.c
+--- a/glyph.c
++++ b/glyph.c
+@@ -1586,6 +1586,33 @@
+ 	return 0;
+ }
+ 
++/* Kryptik: the same font at another size, as for an output's scale; the cache holds the old
++ * size's glyphs. */
++int font_resize(int size, int *w, int *h)
++{
++	int descent, linegap;
++
++	delete_cache(font.cache);
++	font.cache = &leaf;
++
++	font.ascent = get_ascent(&font);
++	descent = get_descent(&font);
++	linegap = get_linegap(&font);
++	font.scale = (float)size / (font.ascent - descent);
++
++	font.height = font.ascent - descent + linegap;
++	font.width = get_width(&font);
++
++	font.ascent = floor(font.scale * font.ascent);
++	font.width = ceil(font.scale * font.width);
++	font.height = ceil(font.scale * font.height);
++
++	*w = font.width;
++	*h = font.height;
++
++	return 0;
++}
++
+ void font_deinit(void)
+ {
+ 	delete_cache(font.cache);
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -24,11 +24,14 @@
+ #include "xdg-shell.h"
+ #include "primary-selection-unstable-v1.h"
+ #include "xdg-decoration-unstable-v1.h"
++#include "fractional-scale-v1.h"
++#include "viewporter.h"
+ 
+ #define ARRAY_LENGTH(a) (sizeof (a) / sizeof (a)[0])
+ 
+ int font_init(int, char *, int *, int *);
+ void font_deinit(void);
++int font_resize(int, int *, int *);
+ unsigned char *get_glyph(uint32_t, uint32_t, int);
+ 
+ enum deco {
+@@ -65,6 +68,13 @@
+ 	struct xdg_surface *xdgsurf;
+ 	struct xdg_toplevel *toplvl;
+ 
++	struct wp_viewporter *viewporter;
++	struct wp_fractional_scale_manager_v1 *fscale_mgr;
++	struct wp_viewport *viewport;
++	struct wp_fractional_scale_v1 *fscale;
++	int scale;
++	int reqwidth, reqheight;
++
+ 	struct buffer {
+ 		struct wl_buffer *b;
+ 		void *data;
+@@ -220,7 +230,8 @@
+ 		[TSM_COLOR_FOREGROUND]    = { 229, 229, 229 },
+ 		[TSM_COLOR_BACKGROUND]    = {   0,   0,   0 },
+ 	},
+-	.opt.app_id = "havoc"
++	.opt.app_id = "havoc",
++	.scale = 120,
+ };
+ 
+ #define error(s) { fprintf(stderr, s ": %s\n", strerror(errno)); }
+@@ -773,7 +784,7 @@
+ 	buffer->age = tsm_screen_draw(term.screen, draw_cell, buffer);
+ 	if (buffer->age == 0)
+ 		term.buf[0].age = term.buf[1].age = 0;
+-	wl_surface_damage(term.surf, 0, 0, term.width, term.height);
++	wl_surface_damage(term.surf, 0, 0, INT_MAX, INT_MAX);
+ 
+ 	term.cb = wl_surface_frame(term.surf);
+ 	wl_callback_add_listener(term.cb, &frame_listener, NULL);
+@@ -785,7 +796,7 @@
+ 	if (term.resize) {
+ 		--term.resize;
+ 
+-		if (term.cfg.margin)
++		if (term.cfg.margin || term.scale != 120)
+ 			draw_margin(buffer);
+ 	}
+ }
+@@ -1173,7 +1184,7 @@
+ 
+ static inline int grid_x(void)
+ {
+-	int x = (wl_fixed_to_double(term.ptr_x) - term.margin.left) / term.cwidth;
++	int x = (wl_fixed_to_double(term.ptr_x) * term.scale / 120 - term.margin.left) / term.cwidth;
+ 
+ 	if (x < 0)
+ 		return 0;
+@@ -1186,7 +1197,7 @@
+ 
+ static inline int grid_y(void)
+ {
+-	int y = (wl_fixed_to_double(term.ptr_y) - term.margin.top) / term.cheight;
++	int y = (wl_fixed_to_double(term.ptr_y) * term.scale / 120 - term.margin.top) / term.cheight;
+ 
+ 	if (y < 0)
+ 		return 0;
+@@ -1501,8 +1512,8 @@
+ 			     struct wl_array *state)
+ {
+ 	term.configured = false;
+-	term.confwidth = width ? width : term.cfg.col * term.cwidth;
+-	term.confheight = height ? height : term.cfg.row * term.cheight;
++	term.reqwidth = width;
++	term.reqheight = height;
+ }
+ 
+ static void toplvl_close(void *data, struct xdg_toplevel *t)
+@@ -1515,34 +1526,54 @@
+ 	.close = toplvl_close,
+ };
+ 
+-static void configure(void *d, struct xdg_surface *surf, uint32_t serial)
++/* Kryptik: pixels at the scale, in the window's units, rounded up. */
++static int logical(int px)
+ {
+-	xdg_surface_ack_configure(surf, serial);
+-	int col = term.confwidth / term.cwidth;
+-	int row = term.confheight / term.cheight;
+-	struct winsize ws = {
+-		row, col, 0, 0
+-	};
++	return (px * 120 + term.scale - 1) / term.scale;
++}
+ 
+-	assert(!term.configured);
+-	term.configured = true;
++/* Kryptik: the window at the output's scale. The buffer is the window's size times the scale,
++ * which the viewport shows at the window's size, so each pixel is one of the screen's; the
++ * cells that fit are drawn from a font that much larger, and what they leave is margin. At
++ * a scale of 1 it is upstream's, margin or not as the config says. */
++static void layout(void)
++{
++	bool scaled = term.scale != 120;
++	int w, h, col, row;
++	struct winsize ws;
++
++	term.confwidth = term.reqwidth ? term.reqwidth : logical(term.cfg.col * term.cwidth);
++	term.confheight = term.reqheight ? term.reqheight : logical(term.cfg.row * term.cheight);
++	w = (term.confwidth * term.scale + 60) / 120;
++	h = (term.confheight * term.scale + 60) / 120;
++	col = w / term.cwidth;
++	row = h / term.cheight;
++	ws = (struct winsize){ row, col, 0, 0 };
+ 
+ 	if (col == 0 || row == 0)
+ 		return;
+ 
+-	if (term.width == term.confwidth && term.height == term.confheight)
+-		return;
+-
+-	if (term.cfg.margin) {
+-		term.width = term.confwidth;
+-		term.height = term.confheight;
+-		term.margin.left = (term.width - col * term.cwidth) / 2;
+-		term.margin.top = (term.height - row * term.cheight) / 2;
+-		term.need_redraw = true;
+-		term.resize = 2;
+-	} else {
++	if (term.cfg.margin || scaled) {
++		if (term.width != w || term.height != h || term.col != col || term.row != row) {
++			term.width = w;
++			term.height = h;
++			term.margin.left = (w - col * term.cwidth) / 2;
++			term.margin.top = (h - row * term.cheight) / 2;
++			term.need_redraw = true;
++			term.resize = 2;
++		}
++	} else if (term.width != col * term.cwidth || term.height != row * term.cheight) {
+ 		term.width = col * term.cwidth;
+ 		term.height = row * term.cheight;
++		term.margin.left = term.margin.top = 0;
++		term.need_redraw = true;
++		term.resize = 2;
++	}
++	if (term.viewport) {
++		if (scaled)
++			wp_viewport_set_destination(term.viewport, term.confwidth, term.confheight);
++		else
++			wp_viewport_set_destination(term.viewport, -1, -1);
+ 	}
+ 
+ 	if (term.col == col && term.row == row)
+@@ -1558,6 +1589,30 @@
+ 	term.resize = 2;
+ }
+ 
++static void configure(void *d, struct xdg_surface *surf, uint32_t serial)
++{
++	xdg_surface_ack_configure(surf, serial);
++	assert(!term.configured);
++	term.configured = true;
++	layout();
++}
++
++/* Kryptik: the output's scale, in 120ths, which the compositor tells as the window is shown
++ * and whenever it moves: the font is drawn that much larger, and layout() follows. */
++static void fscale_preferred(void *data, struct wp_fractional_scale_v1 *f, uint32_t scale)
++{
++	if (scale == 0 || scale > 120 * 8 || (int)scale == term.scale)
++		return;
++	term.scale = scale;
++	font_resize((term.cfg.font_size * term.scale + 60) / 120, &term.cwidth, &term.cheight);
++	if (term.configured)
++		layout();
++}
++
++static const struct wp_fractional_scale_v1_listener fscale_listener = {
++	.preferred_scale = fscale_preferred,
++};
++
+ static const struct xdg_surface_listener surf_listener = {
+ 	.configure = configure,
+ };
+@@ -1602,6 +1657,12 @@
+ 	} else if (strcmp(i, "zwp_primary_selection_device_manager_v1") == 0) {
+ 		term.ps_dm = wl_registry_bind(r, id,
+ 			&zwp_primary_selection_device_manager_v1_interface, 1);
++	} else if (strcmp(i, "wp_viewporter") == 0) {
++		term.viewporter = wl_registry_bind(r, id,
++			&wp_viewporter_interface, 1);
++	} else if (strcmp(i, "wp_fractional_scale_manager_v1") == 0) {
++		term.fscale_mgr = wl_registry_bind(r, id,
++			&wp_fractional_scale_manager_v1_interface, 1);
+ 	} else if (strcmp(i, "zxdg_decoration_manager_v1") == 0) {
+ 		term.deco.manager = wl_registry_bind(r, id,
+ 			&zxdg_decoration_manager_v1_interface, 1);
+@@ -2063,6 +2124,12 @@
+ 	term.surf = wl_compositor_create_surface(term.cp);
+ 	if (term.surf == NULL)
+ 		fail(esurf, "could not create surface");
++	if (term.viewporter && term.fscale_mgr) {
++		term.viewport = wp_viewporter_get_viewport(term.viewporter, term.surf);
++		term.fscale = wp_fractional_scale_manager_v1_get_fractional_scale(
++			term.fscale_mgr, term.surf);
++		wp_fractional_scale_v1_add_listener(term.fscale, &fscale_listener, NULL);
++	}
+ 
+ 	term.xdgsurf = xdg_wm_base_get_xdg_surface(term.wm_base, term.surf);
+ 	if (term.xdgsurf == NULL)
+@@ -2158,7 +2225,15 @@
+ 
+ 	if (term.deco.manager)
+ 		zxdg_decoration_manager_v1_destroy(term.deco.manager);
+-
++	if (term.fscale_mgr)
++		wp_fractional_scale_manager_v1_destroy(term.fscale_mgr);
++	if (term.viewporter)
++		wp_viewporter_destroy(term.viewporter);
++
++	if (term.fscale)
++		wp_fractional_scale_v1_destroy(term.fscale);
++	if (term.viewport)
++		wp_viewport_destroy(term.viewport);
+ 	xdg_toplevel_destroy(term.toplvl);
+ etoplvl:
+ 	xdg_surface_destroy(term.xdgsurf);
